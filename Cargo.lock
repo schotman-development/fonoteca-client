@@ -1428,6 +1428,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tokio",
+ "web-sys",
  "zbus-secret-service-keyring-store",
 ]
 

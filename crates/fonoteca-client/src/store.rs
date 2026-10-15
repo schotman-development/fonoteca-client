@@ -1,6 +1,10 @@
 //! Keeps the [`Account`] in the OS secret store: the Keychain on macOS, the
 //! Secret Service (GNOME Keyring, KWallet, KeePassXC) on Linux. It is never
 //! written anywhere else, so without a secret store nothing is saved.
+//!
+//! The browser preview has no secret store and keeps it, unencrypted, in the
+//! page's localStorage until sign out. A cookie would hand it to the dev
+//! server with every request.
 
 use crate::Account;
 
@@ -17,6 +21,8 @@ mod native {
     use keyring_core::Entry;
 
     use super::Account;
+
+    pub const PLACE: &str = "your system's secret store";
 
     fn entry() -> Result<Entry, String> {
         static STORE: OnceLock<Result<(), String>> = OnceLock::new();
@@ -74,17 +80,39 @@ mod native {
 
 #[cfg(target_family = "wasm")]
 mod browser {
+    use web_sys::Storage;
+
     use super::Account;
 
-    pub async fn load() -> Option<Account> {
-        None
+    pub const PLACE: &str = "this browser";
+
+    const KEY: &str = "fonoteca-client.account";
+
+    fn storage() -> Result<Storage, String> {
+        web_sys::window()
+            .and_then(|window| window.local_storage().ok().flatten())
+            .ok_or_else(|| "this browser blocks site storage.".into())
     }
 
-    pub async fn save(_: Account) -> Result<(), String> {
-        Err("the browser preview doesn't save.".into())
+    pub async fn load() -> Option<Account> {
+        let json = storage().ok()?.get_item(KEY).ok()??;
+        serde_json::from_str(&json).ok()
+    }
+
+    pub async fn save(account: Account) -> Result<(), String> {
+        let json = serde_json::to_string(&account).map_err(|e| e.to_string())?;
+        storage()?
+            .set_item(KEY, &json)
+            .map_err(|_| "the browser refused to store it.".into())
     }
 
     pub async fn forget() -> Result<(), String> {
-        Ok(())
+        // Without storage nothing was saved.
+        let Ok(storage) = storage() else {
+            return Ok(());
+        };
+        storage
+            .remove_item(KEY)
+            .map_err(|_| "the browser refused to remove it.".into())
     }
 }

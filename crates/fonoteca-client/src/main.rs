@@ -9,7 +9,7 @@ use std::rc::Rc;
 use opensubsonic::{Auth, Client};
 use serde::{Deserialize, Serialize};
 
-/// What the onboarding sets up, kept in the OS secret store.
+/// What the onboarding sets up, kept by [`store`].
 #[derive(Serialize, Deserialize)]
 pub struct Account {
     server: String,
@@ -172,7 +172,7 @@ fn finish(ui: &AppWindow, browser: &browse::Shared, account: Account, client: Cl
         async move { Ok(store::save(account).await) },
         |ui, saved| {
             let note = match saved {
-                Ok(()) => "Saved in your system's secret store.".to_owned(),
+                Ok(()) => format!("Saved in {}.", store::PLACE),
                 Err(e) => format!("Not saved, so the next start asks again: {e}"),
             };
             ui.set_saved_note(note.into());
