@@ -350,13 +350,23 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
 
             let discs = songs.iter().any(|song| song.disc_number.unwrap_or(1) > 1);
             let mut b = browser.borrow_mut();
+            // Consecutive tracks of one work are headed by it, as on a
+            // classical album.
+            let mut piece = None;
             for song in &songs {
+                let (work, composers) = match song.works.first() {
+                    Some(work) if Some(work) != piece => (work.name.as_str(), composer_names(song)),
+                    _ => ("", Vec::new()),
+                };
+                piece = song.works.first();
                 b.tracks.push(Track {
                     number: track_number(song, discs).into(),
-                    title: song.title.as_str().into(),
+                    title: track_title(song).into(),
                     names: names(song_names(song)),
                     duration: song.duration.map(duration).unwrap_or_default().into(),
                     loved: song.starred.is_some(),
+                    work: work.into(),
+                    composers: names(composers),
                 });
             }
             b.songs = songs
@@ -594,6 +604,40 @@ fn album_names(album: &AlbumID3) -> Vec<Name> {
 
 fn song_names(song: &Child) -> Vec<Name> {
     named(&song.artists, &song.artist, &song.artist_id)
+}
+
+/// The composers of a song, linked where the server names them as artists.
+fn composer_names(song: &Child) -> Vec<Name> {
+    let composers: Vec<Name> = song
+        .contributors
+        .iter()
+        .filter(|contributor| contributor.role == "composer")
+        .map(|contributor| linked(&contributor.artist))
+        .collect();
+    if composers.is_empty() {
+        song.display_composer
+            .iter()
+            .cloned()
+            .map(unlinked)
+            .collect()
+    } else {
+        composers
+    }
+}
+
+/// A track's title, or within a work its movement: the movement's name where
+/// the server sends one, else the title without the work's name in front.
+fn track_title(song: &Child) -> String {
+    if let Some(movement) = song.movements.first() {
+        return movement.name.clone();
+    }
+    song.works
+        .first()
+        .and_then(|work| song.title.strip_prefix(work.name.as_str()))
+        .and_then(|rest| rest.strip_prefix(": "))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(&song.title)
+        .to_owned()
 }
 
 fn named(artists: &[ArtistID3], artist: &Option<String>, id: &Option<String>) -> Vec<Name> {

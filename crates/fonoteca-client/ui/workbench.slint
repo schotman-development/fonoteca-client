@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TopBar, TrackRow, WorkHeading } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -255,6 +255,34 @@ export component Workbench inherits Window {
                             loved: root.loved-3;
                             clicked => { root.event = "play track:3"; }
                             toggle-love => { root.loved-3 = !root.loved-3; }
+                        }
+                    }
+
+                    if root.current == 4: Example {
+                        caption: "A work heads its movements, as on a classical album";
+                        WorkHeading {
+                            padding-top: 0px;
+                            title: root.long-text ? root.long-title : "Symphony No. 5 in C minor, Op. 67";
+                            composers: root.long-text ? root.many : [{ label: "Ludwig van Beethoven", link: "artist:8" }];
+                            open(link) => { root.event = "open " + link; }
+                        }
+                        TrackRow {
+                            number: "1";
+                            title: "I. Allegro con brio";
+                            names: root.mara;
+                            duration: "7:21";
+                            clicked => { root.event = "play track:4"; }
+                            open(link) => { root.event = "open " + link; }
+                            toggle-love => { root.event = "love track:4"; }
+                        }
+                        TrackRow {
+                            number: "2";
+                            title: "II. Andante con moto";
+                            names: root.mara;
+                            duration: "9:48";
+                            clicked => { root.event = "play track:5"; }
+                            open(link) => { root.event = "open " + link; }
+                            toggle-love => { root.event = "love track:5"; }
                         }
                     }
 

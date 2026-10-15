@@ -369,6 +369,11 @@ mod tests {
     /// The fields of the one album, without its braces.
     const ALBUM: &str = r#""id":"a1","name":"Night Harbour","artist":"Mara Lind","artistId":"r1","coverArt":"al-a1","songCount":2,"duration":470,"created":"2021-01-01T00:00:00Z","year":2021,"genre":"Folk""#;
 
+    /// A classical album: two movements of a symphony, an overture known by
+    /// its composer's name alone, an encore that belongs to no work, and the
+    /// symphony's finale after it.
+    const CLASSICAL: &str = r#""id":"a2","name":"Symphonies","songCount":4,"duration":1629,"created":"2021-01-01T00:00:00Z","song":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","track":1,"duration":441,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"movements":[{"name":"I. Allegro con brio","number":1,"count":4}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}],"displayComposer":"Ludwig van Beethoven"},{"id":"c2","isDir":false,"title":"Symphony No. 5: II. Andante con moto","track":2,"duration":588,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}]},{"id":"c3","isDir":false,"title":"Egmont Overture","track":3,"duration":500,"works":[{"name":"Egmont Overture"}],"displayComposer":"Ludwig van Beethoven"},{"id":"c4","isDir":false,"title":"Encore","track":4,"duration":100},{"id":"c5","isDir":false,"title":"Symphony No. 5: IV. Allegro","track":5,"duration":660,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"displayComposer":"Ludwig van Beethoven"}]"#;
+
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// While set, the flow test's server answers every request with an error.
@@ -389,7 +394,7 @@ mod tests {
 
     /// An OpenSubsonic server without API keys that knows one user, joe, and
     /// 600 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
-    /// refused.
+    /// refused. The second is classical.
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -423,6 +428,8 @@ mod tests {
                 r#""albumList2":{{"album":[{}]}}"#,
                 albums.join(",")
             ))
+        } else if request.contains("/rest/getAlbum") && id == Some("a2") {
+            ok(&format!(r#""album":{{{CLASSICAL}}}"#))
         } else if request.contains("/rest/getAlbum") {
             let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","track":1,"discNumber":1,"duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s2","isDir":false,"title":"Rope and Anchor","track":1,"discNumber":2,"duration":218,"artist":"Mara Lind","artistId":"r1"}]"#;
             ok(&format!(r#""album":{{{ALBUM},"song":{songs}}}"#))
@@ -694,6 +701,30 @@ mod tests {
             assert!(!ui.get_can_go_forward());
             click(&ui, "Back");
             wait_for("the album before them", || ui.get_tracks().row_count() == 2).await;
+
+            ui.invoke_open("album:a2".into());
+            wait_for("the classical album", || ui.get_tracks().row_count() == 5).await;
+            let tracks: Vec<Track> = ui.get_tracks().iter().collect();
+            let heading = |row: usize| {
+                let track = &tracks[row];
+                let composer = track.composers.row_data(0).map(|name| name.link);
+                (track.work.as_str(), composer, track.title.as_str())
+            };
+            let beethoven = Some("artist:r9".into());
+            assert_eq!(
+                heading(0),
+                ("Symphony No. 5", beethoven, "I. Allegro con brio")
+            );
+            assert_eq!(heading(1), ("", None, "II. Andante con moto"));
+            assert_eq!(
+                heading(2),
+                ("Egmont Overture", Some("".into()), "Egmont Overture")
+            );
+            assert_eq!(heading(3), ("", None, "Encore"));
+            assert_eq!(
+                heading(4),
+                ("Symphony No. 5", Some("".into()), "IV. Allegro")
+            );
 
             // A second start finds the saved account, with its server down.
             DOWN.store(true, Relaxed);

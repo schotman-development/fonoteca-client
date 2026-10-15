@@ -1,5 +1,5 @@
 import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow, WorkHeading } from "components.slint";
 
 export { AlbumTile, Name }
 
@@ -13,6 +13,10 @@ export struct Track {
     names: [Name],
     duration: string,
     loved: bool,
+    // The work this track starts, and its composers; empty on the tracks
+    // that continue it and on tracks of no work.
+    work: string,
+    composers: [Name],
 }
 
 component Heading inherits Text {
@@ -169,14 +173,22 @@ export component AppWindow inherits Window {
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                     }
                     if root.page == Page.album: VerticalLayout {
-                        for track[row] in root.tracks: TrackRow {
-                            number: track.number;
-                            title: track.title;
-                            names: track.names;
-                            duration: track.duration;
-                            loved: track.loved;
-                            open(link) => { root.open(link); }
-                            toggle-love => { root.toggle-love(row); }
+                        for track[row] in root.tracks: VerticalLayout {
+                            if track.work != "": WorkHeading {
+                                padding-top: row == 0 ? 0px : 16px;
+                                title: track.work;
+                                composers: track.composers;
+                                open(link) => { root.open(link); }
+                            }
+                            TrackRow {
+                                number: track.number;
+                                title: track.title;
+                                names: track.names;
+                                duration: track.duration;
+                                loved: track.loved;
+                                open(link) => { root.open(link); }
+                                toggle-love => { root.toggle-love(row); }
+                            }
                         }
                     }
                     if root.page-problem != "": Problem { text: root.page-problem; }

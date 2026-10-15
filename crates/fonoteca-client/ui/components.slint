@@ -281,6 +281,32 @@ export component PersonTile inherits Pressable {
     }
 }
 
+// The head of a run of tracks that make up one work, as on a classical
+// album: the work's title and its composers.
+export component WorkHeading inherits VerticalLayout {
+    in property <string> title;
+    in property <[Name]> composers;
+    callback open(link: string);
+    padding-left: 8px;
+    padding-right: 8px;
+    padding-top: 16px;
+    padding-bottom: 4px;
+    spacing: 2px;
+
+    Text {
+        text: root.title;
+        font-size: Theme.body;
+        font-weight: 600;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.composers.length > 0: Links {
+        names: root.composers;
+        font-size: Theme.small;
+        open(link) => { root.open(link); }
+    }
+}
+
 export component TrackRow inherits Pressable {
     in property <string> number;
     in property <string> title;
