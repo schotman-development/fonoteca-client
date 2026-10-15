@@ -13,7 +13,7 @@ and other OpenSubsonic servers, written in Rust.
   stop at.
 - **Browsing like Roon.** Every name on screen leads somewhere: from an album to
   its performers, from a performer to their other recordings, from a composer to
-  their works, and back, the way Roon and Fonoteca's web UI browse.
+  their works, and back.
 - **A component workbench.** Every element of the design system can be opened
   and tried on its own, like the Storybook beside Fonoteca's web UI.
 - **Three platforms:**
