@@ -1,10 +1,208 @@
+import { Button, ComboBox, LineEdit, Palette } from "std-widgets.slint";
+
+export enum Step { opening, server, sign-in, listenbrainz, done }
+
+component Heading inherits Text {
+    font-size: 24px;
+    font-weight: 600;
+    wrap: word-wrap;
+}
+
+component Note inherits Text {
+    wrap: word-wrap;
+    color: Palette.foreground.transparentize(30%);
+}
+
+component Problem inherits Text {
+    wrap: word-wrap;
+    color: #d33;
+}
+
 export component AppWindow inherits Window {
     title: "Fonoteca";
     preferred-width: 800px;
     preferred-height: 600px;
+    background: Palette.background;
 
-    Text {
-        text: "Fonoteca";
-        font-size: 32px;
+    in-out property <Step> step: Step.opening;
+    in property <bool> busy;
+    in-out property <string> problem;
+
+    in-out property <string> address;
+    in property <bool> api-key-offered;
+    in property <bool> unencrypted;
+    in-out property <int> login-method: 0;
+    in-out property <string> api-key;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <string> listenbrainz-token;
+
+    in property <string> server-name;
+    in property <string> signed-in;
+    in property <string> listenbrainz-user;
+    in property <string> saved-note;
+
+    callback find-server();
+    callback sign-in();
+    callback connect-listenbrainz();
+    callback skip-listenbrainz();
+    callback sign-out();
+
+    VerticalLayout {
+        alignment: center;
+        padding: 16px;
+
+        HorizontalLayout {
+            alignment: center;
+
+            VerticalLayout {
+                preferred-width: 420px;
+                max-width: 420px;
+                spacing: 12px;
+
+                if root.step == Step.opening: Note { text: "Reading your saved sign-in…"; }
+
+                if root.step == Step.server: VerticalLayout {
+                    spacing: 12px;
+                    Heading { text: "Connect to your music server"; }
+                    Note { text: "The address of an OpenSubsonic or Subsonic server, such as Navidrome."; }
+                    LineEdit {
+                        placeholder-text: "https://music.example.org";
+                        text <=> root.address;
+                        enabled: !root.busy;
+                        accepted => { root.find-server(); }
+                    }
+                    if root.problem != "": Problem { text: root.problem; }
+                    HorizontalLayout {
+                        alignment: end;
+                        Button {
+                            text: root.busy ? "Checking…" : "Continue";
+                            primary: true;
+                            enabled: !root.busy && root.address != "";
+                            clicked => { root.find-server(); }
+                        }
+                    }
+                }
+
+                if root.step == Step.sign-in: VerticalLayout {
+                    spacing: 12px;
+                    Heading { text: "Sign in"; }
+                    Note { text: root.address; }
+                    if root.unencrypted: Problem {
+                        text: "This address isn't encrypted (http). Anyone on the network between you and the server can read what you send.";
+                    }
+                    if root.api-key-offered: ComboBox {
+                        model: ["API key", "Username and password"];
+                        current-index <=> root.login-method;
+                        enabled: !root.busy;
+                    }
+                    if root.api-key-offered && root.login-method == 0: LineEdit {
+                        placeholder-text: "API key";
+                        input-type: InputType.password;
+                        text <=> root.api-key;
+                        enabled: !root.busy;
+                        accepted => { root.sign-in(); }
+                    }
+                    if !root.api-key-offered || root.login-method == 1: VerticalLayout {
+                        spacing: 12px;
+                        LineEdit {
+                            placeholder-text: "Username";
+                            text <=> root.username;
+                            enabled: !root.busy;
+                        }
+                        LineEdit {
+                            placeholder-text: "Password";
+                            input-type: InputType.password;
+                            text <=> root.password;
+                            enabled: !root.busy;
+                            accepted => { root.sign-in(); }
+                        }
+                    }
+                    if root.problem != "": Problem { text: root.problem; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: "Back";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.problem = "";
+                                root.step = Step.server;
+                            }
+                        }
+                        Rectangle { }
+                        Button {
+                            text: root.busy ? "Signing in…" : "Sign in";
+                            primary: true;
+                            enabled: !root.busy;
+                            clicked => { root.sign-in(); }
+                        }
+                    }
+                }
+
+                if root.step == Step.listenbrainz: VerticalLayout {
+                    spacing: 12px;
+                    Heading { text: "ListenBrainz"; }
+                    Note { text: "Optional. Connect ListenBrainz to love and hate recordings there. Your user token is on https://listenbrainz.org/settings/"; }
+                    LineEdit {
+                        placeholder-text: "User token";
+                        input-type: InputType.password;
+                        text <=> root.listenbrainz-token;
+                        enabled: !root.busy;
+                        accepted => { root.connect-listenbrainz(); }
+                    }
+                    if root.problem != "": Problem { text: root.problem; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: "Back";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.problem = "";
+                                root.step = Step.sign-in;
+                            }
+                        }
+                        Rectangle { }
+                        Button {
+                            text: "Skip";
+                            enabled: !root.busy;
+                            clicked => { root.skip-listenbrainz(); }
+                        }
+                        Button {
+                            text: root.busy ? "Checking…" : "Connect";
+                            primary: true;
+                            enabled: !root.busy && root.listenbrainz-token != "";
+                            clicked => { root.connect-listenbrainz(); }
+                        }
+                    }
+                }
+
+                if root.step == Step.done: VerticalLayout {
+                    spacing: 12px;
+                    Heading { text: "Connected"; }
+                    Text {
+                        text: root.server-name == "" ? root.address : root.server-name + " at " + root.address;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.signed-in;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.listenbrainz-user == "" ? "ListenBrainz not connected" : "ListenBrainz: " + root.listenbrainz-user;
+                        wrap: word-wrap;
+                    }
+                    if root.saved-note != "": Note { text: root.saved-note; }
+                    if root.problem != "": Problem { text: root.problem; }
+                    HorizontalLayout {
+                        alignment: end;
+                        Button {
+                            text: "Sign out";
+                            enabled: !root.busy;
+                            clicked => { root.sign-out(); }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
