@@ -1,0 +1,34 @@
+{
+  "subsonic-response": {
+    "status": "ok",
+    "version": "1.16.1",
+    "song": {
+      "id": "082f435a363c32c57d5edb6a678a28d4",
+      "parent": "e8a0685e3f3ec6f251649af2b58b8617",
+      "isDir": false,
+      "title": "\"polar expedition\"",
+      "album": "Live at The Casbah - 2005-04-29",
+      "artist": "The New Deal",
+      "track": 4,
+      "year": 2005,
+      "coverArt": "mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce",
+      "size": 19866778,
+      "contentType": "audio/flac",
+      "suffix": "flac",
+      "starred": "2023-03-27T09:45:27Z",
+      "duration": 178,
+      "bitRate": 880,
+      "bitDepth": 16,
+      "samplingRate": 44100,
+      "channelCount": 2,
+      "path": "The New Deal/Live at The Casbah - 2005-04-29/04 - \"polar expedition\".flac",
+      "playCount": 8,
+      "discNumber": 1,
+      "created": "2023-03-14T17:51:22.112827504Z",
+      "albumId": "e8a0685e3f3ec6f251649af2b58b8617",
+      "artistId": "97e0398acf63f9fb930d7d4ce209a52b",
+      "type": "music",
+      "isVideo": false
+    }
+  }
+}

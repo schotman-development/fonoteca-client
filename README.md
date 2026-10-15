@@ -46,4 +46,7 @@ podman compose up -d
 
 The code is [MIT](LICENSE) licensed. Slint is used under the
 [Slint Royalty-free Desktop, Mobile, and Web Applications License](https://github.com/slint-ui/slint/blob/master/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md),
-which asks for the badge above.
+which asks for the badge above. The JSON examples in
+`crates/opensubsonic/spec-examples` come from the
+[OpenSubsonic API docs](https://github.com/opensubsonic/open-subsonic-api) and
+keep their [Apache-2.0](crates/opensubsonic/spec-examples/LICENSE) license.

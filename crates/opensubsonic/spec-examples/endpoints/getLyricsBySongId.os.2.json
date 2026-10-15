@@ -1,0 +1,95 @@
+{
+  "subsonic-response": {
+    "status": "ok",
+    "version": "1.16.1",
+    "type": "AwesomeServerName",
+    "serverVersion": "0.1.3 (tag)",
+    "openSubsonic": true,
+    "lyricsList": {
+      "structuredLyrics": [
+        {
+          "kind": "main",
+          "lang": "ko",
+          "synced": true,
+          "line": [
+            { "start": 2747, "value": "눈을 뜬 순간" },
+            { "start": 6214, "value": "모든 게 달라졌어" }
+          ],
+          "cueLine": [
+            {
+              "index": 0,
+              "start": 2747,
+              "end": 6214,
+              "value": "눈을 뜬 순간",
+              "cue": [
+                { "start": 2747, "end": 3018, "value": "눈", "byteStart": 0, "byteEnd": 2 },
+                { "start": 3018, "end": 3179, "value": "을", "byteStart": 3, "byteEnd": 5 },
+                { "start": 3179, "end": 3582, "value": " ", "byteStart": 6, "byteEnd": 6 },
+                { "start": 3582, "end": 4100, "value": "뜬", "byteStart": 7, "byteEnd": 9 },
+                { "start": 4100, "end": 4500, "value": " ", "byteStart": 10, "byteEnd": 10 },
+                { "start": 4500, "end": 5200, "value": "순", "byteStart": 11, "byteEnd": 13 },
+                { "start": 5200, "end": 6214, "value": "간", "byteStart": 14, "byteEnd": 16 }
+              ]
+            },
+            {
+              "index": 1,
+              "start": 6214,
+              "end": 9000,
+              "value": "모든 게 달라졌어",
+              "cue": [
+                { "start": 6214, "end": 6800, "value": "모", "byteStart": 0, "byteEnd": 2 },
+                { "start": 6800, "end": 7200, "value": "든", "byteStart": 3, "byteEnd": 5 },
+                { "start": 7200, "end": 7600, "value": " ", "byteStart": 6, "byteEnd": 6 },
+                { "start": 7600, "end": 8000, "value": "게", "byteStart": 7, "byteEnd": 9 },
+                { "start": 8000, "end": 8400, "value": " ", "byteStart": 10, "byteEnd": 10 },
+                { "start": 8400, "end": 9000, "value": "달라졌어", "byteStart": 11, "byteEnd": 22 }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "translation",
+          "lang": "eng",
+          "synced": true,
+          "line": [
+            { "start": 2747, "value": "The moment I opened my eyes" },
+            { "start": 6214, "value": "Everything had changed" }
+          ]
+        },
+        {
+          "kind": "pronunciation",
+          "lang": "ko-Latn",
+          "synced": true,
+          "line": [
+            { "start": 2747, "value": "nuneul tteun sungan" },
+            { "start": 6214, "value": "modeun ge dallajyeosseo" }
+          ],
+          "cueLine": [
+            {
+              "index": 0,
+              "start": 2747,
+              "end": 6214,
+              "value": "nuneul tteun sungan",
+              "cue": [
+                { "start": 2747, "end": 3179, "value": "nuneul", "byteStart": 0, "byteEnd": 5 },
+                { "start": 3582, "end": 4100, "value": "tteun", "byteStart": 7, "byteEnd": 11 },
+                { "start": 4500, "end": 6214, "value": "sungan", "byteStart": 13, "byteEnd": 18 }
+              ]
+            },
+            {
+              "index": 1,
+              "start": 6214,
+              "end": 9000,
+              "value": "modeun ge dallajyeosseo",
+              "cue": [
+                { "start": 6214, "end": 7200, "value": "modeun", "byteStart": 0, "byteEnd": 5 },
+                { "start": 7600, "end": 8000, "value": "ge", "byteStart": 7, "byteEnd": 8 },
+                { "start": 8400, "end": 9000, "value": "dallajyeosseo", "byteStart": 10, "byteEnd": 22 }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

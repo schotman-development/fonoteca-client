@@ -1,0 +1,12 @@
+{
+  "index": 0,
+  "start": 0,
+  "end": 2400,
+  "value": "Oh love love me tonight",
+  "cue": [
+    { "start": 0, "end": 300, "value": "Oh", "byteStart": 0, "byteEnd": 1 },
+    { "start": 900, "end": 1300, "value": "love", "byteStart": 8, "byteEnd": 11 },
+    { "start": 1300, "end": 1600, "value": "me", "byteStart": 13, "byteEnd": 14 },
+    { "start": 1600, "end": 2400, "value": "tonight", "byteStart": 16, "byteEnd": 22 }
+  ]
+}

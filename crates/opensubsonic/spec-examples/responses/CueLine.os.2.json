@@ -1,0 +1,12 @@
+{
+  "index": 0,
+  "start": 1000,
+  "end": 4000,
+  "value": "You and I",
+  "agentId": "lead",
+  "cue": [
+    { "start": 1000, "end": 1800, "value": "You ", "byteStart": 0, "byteEnd": 3 },
+    { "start": 1800, "end": 2400, "value": "and ", "byteStart": 4, "byteEnd": 7 },
+    { "start": 2400, "end": 3200, "value": "I", "byteStart": 8, "byteEnd": 8 }
+  ]
+}

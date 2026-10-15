@@ -1,0 +1,5 @@
+{
+  "code": 42,
+  "message": "Authentication mechanism not supported. Use API keys",
+  "helpUrl": "https://example.org/users/apiKey"
+}

@@ -1,0 +1,8 @@
+{
+    "trackGain": 0.1,
+    "albumGain": 1.1,
+    "trackPeak": 9.2,
+    "albumPeak": 0,
+    "baseGain": 0,
+    "fallbackGain": -8.1
+}

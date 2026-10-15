@@ -1,0 +1,55 @@
+{
+  "kind": "main",
+  "lang": "eng",
+  "synced": true,
+  "line": [
+    { "start": 1000, "value": "You and I" },
+    { "start": 4000, "value": "Under this sky" },
+    { "start": 7000, "value": "Together tonight" }
+  ],
+  "agents": [
+    { "id": "lead", "role": "main", "name": "Chris Martin" },
+    { "id": "guest", "role": "voice", "name": "Jin" },
+    { "id": "choir", "role": "group", "name": "All" }
+  ],
+  "cueLine": [
+    {
+      "index": 0,
+      "agentId": "lead",
+      "start": 1000,
+      "end": 4000,
+      "value": "You and I",
+      "cue": [
+        { "start": 1000, "end": 1800, "value": "You ", "byteStart": 0, "byteEnd": 3 },
+        { "start": 1800, "end": 2400, "value": "and ", "byteStart": 4, "byteEnd": 7 },
+        { "start": 2400, "end": 3200, "value": "I", "byteStart": 8, "byteEnd": 8 }
+      ]
+    },
+    {
+      "index": 1,
+      "agentId": "guest",
+      "start": 4000,
+      "end": 7000,
+      "value": "Under this sky",
+      "cue": [
+        { "start": 4000, "end": 4800, "value": "Un", "byteStart": 0, "byteEnd": 1 },
+        { "start": 4800, "end": 5400, "value": "der ", "byteStart": 2, "byteEnd": 5 },
+        { "start": 5400, "end": 5900, "value": "this ", "byteStart": 6, "byteEnd": 10 },
+        { "start": 5900, "end": 7000, "value": "sky", "byteStart": 11, "byteEnd": 13 }
+      ]
+    },
+    {
+      "index": 2,
+      "agentId": "choir",
+      "start": 7000,
+      "end": 10000,
+      "value": "Together tonight",
+      "cue": [
+        { "start": 7000, "end": 8000, "value": "To", "byteStart": 0, "byteEnd": 1 },
+        { "start": 8000, "end": 8800, "value": "ge", "byteStart": 2, "byteEnd": 3 },
+        { "start": 8800, "end": 9200, "value": "ther ", "byteStart": 4, "byteEnd": 8 },
+        { "start": 9200, "end": 10000, "value": "tonight", "byteStart": 9, "byteEnd": 15 }
+      ]
+    }
+  ]
+}

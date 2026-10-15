@@ -1,0 +1,6 @@
+[
+  { "id": "lead", "role": "main", "name": "Chris Martin" },
+  { "id": "guest", "role": "voice", "name": "Jin" },
+  { "id": "choir", "role": "group", "name": "All" },
+  { "id": "backing", "role": "bg" }
+]

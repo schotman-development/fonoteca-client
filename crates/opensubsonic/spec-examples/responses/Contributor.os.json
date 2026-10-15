@@ -1,0 +1,8 @@
+{
+    "role": "performer",
+    "subRole": "Bass",
+    "artist": {
+        "id": "ar-1",
+        "name": "Artist 1"
+    }
+}

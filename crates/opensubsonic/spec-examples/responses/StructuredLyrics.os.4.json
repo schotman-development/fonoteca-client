@@ -1,0 +1,33 @@
+{
+  "kind": "pronunciation",
+  "lang": "ko-Latn",
+  "synced": true,
+  "line": [
+    { "start": 2747, "value": "nuneul tteun sungan" },
+    { "start": 6214, "value": "modeun ge dallajyeosseo" }
+  ],
+  "cueLine": [
+    {
+      "index": 0,
+      "start": 2747,
+      "end": 6214,
+      "value": "nuneul tteun sungan",
+      "cue": [
+        { "start": 2747, "end": 3179, "value": "nuneul", "byteStart": 0, "byteEnd": 5 },
+        { "start": 3582, "end": 4100, "value": "tteun", "byteStart": 7, "byteEnd": 11 },
+        { "start": 4500, "end": 6214, "value": "sungan", "byteStart": 13, "byteEnd": 18 }
+      ]
+    },
+    {
+      "index": 1,
+      "start": 6214,
+      "end": 9000,
+      "value": "modeun ge dallajyeosseo",
+      "cue": [
+        { "start": 6214, "end": 7200, "value": "modeun", "byteStart": 0, "byteEnd": 5 },
+        { "start": 7600, "end": 8000, "value": "ge", "byteStart": 7, "byteEnd": 8 },
+        { "start": 8400, "end": 9000, "value": "dallajyeosseo", "byteStart": 10, "byteEnd": 22 }
+      ]
+    }
+  ]
+}
