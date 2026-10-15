@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+mod browse;
 mod store;
 
 use std::cell::RefCell;
@@ -53,18 +54,58 @@ async fn find_server(server: &str) -> Result<bool, String> {
     }
 }
 
-/// Signs in and returns the server's name and version.
-async fn sign_in(server: &str, login: &Login) -> Result<String, String> {
+/// Signs in and returns the server's name and version, and the client to
+/// browse with.
+async fn sign_in(server: &str, login: &Login) -> Result<(String, Client), String> {
     let client = Client::new(server, login.auth()).map_err(|e| e.to_string())?;
     // Switches to form POST where the server allows it, before the ping sends
     // credentials. Servers without OpenSubsonic refuse it, which is fine.
     let _ = client.get_open_subsonic_extensions().await;
     let info = client.ping().await.map_err(|e| e.to_string())?;
-    Ok(match (info.r#type, info.server_version) {
+    let name = match (info.r#type, info.server_version) {
         (Some(name), Some(version)) => format!("{name} {version}"),
         (Some(name), None) => name,
         _ => format!("Subsonic server, API {}", info.version),
+    };
+    Ok((name, client))
+}
+
+/// Opens the library with the saved account, or asks for a server when
+/// there is none. Runs at start, and again on "Try again" after the server
+/// didn't answer.
+fn resume(ui: &AppWindow, browser: &browse::Shared) {
+    ui.set_offline("".into());
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let account = store::load().await;
+        let Some(ui) = weak.upgrade() else { return };
+        let Some(account) = account else {
+            ui.set_step(Step::Server);
+            return;
+        };
+        show(&ui, &account);
+        ui.set_loading(true);
+        let signed_in = sign_in(&account.server, &account.login).await;
+        // Signed out while this was under way, and maybe in again since.
+        if ui.get_step() != Step::Done || browse::started(&browser) {
+            return;
+        }
+        ui.set_loading(false);
+        match signed_in {
+            Ok((name, client)) => {
+                ui.set_server_name(name.into());
+                browse::start(&ui, &browser, client, listenbrainz_client(&account));
+            }
+            Err(e) => ui.set_offline(format!("Your server didn't answer: {e}").into()),
+        }
     })
+    .expect("the event loop is running");
+}
+
+/// The ListenBrainz client for loves, when the account has a token.
+fn listenbrainz_client(account: &Account) -> Option<listenbrainz::Client> {
+    let token = account.listenbrainz.as_ref()?.token.clone();
+    listenbrainz::Client::new(token).ok()
 }
 
 async fn connect_listenbrainz(token: String) -> Result<ListenBrainz, String> {
@@ -120,10 +161,11 @@ fn show(ui: &AppWindow, account: &Account) {
     ui.set_step(Step::Done);
 }
 
-/// Shows and saves the account. Sign out waits while it saves, so it can't
-/// be overtaken by the save.
-fn finish(ui: &AppWindow, account: Account) {
+/// Shows and saves the account, and opens the library. Sign out waits while
+/// it saves, so it can't be overtaken by the save.
+fn finish(ui: &AppWindow, browser: &browse::Shared, account: Account, client: Client) {
     show(ui, &account);
+    browse::start(ui, browser, client, listenbrainz_client(&account));
     ui.set_saved_note("Saving…".into());
     run(
         ui,
@@ -153,7 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// background, so a store waiting on an unlock prompt doesn't hold it back.
 fn start() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
-    let pending: Rc<RefCell<Option<Account>>> = Rc::default();
+    let pending: Rc<RefCell<Option<(Account, Client)>>> = Rc::default();
+    let browser = browse::Shared::default();
+    browse::wire(&ui, &browser);
 
     ui.on_find_server({
         let weak = ui.as_weak();
@@ -190,17 +234,17 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             };
             let pending = pending.clone();
             let task = async move {
-                let name = sign_in(&server, &login).await?;
+                let (name, client) = sign_in(&server, &login).await?;
                 let account = Account {
                     server,
                     login,
                     listenbrainz: None,
                 };
-                Ok((name, account))
+                Ok((name, account, client))
             };
-            run(&ui, task, move |ui, (name, account)| {
+            run(&ui, task, move |ui, (name, account, client)| {
                 ui.set_server_name(name.into());
-                *pending.borrow_mut() = Some(account);
+                *pending.borrow_mut() = Some((account, client));
                 ui.set_step(Step::Listenbrainz);
             });
         }
@@ -209,14 +253,15 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     ui.on_connect_listenbrainz({
         let weak = ui.as_weak();
         let pending = pending.clone();
+        let browser = browser.clone();
         move || {
             let ui = weak.unwrap();
             let token = ui.get_listenbrainz_token().trim().to_owned();
-            let pending = pending.clone();
+            let (pending, browser) = (pending.clone(), browser.clone());
             run(&ui, connect_listenbrainz(token), move |ui, listenbrainz| {
-                if let Some(mut account) = pending.take() {
+                if let Some((mut account, client)) = pending.take() {
                     account.listenbrainz = Some(listenbrainz);
-                    finish(ui, account);
+                    finish(ui, &browser, account, client);
                 }
             });
         }
@@ -225,22 +270,27 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     ui.on_skip_listenbrainz({
         let weak = ui.as_weak();
         let pending = pending.clone();
+        let browser = browser.clone();
         move || {
-            if let Some(account) = pending.take() {
-                finish(&weak.unwrap(), account);
+            if let Some((account, client)) = pending.take() {
+                finish(&weak.unwrap(), &browser, account, client);
             }
         }
     });
 
     ui.on_sign_out({
         let weak = ui.as_weak();
+        let browser = browser.clone();
         move || {
             let ui = weak.unwrap();
             // A disabled button still takes a screen reader's press.
             if ui.get_busy() {
                 return;
             }
-            run(&ui, store::forget(), |ui, ()| {
+            let browser = browser.clone();
+            run(&ui, store::forget(), move |ui, ()| {
+                browse::stop(&browser);
+                ui.set_offline("".into());
                 ui.set_server_name("".into());
                 ui.set_username("".into());
                 ui.set_saved_note("".into());
@@ -249,23 +299,12 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
         }
     });
 
-    let weak = ui.as_weak();
-    slint::spawn_local(async move {
-        let account = store::load().await;
-        let Some(ui) = weak.upgrade() else { return };
-        let Some(account) = account else {
-            ui.set_step(Step::Server);
-            return;
-        };
-        show(&ui, &account);
-        let Account { server, login, .. } = account;
-        run(
-            &ui,
-            async move { sign_in(&server, &login).await },
-            |ui, name| ui.set_server_name(name.into()),
-        );
-    })
-    .expect("the event loop is running");
+    ui.on_reconnect({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || resume(&weak.unwrap(), &browser)
+    });
+
+    resume(&ui, &browser);
 
     Ok(ui)
 }
@@ -274,15 +313,18 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
 mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::pin::Pin;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
     use std::task::{Context, Poll};
     use std::time::{Duration, Instant};
 
     use i_slint_backend_testing::{AccessibleRole, ElementRoot};
+    use slint::Model;
 
     use super::*;
 
     /// A local HTTP server that answers every request with `answer(request)`.
-    fn serve(answer: fn(&str) -> String) -> String {
+    fn serve(answer: fn(&str) -> Vec<u8>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         std::thread::spawn(move || {
@@ -290,47 +332,125 @@ mod tests {
                 let mut stream = BufReader::new(stream.unwrap());
                 let mut request = String::new();
                 while stream.read_line(&mut request).unwrap_or(0) > 2 {}
-                let _ = stream.get_mut().write_all(answer(&request).as_bytes());
+                let _ = stream.get_mut().write_all(&answer(&request));
             }
         });
         address
     }
 
-    fn reply(status: &str, content_type: &str, body: &str) -> String {
-        format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+    fn reply(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+        let mut reply = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
+        .into_bytes();
+        reply.extend_from_slice(body);
+        reply
     }
 
-    fn json(body: &str) -> String {
-        reply("200 OK", "application/json", body)
+    fn json(body: &str) -> Vec<u8> {
+        reply("200 OK", "application/json", body.as_bytes())
     }
 
-    fn not_found(_: &str) -> String {
-        reply("404 Not Found", "text/html", "<h1>Not found</h1>")
+    fn not_found(_: &str) -> Vec<u8> {
+        reply("404 Not Found", "text/html", b"<h1>Not found</h1>")
     }
+
+    /// A PNG of one transparent pixel.
+    const PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100, 96, 0, 0, 0, 6, 0,
+        2, 48, 129, 208, 47, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
 
     const OK: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.64.0","openSubsonic":true}}"#;
     const WRONG_PASSWORD: &str = r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":40,"message":"Wrong username or password"}}}"#;
 
-    /// An OpenSubsonic server without API keys that knows one user, joe.
-    fn subsonic(request: &str) -> String {
+    /// The fields of the one album, without its braces.
+    const ALBUM: &str = r#""id":"a1","name":"Night Harbour","artist":"Mara Lind","artistId":"r1","coverArt":"al-a1","songCount":2,"duration":470,"created":"2021-01-01T00:00:00Z","year":2021,"genre":"Folk""#;
+
+    /// The ids the server was asked to star.
+    static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// While set, the flow test's server answers every request with an error.
+    static DOWN: AtomicBool = AtomicBool::new(false);
+    /// How many covers the server was asked for, and the first ones' ids.
+    static COVERS: AtomicUsize = AtomicUsize::new(0);
+    static FIRST_COVERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// How many times the album list was given.
+    static LISTS: AtomicUsize = AtomicUsize::new(0);
+
+    fn flaky(request: &str) -> Vec<u8> {
+        if DOWN.load(Relaxed) {
+            reply("503 Service Unavailable", "text/plain", b"down")
+        } else {
+            subsonic(request)
+        }
+    }
+
+    /// An OpenSubsonic server without API keys that knows one user, joe, and
+    /// 600 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
+    /// refused.
+    fn subsonic(request: &str) -> Vec<u8> {
+        let ok = |body: &str| {
+            json(&format!(
+                r#"{{"subsonic-response":{{"status":"ok","version":"1.16.1",{body}}}}}"#
+            ))
+        };
+        let param = |name: &str| {
+            request
+                .split(['?', '&', ' '])
+                .find_map(|param| param.strip_prefix(name)?.strip_prefix('='))
+        };
+        let id = param("id");
         if request.contains("getOpenSubsonicExtensions") {
+            ok(r#""openSubsonicExtensions":[{"name":"songLyrics","versions":[1]}]"#)
+        } else if !request.contains("u=joe&") {
+            json(WRONG_PASSWORD)
+        } else if request.contains("/rest/getAlbumList2") {
+            let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
+            LISTS.fetch_add(1, Relaxed);
+            let album = |n: u32| {
+                format!(
+                    r#"{{"id":"a{n}","name":"Other {n}","coverArt":"al-a{n}","songCount":0,"duration":0,"created":"2020-01-01T00:00:00Z"}}"#
+                )
+            };
+            let albums: Vec<String> = std::iter::once(format!("{{{ALBUM}}}"))
+                .chain((2..=600).map(album))
+                .skip(number("offset").unwrap_or(0))
+                .take(number("size").unwrap_or(10))
+                .collect();
+            ok(&format!(
+                r#""albumList2":{{"album":[{}]}}"#,
+                albums.join(",")
+            ))
+        } else if request.contains("/rest/getAlbum") {
+            let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","track":1,"discNumber":1,"duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s2","isDir":false,"title":"Rope and Anchor","track":1,"discNumber":2,"duration":218,"artist":"Mara Lind","artistId":"r1"}]"#;
+            ok(&format!(r#""album":{{{ALBUM},"song":{songs}}}"#))
+        } else if request.contains("/rest/getArtist") {
+            ok(&format!(
+                r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{ALBUM}}}]}}"#
+            ))
+        } else if request.contains("/rest/getCoverArt") {
+            if COVERS.fetch_add(1, Relaxed) < 6 {
+                FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
+            }
+            reply("200 OK", "image/png", PNG)
+        } else if request.contains("/rest/unstar") {
             json(
-                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[{"name":"songLyrics","versions":[1]}]}}"#,
+                r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Not allowed"}}}"#,
             )
-        } else if request.contains("u=joe&") {
+        } else if request.contains("/rest/star") {
+            STARRED.lock().unwrap().extend(id.map(str::to_owned));
             json(OK)
         } else {
-            json(WRONG_PASSWORD)
+            json(OK)
         }
     }
 
     #[test]
     fn finds_servers_and_whether_they_take_api_keys() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let find = |answer: fn(&str) -> String| runtime.block_on(find_server(&serve(answer)));
+        let find = |answer: fn(&str) -> Vec<u8>| runtime.block_on(find_server(&serve(answer)));
 
         assert_eq!(
             find(|_| json(
@@ -367,13 +487,13 @@ mod tests {
             username: username.into(),
             password: "pw".into(),
         };
-        assert_eq!(
-            runtime.block_on(sign_in(&server, &login("joe"))),
-            Ok("navidrome 0.64.0".to_owned())
-        );
-        let wrong = runtime
-            .block_on(sign_in(&server, &login("ann")))
-            .unwrap_err();
+        let name = |username| {
+            runtime
+                .block_on(sign_in(&server, &login(username)))
+                .map(|(name, _)| name)
+        };
+        assert_eq!(name("joe"), Ok("navidrome 0.64.0".to_owned()));
+        let wrong = name("ann").unwrap_err();
         assert!(wrong.contains("40"), "{wrong}");
     }
 
@@ -420,14 +540,16 @@ mod tests {
     /// The only test that may start Slint or touch the store: both are
     /// global to the process.
     #[test]
-    fn onboarding_saves_and_sign_out_forgets() {
+    fn onboarding_browsing_and_sign_out() {
         i_slint_backend_testing::init_integration_test_with_system_time();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _runtime = runtime.enter();
-        let server = serve(subsonic);
+        let server = serve(flaky);
 
         slint::spawn_local(async move {
             let ui = start().unwrap();
+            // Covers are fetched for the tiles in view, so the window needs a size.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
             wait_for("the server step", || ui.get_step() == Step::Server).await;
 
             ui.set_address("http://127.0.0.1:1".into());
@@ -455,9 +577,13 @@ mod tests {
             .await;
             assert_eq!(ui.get_server_name(), "navidrome 0.64.0");
 
+            // The library is asked for once signed in, and fails.
+            DOWN.store(true, Relaxed);
             click(&ui, "Skip");
             assert_eq!(ui.get_step(), Step::Done);
             assert!(ui.get_busy(), "sign out waits while it saves");
+            click(&ui, "Account");
+            assert_eq!(ui.get_page(), Page::Account);
             click(&ui, "Sign out");
             wait_for("the save", || !ui.get_busy()).await;
             assert_eq!(
@@ -473,6 +599,117 @@ mod tests {
             );
             assert!(saved.listenbrainz.is_none());
 
+            // Showing the albums asks again, and Try again once more.
+            click(&ui, "Albums");
+            wait_for("the failed library", || ui.get_page_problem() != "").await;
+            assert_eq!(ui.get_tiles().row_count(), 0);
+            assert!(ui.get_more_tiles());
+            DOWN.store(false, Relaxed);
+            ui.invoke_show_more();
+            assert_eq!(ui.get_page_problem(), "");
+            wait_for("the albums", || ui.get_tiles().row_count() == 100).await;
+            assert_eq!(ui.get_page(), Page::Albums);
+            assert!(ui.get_more_tiles());
+            let tile = ui.get_tiles().row_data(0).unwrap();
+            assert_eq!(tile.link, "album:a1");
+            assert_eq!(tile.names.row_data(0).unwrap().link, "artist:r1");
+            // A window that draws creates the grid, which asks for the covers
+            // in view; here a query over the elements creates it.
+            ui.root_element().query_descendants().find_all();
+            wait_for("a cover", || {
+                ui.get_tiles().row_data(0).unwrap().cover.size().width > 0
+            })
+            .await;
+            // Only the tiles on screen and a screen below it get theirs.
+            let later = Instant::now() + Duration::from_millis(300);
+            wait_for("the covers in view", || Instant::now() > later).await;
+            let asked = COVERS.load(Relaxed);
+            assert!((4..40).contains(&asked), "{asked} covers asked for");
+            // Top first: the first tile's is among the first fetches.
+            let first = FIRST_COVERS.lock().unwrap().clone();
+            assert!(first.contains(&"al-a1".to_owned()), "{first:?}");
+            // The library arrives in two parts. What scrolling near the end
+            // asks for comes from it.
+            wait_for("the whole library", || LISTS.load(Relaxed) == 2).await;
+            ui.invoke_show_more();
+            assert_eq!(ui.get_tiles().row_count(), 200);
+            assert!(ui.get_more_tiles());
+            let lists = LISTS.load(Relaxed);
+
+            click(&ui, "Night Harbour");
+            wait_for("the album", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_page(), Page::Album);
+            assert_eq!(ui.get_header_title(), "Night Harbour");
+            assert_eq!(ui.get_header_facts(), "2021 · Folk · 2 tracks, 8 minutes");
+            let tracks = ui.get_tracks();
+            assert_eq!(tracks.row_data(0).unwrap().number, "1.1");
+            assert_eq!(tracks.row_data(1).unwrap().number, "2.1");
+            assert_eq!(tracks.row_data(0).unwrap().duration, "4:12");
+            assert!(tracks.row_data(0).unwrap().loved);
+            assert!(!tracks.row_data(1).unwrap().loved);
+            assert!(ui.get_can_go_back());
+
+            click(&ui, "Love");
+            assert!(ui.get_tracks().row_data(1).unwrap().loved);
+            wait_for("the star", || *STARRED.lock().unwrap() == ["s2"]).await;
+            assert_eq!(ui.get_page_problem(), "");
+            click(&ui, "Loved");
+            wait_for("the refused unstar", || ui.get_page_problem() != "").await;
+            assert!(ui.get_tracks().iter().all(|track| track.loved));
+
+            click(&ui, "Mara Lind");
+            wait_for("the artist", || {
+                ui.get_page() == Page::Artist && ui.get_tiles().row_count() == 1
+            })
+            .await;
+            assert_eq!(ui.get_header_title(), "Mara Lind");
+            assert_eq!(
+                ui.get_tiles()
+                    .row_data(0)
+                    .unwrap()
+                    .names
+                    .row_data(0)
+                    .unwrap()
+                    .label,
+                "2021"
+            );
+
+            click(&ui, "Back");
+            wait_for("the album again", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_page(), Page::Album);
+            assert!(ui.get_can_go_forward());
+            click(&ui, "Forward");
+            wait_for("the artist again", || ui.get_tiles().row_count() == 1).await;
+            assert_eq!(ui.get_page(), Page::Artist);
+            assert!(!ui.get_can_go_forward());
+            ui.invoke_forward();
+            assert_eq!(ui.get_page(), Page::Artist);
+
+            // A page opened from back in the history drops the pages ahead.
+            click(&ui, "Back");
+            wait_for("the album once more", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Albums");
+            assert_eq!(ui.get_tiles().row_count(), 100, "the library is kept");
+            assert_eq!(LISTS.load(Relaxed), lists);
+            assert!(!ui.get_can_go_forward());
+            click(&ui, "Back");
+            wait_for("the album before them", || ui.get_tracks().row_count() == 2).await;
+
+            // A second start finds the saved account, with its server down.
+            DOWN.store(true, Relaxed);
+            let again = start().unwrap();
+            wait_for("the offline note", || again.get_offline() != "").await;
+            assert_eq!(again.get_step(), Step::Done);
+            DOWN.store(false, Relaxed);
+            click(&again, "Try again");
+            wait_for("the albums after trying again", || {
+                again.get_tiles().row_count() == 100
+            })
+            .await;
+            assert_eq!(again.get_offline(), "");
+            drop(again);
+
+            click(&ui, "Account");
             click(&ui, "Sign out");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
             assert_eq!(ui.get_username(), "");

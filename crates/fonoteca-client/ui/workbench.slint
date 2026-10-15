@@ -2,14 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { Artwork, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TileGrid, TopBar, TrackRow } from "components.slint";
-
-struct Album {
-    title: string,
-    artists: [Name],
-    cover: image,
-    link: string,
-}
+import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -36,7 +29,7 @@ export component Workbench inherits Window {
         "Person tile",
         "Track row",
         "Shelf",
-        "Tile grid",
+        "Cover grid",
         "Page header",
         "Sidebar",
         "Top bar",
@@ -65,37 +58,37 @@ export component Workbench inherits Window {
         { label: "Tomas Reed", link: "artist:4" },
         { label: "Session strings", link: "" },
     ];
-    property <[Album]> albums: [
+    property <[AlbumTile]> albums: [
         {
             title: root.long-text ? root.long-title : "Night Harbour",
-            artists: root.long-text ? root.many : root.mara,
+            names: root.long-text ? root.many : root.mara,
             cover: root.no-art ? root.none : @image-url("samples/cover-1.svg"),
             link: "album:1",
         },
         {
             title: "Tall Windows",
-            artists: [{ label: "The Pale Orchard", link: "artist:2" }],
+            names: [{ label: "The Pale Orchard", link: "artist:2" }],
             cover: root.no-art ? root.none : @image-url("samples/cover-2.svg"),
             link: "album:2",
         },
         {
             title: "Low Country",
-            artists: [{ label: "Ines Varga", link: "artist:3" }, { label: "Tomas Reed", link: "artist:4" }],
+            names: [{ label: "Ines Varga", link: "artist:3" }, { label: "Tomas Reed", link: "artist:4" }],
             cover: root.no-art ? root.none : @image-url("samples/cover-3.svg"),
             link: "album:3",
         },
         {
             title: "Triangle Songs",
-            artists: [{ label: "Kolibri Ensemble", link: "artist:5" }],
+            names: [{ label: "Kolibri Ensemble", link: "artist:5" }],
             cover: root.no-art ? root.none : @image-url("samples/cover-4.svg"),
             link: "album:4",
         },
     ];
-    property <[Album]> shelf: [
+    property <[AlbumTile]> shelf: [
         root.albums[0], root.albums[1], root.albums[2], root.albums[3],
         root.albums[1], root.albums[3], root.albums[0], root.albums[2],
     ];
-    property <[Album]> grid: [
+    property <[AlbumTile]> grid: [
         root.albums[0], root.albums[1], root.albums[2], root.albums[3],
         root.albums[2], root.albums[0], root.albums[3], root.albums[1],
         root.albums[3], root.albums[2], root.albums[1], root.albums[0],
@@ -201,7 +194,7 @@ export component Workbench inherits Window {
                             for album in root.albums: CoverTile {
                                 cover: album.cover;
                                 title: album.title;
-                                names: album.artists;
+                                names: album.names;
                                 clicked => { root.event = "open " + album.link; }
                                 open(link) => { root.event = "open " + link; }
                             }
@@ -272,7 +265,7 @@ export component Workbench inherits Window {
                         for album in root.shelf: CoverTile {
                             cover: album.cover;
                             title: album.title;
-                            names: album.artists;
+                            names: album.names;
                             clicked => { root.event = "open " + album.link; }
                             open(link) => { root.event = "open " + link; }
                         }
@@ -285,15 +278,10 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 6: Example {
-                        caption: "Resize the window to see the tiles move to the next line";
-                        TileGrid {
-                            for album in root.grid: CoverTile {
-                                cover: album.cover;
-                                title: album.title;
-                                names: album.artists;
-                                clicked => { root.event = "open " + album.link; }
-                                open(link) => { root.event = "open " + link; }
-                            }
+                        caption: "Resize the window: tiles widen to fill a row, then move to the next";
+                        CoverGrid {
+                            tiles: root.grid;
+                            open(link) => { root.event = "open " + link; }
                         }
                     }
 

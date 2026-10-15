@@ -1,6 +1,19 @@
-import { Button, ComboBox, LineEdit, Palette } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { AlbumTile, CoverGrid, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
+
+export { AlbumTile, Name }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
+
+export enum Page { albums, album, artist, account }
+
+export struct Track {
+    number: string,
+    title: string,
+    names: [Name],
+    duration: string,
+    loved: bool,
+}
 
 component Heading inherits Text {
     font-size: 24px;
@@ -18,10 +31,32 @@ component Problem inherits Text {
     color: #d33;
 }
 
+// Starts at the top again whenever `visit` changes, that is on every page
+// shown. Says when the bottom is less than a screen away, so more can load
+// before it's reached.
+component PageScroll inherits ScrollView {
+    in property <int> visit;
+    callback near-end();
+    changed visit => {
+        self.content-y = 0;
+    }
+    changed content-y => {
+        self.check-end();
+    }
+    changed content-height => {
+        self.check-end();
+    }
+    function check-end() {
+        if -self.content-y + 2 * self.visible-height >= self.content-height {
+            self.near-end();
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Fonoteca";
-    preferred-width: 800px;
-    preferred-height: 600px;
+    preferred-width: 1100px;
+    preferred-height: 760px;
     background: Palette.background;
 
     in-out property <Step> step: Step.opening;
@@ -48,7 +83,144 @@ export component AppWindow inherits Window {
     callback skip-listenbrainz();
     callback sign-out();
 
-    VerticalLayout {
+    in property <Page> page;
+    in property <int> visit;
+    in property <bool> loading;
+    in property <string> page-problem;
+    // Why the library couldn't be opened with the saved account.
+    in property <string> offline;
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
+    in-out property <int> section;
+    in property <[AlbumTile]> tiles;
+    in property <bool> more-tiles;
+    in property <image> header-image;
+    in property <string> header-title;
+    in property <[Name]> header-names;
+    in property <string> header-facts;
+    in property <[Track]> tracks;
+
+    callback open(link: string);
+    callback back();
+    callback forward();
+    callback show-section(index: int);
+    callback show-more();
+    // The tiles whose covers to fetch next.
+    callback tiles-in-view(first: int, last: int);
+    callback toggle-love(row: int);
+    callback reconnect();
+
+    if root.step == Step.done: HorizontalLayout {
+        Sidebar {
+            width: 200px;
+            items: ["Albums", "Account"];
+            current <=> root.section;
+            selected(index) => { root.show-section(index); }
+        }
+        VerticalLayout {
+            TopBar {
+                can-go-back: root.can-go-back;
+                can-go-forward: root.can-go-forward;
+                back => { root.back(); }
+                forward => { root.forward(); }
+            }
+            scroll := PageScroll {
+                visit: root.visit;
+                near-end => {
+                    if root.page == Page.albums && root.more-tiles && !root.loading && root.page-problem == "" {
+                        root.show-more();
+                    }
+                }
+                content-width: self.visible-width;
+                content-height: stage.preferred-height;
+                stage := VerticalLayout {
+                    width: scroll.visible-width;
+                    padding: 24px;
+                    padding-top: 8px;
+                    spacing: 24px;
+                    alignment: start;
+
+                    if root.offline != "": VerticalLayout {
+                        spacing: 8px;
+                        Problem { text: root.offline; }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Try again";
+                                clicked => { root.reconnect(); }
+                            }
+                        }
+                    }
+                    if root.page == Page.albums: Heading { text: "Albums"; }
+                    if root.page == Page.album || root.page == Page.artist: PageHeader {
+                        artwork: root.header-image;
+                        round: root.page == Page.artist;
+                        kind: root.page == Page.artist ? "Artist" : "Album";
+                        title: root.header-title;
+                        names: root.header-names;
+                        facts: root.header-facts;
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.albums || root.page == Page.artist: CoverGrid {
+                        tiles: root.tiles;
+                        view-top: -scroll.content-y - self.y;
+                        view-height: scroll.visible-height;
+                        open(link) => { root.open(link); }
+                        in-view(first, last) => { root.tiles-in-view(first, last); }
+                    }
+                    if root.page == Page.album: VerticalLayout {
+                        for track[row] in root.tracks: TrackRow {
+                            number: track.number;
+                            title: track.title;
+                            names: track.names;
+                            duration: track.duration;
+                            loved: track.loved;
+                            open(link) => { root.open(link); }
+                            toggle-love => { root.toggle-love(row); }
+                        }
+                    }
+                    if root.page-problem != "": Problem { text: root.page-problem; }
+                    if root.page == Page.albums && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                        alignment: start;
+                        Button {
+                            text: "Try again";
+                            clicked => { root.show-more(); }
+                        }
+                    }
+                    if root.loading: Note { text: "Loading…"; }
+                    if root.page == Page.account: VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        Heading { text: "Account"; }
+                        Text {
+                            text: root.server-name == "" ? root.address : root.server-name + " at " + root.address;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.signed-in;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.listenbrainz-user == "" ? "ListenBrainz not connected" : "ListenBrainz: " + root.listenbrainz-user;
+                            wrap: word-wrap;
+                        }
+                        if root.saved-note != "": Note { text: root.saved-note; }
+                        if root.problem != "": Problem { text: root.problem; }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Sign out";
+                                enabled: !root.busy;
+                                clicked => { root.sign-out(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.step != Step.done: VerticalLayout {
         alignment: center;
         padding: 16px;
 
@@ -172,33 +344,6 @@ export component AppWindow inherits Window {
                             primary: true;
                             enabled: !root.busy && root.listenbrainz-token != "";
                             clicked => { root.connect-listenbrainz(); }
-                        }
-                    }
-                }
-
-                if root.step == Step.done: VerticalLayout {
-                    spacing: 12px;
-                    Heading { text: "Connected"; }
-                    Text {
-                        text: root.server-name == "" ? root.address : root.server-name + " at " + root.address;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: root.signed-in;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: root.listenbrainz-user == "" ? "ListenBrainz not connected" : "ListenBrainz: " + root.listenbrainz-user;
-                        wrap: word-wrap;
-                    }
-                    if root.saved-note != "": Note { text: root.saved-note; }
-                    if root.problem != "": Problem { text: root.problem; }
-                    HorizontalLayout {
-                        alignment: end;
-                        Button {
-                            text: "Sign out";
-                            enabled: !root.busy;
-                            clicked => { root.sign-out(); }
                         }
                     }
                 }

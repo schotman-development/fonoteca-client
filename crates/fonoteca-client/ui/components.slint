@@ -25,6 +25,14 @@ export struct Name {
     link: string,
 }
 
+// An album on a grid or shelf, and the page it opens.
+export struct AlbumTile {
+    title: string,
+    names: [Name],
+    cover: image,
+    link: string,
+}
+
 export global Icons {
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
@@ -372,11 +380,62 @@ export component Shelf {
     }
 }
 
-// Tiles that fill the width and continue on the next line.
-export component TileGrid inherits FlexboxLayout {
-    cross-axis-alignment: start;
-    spacing-horizontal: Theme.gap;
-    spacing-vertical: 24px;
+// Album tiles in rows across the width. Tiles are at least `min-size` wide
+// and widen to fill their row. The grid places them itself rather than in a
+// layout, so it knows its height for any width and a scroll view around it
+// reaches the last row.
+export component CoverGrid {
+    in property <[AlbumTile]> tiles;
+    in property <length> min-size: 200px;
+    // The part of the grid on screen, in the grid's own coordinates.
+    in property <length> view-top;
+    in property <length> view-height;
+    callback open(link: string);
+    // The tiles on screen and a screen below it, whenever that changes.
+    callback in-view(first: int, last: int);
+
+    property <length> gap: Theme.gap;
+    property <length> row-gap: 24px;
+    property <int> columns: max(1, floor((self.width + self.gap) / (self.min-size + self.gap)));
+    property <length> size: (self.width - (self.columns - 1) * self.gap) / self.columns;
+    property <int> rows: ceil(self.tiles.length / self.columns);
+    property <length> row-height: probe.preferred-height;
+    height: self.rows == 0 ? 0 : self.rows * (self.row-height + self.row-gap) - self.row-gap;
+
+    property <length> pitch: self.row-height + self.row-gap;
+    property <int> first-in-view: max(0, floor(self.view-top / self.pitch)) * self.columns;
+    property <int> last-in-view: min(self.tiles.length, (floor((self.view-top + 2 * self.view-height) / self.pitch) + 1) * self.columns) - 1;
+    init => {
+        self.in-view(self.first-in-view, self.last-in-view);
+    }
+    changed first-in-view => {
+        self.in-view(self.first-in-view, self.last-in-view);
+    }
+    changed last-in-view => {
+        self.in-view(self.first-in-view, self.last-in-view);
+    }
+
+    // Measures a tile's height at this width.
+    probe := CoverTile {
+        visible: false;
+        enabled: false;
+        size: root.size;
+        title: "Probe";
+        names: [{ label: "Probe", link: "" }];
+    }
+
+    for tile[i] in root.tiles: CoverTile {
+        x: mod(i, root.columns) * (root.size + root.gap);
+        y: floor(i / root.columns) * (root.row-height + root.row-gap);
+        width: root.size;
+        height: root.row-height;
+        size: root.size;
+        cover: tile.cover;
+        title: tile.title;
+        names: tile.names;
+        clicked => { root.open(tile.link); }
+        open(link) => { root.open(link); }
+    }
 }
 
 // The top of an album, artist, composer or work page. On a narrow window the
