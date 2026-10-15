@@ -150,6 +150,9 @@ impl Client {
             .await?;
         self.form_post
             .store(extensions.iter().any(|e| e.name == "formPost"), Relaxed);
+        if let Ok(mut names) = self.extensions.lock() {
+            *names = extensions.iter().map(|e| e.name.clone()).collect();
+        }
         Ok(extensions)
     }
 
@@ -565,6 +568,19 @@ impl Client {
     pub async fn get_avatar(&self, username: &str) -> Result<Vec<u8>> {
         self.bytes("getAvatar", Params::new().req("username", username))
             .await
+    }
+
+    /// An album's motion cover, the looping video a shop shows in place of
+    /// its sleeve, as an animated WebP scaled to `size` pixels when given.
+    /// Not in the spec: Fonoteca's own call, offered where the client
+    /// [`supports`](Client::supports) `fonotecaAlbumMotion`. `id` is the
+    /// album's id.
+    pub async fn get_album_motion(&self, id: &str, size: Option<u32>) -> Result<Vec<u8>> {
+        self.bytes(
+            "getAlbumMotion",
+            Params::new().req("id", id).opt("size", size),
+        )
+        .await
     }
 
     /// Lyrics found by artist name and song title.

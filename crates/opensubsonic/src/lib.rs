@@ -23,6 +23,7 @@ pub use api::*;
 pub use model::*;
 
 use std::fmt;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 
 use md5::{Digest, Md5};
@@ -78,6 +79,7 @@ pub struct Client {
     auth: Auth,
     password_method: AtomicU8,
     form_post: AtomicBool,
+    extensions: Mutex<Vec<String>>,
 }
 
 impl Client {
@@ -112,7 +114,16 @@ impl Client {
             auth,
             password_method: AtomicU8::new(TOKEN),
             form_post: AtomicBool::new(false),
+            extensions: Mutex::default(),
         })
+    }
+
+    /// Whether the server listed `extension` the last time
+    /// [`Client::get_open_subsonic_extensions`] was called.
+    pub fn supports(&self, extension: &str) -> bool {
+        self.extensions
+            .lock()
+            .is_ok_and(|names| names.iter().any(|name| name == extension))
     }
 
     fn request(&self, endpoint: &str, params: &Params) -> Result<(reqwest::RequestBuilder, u8)> {
@@ -621,7 +632,9 @@ mod tests {
             })
         });
         let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
+        assert!(!client.supports("formPost"));
         client.get_open_subsonic_extensions().await.unwrap();
+        assert!(client.supports("formPost") && !client.supports("songLyrics"));
         client.ping().await.unwrap();
         let log = log.lock().unwrap();
         assert!(!log[0].contains("SECRET"), "{}", log[0]);
