@@ -37,6 +37,8 @@ export global Icons {
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
     out property <string> forward: "M9 5l7 7-7 7";
+    out property <string> up: "M12 19V5 M6 11l6-6 6 6";
+    out property <string> down: "M12 5v14 M6 13l6 6 6-6";
     out property <string> note: "M10 17V5l9-2v12 M10 17a3 3 0 1 1-6 0a3 3 0 1 1 6 0 M19 15a3 3 0 1 1-6 0a3 3 0 1 1 6 0";
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
 }
@@ -573,6 +575,7 @@ export component Sidebar inherits Rectangle {
 export component TopBar inherits HorizontalLayout {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
+    in property <bool> searchable: true;
     in-out property <string> query;
     callback back();
     callback forward();
@@ -596,7 +599,7 @@ export component TopBar inherits HorizontalLayout {
         clicked => { root.forward(); }
     }
     Rectangle { }
-    LineEdit {
+    if root.searchable: LineEdit {
         horizontal-stretch: 0;
         preferred-width: 280px;
         placeholder-text: "Search";

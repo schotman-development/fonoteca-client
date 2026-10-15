@@ -96,6 +96,7 @@ export component Workbench inherits Window {
     property <image> photo-1: root.no-art ? root.none : @image-url("samples/photo-1.svg");
     property <image> photo-2: root.no-art ? root.none : @image-url("samples/photo-2.svg");
     property <bool> loved-1;
+    property <bool> down;
     property <bool> loved-2: true;
     property <bool> loved-3;
     property <bool> loved-album;
@@ -367,7 +368,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 10: Example {
-                        caption: "Heart, back, forward, and a button that can't be pressed";
+                        caption: "Heart, back, forward, a button that can't be pressed, and up or down";
                         HorizontalLayout {
                             alignment: start;
                             spacing: 8px;
@@ -392,6 +393,13 @@ export component Workbench inherits Window {
                                 icon: Icons.forward;
                                 label: "Forward";
                                 enabled: false;
+                            }
+                            IconButton {
+                                icon: root.down ? Icons.down : Icons.up;
+                                label: "Descending";
+                                accessible-checkable: true;
+                                accessible-checked: root.down;
+                                clicked => { root.down = !root.down; }
                             }
                         }
                     }

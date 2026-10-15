@@ -24,6 +24,8 @@ const ALBUMS_AT_ONCE: usize = 100;
 /// against servers that ignore the offset.
 const LIBRARY_AT_ONCE: u32 = 500;
 const LIBRARY_AT_MOST: usize = 50_000;
+/// How long typing in the filter pauses before the albums are filtered.
+const TYPING_PAUSE: Duration = Duration::from_millis(200);
 /// Tile covers fetched at the same time.
 const COVERS_AT_ONCE: usize = 6;
 /// The sizes covers are asked for, in logical pixels. Grid tiles are at least
@@ -56,11 +58,17 @@ pub struct Browser {
     pictures: HashMap<(String, u32), Image>,
     /// Shows the next frame of the album's motion cover.
     motion: Timer,
-    /// Every album on the server in name order, while they arrive and once
-    /// they all have.
+    /// Every album on the server in the order they arrived, while they arrive
+    /// and once they all have.
     library: Vec<AlbumID3>,
     library_loading: bool,
     library_loaded: bool,
+    /// The albums page's filter, and the albums it shows, as indexes into
+    /// `library` in the page's order.
+    filter: String,
+    view: Vec<usize>,
+    /// Filters the albums once typing pauses.
+    typing: Timer,
 }
 
 pub type Shared = Rc<RefCell<Browser>>;
@@ -78,6 +86,7 @@ pub fn start(
         b.listenbrainz = listenbrainz.map(Rc::new);
         b.history.clear();
     }
+    ui.set_album_filter("".into());
     open(ui, browser, "albums".into());
 }
 
@@ -122,6 +131,28 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_toggle_love({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |row| toggle_love(&weak.unwrap(), &browser, row as usize)
+    });
+    ui.on_sort_albums({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || show(&weak.unwrap(), &browser)
+    });
+    ui.on_filter_albums({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || {
+            let (weak, shared) = (weak.clone(), browser.clone());
+            browser
+                .borrow()
+                .typing
+                .start(TimerMode::SingleShot, TYPING_PAUSE, move || {
+                    let ui = weak.unwrap();
+                    let filter = ui.get_album_filter().trim().to_owned();
+                    if ui.get_page() != Page::Albums || shared.borrow().filter == filter {
+                        return;
+                    }
+                    shared.borrow_mut().filter = filter;
+                    show(&ui, &shared);
+                });
+        }
     });
     ui.on_tiles_in_view({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -252,8 +283,8 @@ fn albums(ui: &AppWindow, browser: &Shared) {
     arrange(ui, browser);
 }
 
-/// Asks for every album, a page at a time, and shows them on the albums page
-/// as they arrive. The library is kept, so the page comes back at once.
+/// Asks for every album, a page at a time, and arranges the albums page as
+/// they arrive. Sorting and filtering then need nothing from the server.
 fn load_library(ui: &AppWindow, browser: &Shared) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
@@ -311,10 +342,22 @@ fn load_library(ui: &AppWindow, browser: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Shows the albums that have arrived: as many as are shown, and at least a
-/// page.
+/// Puts the library in the albums page's order, with its filter. The albums
+/// shown stay when they are still the first ones; otherwise as many are shown
+/// again, and at least a page.
 fn arrange(ui: &AppWindow, browser: &Shared) {
-    let shown = browser.borrow().tiles.row_count();
+    let (sort, descending) = (ui.get_album_sort(), ui.get_album_descending());
+    let mut b = browser.borrow_mut();
+    let view = arranged(&b.library, &b.filter, sort, descending);
+    let shown = b.tiles.row_count();
+    if view.get(..shown) != b.view.get(..shown) {
+        b.tiles = Rc::default();
+        b.covers.clear();
+        b.fetching = 0;
+        ui.set_tiles(ModelRc::from(b.tiles.clone()));
+    }
+    b.view = view;
+    drop(b);
     show_albums(ui, browser, shown.max(ALBUMS_AT_ONCE));
 }
 
@@ -335,15 +378,68 @@ fn more_albums(ui: &AppWindow, browser: &Shared) {
 fn show_albums(ui: &AppWindow, browser: &Shared, upto: usize) {
     let (albums, more, waiting) = {
         let b = browser.borrow();
-        let end = upto.min(b.library.len());
+        let end = upto.min(b.view.len());
         let start = b.tiles.row_count().min(end);
-        let albums = b.library[start..end].to_vec();
-        let more = end < b.library.len() || !b.library_loaded;
-        (albums, more, b.library_loading && b.library.is_empty())
+        let albums: Vec<AlbumID3> = b.view[start..end]
+            .iter()
+            .map(|&i| b.library[i].clone())
+            .collect();
+        let more = end < b.view.len() || !b.library_loaded;
+        (albums, more, b.library_loading && b.view.is_empty())
     };
     ui.set_more_tiles(more);
     ui.set_loading(waiting);
     add_tiles(ui, browser, &albums, album_names);
+}
+
+/// The albums where every word of `filter` starts a word of their name or
+/// artists, as indexes into `library`, in the order of the Sort menu's
+/// `sort`. Each order is sorted ascending and turned around for descending.
+fn arranged(library: &[AlbumID3], filter: &str, sort: i32, descending: bool) -> Vec<usize> {
+    let filter = filter.to_lowercase();
+    let wanted: Vec<&str> = words(&filter).collect();
+    let mut view: Vec<usize> = (0..library.len())
+        .filter(|&i| {
+            let album = &library[i];
+            let text = album_names(album)
+                .iter()
+                .fold(album.name.to_lowercase(), |text, name| {
+                    text + " " + &name.label.to_lowercase()
+                });
+            wanted
+                .iter()
+                .all(|word| words(&text).any(|other| other.starts_with(word)))
+        })
+        .collect();
+    let name = |i: &usize| library[*i].name.to_lowercase();
+    match sort {
+        1 => view.sort_by_cached_key(|i| (sort_artist(&library[*i]).to_lowercase(), name(i))),
+        2 => view.sort_by(|a, b| library[*a].created.cmp(&library[*b].created)),
+        3 => {
+            view.retain(|i| library[*i].year.is_some_and(|year| year > 0));
+            view.sort_by_cached_key(|i| (library[*i].year, name(i)));
+        }
+        _ => view.sort_by_cached_key(name),
+    }
+    if descending {
+        view.reverse();
+    }
+    view
+}
+
+fn words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+}
+
+/// The artist an album sorts by: its one artist field, or the first of its
+/// artists.
+fn sort_artist(album: &AlbumID3) -> &str {
+    album
+        .artist
+        .as_deref()
+        .or_else(|| album.artists.first().map(|artist| artist.name.as_str()))
+        .unwrap_or_default()
 }
 
 fn album(ui: &AppWindow, browser: &Shared, id: String) {

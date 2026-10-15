@@ -391,8 +391,10 @@ mod tests {
     /// How many covers the server was asked for, and the first ones' ids.
     static COVERS: AtomicUsize = AtomicUsize::new(0);
     static FIRST_COVERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    /// How many times the album list was given.
+    /// How many times the album list was given, and whether it refuses all
+    /// but its first part.
     static LISTS: AtomicUsize = AtomicUsize::new(0);
+    static LATER_DOWN: AtomicBool = AtomicBool::new(false);
 
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
@@ -403,8 +405,9 @@ mod tests {
     }
 
     /// An OpenSubsonic server without API keys that knows one user, joe, and
-    /// 600 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
-    /// refused. The second is classical, with a motion cover.
+    /// 603 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
+    /// refused. The second is classical, with a motion cover. The last three
+    /// are by or about Bach, and each order puts them differently.
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -425,6 +428,9 @@ mod tests {
             json(WRONG_PASSWORD)
         } else if request.contains("/rest/getAlbumList2") {
             let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
+            if LATER_DOWN.load(Relaxed) && number("offset").unwrap_or(0) > 0 {
+                return reply("503 Service Unavailable", "text/plain", b"down");
+            }
             LISTS.fetch_add(1, Relaxed);
             let album = |n: u32| {
                 format!(
@@ -433,6 +439,11 @@ mod tests {
             };
             let albums: Vec<String> = std::iter::once(format!("{{{ALBUM}}}"))
                 .chain((2..=600).map(album))
+                .chain([
+                    r#"{"id":"b1","name":"Sonatas","artist":"Bach Ensemble","year":2010,"songCount":0,"duration":0,"created":"2022-01-01T00:00:00Z"}"#.to_owned(),
+                    r#"{"id":"b3","name":"Variations on Bach","artist":"Anna Bach","year":0,"songCount":0,"duration":0,"created":"2023-01-01T00:00:00Z"}"#.to_owned(),
+                    r#"{"id":"b2","name":"partitas","artist":"Anna Bach","year":2010,"songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z"}"#.to_owned(),
+                ])
                 .skip(number("offset").unwrap_or(0))
                 .take(number("size").unwrap_or(10))
                 .collect();
@@ -632,6 +643,7 @@ mod tests {
             assert_eq!(ui.get_tiles().row_count(), 0);
             assert!(ui.get_more_tiles());
             DOWN.store(false, Relaxed);
+            LATER_DOWN.store(true, Relaxed);
             ui.invoke_show_more();
             assert_eq!(ui.get_page_problem(), "");
             wait_for("the albums", || ui.get_tiles().row_count() == 100).await;
@@ -655,13 +667,78 @@ mod tests {
             // Top first: the first tile's is among the first fetches.
             let first = FIRST_COVERS.lock().unwrap().clone();
             assert!(first.contains(&"al-a1".to_owned()), "{first:?}");
-            // The library arrives in two parts. What scrolling near the end
-            // asks for comes from it.
-            wait_for("the whole library", || LISTS.load(Relaxed) == 2).await;
+            let links = |ui: &AppWindow| -> Vec<String> {
+                ui.get_tiles().iter().map(|tile| tile.link.into()).collect()
+            };
+            let ids = |ids: &[&str]| -> Vec<String> {
+                ids.iter().map(|id| format!("album:{id}")).collect()
+            };
+            let sort = |sort: i32, descending: bool| {
+                ui.set_album_sort(sort);
+                ui.set_album_descending(descending);
+                ui.invoke_sort_albums();
+            };
+            // The library's second part fails at first. Sorting meanwhile
+            // sorts the first part, and the rest takes its place once it's in.
+            wait_for("the failed second part", || ui.get_page_problem() != "").await;
+            sort(2, true);
+            wait_for("the second part failing again", || {
+                ui.get_page_problem() != ""
+            })
+            .await;
+            assert_eq!(links(&ui)[0], "album:a1");
+            LATER_DOWN.store(false, Relaxed);
+            ui.invoke_show_more();
+            wait_for("the rest in order", || {
+                links(&ui).starts_with(&ids(&["b2", "b3", "b1", "a1"]))
+            })
+            .await;
+            sort(0, false);
+            // What scrolling near the end asks for comes from the library.
+            assert_eq!(LISTS.load(Relaxed), 2);
             ui.invoke_show_more();
             assert_eq!(ui.get_tiles().row_count(), 200);
             assert!(ui.get_more_tiles());
+
+            // Sorting, reversing and filtering happen here, at once, without
+            // asking the server again.
             let lists = LISTS.load(Relaxed);
+            sort(2, true);
+            assert_eq!(links(&ui)[..4], ids(&["b2", "b3", "b1", "a1"]));
+            assert_eq!(ui.get_tiles().row_count(), 100);
+            sort(0, true);
+            assert_eq!(links(&ui)[..3], ids(&["b3", "b1", "b2"]));
+            sort(3, false);
+            assert_eq!(links(&ui), ids(&["b2", "b1", "a1"]));
+            assert!(!ui.get_more_tiles());
+            let filter = |typed: &str| {
+                ui.set_album_filter(typed.into());
+                ui.invoke_filter_albums();
+            };
+            filter("bach");
+            for (order, descending, expected) in [
+                (3, false, &["b2", "b1"][..]),
+                (3, true, &["b1", "b2"]),
+                (0, false, &["b2", "b1", "b3"]),
+                (0, true, &["b3", "b1", "b2"]),
+                (1, false, &["b2", "b3", "b1"]),
+                (2, false, &["b1", "b3", "b2"]),
+                (2, true, &["b2", "b3", "b1"]),
+            ] {
+                sort(order, descending);
+                wait_for("the sorted matches", || links(&ui) == ids(expected)).await;
+            }
+            // Every word, at the start of a word of the name or the artist.
+            filter("BACH part");
+            wait_for("one match", || links(&ui) == ids(&["b2"])).await;
+            filter("artitas");
+            wait_for("no matches", || ui.get_tiles().row_count() == 0).await;
+            assert!(!ui.get_loading());
+            filter("");
+            sort(0, false);
+            wait_for("all albums", || ui.get_tiles().row_count() == 100).await;
+            assert_eq!(links(&ui)[0], "album:a1");
+            assert_eq!(LISTS.load(Relaxed), lists);
 
             click(&ui, "Night Harbour");
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;

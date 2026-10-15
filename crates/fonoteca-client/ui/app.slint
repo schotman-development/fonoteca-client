@@ -1,5 +1,5 @@
 import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow, WorkHeading } from "components.slint";
+import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow, WorkHeading } from "components.slint";
 
 export { AlbumTile, Name }
 
@@ -57,6 +57,71 @@ component PageScroll inherits ScrollView {
     }
 }
 
+// The albums page's Sort menu and direction.
+component SortControls inherits HorizontalLayout {
+    in-out property <int> sort;
+    in-out property <bool> descending;
+    callback sort-selected();
+    spacing: 12px;
+    ComboBox {
+        min-width: 96px;
+        horizontal-stretch: 0;
+        accessible-label: "Sort by";
+        // In the order browse.rs's `arranged` takes them.
+        model: ["Name", "Artist", "Recently added", "Year"];
+        current-index <=> root.sort;
+        // Names start A to Z, dates newest first.
+        selected => {
+            root.descending = root.sort >= 2;
+            root.sort-selected();
+        }
+    }
+    IconButton {
+        cross-axis-self-alignment: center;
+        icon: root.descending ? Icons.down : Icons.up;
+        label: "Descending";
+        accessible-checkable: true;
+        accessible-checked: root.descending;
+        clicked => {
+            root.descending = !root.descending;
+            root.sort-selected();
+        }
+    }
+}
+
+// The albums page's filter, with the sort controls beside it or, when
+// `stacked`, under it.
+component AlbumControls inherits VerticalLayout {
+    in property <bool> stacked;
+    in-out property <string> filter;
+    in-out property <int> sort;
+    in-out property <bool> descending;
+    callback filter-edited();
+    callback sort-selected();
+    spacing: 12px;
+    HorizontalLayout {
+        spacing: 12px;
+        LineEdit {
+            min-width: 64px;
+            preferred-width: 240px;
+            placeholder-text: "Filter";
+            text <=> root.filter;
+            edited => { root.filter-edited(); }
+        }
+        if !root.stacked: SortControls {
+            sort <=> root.sort;
+            descending <=> root.descending;
+            sort-selected => { root.sort-selected(); }
+        }
+    }
+    if root.stacked: SortControls {
+        alignment: start;
+        sort <=> root.sort;
+        descending <=> root.descending;
+        sort-selected => { root.sort-selected(); }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Fonoteca";
     preferred-width: 1100px;
@@ -103,12 +168,19 @@ export component AppWindow inherits Window {
     in property <[Name]> header-names;
     in property <string> header-facts;
     in property <[Track]> tracks;
+    // The albums page's order, as the index into its Sort menu, its
+    // direction, and the filter typed on it.
+    in-out property <int> album-sort;
+    in-out property <bool> album-descending;
+    in-out property <string> album-filter;
 
     callback open(link: string);
     callback back();
     callback forward();
     callback show-section(index: int);
     callback show-more();
+    callback sort-albums();
+    callback filter-albums();
     // The tiles whose covers to fetch next.
     callback tiles-in-view(first: int, last: int);
     callback toggle-love(row: int);
@@ -125,6 +197,7 @@ export component AppWindow inherits Window {
             TopBar {
                 can-go-back: root.can-go-back;
                 can-go-forward: root.can-go-forward;
+                searchable: false;
                 back => { root.back(); }
                 forward => { root.forward(); }
             }
@@ -155,7 +228,35 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.page == Page.albums: Heading { text: "Albums"; }
+                    // The filter and sort controls go beside the heading, or
+                    // under it in two rows when the page is too narrow.
+                    if root.page == Page.albums: VerticalLayout {
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Heading {
+                                horizontal-stretch: 1;
+                                text: "Albums";
+                                vertical-alignment: center;
+                            }
+                            if scroll.visible-width >= 600px: AlbumControls {
+                                horizontal-stretch: 0;
+                                filter <=> root.album-filter;
+                                sort <=> root.album-sort;
+                                descending <=> root.album-descending;
+                                filter-edited => { root.filter-albums(); }
+                                sort-selected => { root.sort-albums(); }
+                            }
+                        }
+                        if scroll.visible-width < 600px: AlbumControls {
+                            stacked: true;
+                            filter <=> root.album-filter;
+                            sort <=> root.album-sort;
+                            descending <=> root.album-descending;
+                            filter-edited => { root.filter-albums(); }
+                            sort-selected => { root.sort-albums(); }
+                        }
+                    }
                     if root.page == Page.album || root.page == Page.artist: PageHeader {
                         artwork: root.header-image;
                         round: root.page == Page.artist;
@@ -190,6 +291,9 @@ export component AppWindow inherits Window {
                                 toggle-love => { root.toggle-love(row); }
                             }
                         }
+                    }
+                    if root.page == Page.albums && root.album-filter != "" && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
+                        text: "No albums match.";
                     }
                     if root.page-problem != "": Problem { text: root.page-problem; }
                     if root.page == Page.albums && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
