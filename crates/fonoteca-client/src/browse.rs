@@ -4,11 +4,17 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::io::Cursor;
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Duration;
 
+use image::codecs::webp::WebPDecoder;
+use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{AlbumID3, AlbumListType, ArtistID3, Child, Client, ListOptions};
-use slint::{ComponentHandle, Image, Model, ModelRc, VecModel};
+use slint::{
+    ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, Timer, TimerMode, VecModel,
+};
 
 use crate::{AlbumTile, AppWindow, Name, Page, Track};
 
@@ -25,6 +31,8 @@ const COVERS_AT_ONCE: usize = 6;
 /// but the narrowest windows; page headers are 220.
 const TILE_SIZE: f32 = 300.0;
 const HEADER_SIZE: f32 = 220.0;
+/// Fonoteca's extension for motion covers.
+const MOTION: &str = "fonotecaAlbumMotion";
 
 #[derive(Default)]
 pub struct Browser {
@@ -46,6 +54,8 @@ pub struct Browser {
     /// Covers seen this session, by cover id and size.
     // ponytail: unbounded, every cover seen stays decoded; an LRU when big libraries need it.
     pictures: HashMap<(String, u32), Image>,
+    /// Shows the next frame of the album's motion cover.
+    motion: Timer,
     /// Every album on the server in name order, while they arrive and once
     /// they all have.
     library: Vec<AlbumID3>,
@@ -158,6 +168,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         b.songs.clear();
         b.covers.clear();
         b.fetching = 0;
+        b.motion = Timer::default();
         ui.set_visit(b.visit);
         ui.set_can_go_back(b.at > 0);
         ui.set_can_go_forward(b.at + 1 < b.history.len());
@@ -347,6 +358,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             ui.set_header_names(names(album_names(&album)));
             ui.set_header_facts(album_facts(&album).into());
             header_image(ui, browser, album.cover_art);
+            header_motion(ui, browser, album.id);
 
             let discs = songs.iter().any(|song| song.disc_number.unwrap_or(1) > 1);
             let mut b = browser.borrow_mut();
@@ -481,6 +493,60 @@ fn header_image(ui: &AppWindow, browser: &Shared, cover: Option<String>) {
         }
     })
     .expect("the event loop is running");
+}
+
+/// Plays the album's motion cover in the header in place of its cover, on
+/// servers that have them. Frames are decoded as they are shown, so only the
+/// file stays in memory.
+fn header_motion(ui: &AppWindow, browser: &Shared, album: String) {
+    let client = browser.borrow().client.clone();
+    let Some(client) = client.filter(|client| client.supports(MOTION)) else {
+        return;
+    };
+    let size = pixels(ui, HEADER_SIZE);
+    let visit = browser.borrow().visit;
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let Ok(bytes) = client.get_album_motion(&album, Some(size)).await else {
+            return;
+        };
+        let bytes: Rc<[u8]> = bytes.into();
+        let b = browser.borrow();
+        let (Some(mut frames), true) = (motion_frames(&bytes), b.visit == visit) else {
+            return;
+        };
+        let Some(Ok(first)) = frames.next() else {
+            return;
+        };
+        let interval = Duration::from(first.delay()).max(Duration::from_millis(10));
+        if let Some(ui) = weak.upgrade() {
+            ui.set_header_image(picture(first));
+        }
+        b.motion.start(TimerMode::Repeated, interval, move || {
+            let next = frames.next().or_else(|| {
+                frames = motion_frames(&bytes)?;
+                frames.next()
+            });
+            if let (Some(ui), Some(Ok(frame))) = (weak.upgrade(), next) {
+                ui.set_header_image(picture(frame));
+            }
+        });
+    })
+    .expect("the event loop is running");
+}
+
+fn motion_frames(bytes: &Rc<[u8]>) -> Option<Frames<'static>> {
+    let decoder = WebPDecoder::new(Cursor::new(bytes.clone())).ok()?;
+    Some(decoder.into_frames())
+}
+
+fn picture(frame: Frame) -> Image {
+    let frame = frame.into_buffer();
+    Image::from_rgba8(SharedPixelBuffer::clone_from_slice(
+        frame.as_raw(),
+        frame.width(),
+        frame.height(),
+    ))
 }
 
 /// The cover, or `Some(None)` when there is none to show. `None` means the

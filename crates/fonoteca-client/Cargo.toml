@@ -8,6 +8,7 @@ publish = false
 default-run = "fonoteca-client"
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["webp"] }
 listenbrainz = { path = "../listenbrainz" }
 opensubsonic = { path = "../opensubsonic" }
 serde = { version = "1", features = ["derive"] }

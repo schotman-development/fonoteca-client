@@ -369,6 +369,16 @@ mod tests {
     /// The fields of the one album, without its braces.
     const ALBUM: &str = r#""id":"a1","name":"Night Harbour","artist":"Mara Lind","artistId":"r1","coverArt":"al-a1","songCount":2,"duration":470,"created":"2021-01-01T00:00:00Z","year":2021,"genre":"Folk""#;
 
+    /// A two-pixel-square animated WebP: red, then blue, 100 ms each.
+    const MOTION: &[u8] = &[
+        82, 73, 70, 70, 132, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 2, 0, 0, 0, 1,
+        0, 0, 1, 0, 0, 65, 78, 73, 77, 6, 0, 0, 0, 255, 255, 255, 255, 0, 0, 65, 78, 77, 70, 40, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 100, 0, 0, 2, 86, 80, 56, 76, 15, 0, 0, 0, 47, 1,
+        64, 0, 0, 7, 16, 237, 143, 254, 7, 34, 162, 255, 1, 0, 65, 78, 77, 70, 40, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 100, 0, 0, 0, 86, 80, 56, 76, 15, 0, 0, 0, 47, 1, 64, 0, 0,
+        7, 16, 81, 255, 254, 7, 34, 162, 255, 1, 0,
+    ];
+
     /// A classical album: two movements of a symphony, an overture known by
     /// its composer's name alone, an encore that belongs to no work, and the
     /// symphony's finale after it.
@@ -394,7 +404,7 @@ mod tests {
 
     /// An OpenSubsonic server without API keys that knows one user, joe, and
     /// 600 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
-    /// refused. The second is classical.
+    /// refused. The second is classical, with a motion cover.
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -408,7 +418,9 @@ mod tests {
         };
         let id = param("id");
         if request.contains("getOpenSubsonicExtensions") {
-            ok(r#""openSubsonicExtensions":[{"name":"songLyrics","versions":[1]}]"#)
+            ok(
+                r#""openSubsonicExtensions":[{"name":"songLyrics","versions":[1]},{"name":"fonotecaAlbumMotion","versions":[1]}]"#,
+            )
         } else if !request.contains("u=joe&") {
             json(WRONG_PASSWORD)
         } else if request.contains("/rest/getAlbumList2") {
@@ -428,6 +440,14 @@ mod tests {
                 r#""albumList2":{{"album":[{}]}}"#,
                 albums.join(",")
             ))
+        } else if request.contains("/rest/getAlbumMotion") {
+            if id == Some("a2") {
+                reply("200 OK", "image/webp", MOTION)
+            } else {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Not found"}}}"#,
+                )
+            }
         } else if request.contains("/rest/getAlbum") && id == Some("a2") {
             ok(&format!(r#""album":{{{CLASSICAL}}}"#))
         } else if request.contains("/rest/getAlbum") {
@@ -725,6 +745,21 @@ mod tests {
                 heading(4),
                 ("Symphony No. 5", Some("".into()), "IV. Allegro")
             );
+            // Red or blue, as far as encoding lets them be.
+            let colour = || {
+                let picture = ui.get_header_image().to_rgba8()?;
+                let pixel = picture.as_slice()[0];
+                Some(if pixel.r > pixel.b { "red" } else { "blue" })
+            };
+            wait_for("the motion cover", || colour() == Some("red")).await;
+            wait_for("its next frame", || colour() == Some("blue")).await;
+            wait_for("its first frame again", || colour() == Some("red")).await;
+            // Leaving the album stops it.
+            click(&ui, "Back");
+            wait_for("the album before it", || ui.get_tracks().row_count() == 2).await;
+            let later = Instant::now() + Duration::from_millis(300);
+            wait_for("a few frames' time", || Instant::now() > later).await;
+            assert_ne!(ui.get_header_image().size().width, 2);
 
             // A second start finds the saved account, with its server down.
             DOWN.store(true, Relaxed);
