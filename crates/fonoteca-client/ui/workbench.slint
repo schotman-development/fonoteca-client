@@ -1,0 +1,386 @@
+// Every shared component on its own, with sample data and switches for the
+// cases that break layouts. Run with `cargo run --bin workbench`.
+
+import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
+import { Artwork, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TileGrid, TopBar, TrackRow } from "components.slint";
+
+struct Album {
+    title: string,
+    artists: [Name],
+    cover: image,
+    link: string,
+}
+
+component Example inherits VerticalLayout {
+    in property <string> caption;
+    spacing: 12px;
+    Text {
+        text: root.caption;
+        font-size: Theme.small;
+        color: Theme.muted;
+        wrap: word-wrap;
+    }
+    @children
+}
+
+export component Workbench inherits Window {
+    title: "Fonoteca workbench";
+    preferred-width: 1100px;
+    preferred-height: 760px;
+    background: Palette.background;
+
+    property <[string]> entries: [
+        "Artwork",
+        "Links",
+        "Cover tile",
+        "Person tile",
+        "Track row",
+        "Shelf",
+        "Tile grid",
+        "Page header",
+        "Sidebar",
+        "Top bar",
+        "Icon button",
+    ];
+    property <int> current;
+    property <bool> long-text;
+    property <bool> no-art;
+    property <string> event;
+
+    property <image> none;
+    property <string> long-title: "An unusually long title that keeps going, to show where text wraps and where it is cut short";
+    property <[Name]> many: [
+        { label: "Mara Lind", link: "artist:1" },
+        { label: "Tomas Reed", link: "artist:4" },
+        { label: "Ines Varga", link: "artist:3" },
+        { label: "Kolibri Ensemble", link: "artist:5" },
+        { label: "The Pale Orchard", link: "artist:2" },
+        { label: "Oskar Brandt-Falkenberg", link: "artist:6" },
+        { label: "Noor Haddad", link: "artist:7" },
+        { label: "Session strings", link: "" },
+    ];
+    property <[Name]> mara: [{ label: "Mara Lind", link: "artist:1" }];
+    property <[Name]> credits: root.long-text ? root.many : [
+        { label: "Mara Lind", link: "artist:1" },
+        { label: "Tomas Reed", link: "artist:4" },
+        { label: "Session strings", link: "" },
+    ];
+    property <[Album]> albums: [
+        {
+            title: root.long-text ? root.long-title : "Night Harbour",
+            artists: root.long-text ? root.many : root.mara,
+            cover: root.no-art ? root.none : @image-url("samples/cover-1.svg"),
+            link: "album:1",
+        },
+        {
+            title: "Tall Windows",
+            artists: [{ label: "The Pale Orchard", link: "artist:2" }],
+            cover: root.no-art ? root.none : @image-url("samples/cover-2.svg"),
+            link: "album:2",
+        },
+        {
+            title: "Low Country",
+            artists: [{ label: "Ines Varga", link: "artist:3" }, { label: "Tomas Reed", link: "artist:4" }],
+            cover: root.no-art ? root.none : @image-url("samples/cover-3.svg"),
+            link: "album:3",
+        },
+        {
+            title: "Triangle Songs",
+            artists: [{ label: "Kolibri Ensemble", link: "artist:5" }],
+            cover: root.no-art ? root.none : @image-url("samples/cover-4.svg"),
+            link: "album:4",
+        },
+    ];
+    property <[Album]> shelf: [
+        root.albums[0], root.albums[1], root.albums[2], root.albums[3],
+        root.albums[1], root.albums[3], root.albums[0], root.albums[2],
+    ];
+    property <[Album]> grid: [
+        root.albums[0], root.albums[1], root.albums[2], root.albums[3],
+        root.albums[2], root.albums[0], root.albums[3], root.albums[1],
+        root.albums[3], root.albums[2], root.albums[1], root.albums[0],
+    ];
+    property <image> photo-1: root.no-art ? root.none : @image-url("samples/photo-1.svg");
+    property <image> photo-2: root.no-art ? root.none : @image-url("samples/photo-2.svg");
+    property <bool> loved-1;
+    property <bool> loved-2: true;
+    property <bool> loved-3;
+    property <bool> loved-album;
+
+    HorizontalLayout {
+        Sidebar {
+            width: 160px;
+            items: root.entries;
+            current <=> root.current;
+        }
+        VerticalLayout {
+            FlexboxLayout {
+                padding: 12px;
+                spacing: 16px;
+                cross-axis-alignment: center;
+                CheckBox {
+                    text: "Long text";
+                    checked <=> root.long-text;
+                }
+                CheckBox {
+                    text: "No artwork";
+                    checked <=> root.no-art;
+                }
+                ComboBox {
+                    model: ["Follow the system", "Light", "Dark"];
+                    selected => {
+                        Palette.color-scheme = self.current-index == 1 ? ColorScheme.light : self.current-index == 2 ? ColorScheme.dark : ColorScheme.unknown;
+                    }
+                }
+                Text {
+                    text: root.event == "" ? "Events show here." : "Event: " + root.event;
+                    color: Theme.muted;
+                }
+            }
+            scroll := ScrollView {
+                content-width: self.visible-width;
+                content-height: stage.preferred-height;
+                stage := VerticalLayout {
+                    width: scroll.visible-width;
+                    padding: 24px;
+                    spacing: 32px;
+                    alignment: start;
+
+                    if root.current == 0: Example {
+                        caption: "Square for covers, round for people; drawn when there is no image";
+                        FlexboxLayout {
+                            spacing: Theme.gap;
+                            Artwork { source: root.albums[0].cover; }
+                            Artwork { source: root.none; }
+                            Artwork { round: true; source: root.photo-1; }
+                            Artwork { round: true; source: root.none; }
+                        }
+                    }
+                    if root.current == 0: Example {
+                        caption: "Any size";
+                        FlexboxLayout {
+                            spacing: Theme.gap;
+                            cross-axis-alignment: end;
+                            Artwork { size: 48px; source: root.albums[1].cover; }
+                            Artwork { size: 96px; source: root.albums[1].cover; }
+                            Artwork { size: 220px; source: root.albums[1].cover; }
+                        }
+                    }
+
+                    if root.current == 1: Example {
+                        caption: "Link";
+                        HorizontalLayout {
+                            alignment: start;
+                            Link {
+                                text: "Mara Lind";
+                                clicked => { root.event = "open artist:1"; }
+                            }
+                        }
+                    }
+                    if root.current == 1: Example {
+                        caption: "Links that wrap; a name without a page isn't clickable";
+                        Links {
+                            names: root.credits;
+                            open(link) => { root.event = "open " + link; }
+                        }
+                    }
+                    if root.current == 1: Example {
+                        caption: "Links on one line, 220px wide: names that don't fit are left out";
+                        LinksLine {
+                            width: 220px;
+                            names: root.credits;
+                            open(link) => { root.event = "open " + link; }
+                        }
+                    }
+
+                    if root.current == 2: Example {
+                        caption: "Click the cover or the title for the album, a name for the artist";
+                        FlexboxLayout {
+                            spacing: Theme.gap;
+                            cross-axis-alignment: start;
+                            for album in root.albums: CoverTile {
+                                cover: album.cover;
+                                title: album.title;
+                                names: album.artists;
+                                clicked => { root.event = "open " + album.link; }
+                                open(link) => { root.event = "open " + link; }
+                            }
+                        }
+                    }
+
+                    if root.current == 3: Example {
+                        caption: "With and without a role";
+                        FlexboxLayout {
+                            spacing: Theme.gap;
+                            cross-axis-alignment: start;
+                            PersonTile {
+                                photo: root.photo-1;
+                                name: root.long-text ? "Oskar Brandt-Falkenberg von Hohenstein" : "Mara Lind";
+                                role: "Vocals, guitar";
+                                clicked => { root.event = "open artist:1"; }
+                            }
+                            PersonTile {
+                                photo: root.photo-2;
+                                name: "Ines Varga";
+                                role: "Composer";
+                                clicked => { root.event = "open artist:3"; }
+                            }
+                            PersonTile {
+                                photo: root.none;
+                                name: "Tomas Reed";
+                                clicked => { root.event = "open artist:4"; }
+                            }
+                        }
+                    }
+
+                    if root.current == 4: Example {
+                        caption: "Click a row, a name or the heart";
+                        TrackRow {
+                            number: "1";
+                            title: "Harbour Lights";
+                            names: root.mara;
+                            duration: "4:12";
+                            loved: root.loved-1;
+                            clicked => { root.event = "play track:1"; }
+                            open(link) => { root.event = "open " + link; }
+                            toggle-love => { root.loved-1 = !root.loved-1; }
+                        }
+                        TrackRow {
+                            number: "2";
+                            title: root.long-text ? root.long-title : "Rope and Anchor";
+                            names: root.credits;
+                            duration: "3:48";
+                            loved: root.loved-2;
+                            clicked => { root.event = "play track:2"; }
+                            open(link) => { root.event = "open " + link; }
+                            toggle-love => { root.loved-2 = !root.loved-2; }
+                        }
+                        TrackRow {
+                            number: "3";
+                            title: "Inland";
+                            duration: "11:27";
+                            loved: root.loved-3;
+                            clicked => { root.event = "play track:3"; }
+                            toggle-love => { root.loved-3 = !root.loved-3; }
+                        }
+                    }
+
+                    if root.current == 5: Shelf {
+                        title: "New albums";
+                        more: true;
+                        see-all => { root.event = "see all new albums"; }
+                        for album in root.shelf: CoverTile {
+                            cover: album.cover;
+                            title: album.title;
+                            names: album.artists;
+                            clicked => { root.event = "open " + album.link; }
+                            open(link) => { root.event = "open " + link; }
+                        }
+                    }
+                    if root.current == 5: Shelf {
+                        title: "Performers";
+                        PersonTile { photo: root.photo-1; name: "Mara Lind"; role: "Vocals"; }
+                        PersonTile { photo: root.photo-2; name: "Ines Varga"; role: "Piano"; }
+                        PersonTile { photo: root.none; name: "Tomas Reed"; role: "Bass"; }
+                    }
+
+                    if root.current == 6: Example {
+                        caption: "Resize the window to see the tiles move to the next line";
+                        TileGrid {
+                            for album in root.grid: CoverTile {
+                                cover: album.cover;
+                                title: album.title;
+                                names: album.artists;
+                                clicked => { root.event = "open " + album.link; }
+                                open(link) => { root.event = "open " + link; }
+                            }
+                        }
+                    }
+
+                    if root.current == 7: Example {
+                        caption: "Album; on a narrow window the text moves under the cover";
+                        PageHeader {
+                            artwork: root.albums[0].cover;
+                            kind: "Album";
+                            title: root.albums[0].title;
+                            names: root.long-text ? root.many : root.mara;
+                            facts: "2021 · Folk · 9 tracks, 41 minutes";
+                            open(link) => { root.event = "open " + link; }
+                            IconButton {
+                                icon: Icons.heart;
+                                filled: root.loved-album;
+                                color: root.loved-album ? Theme.accent : Theme.muted;
+                                label: root.loved-album ? "Loved" : "Love";
+                                clicked => { root.loved-album = !root.loved-album; }
+                            }
+                        }
+                    }
+                    if root.current == 7: Example {
+                        caption: "Artist";
+                        PageHeader {
+                            artwork: root.photo-1;
+                            round: true;
+                            kind: "Artist";
+                            title: root.long-text ? "Oskar Brandt-Falkenberg von Hohenstein" : "Mara Lind";
+                            facts: "6 albums, 2 compilations";
+                        }
+                    }
+
+                    if root.current == 8: Example {
+                        caption: "The current section is highlighted";
+                        Sidebar {
+                            width: 220px;
+                            height: 300px;
+                            items: ["Home", "Albums", "Artists", "Composers", "Genres", "Playlists"];
+                            selected(index) => { root.event = "section " + index; }
+                        }
+                    }
+
+                    if root.current == 9: Example {
+                        caption: "Back is possible here, forward isn't; press Enter to search";
+                        Rectangle {
+                            background: Theme.surface;
+                            border-radius: Theme.radius;
+                            TopBar {
+                                can-go-back: true;
+                                back => { root.event = "back"; }
+                                forward => { root.event = "forward"; }
+                                search(query) => { root.event = "search " + query; }
+                            }
+                        }
+                    }
+
+                    if root.current == 10: Example {
+                        caption: "Heart, back, forward, and a button that can't be pressed";
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 8px;
+                            IconButton {
+                                icon: Icons.heart;
+                                filled: root.loved-1;
+                                color: root.loved-1 ? Theme.accent : Theme.text;
+                                label: "Love";
+                                clicked => { root.loved-1 = !root.loved-1; }
+                            }
+                            IconButton {
+                                icon: Icons.back;
+                                label: "Back";
+                                clicked => { root.event = "back"; }
+                            }
+                            IconButton {
+                                icon: Icons.forward;
+                                label: "Forward";
+                                clicked => { root.event = "forward"; }
+                            }
+                            IconButton {
+                                icon: Icons.forward;
+                                label: "Forward";
+                                enabled: false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

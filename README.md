@@ -42,6 +42,14 @@ the page on every change:
 podman compose up -d
 ```
 
+The same command serves the component workbench on http://localhost:8091. It
+shows each shared part of the UI on its own, with sample data and switches for
+long text, missing artwork and light or dark mode. It also runs natively:
+
+```sh
+cargo run --bin workbench
+```
+
 ## License
 
 The code is [MIT](LICENSE) licensed. Slint is used under the

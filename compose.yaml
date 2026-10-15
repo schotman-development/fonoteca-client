@@ -1,5 +1,6 @@
-# Serves the browser build of the UI on port 8090, rebuilding and reloading the
-# page on every change. The host runs podman: `podman compose up -d`.
+# Serves the browser build of the UI on port 8090 and the component workbench
+# on 8091, rebuilding and reloading the page on every change. The host runs
+# podman: `podman compose up -d`.
 
 name: fonoteca-client
 
@@ -14,4 +15,16 @@ services:
     ports:
       - '8090:8090'
     volumes:
-      - .:/src:Z
+      - .:/src:z
+
+  workbench:
+    build:
+      context: dev
+      dockerfile: Containerfile
+    restart: unless-stopped
+    working_dir: /src/crates/fonoteca-client
+    command: trunk serve workbench.html --port 8091 --dist dist-workbench
+    ports:
+      - '8091:8091'
+    volumes:
+      - .:/src:z

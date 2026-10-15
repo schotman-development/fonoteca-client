@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+default-run = "fonoteca-client"
 
 [dependencies]
 listenbrainz = { path = "../listenbrainz" }
