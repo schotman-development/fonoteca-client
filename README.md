@@ -27,7 +27,8 @@ and other OpenSubsonic servers, written in Rust with [Slint](https://slint.dev).
 ## Development
 
 Install Rust with [rustup](https://rustup.rs); `rust-toolchain.toml` picks the
-toolchain.
+toolchain. On Linux, Slint also needs `pkg-config` and fontconfig's development
+files (`libfontconfig-dev` on Debian and Ubuntu).
 
 ```sh
 cargo run
