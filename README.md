@@ -34,6 +34,14 @@ files (`libfontconfig-dev` on Debian and Ubuntu).
 cargo run
 ```
 
+The UI also runs in a browser. This builds it with [Trunk](https://trunkrs.dev)
+in a container and serves it on http://localhost:8090, rebuilding and reloading
+the page on every change:
+
+```sh
+podman compose up -d
+```
+
 ## License
 
 The code is [MIT](LICENSE) licensed. Slint is used under the

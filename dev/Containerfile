@@ -1,0 +1,3 @@
+FROM docker.io/library/rust:slim
+ADD --checksum=sha256:a67f4054b249fe9acc5fabc25de1aebf19783aca3ad6ff64bf34d7da44d0ea20 https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-musl.tar.gz /tmp/trunk.tar.gz
+RUN tar -xzf /tmp/trunk.tar.gz -C /usr/local/bin && rm /tmp/trunk.tar.gz

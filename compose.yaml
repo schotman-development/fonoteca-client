@@ -1,0 +1,17 @@
+# Serves the browser build of the UI on port 8090, rebuilding and reloading the
+# page on every change. The host runs podman: `podman compose up -d`.
+
+name: fonoteca-client
+
+services:
+  web:
+    build:
+      context: dev
+      dockerfile: Containerfile
+    restart: unless-stopped
+    working_dir: /src/crates/fonoteca-client
+    command: trunk serve
+    ports:
+      - '8090:8090'
+    volumes:
+      - .:/src:Z
