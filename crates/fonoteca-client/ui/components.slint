@@ -1,0 +1,521 @@
+// The parts the browsing pages share. Every name on screen is a link: its
+// `link` names where it leads (such as "artist:<id>"), and the component hands
+// it to `open`.
+
+import { LineEdit, Palette } from "std-widgets.slint";
+
+export global Theme {
+    out property <brush> text: Palette.foreground;
+    out property <brush> muted: Palette.foreground.transparentize(40%);
+    out property <brush> hover: Palette.foreground.transparentize(92%);
+    out property <brush> surface: Palette.alternate-background;
+    out property <brush> accent: Palette.accent-background;
+
+    out property <length> small: 12px;
+    out property <length> body: 14px;
+    out property <length> heading: 20px;
+    out property <length> title: 32px;
+
+    out property <length> gap: 16px;
+    out property <length> radius: 6px;
+}
+
+export struct Name {
+    label: string,
+    link: string,
+}
+
+export global Icons {
+    out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
+    out property <string> back: "M15 5l-7 7 7 7";
+    out property <string> forward: "M9 5l7 7-7 7";
+    out property <string> note: "M10 17V5l9-2v12 M10 17a3 3 0 1 1-6 0a3 3 0 1 1 6 0 M19 15a3 3 0 1 1-6 0a3 3 0 1 1 6 0";
+    out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
+}
+
+// Clicks, Enter and Space, and screen readers all end up in `clicked`.
+component Pressable {
+    in property <bool> enabled: true;
+    in property <string> label;
+    out property <bool> hovered: root.enabled && touch.has-hover;
+    out property <bool> focused: focus.has-focus;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: Theme.radius + 3px;
+        border-width: root.focused ? 2px : 0;
+        border-color: Theme.accent;
+    }
+
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == Key.Space {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+
+    @children
+}
+
+export component Link inherits Pressable {
+    in property <string> text;
+    in property <length> font-size: Theme.body;
+    in property <int> font-weight: 400;
+    in property <brush> color: Theme.muted;
+    label: self.text;
+
+    HorizontalLayout {
+        Text {
+            text: root.text;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            color: root.hovered || root.focused ? Theme.text : root.color;
+            overflow: elide;
+        }
+    }
+}
+
+// Names in a row with commas, such as an album's artists. A long list
+// continues on the next line.
+export component Links inherits FlexboxLayout {
+    in property <[Name]> names;
+    in property <length> font-size: Theme.body;
+    in property <brush> text-color: Theme.muted;
+    callback open(link: string);
+
+    spacing-horizontal: 4px;
+
+    for name[i] in root.names: Link {
+        text: i < root.names.length - 1 ? name.label + "," : name.label;
+        label: name.label;
+        enabled: name.link != "";
+        font-size: root.font-size;
+        color: root.text-color;
+        clicked => { root.open(name.link); }
+    }
+}
+
+// Links kept to one line: the names that don't fit are left out, and the
+// comma before them shows there are more.
+export component LinksLine inherits Rectangle {
+    in property <[Name]> names;
+    in property <length> font-size: Theme.body;
+    in property <brush> text-color: Theme.muted;
+    callback open(link: string);
+
+    height: line.preferred-height;
+    clip: true;
+
+    line := Text {
+        visible: false;
+        text: " ";
+        font-size: root.font-size;
+    }
+    Links {
+        names: root.names;
+        font-size: root.font-size;
+        text-color: root.text-color;
+        open(link) => { root.open(link); }
+    }
+}
+
+// Cover art or a photo, with a note or a person drawn where there is none.
+export component Artwork inherits Rectangle {
+    in property <image> source;
+    in property <bool> round;
+    in property <length> size: 160px;
+    in property <bool> highlighted;
+
+    width: root.size;
+    height: root.size;
+    border-radius: root.round ? root.size / 2 : Theme.radius;
+    clip: true;
+    background: Theme.surface;
+
+    if root.source.width == 0: Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.size * 0.4;
+        height: root.size * 0.4;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.round ? Icons.person : Icons.note;
+        stroke: Theme.muted;
+        stroke-width: 1.5px;
+    }
+    Image {
+        width: 100%;
+        height: 100%;
+        source: root.source;
+        image-fit: cover;
+    }
+    Rectangle {
+        background: root.highlighted ? #00000026 : transparent;
+    }
+}
+
+export component IconButton inherits Pressable {
+    in property <string> icon;
+    in property <bool> filled;
+    in property <brush> color: Theme.text;
+
+    width: 32px;
+    height: 32px;
+
+    Rectangle {
+        border-radius: self.height / 2;
+        background: root.hovered ? Theme.hover : transparent;
+    }
+    Path {
+        width: 20px;
+        height: 20px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        stroke: root.enabled ? root.color : Theme.muted.transparentize(60%);
+        stroke-width: 1.75px;
+        fill: root.filled ? root.color : transparent;
+    }
+}
+
+// An album, playlist or genre in a shelf or grid.
+export component CoverTile inherits Pressable {
+    in property <image> cover;
+    in property <string> title;
+    in property <[Name]> names;
+    in property <length> size: 160px;
+    callback open(link: string);
+    label: self.title;
+
+    VerticalLayout {
+        width: root.size;
+        alignment: start;
+        spacing: 4px;
+        Artwork {
+            size: root.size;
+            source: root.cover;
+            highlighted: root.hovered;
+        }
+        Rectangle { height: 2px; }
+        Text {
+            text: root.title;
+            font-size: Theme.body;
+            font-weight: 600;
+            color: Theme.text;
+            overflow: elide;
+        }
+        if root.names.length > 0: LinksLine {
+            names: root.names;
+            font-size: Theme.small;
+            open(link) => { root.open(link); }
+        }
+    }
+}
+
+// An artist, composer or other performer, with what they did here.
+export component PersonTile inherits Pressable {
+    in property <image> photo;
+    in property <string> name;
+    in property <string> role;
+    in property <length> size: 140px;
+    label: self.role == "" ? self.name : self.name + ", " + self.role;
+
+    VerticalLayout {
+        width: root.size;
+        alignment: start;
+        spacing: 4px;
+        Artwork {
+            size: root.size;
+            round: true;
+            source: root.photo;
+            highlighted: root.hovered;
+        }
+        Rectangle { height: 2px; }
+        Text {
+            text: root.name;
+            font-size: Theme.body;
+            font-weight: 600;
+            color: Theme.text;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        if root.role != "": Text {
+            text: root.role;
+            font-size: Theme.small;
+            color: Theme.muted;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+export component TrackRow inherits Pressable {
+    in property <string> number;
+    in property <string> title;
+    in property <[Name]> names;
+    in property <string> duration;
+    in property <bool> loved;
+    callback open(link: string);
+    callback toggle-love();
+    label: self.title;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: root.hovered ? Theme.hover : transparent;
+    }
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 12px;
+        Text {
+            width: 28px;
+            text: root.number;
+            font-size: Theme.body;
+            color: Theme.muted;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                font-size: Theme.body;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.names.length > 0: Links {
+                names: root.names;
+                font-size: Theme.small;
+                open(link) => { root.open(link); }
+            }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.heart;
+            filled: root.loved;
+            color: root.loved ? Theme.accent : Theme.muted;
+            label: root.loved ? "Loved" : "Love";
+            accessible-checkable: true;
+            accessible-checked: root.loved;
+            clicked => { root.toggle-love(); }
+        }
+        Text {
+            horizontal-stretch: 0;
+            min-width: 44px;
+            text: root.duration;
+            font-size: Theme.body;
+            color: Theme.muted;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A titled row of tiles that scrolls sideways, with the rest behind "See all".
+export component Shelf {
+    in property <string> title;
+    in property <bool> more;
+    callback see-all();
+
+    VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: Theme.gap;
+            Text {
+                horizontal-stretch: 1;
+                text: root.title;
+                font-size: Theme.heading;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.more: Link {
+                cross-axis-self-alignment: center;
+                text: "See all";
+                clicked => { root.see-all(); }
+            }
+        }
+        Flickable {
+            height: row.preferred-height;
+            content-width: row.preferred-width;
+            row := HorizontalLayout {
+                width: self.preferred-width;
+                spacing: Theme.gap;
+                @children
+            }
+        }
+    }
+}
+
+// Tiles that fill the width and continue on the next line.
+export component TileGrid inherits FlexboxLayout {
+    cross-axis-alignment: start;
+    spacing-horizontal: Theme.gap;
+    spacing-vertical: 24px;
+}
+
+// The top of an album, artist, composer or work page. On a narrow window the
+// text moves under the artwork. Children go in a row under the facts.
+export component PageHeader inherits FlexboxLayout {
+    in property <image> artwork;
+    in property <bool> round;
+    in property <string> kind;
+    in property <string> title;
+    in property <[Name]> names;
+    in property <string> facts;
+    callback open(link: string);
+
+    alignment: stretch;
+    cross-axis-alignment: start;
+    spacing: 24px;
+
+    Artwork {
+        size: 220px;
+        round: root.round;
+        source: root.artwork;
+    }
+    VerticalLayout {
+        preferred-width: 280px;
+        horizontal-stretch: 1;
+        alignment: start;
+        spacing: 6px;
+        if root.kind != "": Text {
+            text: root.kind;
+            font-size: Theme.small;
+            font-weight: 600;
+            color: Theme.muted;
+        }
+        Text {
+            text: root.title;
+            font-size: Theme.title;
+            font-weight: 700;
+            color: Theme.text;
+            wrap: word-wrap;
+        }
+        if root.names.length > 0: Links {
+            names: root.names;
+            font-size: Theme.body;
+            text-color: Theme.text;
+            open(link) => { root.open(link); }
+        }
+        if root.facts != "": Text {
+            text: root.facts;
+            font-size: Theme.body;
+            color: Theme.muted;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: start;
+            spacing: 8px;
+            @children
+        }
+    }
+}
+
+component NavButton inherits Pressable {
+    in property <string> text;
+    in property <bool> current;
+    label: self.text;
+    accessible-item-selectable: true;
+    accessible-item-selected: self.current;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: root.current ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
+    }
+    HorizontalLayout {
+        padding: 8px;
+        padding-left: 12px;
+        Text {
+            text: root.text;
+            font-size: Theme.body;
+            font-weight: root.current ? 600 : 400;
+            color: root.current ? Theme.text : Theme.muted;
+            overflow: elide;
+        }
+    }
+}
+
+// The list of library sections down the left side.
+export component Sidebar inherits Rectangle {
+    in property <[string]> items;
+    in-out property <int> current;
+    callback selected(index: int);
+
+    background: Theme.surface;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 2px;
+        alignment: start;
+        for item[i] in root.items: NavButton {
+            text: item;
+            current: i == root.current;
+            clicked => {
+                root.current = i;
+                root.selected(i);
+            }
+        }
+    }
+}
+
+// Back and forward through the pages seen, and search across the library.
+export component TopBar inherits HorizontalLayout {
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
+    in-out property <string> query;
+    callback back();
+    callback forward();
+    callback search(query: string);
+
+    padding: 8px;
+    spacing: 4px;
+
+    IconButton {
+        cross-axis-self-alignment: center;
+        icon: Icons.back;
+        label: "Back";
+        enabled: root.can-go-back;
+        clicked => { root.back(); }
+    }
+    IconButton {
+        cross-axis-self-alignment: center;
+        icon: Icons.forward;
+        label: "Forward";
+        enabled: root.can-go-forward;
+        clicked => { root.forward(); }
+    }
+    Rectangle { }
+    LineEdit {
+        horizontal-stretch: 0;
+        preferred-width: 280px;
+        placeholder-text: "Search";
+        text <=> root.query;
+        accepted(text) => { root.search(text); }
+    }
+}
