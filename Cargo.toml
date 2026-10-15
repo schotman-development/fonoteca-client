@@ -2,6 +2,12 @@
 resolver = "3"
 members = ["crates/*"]
 
+# Dependencies are optimized in dev builds too. The browser preview runs the
+# dev build, and an unoptimized Slint renderer and image decoder make loading
+# covers and scrolling stutter. Only the first build takes longer.
+[profile.dev.package."*"]
+opt-level = 2
+
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
