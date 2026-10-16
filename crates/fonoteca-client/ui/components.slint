@@ -31,6 +31,7 @@ export struct AlbumTile {
     names: [Name],
     cover: image,
     link: string,
+    selected: bool,
 }
 
 export global Icons {
@@ -41,15 +42,19 @@ export global Icons {
     out property <string> down: "M12 5v14 M6 13l6 6 6-6";
     out property <string> note: "M10 17V5l9-2v12 M10 17a3 3 0 1 1-6 0a3 3 0 1 1 6 0 M19 15a3 3 0 1 1-6 0a3 3 0 1 1 6 0";
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
+    out property <string> check: "M5 12.5l4.5 4.5 9.5-10";
+    out property <string> close: "M6 6l12 12 M18 6L6 18";
 }
 
-// Clicks, Enter and Space, and screen readers all end up in `clicked`.
+// Clicks, Enter and Space, and screen readers all end up in `clicked`; a
+// right-click, a two-finger click and the Menu key in `context-clicked`.
 component Pressable {
     in property <bool> enabled: true;
     in property <string> label;
     out property <bool> hovered: root.enabled && touch.has-hover;
     out property <bool> focused: focus.has-focus;
     callback clicked();
+    callback context-clicked();
 
     accessible-role: button;
     accessible-label: root.label;
@@ -78,6 +83,10 @@ component Pressable {
                 root.clicked();
                 return accept;
             }
+            if event.text == Key.Menu {
+                root.context-clicked();
+                return accept;
+            }
             reject
         }
     }
@@ -86,6 +95,11 @@ component Pressable {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
         clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.context-clicked();
+            }
+        }
     }
 
     @children
@@ -118,6 +132,7 @@ export component Links inherits FlexboxLayout {
     in property <length> font-size: Theme.body;
     in property <brush> text-color: Theme.muted;
     callback open(link: string);
+    callback context-clicked();
 
     spacing-horizontal: 4px;
 
@@ -128,6 +143,7 @@ export component Links inherits FlexboxLayout {
         font-size: root.font-size;
         color: root.text-color;
         clicked => { root.open(name.link); }
+        context-clicked => { root.context-clicked(); }
     }
 }
 
@@ -138,6 +154,7 @@ export component LinksLine inherits Rectangle {
     in property <length> font-size: Theme.body;
     in property <brush> text-color: Theme.muted;
     callback open(link: string);
+    callback context-clicked();
 
     height: line.preferred-height;
     clip: true;
@@ -152,6 +169,7 @@ export component LinksLine inherits Rectangle {
         font-size: root.font-size;
         text-color: root.text-color;
         open(link) => { root.open(link); }
+        context-clicked => { root.context-clicked(); }
     }
 }
 
@@ -220,9 +238,25 @@ export component CoverTile inherits Pressable {
     in property <string> title;
     in property <[Name]> names;
     in property <length> size: 160px;
+    // While its page is selecting, every tile shows whether it is selected.
+    in property <bool> selecting;
+    in property <bool> selected;
     callback open(link: string);
     label: self.title;
+    accessible-item-selectable: self.selecting;
+    accessible-item-selected: self.selected;
 
+    // Behind the whole tile, its outline just outside it.
+    if root.selected: Rectangle {
+        x: -6px;
+        y: -6px;
+        width: parent.width + 12px;
+        height: parent.height + 12px;
+        border-radius: Theme.radius;
+        border-width: 2px;
+        border-color: Theme.accent;
+        background: Theme.accent.transparentize(85%);
+    }
     VerticalLayout {
         width: root.size;
         alignment: start;
@@ -231,6 +265,27 @@ export component CoverTile inherits Pressable {
             size: root.size;
             source: root.cover;
             highlighted: root.hovered;
+            if root.selecting: Rectangle {
+                x: 10px;
+                y: 10px;
+                width: 32px;
+                height: 32px;
+                border-radius: self.height / 2;
+                border-width: root.selected ? 0 : 2px;
+                border-color: white;
+                background: root.selected ? Theme.accent : #00000059;
+                if root.selected: Path {
+                    x: 5px;
+                    y: 5px;
+                    width: 22px;
+                    height: 22px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Icons.check;
+                    stroke: Palette.accent-foreground;
+                    stroke-width: 3px;
+                }
+            }
         }
         Rectangle { height: 2px; }
         Text {
@@ -244,6 +299,7 @@ export component CoverTile inherits Pressable {
             names: root.names;
             font-size: Theme.small;
             open(link) => { root.open(link); }
+            context-clicked => { root.context-clicked(); }
         }
     }
 }
@@ -419,7 +475,12 @@ export component CoverGrid {
     // The part of the grid on screen, in the grid's own coordinates.
     in property <length> view-top;
     in property <length> view-height;
+    // While some tiles are selected, a click selects another tile, or lets a
+    // selected one go, instead of opening it.
+    in property <bool> selecting;
     callback open(link: string);
+    // A tile right-clicked, or clicked while selecting.
+    callback select(index: int);
     // The tiles on screen and a screen below it, whenever that changes.
     callback in-view(first: int, last: int);
 
@@ -462,8 +523,59 @@ export component CoverGrid {
         cover: tile.cover;
         title: tile.title;
         names: tile.names;
-        clicked => { root.open(tile.link); }
-        open(link) => { root.open(link); }
+        selecting: root.selecting;
+        selected: tile.selected;
+        clicked => {
+            if root.selecting {
+                root.select(i);
+            } else {
+                root.open(tile.link);
+            }
+        }
+        context-clicked => { root.select(i); }
+        open(link) => {
+            if root.selecting {
+                root.select(i);
+            } else {
+                root.open(link);
+            }
+        }
+    }
+}
+
+// Floats over the bottom of a page while something on it is selected: how
+// many, the actions for them as children, and a button that ends selecting.
+export component SelectionBar inherits Rectangle {
+    in property <int> count;
+    callback clear();
+
+    border-radius: 12px;
+    background: Theme.accent;
+    drop-shadow-blur: 16px;
+    drop-shadow-offset-y: 4px;
+    drop-shadow-color: #0000004d;
+
+    // Keeps clicks on the bar from reaching the tiles under it.
+    TouchArea { }
+    HorizontalLayout {
+        padding: 8px;
+        padding-left: 16px;
+        spacing: 8px;
+        Text {
+            text: root.count + " selected";
+            font-size: Theme.body;
+            font-weight: 600;
+            color: Palette.accent-foreground;
+            vertical-alignment: center;
+        }
+        @children
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.close;
+            label: "Clear selection";
+            color: Palette.accent-foreground;
+            clicked => { root.clear(); }
+        }
     }
 }
 

@@ -69,6 +69,9 @@ pub struct Browser {
     view: Vec<usize>,
     /// Filters the albums once typing pauses.
     typing: Timer,
+    /// The links of the albums selected, in the order they were picked. They
+    /// stay selected through sorting, filtering and other pages.
+    selected: Vec<String>,
 }
 
 pub type Shared = Rc<RefCell<Browser>>;
@@ -162,6 +165,54 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
             fetch_covers(&weak.unwrap(), &browser);
         }
     });
+    ui.on_select_tile({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row| select_tile(&weak.unwrap(), &browser, row as usize)
+    });
+    ui.on_clear_selection({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || clear_selection(&weak.unwrap(), &browser)
+    });
+}
+
+/// Selects the tile at `row`, or lets it go if it is selected.
+fn select_tile(ui: &AppWindow, browser: &Shared, row: usize) {
+    let tiles = browser.borrow().tiles.clone();
+    let Some(mut tile) = tiles.row_data(row) else {
+        return;
+    };
+    let count = {
+        let mut b = browser.borrow_mut();
+        let link = tile.link.to_string();
+        tile.selected = match b.selected.iter().position(|picked| *picked == link) {
+            Some(at) => {
+                b.selected.remove(at);
+                false
+            }
+            None => {
+                b.selected.push(link);
+                true
+            }
+        };
+        b.selected.len()
+    };
+    tiles.set_row_data(row, tile);
+    ui.set_selected_tiles(count as i32);
+}
+
+fn clear_selection(ui: &AppWindow, browser: &Shared) {
+    let tiles = {
+        let mut b = browser.borrow_mut();
+        b.selected.clear();
+        b.tiles.clone()
+    };
+    for row in 0..tiles.row_count() {
+        if let Some(mut tile) = tiles.row_data(row).filter(|tile| tile.selected) {
+            tile.selected = false;
+            tiles.set_row_data(row, tile);
+        }
+    }
+    ui.set_selected_tiles(0);
 }
 
 fn open(ui: &AppWindow, browser: &Shared, link: String) {
@@ -210,6 +261,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
     ui.set_loading(false);
     ui.set_more_tiles(false);
+    ui.set_selected_tiles(browser.borrow().selected.len() as i32);
     ui.set_header_image(Image::default());
     ui.set_header_title("".into());
     ui.set_header_names(ModelRc::default());
@@ -578,11 +630,13 @@ fn add_tiles(
                 let row = b.tiles.row_count();
                 b.covers.insert(row, cover.clone());
             }
+            let link = format!("album:{}", album.id);
             b.tiles.push(AlbumTile {
                 title: album.name.as_str().into(),
                 names: names(names_of(album)),
                 cover: seen.unwrap_or_default(),
-                link: format!("album:{}", album.id).into(),
+                selected: b.selected.contains(&link),
+                link: link.into(),
             });
         }
     }

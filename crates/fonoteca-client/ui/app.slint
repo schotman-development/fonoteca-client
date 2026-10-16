@@ -1,5 +1,5 @@
 import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, SelectionBar, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
 
 export { AlbumTile, Name }
 
@@ -183,6 +183,9 @@ export component AppWindow inherits Window {
     in property <[Name]> header-names;
     in property <string> header-facts;
     in property <[Track]> tracks;
+    // How many albums are selected, on this page or others. While any are,
+    // the selection bar is up and a click on a tile selects it.
+    in property <int> selected-tiles;
     // The albums page's order, as the index into its Sort menu, its
     // direction, and the filter typed on it.
     in-out property <int> album-sort;
@@ -200,10 +203,15 @@ export component AppWindow inherits Window {
     callback tiles-in-view(first: int, last: int);
     callback toggle-love(row: int);
     callback reconnect();
+    // Selects the tile at `index`, or lets it go if it is selected.
+    callback select-tile(index: int);
+    callback clear-selection();
+
+    property <length> sidebar-width: 200px;
 
     if root.step == Step.done: HorizontalLayout {
         Sidebar {
-            width: 200px;
+            width: root.sidebar-width;
             items: ["Albums", "Account"];
             current <=> root.section;
             selected(index) => { root.show-section(index); }
@@ -229,6 +237,8 @@ export component AppWindow inherits Window {
                     width: scroll.visible-width;
                     padding: 24px;
                     padding-top: 8px;
+                    // Room to scroll the last tiles out from under the bar.
+                    padding-bottom: root.selected-tiles > 0 ? 96px : 24px;
                     spacing: 24px;
                     alignment: start;
 
@@ -287,6 +297,8 @@ export component AppWindow inherits Window {
                         view-height: scroll.visible-height;
                         open(link) => { root.open(link); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
+                        selecting: root.selected-tiles > 0;
+                        select(index) => { root.select-tile(index); }
                     }
                     if root.page == Page.album: VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
@@ -358,6 +370,15 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    if root.step == Step.done && root.selected-tiles > 0: SelectionBar {
+        x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
+        y: root.height - self.height - 24px;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        count: root.selected-tiles;
+        clear => { root.clear-selection(); }
     }
 
     if root.step != Step.done: VerticalLayout {

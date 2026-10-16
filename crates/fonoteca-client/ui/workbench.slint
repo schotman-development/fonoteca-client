@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -34,6 +34,7 @@ export component Workbench inherits Window {
         "Sidebar",
         "Top bar",
         "Icon button",
+        "Selection bar",
     ];
     property <int> current;
     property <bool> long-text;
@@ -197,7 +198,25 @@ export component Workbench inherits Window {
                                 title: album.title;
                                 names: album.names;
                                 clicked => { root.event = "open " + album.link; }
+                                context-clicked => { root.event = "select " + album.link; }
                                 open(link) => { root.event = "open " + link; }
+                            }
+                        }
+                    }
+                    if root.current == 2: Example {
+                        caption: "While selecting: the first selected, the others not";
+                        FlexboxLayout {
+                            spacing: Theme.gap;
+                            cross-axis-alignment: start;
+                            for album[i] in root.albums: CoverTile {
+                                cover: album.cover;
+                                title: album.title;
+                                names: album.names;
+                                selecting: true;
+                                selected: i == 0;
+                                clicked => { root.event = "select " + album.link; }
+                                context-clicked => { root.event = "select " + album.link; }
+                                open(link) => { root.event = "select " + album.link; }
                             }
                         }
                     }
@@ -324,6 +343,7 @@ export component Workbench inherits Window {
                         CoverGrid {
                             tiles: root.grid;
                             open(link) => { root.event = "open " + link; }
+                            select(index) => { root.event = "select tile " + index; }
                         }
                     }
 
@@ -413,6 +433,17 @@ export component Workbench inherits Window {
                                 accessible-checkable: true;
                                 accessible-checked: root.down;
                                 clicked => { root.down = !root.down; }
+                            }
+                        }
+                    }
+
+                    if root.current == 11: Example {
+                        caption: "How many are selected, and the button that ends selecting";
+                        HorizontalLayout {
+                            alignment: start;
+                            SelectionBar {
+                                count: root.long-text ? 12345 : 3;
+                                clear => { root.event = "clear selection"; }
                             }
                         }
                     }

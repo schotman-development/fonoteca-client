@@ -318,8 +318,9 @@ mod tests {
     use std::task::{Context, Poll};
     use std::time::{Duration, Instant};
 
-    use i_slint_backend_testing::{AccessibleRole, ElementRoot};
+    use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementRoot};
     use slint::Model;
+    use slint::platform::PointerEventButton;
 
     use super::*;
 
@@ -560,7 +561,7 @@ mod tests {
         }
     }
 
-    fn click(ui: &AppWindow, label: &str) {
+    fn button(ui: &AppWindow, label: &str) -> ElementHandle {
         let label = label.to_owned();
         let button = ui
             .root_element()
@@ -571,9 +572,11 @@ mod tests {
                 move |button| button.accessible_label().is_some_and(|l| l == label)
             })
             .find_first();
-        button
-            .unwrap_or_else(|| panic!("no {label} button"))
-            .invoke_accessible_default_action();
+        button.unwrap_or_else(|| panic!("no {label} button"))
+    }
+
+    fn click(ui: &AppWindow, label: &str) {
+        button(ui, label).invoke_accessible_default_action();
     }
 
     /// The only test that may start Slint or touch the store: both are
@@ -740,6 +743,75 @@ mod tests {
             wait_for("all albums", || ui.get_tiles().row_count() == 100).await;
             assert_eq!(links(&ui)[0], "album:a1");
             assert_eq!(LISTS.load(Relaxed), lists);
+
+            // Once a tile is selected, a click selects another, or lets a
+            // selected one go, instead of opening it.
+            let selected = |ui: &AppWindow| -> Vec<usize> {
+                let tiles = ui.get_tiles();
+                (0..tiles.row_count())
+                    .filter(|row| tiles.row_data(*row).unwrap().selected)
+                    .collect()
+            };
+            ui.invoke_select_tile(2);
+            click(&ui, "Night Harbour");
+            assert_eq!(ui.get_page(), Page::Albums);
+            assert_eq!(selected(&ui), [0, 2]);
+            assert_eq!(ui.get_selected_tiles(), 2);
+            click(&ui, "Night Harbour");
+            assert_eq!(selected(&ui), [2]);
+            assert_eq!(ui.get_selected_tiles(), 1);
+            // A name on a tile selects the tile too, and so does a right-click.
+            click(&ui, "Mara Lind");
+            assert_eq!(ui.get_page(), Page::Albums);
+            assert_eq!(selected(&ui), [0, 2]);
+            click(&ui, "Clear selection");
+            assert!(selected(&ui).is_empty());
+            button(&ui, "Night Harbour")
+                .single_click(PointerEventButton::Right)
+                .await;
+            assert_eq!(selected(&ui), [0]);
+            button(&ui, "Mara Lind")
+                .single_click(PointerEventButton::Right)
+                .await;
+            assert!(selected(&ui).is_empty());
+            ui.invoke_select_tile(1);
+            ui.invoke_clear_selection();
+            assert!(selected(&ui).is_empty());
+            assert_eq!(ui.get_selected_tiles(), 0);
+            // The selection lasts through sorting, filtering and other pages.
+            let picked = |ui: &AppWindow| -> Vec<String> {
+                let links = links(ui);
+                selected(ui)
+                    .into_iter()
+                    .map(|row| links[row].clone())
+                    .collect()
+            };
+            filter("bach");
+            wait_for("the Bach albums", || links(&ui) == ids(&["b2", "b1", "b3"])).await;
+            ui.invoke_select_tile(1);
+            sort(0, true);
+            assert_eq!(links(&ui), ids(&["b3", "b1", "b2"]));
+            assert_eq!(picked(&ui), ids(&["b1"]));
+            filter("BACH part");
+            wait_for("one match", || links(&ui) == ids(&["b2"])).await;
+            assert!(picked(&ui).is_empty());
+            assert_eq!(ui.get_selected_tiles(), 1);
+            filter("bach");
+            wait_for("the Bach albums again", || links(&ui).len() == 3).await;
+            assert_eq!(picked(&ui), ids(&["b1"]));
+            ui.invoke_show_section(1);
+            assert_eq!(ui.get_page(), Page::Account);
+            assert_eq!(ui.get_selected_tiles(), 1);
+            ui.invoke_back();
+            wait_for("the albums page", || links(&ui).len() == 3).await;
+            assert_eq!(picked(&ui), ids(&["b1"]));
+            assert_eq!(ui.get_selected_tiles(), 1);
+            ui.invoke_clear_selection();
+            assert!(picked(&ui).is_empty());
+            assert_eq!(ui.get_selected_tiles(), 0);
+            filter("");
+            sort(0, false);
+            wait_for("all albums again", || ui.get_tiles().row_count() == 100).await;
 
             click(&ui, "Night Harbour");
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;
