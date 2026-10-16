@@ -661,9 +661,12 @@ component NavButton inherits Pressable {
     }
 }
 
-// The list of library sections down the left side.
+// The list of library sections down the left side. `groups[i]` names the
+// group of `items[i]`: sections of one group follow each other under its
+// heading, and a section without one is set apart by a gap.
 export component Sidebar inherits Rectangle {
     in property <[string]> items;
+    in property <[string]> groups;
     in-out property <int> current;
     callback selected(index: int);
 
@@ -673,12 +676,27 @@ export component Sidebar inherits Rectangle {
         padding: 12px;
         spacing: 2px;
         alignment: start;
-        for item[i] in root.items: NavButton {
-            text: item;
-            current: i == root.current;
-            clicked => {
-                root.current = i;
-                root.selected(i);
+        for item[i] in root.items: VerticalLayout {
+            spacing: 2px;
+            if (i == 0 && root.groups[0] != "") || (i > 0 && root.groups[i] != root.groups[i - 1]): VerticalLayout {
+                padding-top: i == 0 ? 0 : 16px;
+                padding-bottom: 4px;
+                padding-left: 12px;
+                if root.groups[i] != "": Text {
+                    text: root.groups[i];
+                    font-size: Theme.small;
+                    font-weight: 600;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+            }
+            NavButton {
+                text: item;
+                current: i == root.current;
+                clicked => {
+                    root.current = i;
+                    root.selected(i);
+                }
             }
         }
     }

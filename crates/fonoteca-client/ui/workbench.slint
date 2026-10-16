@@ -377,11 +377,17 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 8: Example {
-                        caption: "The current section is highlighted";
+                        caption: "The current section is highlighted; sections are grouped under headings, the last without one";
                         Sidebar {
                             width: 220px;
                             height: 300px;
-                            items: ["Home", "Albums", "Artists", "Composers", "Genres", "Playlists"];
+                            items: ["Albums", "Artists", "Composers", "Genres", "Account"];
+                            groups: [
+                                root.long-text ? "Library on the server down the hall" : "Library",
+                                root.long-text ? "Library on the server down the hall" : "Library",
+                                root.long-text ? "Library on the server down the hall" : "Library",
+                                root.long-text ? "Library on the server down the hall" : "Library",
+                            ];
                             selected(index) => { root.event = "section " + index; }
                         }
                     }

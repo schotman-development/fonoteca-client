@@ -213,6 +213,7 @@ export component AppWindow inherits Window {
         Sidebar {
             width: root.sidebar-width;
             items: ["Albums", "Account"];
+            groups: ["Library"];
             current <=> root.section;
             selected(index) => { root.show-section(index); }
         }
