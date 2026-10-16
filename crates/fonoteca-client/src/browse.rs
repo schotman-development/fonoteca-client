@@ -1,6 +1,7 @@
 //! The library pages after sign-in: what each page shows, where its links lead,
 //! and the history behind back and forward. A link is a page's address, such
-//! as "albums", "artists", "album:<id>" or "artist:<id>".
+//! as "albums", "artists", "playlists", "album:<id>", "artist:<id>" or
+//! "playlist:<id>".
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -11,9 +12,12 @@ use std::time::Duration;
 
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
-use opensubsonic::{AlbumID3, AlbumListType, ArtistID3, Child, Client, ItemDate, ListOptions};
+use opensubsonic::{
+    AlbumID3, AlbumListType, ArtistID3, Child, Client, ItemDate, ListOptions, Playlist,
+};
 use slint::{
-    ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, Timer, TimerMode, VecModel,
+    ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
+    VecModel,
 };
 
 use crate::{AlbumTile, AppWindow, Name, Page, Track};
@@ -66,6 +70,11 @@ pub struct Browser {
     /// Every artist on the server, once they have arrived.
     artists: Vec<ArtistID3>,
     artists_loaded: bool,
+    /// The playlists, for the sidebar and the playlists page, asked for on
+    /// sign-in and on every visit to that page.
+    playlists: Vec<Playlist>,
+    playlists_loading: bool,
+    playlists_loaded: bool,
     /// The filter of the albums or artists page on screen, and what it
     /// shows, as indexes into `library` or `artists` in the page's order.
     filter: String,
@@ -94,6 +103,8 @@ pub fn start(
     }
     ui.set_album_filter("".into());
     ui.set_artist_filter("".into());
+    sidebar(ui, browser);
+    load_playlists(ui, browser);
     open(ui, browser, "albums".into());
 }
 
@@ -119,12 +130,16 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_show_section({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| {
-            let link = match index {
-                1 => "artists",
-                2 => "account",
-                _ => "albums",
-            };
-            open(&weak.unwrap(), &browser, link.into());
+            let link = usize::try_from(index).ok().and_then(|index| {
+                let b = browser.borrow();
+                sections(&b.playlists)
+                    .into_iter()
+                    .nth(index)
+                    .map(|(link, ..)| link)
+            });
+            if let Some(link) = link {
+                open(&weak.unwrap(), &browser, link);
+            }
         }
     });
     ui.on_back({
@@ -263,6 +278,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         ui.set_can_go_forward(b.at + 1 < b.history.len());
         ui.set_tiles(ModelRc::from(b.tiles.clone()));
         ui.set_tracks(ModelRc::from(b.tracks.clone()));
+        ui.set_section(section(&b));
         b.history[b.at].clone()
     };
     ui.set_page_problem("".into());
@@ -279,29 +295,71 @@ fn show(ui: &AppWindow, browser: &Shared) {
     match page {
         "artists" => {
             ui.set_page(Page::Artists);
-            ui.set_section(1);
             artists(ui, browser);
+        }
+        "playlists" => {
+            ui.set_page(Page::Playlists);
+            playlists(ui, browser);
         }
         "album" => {
             ui.set_page(Page::Album);
-            ui.set_section(-1);
             album(ui, browser, id);
         }
         "artist" => {
             ui.set_page(Page::Artist);
-            ui.set_section(-1);
             artist(ui, browser, id);
         }
-        "account" => {
-            ui.set_page(Page::Account);
-            ui.set_section(2);
+        "playlist" => {
+            ui.set_page(Page::Playlist);
+            playlist(ui, browser, id);
         }
+        "account" => ui.set_page(Page::Account),
         _ => {
             ui.set_page(Page::Albums);
-            ui.set_section(0);
             albums(ui, browser);
         }
     }
+}
+
+/// The sidebar's entries, as links, labels and groups: the library's pages,
+/// the playlists and the account.
+fn sections(playlists: &[Playlist]) -> Vec<(String, &str, &str)> {
+    let library = [
+        ("albums", "Albums"),
+        ("artists", "Artists"),
+        ("playlists", "Playlists"),
+    ]
+    .map(|(link, label)| (link.to_owned(), label, "Library"));
+    let playlists = playlists.iter().map(|playlist| {
+        let link = format!("playlist:{}", playlist.id);
+        (link, playlist.name.as_str(), "Playlists")
+    });
+    library
+        .into_iter()
+        .chain(playlists)
+        .chain([("account".to_owned(), "Account", "")])
+        .collect()
+}
+
+/// The sidebar entry of the page on screen, or -1 when it has none.
+fn section(b: &Browser) -> i32 {
+    let link = b.history.get(b.at);
+    let at = sections(&b.playlists)
+        .iter()
+        .position(|section| Some(&section.0) == link);
+    at.map_or(-1, |at| at as i32)
+}
+
+/// Lists the sidebar's entries, the page on screen's current.
+fn sidebar(ui: &AppWindow, browser: &Shared) {
+    let b = browser.borrow();
+    let (labels, groups): (Vec<SharedString>, Vec<SharedString>) = sections(&b.playlists)
+        .into_iter()
+        .map(|(_, label, group)| (label.into(), group.into()))
+        .unzip();
+    ui.set_sections(ModelRc::new(VecModel::from(labels)));
+    ui.set_section_groups(ModelRc::new(VecModel::from(groups)));
+    ui.set_section(section(&b));
 }
 
 /// Runs `task` for the page on screen, and drops its answer if that page has
@@ -432,6 +490,101 @@ fn artists(ui: &AppWindow, browser: &Shared) {
     );
 }
 
+/// Asks for the playlists, for the sidebar and the playlists page.
+fn load_playlists(ui: &AppWindow, browser: &Shared) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    browser.borrow_mut().playlists_loading = true;
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let answer = client.get_playlists(None).await;
+        let Some(ui) = weak.upgrade() else { return };
+        let signed_in = browser
+            .borrow()
+            .client
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(current, &client));
+        if !signed_in {
+            return;
+        }
+        let shown = ui.get_page() == Page::Playlists;
+        let (changed, known) = {
+            let mut b = browser.borrow_mut();
+            b.playlists_loading = false;
+            let known = b.playlists_loaded;
+            let changed = match answer {
+                Ok(list) => {
+                    b.playlists_loaded = true;
+                    let changed = b.playlists != list.playlist;
+                    b.playlists = list.playlist;
+                    Ok(changed)
+                }
+                Err(e) => Err(e),
+            };
+            (changed, known)
+        };
+        if shown {
+            ui.set_loading(false);
+        }
+        match changed {
+            Ok(true) => {
+                sidebar(&ui, &browser);
+                if shown {
+                    show_playlists(&ui, &browser);
+                }
+            }
+            Ok(false) => {}
+            // The playlists shown stay when asking again fails.
+            Err(e) if shown && !known => ui.set_page_problem(e.to_string().into()),
+            Err(_) => {}
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Shows the playlists on the playlists page that are known, and asks for
+/// them again: OpenSubsonic says to refresh playlists on each access.
+// ponytail: ignores validUntil, which only allows fewer requests; read it if they cost.
+fn playlists(ui: &AppWindow, browser: &Shared) {
+    let (loaded, loading) = {
+        let b = browser.borrow();
+        (b.playlists_loaded, b.playlists_loading)
+    };
+    if loaded {
+        show_playlists(ui, browser);
+    } else {
+        ui.set_loading(true);
+    }
+    if !loading {
+        load_playlists(ui, browser);
+    }
+}
+
+/// Puts the playlists on the playlists page, in place of what it showed.
+// ponytail: all tiles at once; page them like the albums if someone has thousands.
+fn show_playlists(ui: &AppWindow, browser: &Shared) {
+    let tiles = {
+        let mut b = browser.borrow_mut();
+        b.tiles = Rc::default();
+        b.covers.clear();
+        b.fetching = 0;
+        ui.set_tiles(ModelRc::from(b.tiles.clone()));
+        b.playlists.iter().map(playlist_tile).collect()
+    };
+    add_tiles(ui, browser, tiles);
+}
+
+/// The album of a song, linked when the server gives its id.
+fn album_name(song: &Child) -> Option<Name> {
+    let album = song.album.as_ref()?;
+    let link = song.album_id.as_ref().map(|id| format!("album:{id}"));
+    Some(Name {
+        label: album.as_str().into(),
+        link: link.unwrap_or_default().into(),
+    })
+}
+
 /// What is typed in the filter of the page on screen, if it has one.
 fn typed_filter(ui: &AppWindow) -> Option<String> {
     let typed = match ui.get_page() {
@@ -467,10 +620,14 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
     show_tiles(ui, browser, shown.max(TILES_AT_ONCE));
 }
 
-/// Shows the next tiles, and asks for the library or the artists again if
-/// that failed.
+/// Shows the next tiles, and asks for the library, the artists or the
+/// playlists again if that failed.
 fn more_tiles(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
+    if ui.get_page() == Page::Playlists {
+        playlists(ui, browser);
+        return;
+    }
     if ui.get_page() == Page::Artists {
         if !browser.borrow().artists_loaded {
             artists(ui, browser);
@@ -696,6 +853,58 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
             add_tiles(ui, browser, tiles.collect());
         },
     );
+}
+
+/// A playlist's tracks: each with its artists and album, and the heart that
+/// loves it.
+fn playlist(ui: &AppWindow, browser: &Shared, id: String) {
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_playlist(&id).await },
+        |ui, browser, playlist| {
+            let songs = playlist.entry;
+            let playlist = playlist.playlist;
+            ui.set_header_title(playlist.name.as_str().into());
+            let facts = [
+                playlist.comment.unwrap_or_default(),
+                length(playlist.song_count, playlist.duration),
+            ];
+            let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
+            ui.set_header_facts(facts.join(" · ").into());
+            header_image(ui, browser, playlist.cover_art);
+
+            let mut b = browser.borrow_mut();
+            for song in &songs {
+                let artists = song_names(song);
+                let album = album_name(song);
+                b.tracks.push(Track {
+                    title: song.title.as_str().into(),
+                    split: artists.len() as i32,
+                    names: names(artists.into_iter().chain(album).collect()),
+                    duration: song.duration.map(duration).unwrap_or_default().into(),
+                    loved: song.starred.is_some(),
+                    ..Track::default()
+                });
+            }
+            b.songs = songs
+                .into_iter()
+                .map(|song| (song.id, song.music_brainz_id))
+                .collect();
+        },
+    );
+}
+
+/// A playlist's tile, with how many tracks it has, and its cover's id.
+fn playlist_tile(playlist: &Playlist) -> (AlbumTile, Option<String>) {
+    let tracks = count(playlist.song_count.max(0) as usize, "track", "tracks");
+    let tile = AlbumTile {
+        title: playlist.name.as_str().into(),
+        names: names(vec![unlinked(tracks)]),
+        link: format!("playlist:{}", playlist.id).into(),
+        ..AlbumTile::default()
+    };
+    (tile, playlist.cover_art.clone())
 }
 
 /// An album's tile, named by `credits`, and its cover's id.
@@ -1110,25 +1319,29 @@ fn album_facts(album: &AlbumID3) -> String {
     } else {
         genres.join(", ")
     };
-    // At least a minute, so a short single doesn't say 0.
-    let minutes = match album.duration {
-        0 => 0,
-        seconds => ((seconds + 30) / 60).max(1),
-    };
-    let length = format!(
-        "{}, {}",
-        count(album.song_count as usize, "track", "tracks"),
-        count(minutes as usize, "minute", "minutes"),
-    );
     [
         album.year.map(|y| y.to_string()).unwrap_or_default(),
         genres,
-        length,
+        length(album.song_count, album.duration),
     ]
     .into_iter()
     .filter(|part| !part.is_empty())
     .collect::<Vec<_>>()
     .join(" · ")
+}
+
+/// "9 tracks, 41 minutes".
+fn length(tracks: i64, seconds: i64) -> String {
+    // At least a minute, so a short single doesn't say 0.
+    let minutes = match seconds {
+        0 => 0,
+        seconds => ((seconds + 30) / 60).max(1),
+    };
+    format!(
+        "{}, {}",
+        count(tracks as usize, "track", "tracks"),
+        count(minutes as usize, "minute", "minutes"),
+    )
 }
 
 fn count(n: usize, one: &str, many: &str) -> String {

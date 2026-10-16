@@ -5,12 +5,13 @@ export { AlbumTile, Name }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { albums, artists, album, artist, account }
+export enum Page { albums, artists, playlists, album, artist, playlist, account }
 
 export struct Track {
     title: string,
     // Who wrote this track, `split` of them, then who plays it, as far as its
-    // row says: a movement names only performers its work's row doesn't.
+    // row says: a movement names only performers its work's row doesn't. On a
+    // playlist, who plays it, `split` of them, then its album.
     names: [Name],
     split: int,
     duration: string,
@@ -179,6 +180,10 @@ export component AppWindow inherits Window {
     in property <string> offline;
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
+    // The sidebar's entries and their groups: the library's pages, the
+    // playlists and the account. `section` is the current one.
+    in property <[string]> sections;
+    in property <[string]> section-groups;
     in-out property <int> section;
     in property <[AlbumTile]> tiles;
     in property <bool> more-tiles;
@@ -218,8 +223,8 @@ export component AppWindow inherits Window {
     if root.step == Step.done: HorizontalLayout {
         Sidebar {
             width: root.sidebar-width;
-            items: ["Albums", "Artists", "Account"];
-            groups: ["Library", "Library"];
+            items: root.sections;
+            groups: root.section-groups;
             current <=> root.section;
             selected(index) => { root.show-section(index); }
         }
@@ -310,16 +315,17 @@ export component AppWindow inherits Window {
                             edited => { root.filter-artists(); }
                         }
                     }
-                    if root.page == Page.album || root.page == Page.artist: PageHeader {
+                    if root.page == Page.playlists: Heading { text: "Playlists"; }
+                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist: PageHeader {
                         artwork: root.header-image;
                         round: root.page == Page.artist;
-                        kind: root.page == Page.artist ? "Artist" : "Album";
+                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : "Album";
                         title: root.header-title;
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
                     }
-                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.artist: CoverGrid {
+                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist: CoverGrid {
                         tiles: root.tiles;
                         round: root.page == Page.artists;
                         view-top: -scroll.content-y - self.y;
@@ -329,7 +335,7 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index) => { root.select-tile(index); }
                     }
-                    if root.page == Page.album: VerticalLayout {
+                    if root.page == Page.album || root.page == Page.playlist: VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
                             if track.work != "": TrackRow {
                                 title: track.work;
@@ -360,8 +366,9 @@ export component AppWindow inherits Window {
                     if ((root.page == Page.albums && root.album-filter != "") || (root.page == Page.artists && root.artist-filter != "")) && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
                         text: root.page == Page.artists ? "No artists match." : "No albums match.";
                     }
+                    if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.albums || root.page == Page.artists) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

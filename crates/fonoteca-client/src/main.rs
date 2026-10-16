@@ -370,6 +370,9 @@ mod tests {
     /// The fields of the one album, without its braces.
     const ALBUM: &str = r#""id":"a1","name":"Night Harbour","artist":"Mara Lind","artistId":"r1","coverArt":"al-a1","songCount":2,"duration":470,"created":"2021-01-01T00:00:00Z","year":2021,"genre":"Folk""#;
 
+    /// The fields of the playlist with songs, without its braces.
+    const ROAD_TRIP: &str = r#""id":"p1","name":"Road Trip","comment":"For the car","owner":"joe","public":false,"songCount":2,"duration":470,"created":"2024-01-01T00:00:00Z","changed":"2024-02-01T00:00:00Z","coverArt":"pl-p1""#;
+
     /// A two-pixel-square animated WebP: red, then blue, 100 ms each.
     const MOTION: &[u8] = &[
         82, 73, 70, 70, 132, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 2, 0, 0, 0, 1,
@@ -410,7 +413,7 @@ mod tests {
     /// 603 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
     /// refused. The second is classical, with a motion cover. The last three
     /// are by or about Bach, and each order puts them differently. It knows
-    /// 122 artists, in three indexes.
+    /// 122 artists, in three indexes, and two playlists, one of them empty.
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -483,6 +486,13 @@ mod tests {
             ok(&format!(
                 r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{ALBUM}}}]}}"#
             ))
+        } else if request.contains("/rest/getPlaylists") {
+            ok(&format!(
+                r#""playlists":{{"playlist":[{{{ROAD_TRIP}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z"}}]}}"#
+            ))
+        } else if request.contains("/rest/getPlaylist") {
+            let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}]"#;
+            ok(&format!(r#""playlist":{{{ROAD_TRIP},"entry":{songs}}}"#))
         } else if request.contains("/rest/getCoverArt") {
             if COVERS.fetch_add(1, Relaxed) < 6 {
                 FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
@@ -812,7 +822,7 @@ mod tests {
             filter("bach");
             wait_for("the Bach albums again", || links(&ui).len() == 3).await;
             assert_eq!(picked(&ui), ids(&["b1"]));
-            ui.invoke_show_section(2);
+            click(&ui, "Account");
             assert_eq!(ui.get_page(), Page::Account);
             assert_eq!(ui.get_selected_tiles(), 1);
             ui.invoke_back();
@@ -875,9 +885,79 @@ mod tests {
             click(&ui, "Albums");
             assert_eq!(ui.get_tiles().row_count(), 100);
 
+            // The playlists were asked for on sign-in, while the server was
+            // down. Their page asks again, and so does Try again.
+            assert_eq!(ui.get_sections().row_count(), 4);
+            DOWN.store(true, Relaxed);
+            click(&ui, "Playlists");
+            wait_for("the failed playlists", || ui.get_page_problem() != "").await;
+            assert_eq!(ui.get_page(), Page::Playlists);
+            assert_eq!(ui.get_section(), 2);
+            DOWN.store(false, Relaxed);
+            click(&ui, "Try again");
+            wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
+            let tile = ui.get_tiles().row_data(0).unwrap();
+            assert_eq!(
+                (tile.title.as_str(), tile.link.as_str()),
+                ("Road Trip", "playlist:p1")
+            );
+            assert_eq!(tile.names.row_data(0).unwrap().label, "2 tracks");
+            // The sidebar lists them under their own heading.
+            let strings = |model: slint::ModelRc<slint::SharedString>| -> Vec<String> {
+                model.iter().map(Into::into).collect()
+            };
+            assert_eq!(
+                strings(ui.get_sections()),
+                [
+                    "Albums",
+                    "Artists",
+                    "Playlists",
+                    "Road Trip",
+                    "Empty",
+                    "Account"
+                ]
+            );
+            assert_eq!(
+                strings(ui.get_section_groups()),
+                [
+                    "Library",
+                    "Library",
+                    "Library",
+                    "Playlists",
+                    "Playlists",
+                    ""
+                ]
+            );
+            ui.invoke_show_section(3);
+            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_page(), Page::Playlist);
+            assert_eq!(ui.get_section(), 3);
+            assert_eq!(ui.get_header_title(), "Road Trip");
+            assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
+            // Each track with its artists, then its album.
+            let tracks: Vec<Track> = ui.get_tracks().iter().collect();
+            let links = |track: &Track| -> Vec<String> {
+                track.names.iter().map(|name| name.link.into()).collect()
+            };
+            assert_eq!(tracks[0].title, "Harbour Lights");
+            assert_eq!(links(&tracks[0]), ["artist:r1", "album:a1"]);
+            assert_eq!(tracks[0].split, 1);
+            assert!(tracks[0].loved);
+            assert_eq!(links(&tracks[1]), [""]);
+            assert!(!tracks[1].loved);
+            click(&ui, "Account");
+            assert_eq!(ui.get_section(), 5);
+            // Shown again at once, while they are asked for again.
+            click(&ui, "Playlists");
+            assert_eq!(ui.get_tiles().row_count(), 2);
+            assert!(!ui.get_loading());
+            click(&ui, "Albums");
+            assert_eq!(ui.get_tiles().row_count(), 100);
+
             click(&ui, "Night Harbour");
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Album);
+            assert_eq!(ui.get_section(), -1, "an album has no sidebar entry");
             assert_eq!(ui.get_header_title(), "Night Harbour");
             assert_eq!(ui.get_header_facts(), "2021 · Folk · 2 tracks, 8 minutes");
             let tracks = ui.get_tracks();
