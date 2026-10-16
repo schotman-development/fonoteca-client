@@ -25,7 +25,7 @@ export struct Name {
     link: string,
 }
 
-// An album on a grid or shelf, and the page it opens.
+// An album or artist on a grid or shelf, and the page it opens.
 export struct AlbumTile {
     title: string,
     names: [Name],
@@ -151,6 +151,7 @@ export component Links inherits FlexboxLayout {
 // comma before them shows there are more.
 export component LinksLine inherits Rectangle {
     in property <[Name]> names;
+    in property <bool> centered;
     in property <length> font-size: Theme.body;
     in property <brush> text-color: Theme.muted;
     callback open(link: string);
@@ -165,6 +166,7 @@ export component LinksLine inherits Rectangle {
         font-size: root.font-size;
     }
     Links {
+        alignment: root.centered ? LayoutAlignment.center : LayoutAlignment.stretch;
         names: root.names;
         font-size: root.font-size;
         text-color: root.text-color;
@@ -232,12 +234,13 @@ export component IconButton inherits Pressable {
     }
 }
 
-// An album, playlist or genre in a shelf or grid.
+// An album, playlist or genre in a shelf or grid, or an artist, round.
 export component CoverTile inherits Pressable {
     in property <image> cover;
     in property <string> title;
     in property <[Name]> names;
     in property <length> size: 160px;
+    in property <bool> round;
     // While its page is selecting, every tile shows whether it is selected.
     in property <bool> selecting;
     in property <bool> selected;
@@ -263,11 +266,13 @@ export component CoverTile inherits Pressable {
         spacing: 4px;
         Artwork {
             size: root.size;
+            round: root.round;
             source: root.cover;
             highlighted: root.hovered;
+            // Inside the circle when round.
             if root.selecting: Rectangle {
-                x: 10px;
-                y: 10px;
+                x: root.round ? root.size * 0.15 : 10px;
+                y: self.x;
                 width: 32px;
                 height: 32px;
                 border-radius: self.height / 2;
@@ -293,10 +298,12 @@ export component CoverTile inherits Pressable {
             font-size: Theme.body;
             font-weight: 600;
             color: Theme.text;
+            horizontal-alignment: root.round ? center : left;
             overflow: elide;
         }
         if root.names.length > 0: LinksLine {
             names: root.names;
+            centered: root.round;
             font-size: Theme.small;
             open(link) => { root.open(link); }
             context-clicked => { root.context-clicked(); }
@@ -475,6 +482,8 @@ export component CoverGrid {
     // The part of the grid on screen, in the grid's own coordinates.
     in property <length> view-top;
     in property <length> view-height;
+    // Round tiles, for artists.
+    in property <bool> round;
     // While some tiles are selected, a click selects another tile, or lets a
     // selected one go, instead of opening it.
     in property <bool> selecting;
@@ -520,6 +529,7 @@ export component CoverGrid {
         width: root.size;
         height: root.row-height;
         size: root.size;
+        round: root.round;
         cover: tile.cover;
         title: tile.title;
         names: tile.names;

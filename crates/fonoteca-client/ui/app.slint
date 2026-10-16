@@ -5,7 +5,7 @@ export { AlbumTile, Name }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { albums, album, artist, account }
+export enum Page { albums, artists, album, artist, account }
 
 export struct Track {
     title: string,
@@ -72,6 +72,13 @@ component PageScroll inherits ScrollView {
     }
 }
 
+// The filter of the albums or artists page.
+component Filter inherits LineEdit {
+    min-width: 64px;
+    preferred-width: 240px;
+    placeholder-text: "Filter";
+}
+
 // The albums page's Sort menu and direction.
 component SortControls inherits HorizontalLayout {
     in-out property <int> sort;
@@ -116,10 +123,7 @@ component AlbumControls inherits VerticalLayout {
     spacing: 12px;
     HorizontalLayout {
         spacing: 12px;
-        LineEdit {
-            min-width: 64px;
-            preferred-width: 240px;
-            placeholder-text: "Filter";
+        Filter {
             text <=> root.filter;
             edited => { root.filter-edited(); }
         }
@@ -191,6 +195,7 @@ export component AppWindow inherits Window {
     in-out property <int> album-sort;
     in-out property <bool> album-descending;
     in-out property <string> album-filter;
+    in-out property <string> artist-filter;
 
     callback open(link: string);
     callback back();
@@ -199,6 +204,7 @@ export component AppWindow inherits Window {
     callback show-more();
     callback sort-albums();
     callback filter-albums();
+    callback filter-artists();
     // The tiles whose covers to fetch next.
     callback tiles-in-view(first: int, last: int);
     callback toggle-love(row: int);
@@ -212,8 +218,8 @@ export component AppWindow inherits Window {
     if root.step == Step.done: HorizontalLayout {
         Sidebar {
             width: root.sidebar-width;
-            items: ["Albums", "Account"];
-            groups: ["Library"];
+            items: ["Albums", "Artists", "Account"];
+            groups: ["Library", "Library"];
             current <=> root.section;
             selected(index) => { root.show-section(index); }
         }
@@ -228,7 +234,7 @@ export component AppWindow inherits Window {
             scroll := PageScroll {
                 visit: root.visit;
                 near-end => {
-                    if root.page == Page.albums && root.more-tiles && !root.loading && root.page-problem == "" {
+                    if (root.page == Page.albums || root.page == Page.artists) && root.more-tiles && !root.loading && root.page-problem == "" {
                         root.show-more();
                     }
                 }
@@ -283,6 +289,27 @@ export component AppWindow inherits Window {
                             sort-selected => { root.sort-albums(); }
                         }
                     }
+                    // Its filter too goes under the heading when narrow.
+                    if root.page == Page.artists: VerticalLayout {
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Heading {
+                                horizontal-stretch: 1;
+                                text: "Artists";
+                                vertical-alignment: center;
+                            }
+                            if scroll.visible-width >= 600px: Filter {
+                                horizontal-stretch: 0;
+                                text <=> root.artist-filter;
+                                edited => { root.filter-artists(); }
+                            }
+                        }
+                        if scroll.visible-width < 600px: Filter {
+                            text <=> root.artist-filter;
+                            edited => { root.filter-artists(); }
+                        }
+                    }
                     if root.page == Page.album || root.page == Page.artist: PageHeader {
                         artwork: root.header-image;
                         round: root.page == Page.artist;
@@ -292,8 +319,9 @@ export component AppWindow inherits Window {
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
                     }
-                    if root.page == Page.albums || root.page == Page.artist: CoverGrid {
+                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.artist: CoverGrid {
                         tiles: root.tiles;
+                        round: root.page == Page.artists;
                         view-top: -scroll.content-y - self.y;
                         view-height: scroll.visible-height;
                         open(link) => { root.open(link); }
@@ -329,11 +357,11 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.page == Page.albums && root.album-filter != "" && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
-                        text: "No albums match.";
+                    if ((root.page == Page.albums && root.album-filter != "") || (root.page == Page.artists && root.artist-filter != "")) && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
+                        text: root.page == Page.artists ? "No artists match." : "No albums match.";
                     }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if root.page == Page.albums && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.albums || root.page == Page.artists) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

@@ -204,6 +204,23 @@ export component Workbench inherits Window {
                         }
                     }
                     if root.current == 2: Example {
+                        caption: "Round, for artists; the first selected";
+                        FlexboxLayout {
+                            spacing: Theme.gap;
+                            cross-axis-alignment: start;
+                            for i in 3: CoverTile {
+                                round: true;
+                                cover: i == 0 ? root.photo-1 : i == 1 ? root.photo-2 : root.none;
+                                title: i == 0 && root.long-text ? "Oskar Brandt-Falkenberg von Hohenstein" : i == 0 ? "Mara Lind" : i == 1 ? "Ines Varga" : "Tomas Reed";
+                                names: [{ label: i == 0 ? "6 albums" : "1 album", link: "" }];
+                                selecting: i == 0;
+                                selected: i == 0;
+                                clicked => { root.event = "open artist:" + i; }
+                                context-clicked => { root.event = "select artist:" + i; }
+                            }
+                        }
+                    }
+                    if root.current == 2: Example {
                         caption: "While selecting: the first selected, the others not";
                         FlexboxLayout {
                             spacing: Theme.gap;

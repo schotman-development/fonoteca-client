@@ -409,7 +409,8 @@ mod tests {
     /// An OpenSubsonic server without API keys that knows one user, joe, and
     /// 603 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
     /// refused. The second is classical, with a motion cover. The last three
-    /// are by or about Bach, and each order puts them differently.
+    /// are by or about Bach, and each order puts them differently. It knows
+    /// 122 artists, in three indexes.
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -466,6 +467,18 @@ mod tests {
         } else if request.contains("/rest/getAlbum") {
             let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","track":1,"discNumber":1,"duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s2","isDir":false,"title":"Rope and Anchor","track":1,"discNumber":2,"duration":218,"artist":"Mara Lind","artistId":"r1"}]"#;
             ok(&format!(r#""album":{{{ALBUM},"song":{songs}}}"#))
+        } else if request.contains("/rest/getArtists") {
+            let others: Vec<String> = (1..=120)
+                .map(|n| {
+                    format!(
+                        r#"{{"id":"o{n}","name":"Other {n}","coverArt":"ar-o{n}","albumCount":1}}"#
+                    )
+                })
+                .collect();
+            ok(&format!(
+                r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
+                others.join(",")
+            ))
         } else if request.contains("/rest/getArtist") {
             ok(&format!(
                 r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{ALBUM}}}]}}"#
@@ -799,7 +812,7 @@ mod tests {
             filter("bach");
             wait_for("the Bach albums again", || links(&ui).len() == 3).await;
             assert_eq!(picked(&ui), ids(&["b1"]));
-            ui.invoke_show_section(1);
+            ui.invoke_show_section(2);
             assert_eq!(ui.get_page(), Page::Account);
             assert_eq!(ui.get_selected_tiles(), 1);
             ui.invoke_back();
@@ -812,6 +825,55 @@ mod tests {
             filter("");
             sort(0, false);
             wait_for("all albums again", || ui.get_tiles().row_count() == 100).await;
+
+            // The artists arrive at once, and Try again asks again when they
+            // don't. They show a page at a time, in the server's order.
+            DOWN.store(true, Relaxed);
+            click(&ui, "Artists");
+            wait_for("the failed artists", || ui.get_page_problem() != "").await;
+            assert_eq!(ui.get_page(), Page::Artists);
+            DOWN.store(false, Relaxed);
+            ui.invoke_show_more();
+            wait_for("the artists", || ui.get_tiles().row_count() == 100).await;
+            assert!(ui.get_more_tiles());
+            let tile = ui.get_tiles().row_data(0).unwrap();
+            assert_eq!(
+                (tile.title.as_str(), tile.link.as_str()),
+                ("Anna Bach", "artist:r3")
+            );
+            assert_eq!(tile.names.row_data(0).unwrap().label, "2 albums");
+            let tile = ui.get_tiles().row_data(1).unwrap();
+            assert_eq!(tile.names.row_data(0).unwrap().label, "1 album");
+            ui.invoke_show_more();
+            assert_eq!(ui.get_tiles().row_count(), 122);
+            assert!(!ui.get_more_tiles());
+            // Their filter is their own.
+            let filter_artists = |typed: &str| {
+                ui.set_artist_filter(typed.into());
+                ui.invoke_filter_artists();
+            };
+            filter_artists("LIND");
+            wait_for("one artist", || links(&ui) == ["artist:r1"]).await;
+            assert_eq!(ui.get_album_filter(), "");
+            filter_artists("lindsay");
+            wait_for("no artists", || ui.get_tiles().row_count() == 0).await;
+            filter_artists("");
+            wait_for("all artists", || ui.get_tiles().row_count() == 100).await;
+            // They join the albums' selection, and are kept for the session.
+            ui.invoke_select_tile(1);
+            click(&ui, "Albums");
+            assert_eq!(ui.get_selected_tiles(), 1);
+            click(&ui, "Artists");
+            assert_eq!(ui.get_tiles().row_count(), 100);
+            assert!(ui.get_tiles().row_data(1).unwrap().selected);
+            ui.invoke_clear_selection();
+            click(&ui, "Mara Lind");
+            wait_for("her page", || {
+                ui.get_page() == Page::Artist && ui.get_tiles().row_count() == 1
+            })
+            .await;
+            click(&ui, "Albums");
+            assert_eq!(ui.get_tiles().row_count(), 100);
 
             click(&ui, "Night Harbour");
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;

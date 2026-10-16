@@ -1,6 +1,6 @@
 //! The library pages after sign-in: what each page shows, where its links lead,
 //! and the history behind back and forward. A link is a page's address, such
-//! as "albums", "album:<id>" or "artist:<id>".
+//! as "albums", "artists", "album:<id>" or "artist:<id>".
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -18,8 +18,8 @@ use slint::{
 
 use crate::{AlbumTile, AppWindow, Name, Page, Track};
 
-/// Albums added to the albums page at a time.
-const ALBUMS_AT_ONCE: usize = 100;
+/// Tiles added to the albums or artists page at a time.
+const TILES_AT_ONCE: usize = 100;
 /// Albums asked for at a time while the library loads, and at most how many,
 /// against servers that ignore the offset.
 const LIBRARY_AT_ONCE: u32 = 500;
@@ -63,11 +63,14 @@ pub struct Browser {
     library: Vec<AlbumID3>,
     library_loading: bool,
     library_loaded: bool,
-    /// The albums page's filter, and the albums it shows, as indexes into
-    /// `library` in the page's order.
+    /// Every artist on the server, once they have arrived.
+    artists: Vec<ArtistID3>,
+    artists_loaded: bool,
+    /// The filter of the albums or artists page on screen, and what it
+    /// shows, as indexes into `library` or `artists` in the page's order.
     filter: String,
     view: Vec<usize>,
-    /// Filters the albums once typing pauses.
+    /// Filters the albums or artists once typing pauses.
     typing: Timer,
     /// The links of the albums selected, in the order they were picked. They
     /// stay selected through sorting, filtering and other pages.
@@ -90,6 +93,7 @@ pub fn start(
         b.history.clear();
     }
     ui.set_album_filter("".into());
+    ui.set_artist_filter("".into());
     open(ui, browser, "albums".into());
 }
 
@@ -115,7 +119,11 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_show_section({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| {
-            let link = if index == 1 { "account" } else { "albums" };
+            let link = match index {
+                1 => "artists",
+                2 => "account",
+                _ => "albums",
+            };
             open(&weak.unwrap(), &browser, link.into());
         }
     });
@@ -129,7 +137,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     });
     ui.on_show_more({
         let (weak, browser) = (ui.as_weak(), browser.clone());
-        move || more_albums(&weak.unwrap(), &browser)
+        move || more_tiles(&weak.unwrap(), &browser)
     });
     ui.on_toggle_love({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -139,7 +147,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || show(&weak.unwrap(), &browser)
     });
-    ui.on_filter_albums({
+    let filter = {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || {
             let (weak, shared) = (weak.clone(), browser.clone());
@@ -148,15 +156,14 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
                 .typing
                 .start(TimerMode::SingleShot, TYPING_PAUSE, move || {
                     let ui = weak.unwrap();
-                    let filter = ui.get_album_filter().trim().to_owned();
-                    if ui.get_page() != Page::Albums || shared.borrow().filter == filter {
-                        return;
+                    if typed_filter(&ui).is_some_and(|typed| shared.borrow().filter != typed) {
+                        show(&ui, &shared);
                     }
-                    shared.borrow_mut().filter = filter;
-                    show(&ui, &shared);
                 });
         }
-    });
+    };
+    ui.on_filter_albums(filter.clone());
+    ui.on_filter_artists(filter);
     ui.on_tiles_in_view({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |first, last| {
@@ -270,6 +277,11 @@ fn show(ui: &AppWindow, browser: &Shared) {
     let (page, id) = link.split_once(':').unwrap_or((&link, ""));
     let id = id.to_owned();
     match page {
+        "artists" => {
+            ui.set_page(Page::Artists);
+            ui.set_section(1);
+            artists(ui, browser);
+        }
         "album" => {
             ui.set_page(Page::Album);
             ui.set_section(-1);
@@ -282,7 +294,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "account" => {
             ui.set_page(Page::Account);
-            ui.set_section(1);
+            ui.set_section(2);
         }
         _ => {
             ui.set_page(Page::Albums);
@@ -394,13 +406,55 @@ fn load_library(ui: &AppWindow, browser: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Puts the library in the albums page's order, with its filter. The albums
-/// shown stay when they are still the first ones; otherwise as many are shown
-/// again, and at least a page.
+/// Shows every artist on the artists page, asking for them first if they
+/// haven't arrived yet.
+fn artists(ui: &AppWindow, browser: &Shared) {
+    if browser.borrow().artists_loaded {
+        arrange(ui, browser);
+        return;
+    }
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_artists(None).await },
+        |ui, browser, artists| {
+            {
+                let mut b = browser.borrow_mut();
+                b.artists = artists
+                    .index
+                    .into_iter()
+                    .flat_map(|index| index.artist)
+                    .collect();
+                b.artists_loaded = true;
+            }
+            arrange(ui, browser);
+        },
+    );
+}
+
+/// What is typed in the filter of the page on screen, if it has one.
+fn typed_filter(ui: &AppWindow) -> Option<String> {
+    let typed = match ui.get_page() {
+        Page::Albums => ui.get_album_filter(),
+        Page::Artists => ui.get_artist_filter(),
+        _ => return None,
+    };
+    Some(typed.trim().to_owned())
+}
+
+/// Puts the library in the albums page's order, or the artists in the
+/// server's, with the page's filter. The tiles shown stay when they are still
+/// the first ones; otherwise as many are shown again, and at least a page.
 fn arrange(ui: &AppWindow, browser: &Shared) {
     let (sort, descending) = (ui.get_album_sort(), ui.get_album_descending());
+    let filter = typed_filter(ui).unwrap_or_default();
     let mut b = browser.borrow_mut();
-    let view = arranged(&b.library, &b.filter, sort, descending);
+    let view = if ui.get_page() == Page::Artists {
+        filtered(&b.artists, &filter)
+    } else {
+        arranged(&b.library, &filter, sort, descending)
+    };
+    b.filter = filter;
     let shown = b.tiles.row_count();
     if view.get(..shown) != b.view.get(..shown) {
         b.tiles = Rc::default();
@@ -410,38 +464,59 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
     }
     b.view = view;
     drop(b);
-    show_albums(ui, browser, shown.max(ALBUMS_AT_ONCE));
+    show_tiles(ui, browser, shown.max(TILES_AT_ONCE));
 }
 
-/// Shows the next albums, and asks for the library again if that failed.
-fn more_albums(ui: &AppWindow, browser: &Shared) {
+/// Shows the next tiles, and asks for the library or the artists again if
+/// that failed.
+fn more_tiles(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
-    let (ask, shown) = {
-        let b = browser.borrow();
-        (!b.library_loaded && !b.library_loading, b.tiles.row_count())
-    };
-    if ask {
-        load_library(ui, browser);
+    if ui.get_page() == Page::Artists {
+        if !browser.borrow().artists_loaded {
+            artists(ui, browser);
+            return;
+        }
+    } else {
+        let ask = {
+            let b = browser.borrow();
+            !b.library_loaded && !b.library_loading
+        };
+        if ask {
+            load_library(ui, browser);
+        }
     }
-    show_albums(ui, browser, shown + ALBUMS_AT_ONCE);
+    let shown = browser.borrow().tiles.row_count();
+    show_tiles(ui, browser, shown + TILES_AT_ONCE);
 }
 
-/// Shows the page's albums up to the `upto`th.
-fn show_albums(ui: &AppWindow, browser: &Shared, upto: usize) {
-    let (albums, more, waiting) = {
+/// Shows the page's albums or artists up to the `upto`th.
+fn show_tiles(ui: &AppWindow, browser: &Shared, upto: usize) {
+    let artists_page = ui.get_page() == Page::Artists;
+    let (tiles, more, waiting) = {
         let b = browser.borrow();
         let end = upto.min(b.view.len());
         let start = b.tiles.row_count().min(end);
-        let albums: Vec<AlbumID3> = b.view[start..end]
+        let tiles: Vec<_> = b.view[start..end]
             .iter()
-            .map(|&i| b.library[i].clone())
+            .map(|&i| {
+                if artists_page {
+                    artist_tile(&b.artists[i])
+                } else {
+                    album_tile(&b.library[i], album_names(&b.library[i]))
+                }
+            })
             .collect();
-        let more = end < b.view.len() || !b.library_loaded;
-        (albums, more, b.library_loading && b.view.is_empty())
+        // The artists arrive at once, the library a part at a time.
+        let more = end < b.view.len() || (!artists_page && !b.library_loaded);
+        (
+            tiles,
+            more,
+            !artists_page && b.library_loading && b.view.is_empty(),
+        )
     };
     ui.set_more_tiles(more);
     ui.set_loading(waiting);
-    add_tiles(ui, browser, &albums, album_names);
+    add_tiles(ui, browser, tiles);
 }
 
 /// The albums where every word of `filter` starts a word of their name or
@@ -458,9 +533,7 @@ fn arranged(library: &[AlbumID3], filter: &str, sort: i32, descending: bool) -> 
                 .fold(album.name.to_lowercase(), |text, name| {
                     text + " " + &name.label.to_lowercase()
                 });
-            wanted
-                .iter()
-                .all(|word| words(&text).any(|other| other.starts_with(word)))
+            matches(&wanted, &text)
         })
         .collect();
     let name = |i: &usize| library[*i].name.to_lowercase();
@@ -477,6 +550,23 @@ fn arranged(library: &[AlbumID3], filter: &str, sort: i32, descending: bool) -> 
         view.reverse();
     }
     view
+}
+
+/// The artists where every word of `filter` starts a word of their name, as
+/// indexes into `artists`, in the server's order.
+fn filtered(artists: &[ArtistID3], filter: &str) -> Vec<usize> {
+    let filter = filter.to_lowercase();
+    let wanted: Vec<&str> = words(&filter).collect();
+    (0..artists.len())
+        .filter(|&i| matches(&wanted, &artists[i].name.to_lowercase()))
+        .collect()
+}
+
+/// Whether every word of `wanted` starts a word of `text`.
+fn matches(wanted: &[&str], text: &str) -> bool {
+    wanted
+        .iter()
+        .all(|word| words(text).any(|other| other.starts_with(word)))
 }
 
 fn words(text: &str) -> impl Iterator<Item = &str> {
@@ -599,45 +689,58 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
             ui.set_header_title(artist.artist.name.as_str().into());
             ui.set_header_facts(count(artist.album.len(), "album", "albums").into());
             header_image(ui, browser, artist.artist.cover_art);
-            add_tiles(ui, browser, &artist.album, |album| {
-                album
-                    .year
-                    .map(|year| unlinked(year.to_string()))
-                    .into_iter()
-                    .collect()
+            let tiles = artist.album.iter().map(|album| {
+                let year = album.year.map(|year| unlinked(year.to_string()));
+                album_tile(album, year.into_iter().collect())
             });
+            add_tiles(ui, browser, tiles.collect());
         },
     );
 }
 
-/// Adds a tile per album, named by `names_of`, with its cover when it has been
-/// seen this session, and fetches the others.
-fn add_tiles(
-    ui: &AppWindow,
-    browser: &Shared,
-    albums: &[AlbumID3],
-    names_of: impl Fn(&AlbumID3) -> Vec<Name>,
-) {
+/// An album's tile, named by `credits`, and its cover's id.
+fn album_tile(album: &AlbumID3, credits: Vec<Name>) -> (AlbumTile, Option<String>) {
+    let tile = AlbumTile {
+        title: album.name.as_str().into(),
+        names: names(credits),
+        link: format!("album:{}", album.id).into(),
+        ..AlbumTile::default()
+    };
+    (tile, album.cover_art.clone())
+}
+
+/// An artist's tile, with how many albums they have, and their picture's id.
+fn artist_tile(artist: &ArtistID3) -> (AlbumTile, Option<String>) {
+    let albums = artist
+        .album_count
+        .and_then(|n| usize::try_from(n).ok())
+        .map(|n| unlinked(count(n, "album", "albums")));
+    let tile = AlbumTile {
+        title: artist.name.as_str().into(),
+        names: names(albums.into_iter().collect()),
+        link: format!("artist:{}", artist.id).into(),
+        ..AlbumTile::default()
+    };
+    (tile, artist.cover_art.clone())
+}
+
+/// Adds the tiles, each with its cover when it has been seen this session,
+/// and fetches the others.
+fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<String>)>) {
     let size = pixels(ui, TILE_SIZE);
     {
         let mut b = browser.borrow_mut();
-        for album in albums {
-            let seen = album
-                .cover_art
+        for (mut tile, cover) in tiles {
+            let seen = cover
                 .as_ref()
                 .and_then(|cover| b.pictures.get(&(cover.clone(), size)).cloned());
-            if let (None, Some(cover)) = (&seen, &album.cover_art) {
+            if let (None, Some(cover)) = (&seen, cover) {
                 let row = b.tiles.row_count();
-                b.covers.insert(row, cover.clone());
+                b.covers.insert(row, cover);
             }
-            let link = format!("album:{}", album.id);
-            b.tiles.push(AlbumTile {
-                title: album.name.as_str().into(),
-                names: names(names_of(album)),
-                cover: seen.unwrap_or_default(),
-                selected: b.selected.contains(&link),
-                link: link.into(),
-            });
+            tile.cover = seen.unwrap_or_default();
+            tile.selected = b.selected.iter().any(|link| *link == tile.link.as_str());
+            b.tiles.push(tile);
         }
     }
     fetch_covers(ui, browser);
