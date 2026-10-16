@@ -1,11 +1,17 @@
-import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, SelectionBar, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
-export { AlbumTile, Name }
+export { AlbumTile, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { albums, artists, playlists, album, artist, playlist, account }
+export enum Page { albums, artists, tracks, playlists, album, artist, playlist, account }
+
+// A column the tracks table can show, and whether it does.
+export struct ColumnChoice {
+    title: string,
+    shown: bool,
+}
 
 export struct Track {
     title: string,
@@ -51,13 +57,14 @@ component Problem inherits Text {
     color: #d33;
 }
 
-// Starts at the top again whenever `visit` changes, that is on every page
+// Starts at the top left again whenever `visit` changes, that is on every page
 // shown. Says when the bottom is less than a screen away, so more can load
 // before it's reached.
 component PageScroll inherits ScrollView {
     in property <int> visit;
     callback near-end();
     changed visit => {
+        self.content-x = 0;
         self.content-y = 0;
     }
     changed content-y => {
@@ -192,8 +199,15 @@ export component AppWindow inherits Window {
     in property <[Name]> header-names;
     in property <string> header-facts;
     in property <[Track]> tracks;
-    // How many albums are selected, on this page or others. While any are,
-    // the selection bar is up and a click on a tile selects it.
+    // The tracks page's table: the columns shown, their rows, how wide they
+    // are together, and every column there is to pick from.
+    in property <[TrackColumn]> track-columns;
+    in property <[TrackLine]> track-lines;
+    in property <length> track-table-width;
+    in property <[ColumnChoice]> track-choices;
+    // How many albums and tracks are selected, on this page or others. While
+    // any are, the selection bar is up and a click on a tile or row selects
+    // it.
     in property <int> selected-tiles;
     // The albums page's order, as the index into its Sort menu, its
     // direction, and the filter typed on it.
@@ -210,12 +224,19 @@ export component AppWindow inherits Window {
     callback sort-albums();
     callback filter-albums();
     callback filter-artists();
-    // The tiles whose covers to fetch next.
+    // The tiles or tracks table rows whose covers to fetch next.
     callback tiles-in-view(first: int, last: int);
     callback toggle-love(row: int);
+    callback toggle-line-love(row: int);
+    callback toggle-track-column(index: int);
+    // Sorts the tracks table by its `index`th column shown, or turns that
+    // around.
+    callback sort-tracks(index: int);
     callback reconnect();
-    // Selects the tile at `index`, or lets it go if it is selected.
+    // Selects the tile or tracks table row at `index`, or lets it go if it
+    // is selected.
     callback select-tile(index: int);
+    callback select-line(index: int);
     callback clear-selection();
 
     property <length> sidebar-width: 200px;
@@ -236,17 +257,85 @@ export component AppWindow inherits Window {
                 back => { root.back(); }
                 forward => { root.forward(); }
             }
+            // The tracks page's heading and the table's headings stay put
+            // while the rows scroll, and follow them sideways.
+            if root.page == Page.tracks: VerticalLayout {
+                vertical-stretch: 0;
+                padding-top: 8px;
+                spacing: 12px;
+                HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    spacing: 12px;
+                    Heading {
+                        horizontal-stretch: 1;
+                        text: "Tracks";
+                        vertical-alignment: center;
+                    }
+                    Button {
+                        horizontal-stretch: 0;
+                        text: "Columns";
+                        clicked => { columns.show(); }
+                    }
+                }
+                Rectangle {
+                    height: header.height;
+                    clip: true;
+                    background: Palette.background;
+                    // Cut off where the rows are, at the page's edges.
+                    header := TrackHeader {
+                        x: scroll.content-x + 24px;
+                        width: stage.width - 48px;
+                        columns: root.track-columns;
+                        sort(index) => {
+                            scroll.content-y = 0;
+                            root.sort-tracks(index);
+                        }
+                    }
+                }
+                columns := PopupWindow {
+                    x: parent.width - self.width - 24px;
+                    y: 52px;
+                    width: 260px;
+                    height: min(420px, root.height - 120px);
+                    close-policy: PopupClosePolicy.close-on-click-outside;
+                    Rectangle {
+                        background: Palette.background;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.hover;
+                        drop-shadow-blur: 16px;
+                        drop-shadow-offset-y: 4px;
+                        drop-shadow-color: #0000004d;
+                        choices := ScrollView {
+                            content-width: self.visible-width;
+                            content-height: picks.preferred-height;
+                            picks := VerticalLayout {
+                                width: choices.visible-width;
+                                padding: 12px;
+                                spacing: 4px;
+                                for choice[i] in root.track-choices: CheckBox {
+                                    text: choice.title;
+                                    checked: choice.shown;
+                                    toggled => { root.toggle-track-column(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             scroll := PageScroll {
                 visit: root.visit;
                 near-end => {
-                    if (root.page == Page.albums || root.page == Page.artists) && root.more-tiles && !root.loading && root.page-problem == "" {
+                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks) && root.more-tiles && !root.loading && root.page-problem == "" {
                         root.show-more();
                     }
                 }
-                content-width: self.visible-width;
+                content-width: stage.width;
                 content-height: stage.preferred-height;
                 stage := VerticalLayout {
-                    width: scroll.visible-width;
+                    // Wider than the page when the table's columns don't fit.
+                    width: root.page == Page.tracks ? max(scroll.visible-width, root.track-table-width + 48px) : scroll.visible-width;
                     padding: 24px;
                     padding-top: 8px;
                     // Room to scroll the last tiles out from under the bar.
@@ -335,6 +424,33 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index) => { root.select-tile(index); }
                     }
+                    if root.page == Page.tracks: VerticalLayout {
+                        // The rows on screen and a screen below, by
+                        // TrackLineRow's height, whose covers to fetch.
+                        property <length> view-top: -scroll.content-y - self.y;
+                        property <int> first-in-view: max(0, floor(self.view-top / 54px));
+                        property <int> last-in-view: min(root.track-lines.length, floor((self.view-top + 2 * scroll.visible-height) / 54px) + 1) - 1;
+                        init => {
+                            root.tiles-in-view(self.first-in-view, self.last-in-view);
+                        }
+                        changed first-in-view => {
+                            root.tiles-in-view(self.first-in-view, self.last-in-view);
+                        }
+                        changed last-in-view => {
+                            root.tiles-in-view(self.first-in-view, self.last-in-view);
+                        }
+                        for line[row] in root.track-lines: TrackLineRow {
+                            columns: root.track-columns;
+                            line: line;
+                            striped: mod(row, 2) == 1;
+                            selecting: root.selected-tiles > 0;
+                            joined-above: row > 0 && root.track-lines[row - 1].selected;
+                            joined-below: row + 1 < root.track-lines.length && root.track-lines[row + 1].selected;
+                            open(link) => { root.open(link); }
+                            toggle-love => { root.toggle-line-love(row); }
+                            select => { root.select-line(row); }
+                        }
+                    }
                     if root.page == Page.album || root.page == Page.playlist: VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
                             if track.work != "": TrackRow {
@@ -367,8 +483,9 @@ export component AppWindow inherits Window {
                         text: root.page == Page.artists ? "No artists match." : "No albums match.";
                     }
                     if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
+                    if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: "No tracks yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.playlists) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

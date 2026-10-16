@@ -44,6 +44,8 @@ export global Icons {
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
     out property <string> check: "M5 12.5l4.5 4.5 9.5-10";
     out property <string> close: "M6 6l12 12 M18 6L6 18";
+    // Filled.
+    out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
 
 // Clicks, Enter and Space, and screen readers all end up in `clicked`; a
@@ -151,7 +153,8 @@ export component Links inherits FlexboxLayout {
 // comma before them shows there are more.
 export component LinksLine inherits Rectangle {
     in property <[Name]> names;
-    in property <bool> centered;
+    // How the names that fit share the line.
+    in property <LayoutAlignment> alignment: LayoutAlignment.stretch;
     in property <length> font-size: Theme.body;
     in property <brush> text-color: Theme.muted;
     callback open(link: string);
@@ -166,7 +169,7 @@ export component LinksLine inherits Rectangle {
         font-size: root.font-size;
     }
     Links {
-        alignment: root.centered ? LayoutAlignment.center : LayoutAlignment.stretch;
+        alignment: root.alignment;
         names: root.names;
         font-size: root.font-size;
         text-color: root.text-color;
@@ -303,7 +306,7 @@ export component CoverTile inherits Pressable {
         }
         if root.names.length > 0: LinksLine {
             names: root.names;
-            centered: root.round;
+            alignment: root.round ? LayoutAlignment.center : LayoutAlignment.stretch;
             font-size: Theme.small;
             open(link) => { root.open(link); }
             context-clicked => { root.context-clicked(); }
@@ -432,6 +435,234 @@ export component TrackRow inherits Pressable {
             color: Theme.muted;
             horizontal-alignment: right;
             vertical-alignment: center;
+        }
+    }
+}
+
+// A column of the tracks table: its heading and width, whether it takes the
+// room left over, whether it holds the heart or the album's cover, and
+// whether the table is sorted by it and which way.
+export struct TrackColumn {
+    title: string,
+    width: length,
+    stretch: bool,
+    heart: bool,
+    cover: bool,
+    sorted: bool,
+    descending: bool,
+}
+
+// A row of the tracks table: what it shows in each column, in the columns'
+// order, whether its song is loved, its album's cover, whether it is
+// selected, and its album and artists for its menu, where they have a page.
+export struct TrackLine {
+    cells: [[Name]],
+    loved: bool,
+    cover: image,
+    selected: bool,
+    album: Name,
+    artists: [Name],
+}
+
+component TableCell inherits Rectangle {
+    in property <TrackColumn> column;
+    min-width: self.column.width;
+    preferred-width: self.column.width;
+    max-width: self.column.stretch ? 100000px : self.column.width;
+    horizontal-stretch: self.column.stretch ? 1 : 0;
+}
+
+// The headings over the tracks table's rows, as wide as they are. A click on
+// one sorts the table by it; on the one it is sorted by, turns that around.
+export component TrackHeader inherits HorizontalLayout {
+    in property <[TrackColumn]> columns;
+    callback sort(index: int);
+    padding-left: 8px;
+    padding-right: 8px;
+    spacing: 12px;
+    height: 32px;
+
+    for column[c] in root.columns: TableCell {
+        column: column;
+        Pressable {
+            width: parent.width;
+            height: parent.height;
+            // Covers have nothing to sort by.
+            enabled: !column.cover;
+            label: column.cover ? column.title : "Sort by " + column.title;
+            accessible-description: !column.sorted ? "" : column.descending ? "Sorted descending" : "Sorted ascending";
+            clicked => { root.sort(c); }
+            HorizontalLayout {
+                spacing: 4px;
+                Text {
+                    horizontal-stretch: 0;
+                    text: column.heart || column.cover ? "" : column.title;
+                    font-size: Theme.small;
+                    font-weight: 600;
+                    color: column.sorted ? Theme.text : Theme.muted;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if column.sorted: Path {
+                    y: (parent.height - self.height) / 2;
+                    width: 14px;
+                    height: 14px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: column.descending ? Icons.down : Icons.up;
+                    stroke: Theme.text;
+                    stroke-width: 2px;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+    }
+    // Over the rows' menu buttons.
+    Rectangle {
+        width: 32px;
+    }
+}
+
+// A row of the tracks table, cells lined up under `TrackHeader`'s headings.
+// Names in it are links, and the heart loves its song. A right-click selects
+// it, as do clicks while the page is selecting; the button at its end opens
+// its menu.
+export component TrackLineRow inherits Rectangle {
+    in property <[TrackColumn]> columns;
+    in property <TrackLine> line;
+    in property <bool> striped;
+    in property <bool> selecting;
+    // Whether the rows above and below it are selected too.
+    in property <bool> joined-above;
+    in property <bool> joined-below;
+    callback open(link: string);
+    callback toggle-love();
+    callback select();
+
+    height: 54px;
+    border-radius: Theme.radius;
+    background: root.striped && !root.line.selected ? Theme.hover.transparentize(50%) : transparent;
+    accessible-role: list-item;
+    accessible-item-selectable: root.selecting;
+    accessible-item-selected: root.line.selected;
+
+    // The outline runs on past the row where a neighbour is selected, and is
+    // cut off there, so selected rows next to each other read as one block.
+    if root.line.selected: Rectangle {
+        clip: true;
+        Rectangle {
+            property <length> past: Theme.radius + 2px;
+            y: root.joined-above ? -self.past : 0;
+            height: parent.height + (root.joined-above ? self.past : 0) + (root.joined-below ? self.past : 0);
+            border-radius: Theme.radius;
+            border-width: 2px;
+            border-color: Theme.accent;
+            background: Theme.accent.transparentize(85%);
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: root.selecting ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if root.selecting {
+                root.select();
+            }
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.select();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 12px;
+        for column[c] in root.columns: slot := TableCell {
+            property <[Name]> names: root.line.cells[c];
+            // Most cells are one plain value, which a Text draws for less.
+            property <bool> plain: self.names.length <= 1 && self.names[0].link == "";
+            column: column;
+            if column.heart: IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.heart;
+                filled: root.line.loved;
+                color: root.line.loved ? Theme.accent : Theme.muted;
+                label: root.line.loved ? "Loved" : "Love";
+                accessible-checkable: true;
+                accessible-checked: root.line.loved;
+                clicked => { root.toggle-love(); }
+            }
+            if column.cover: Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                height: self.width;
+                border-radius: 3px;
+                background: Theme.hover;
+                clip: true;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.line.cover;
+                    image-fit: cover;
+                }
+            }
+            if !column.heart && !column.cover && slot.plain: Text {
+                width: parent.width;
+                height: parent.height;
+                text: slot.names[0].label;
+                font-size: Theme.body;
+                color: column.stretch ? Theme.text : Theme.muted;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            if !column.heart && !column.cover && !slot.plain: LinksLine {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                alignment: start;
+                names: slot.names;
+                open(link) => { root.open(link); }
+                context-clicked => { root.select(); }
+            }
+        }
+        menu := ContextMenuArea {
+            width: 32px;
+            Menu {
+                MenuItem {
+                    title: root.line.loved ? "Unlove" : "Love";
+                    activated => { root.toggle-love(); }
+                }
+                if root.line.album.link != "": MenuItem {
+                    title: "Go to album";
+                    activated => { root.open(root.line.album.link); }
+                }
+                if root.line.artists.length == 1: MenuItem {
+                    title: "Go to artist";
+                    activated => { root.open(root.line.artists[0].link); }
+                }
+                if root.line.artists.length > 1: Menu {
+                    title: "Go to artist";
+                    for artist in root.line.artists: MenuItem {
+                        title: artist.label;
+                        activated => { root.open(artist.link); }
+                    }
+                }
+                MenuItem {
+                    title: root.line.selected ? "Deselect" : "Select";
+                    activated => { root.select(); }
+                }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.more;
+                filled: true;
+                color: Theme.muted;
+                label: "More";
+                clicked => { menu.show({ x: 0, y: self.y + self.height }); }
+            }
         }
     }
 }

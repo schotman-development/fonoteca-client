@@ -413,7 +413,8 @@ mod tests {
     /// 603 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
     /// refused. The second is classical, with a motion cover. The last three
     /// are by or about Bach, and each order puts them differently. It knows
-    /// 122 artists, in three indexes, and two playlists, one of them empty.
+    /// 122 artists, in three indexes, two playlists, one of them empty, and
+    /// 230 songs for the empty search, more than the client asks for at once.
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -485,6 +486,30 @@ mod tests {
         } else if request.contains("/rest/getArtist") {
             ok(&format!(
                 r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{ALBUM}}}]}}"#
+            ))
+        } else if request.contains("/rest/search3") {
+            let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
+            let song = |n: usize| {
+                if n == 1 {
+                    r#"{"id":"t1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","artists":[{"id":"r1","name":"Mara Lind"}],"year":2021,"duration":252,"starred":"2024-01-01T00:00:00Z","coverArt":"al-a1","genres":[{"name":"Folk"},{"name":"Pop"}],"contributors":[{"role":"performer","subRole":"piano","artist":{"id":"r3","name":"Anna Bach"}}],"replayGain":{"trackGain":-6.2},"size":4404019,"samplingRate":44100}"#.to_owned()
+                } else if n == 2 {
+                    // Also on the Road Trip playlist.
+                    r#"{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}"#.to_owned()
+                } else {
+                    format!(r#"{{"id":"t{n}","isDir":false,"title":"Song {n}","duration":60}}"#)
+                }
+            };
+            let songs: Vec<String> = (1..=230)
+                .map(song)
+                .skip(number("songOffset").unwrap_or(0))
+                .take(number("songCount").unwrap_or(20))
+                .collect();
+            if param("query") != Some("") || number("albumCount") != Some(0) {
+                return json(OK);
+            }
+            ok(&format!(
+                r#""searchResult3":{{"song":[{}]}}"#,
+                songs.join(",")
             ))
         } else if request.contains("/rest/getPlaylists") {
             ok(&format!(
@@ -887,12 +912,12 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 4);
+            assert_eq!(ui.get_sections().row_count(), 5);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Playlists);
-            assert_eq!(ui.get_section(), 2);
+            assert_eq!(ui.get_section(), 3);
             DOWN.store(false, Relaxed);
             click(&ui, "Try again");
             wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
@@ -911,6 +936,7 @@ mod tests {
                 [
                     "Albums",
                     "Artists",
+                    "Tracks",
                     "Playlists",
                     "Road Trip",
                     "Empty",
@@ -923,15 +949,16 @@ mod tests {
                     "Library",
                     "Library",
                     "Library",
+                    "Library",
                     "Playlists",
                     "Playlists",
                     ""
                 ]
             );
-            ui.invoke_show_section(3);
+            ui.invoke_show_section(4);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
-            assert_eq!(ui.get_section(), 3);
+            assert_eq!(ui.get_section(), 4);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
             // Each track with its artists, then its album.
@@ -946,7 +973,7 @@ mod tests {
             assert_eq!(links(&tracks[1]), [""]);
             assert!(!tracks[1].loved);
             click(&ui, "Account");
-            assert_eq!(ui.get_section(), 5);
+            assert_eq!(ui.get_section(), 6);
             // Shown again at once, while they are asked for again.
             click(&ui, "Playlists");
             assert_eq!(ui.get_tiles().row_count(), 2);
@@ -1117,6 +1144,200 @@ mod tests {
             let later = Instant::now() + Duration::from_millis(300);
             wait_for("a few frames' time", || Instant::now() > later).await;
             assert_ne!(ui.get_header_image().size().width, 2);
+
+            // The tracks page lists every song in the columns picked, a page
+            // at a time.
+            click(&ui, "Tracks");
+            wait_for("the tracks", || ui.get_track_lines().row_count() == 100).await;
+            assert_eq!(ui.get_page(), Page::Tracks);
+            assert!(ui.get_more_tiles());
+            let titles = |ui: &AppWindow| -> Vec<String> {
+                ui.get_track_columns()
+                    .iter()
+                    .map(|column| column.title.into())
+                    .collect()
+            };
+            assert_eq!(
+                titles(&ui),
+                ["Cover", "Title", "Artists", "Album", "Duration", "Loved"]
+            );
+            let cell = |ui: &AppWindow, row: usize, column: usize| -> Vec<(String, String)> {
+                let line = ui.get_track_lines().row_data(row).unwrap();
+                let names = line.cells.row_data(column).unwrap();
+                names
+                    .iter()
+                    .map(|name| (name.label.into(), name.link.into()))
+                    .collect()
+            };
+            let one = |label: &str, link: &str| vec![(label.to_owned(), link.to_owned())];
+            assert_eq!(cell(&ui, 0, 1), one("Harbour Lights", ""));
+            assert_eq!(cell(&ui, 0, 2), one("Mara Lind", "artist:r1"));
+            assert_eq!(cell(&ui, 0, 3), one("Night Harbour", "album:a1"));
+            assert_eq!(cell(&ui, 0, 4), one("4:12", ""));
+            assert!(cell(&ui, 1, 3).is_empty());
+            // The rows in view get their album's cover, songs without one
+            // none.
+            ui.root_element().query_descendants().find_all();
+            let cover = |ui: &AppWindow, row: usize| {
+                ui.get_track_lines()
+                    .row_data(row)
+                    .unwrap()
+                    .cover
+                    .size()
+                    .width
+            };
+            wait_for("a row's cover", || cover(&ui, 0) > 0).await;
+            assert_eq!(cover(&ui, 1), 0);
+            let width = ui.get_track_table_width();
+            ui.invoke_show_more();
+            assert_eq!(ui.get_track_lines().row_count(), 200);
+            ui.invoke_show_more();
+            assert_eq!(ui.get_track_lines().row_count(), 230);
+            wait_for("the empty part after the last", || !ui.get_more_tiles()).await;
+            assert_eq!(ui.get_track_lines().row_count(), 230);
+            // A song loved on another page is loved here too.
+            let loved =
+                |ui: &AppWindow, row: usize| ui.get_track_lines().row_data(row).unwrap().loved;
+            assert!(loved(&ui, 0));
+            assert!(!loved(&ui, 1));
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Love");
+            wait_for("the star", || {
+                STARRED.lock().unwrap().contains(&"s9".to_owned())
+            })
+            .await;
+            click(&ui, "Back");
+            assert!(loved(&ui, 1));
+            // A cover fetched before is there at once.
+            assert!(cover(&ui, 0) > 0);
+            // The heart stars the song.
+            click(&ui, "Love");
+            assert!(loved(&ui, 2));
+            wait_for("the star", || {
+                STARRED.lock().unwrap().contains(&"t3".to_owned())
+            })
+            .await;
+            // A column for every field of a song; the rows follow the choice.
+            let choice = |ui: &AppWindow, title: &str| {
+                let choices = ui.get_track_choices();
+                let at = choices.iter().position(|c| c.title == title);
+                at.unwrap_or_else(|| panic!("no {title} column")) as i32
+            };
+            for title in [
+                "Genres",
+                "Contributors",
+                "Track gain",
+                "Size",
+                "Sample rate",
+                "Year",
+            ] {
+                ui.invoke_toggle_track_column(choice(&ui, title));
+            }
+            ui.invoke_toggle_track_column(choice(&ui, "Artists"));
+            assert_eq!(
+                titles(&ui),
+                [
+                    "Cover",
+                    "Title",
+                    "Album",
+                    "Contributors",
+                    "Year",
+                    "Genres",
+                    "Duration",
+                    "Loved",
+                    "Track gain",
+                    "Sample rate",
+                    "Size"
+                ]
+            );
+            assert!(ui.get_track_table_width() > width);
+            assert_eq!(ui.get_track_lines().row_count(), 100);
+            assert_eq!(cell(&ui, 0, 2), one("Night Harbour", "album:a1"));
+            assert_eq!(
+                cell(&ui, 0, 3),
+                one("Anna Bach (performer, piano)", "artist:r3")
+            );
+            assert_eq!(cell(&ui, 0, 4), one("2021", ""));
+            assert_eq!(cell(&ui, 0, 5), one("Folk, Pop", ""));
+            assert_eq!(cell(&ui, 0, 8), one("-6.20 dB", ""));
+            assert_eq!(cell(&ui, 0, 9), one("44.1 kHz", ""));
+            assert_eq!(cell(&ui, 0, 10), one("4.2 MB", ""));
+            let choices = ui.get_track_choices();
+            assert!(choices.iter().any(|c| c.title == "Genres" && c.shown));
+            assert!(choices.iter().any(|c| c.title == "Artists" && !c.shown));
+            // The heart's row keeps it when the columns change.
+            assert!(loved(&ui, 2));
+            // A click on a heading sorts by it, a second turns that around;
+            // songs without the value go last either way.
+            let first = |ui: &AppWindow| -> Vec<String> {
+                (0..3).map(|row| cell(ui, row, 1)[0].0.clone()).collect()
+            };
+            let sorted = |ui: &AppWindow| -> Vec<(String, bool)> {
+                ui.get_track_columns()
+                    .iter()
+                    .filter(|column| column.sorted)
+                    .map(|column| (column.title.into(), column.descending))
+                    .collect()
+            };
+            click(&ui, "Sort by Title");
+            assert_eq!(first(&ui), ["Fugue", "Harbour Lights", "Song 10"]);
+            assert_eq!(sorted(&ui), [("Title".to_owned(), false)]);
+            assert_eq!(ui.get_track_lines().row_count(), 100);
+            click(&ui, "Sort by Title");
+            assert_eq!(first(&ui), ["Song 99", "Song 98", "Song 97"]);
+            assert_eq!(sorted(&ui), [("Title".to_owned(), true)]);
+            let column = |ui: &AppWindow, title: &str| -> i32 {
+                titles(ui).iter().position(|t| t == title).unwrap() as i32
+            };
+            ui.invoke_sort_tracks(column(&ui, "Duration"));
+            assert_eq!(first(&ui), ["Song 3", "Song 4", "Song 5"]);
+            ui.invoke_sort_tracks(column(&ui, "Duration"));
+            assert_eq!(first(&ui), ["Harbour Lights", "Fugue", "Song 3"]);
+            ui.invoke_sort_tracks(column(&ui, "Year"));
+            assert_eq!(first(&ui), ["Harbour Lights", "Fugue", "Song 3"]);
+            ui.invoke_sort_tracks(column(&ui, "Year"));
+            assert_eq!(first(&ui), ["Harbour Lights", "Fugue", "Song 3"]);
+            assert_eq!(sorted(&ui), [("Year".to_owned(), true)]);
+            // The heart follows its song through the sort.
+            ui.invoke_sort_tracks(column(&ui, "Loved"));
+            assert_eq!(first(&ui), ["Song 4", "Song 5", "Song 6"]);
+            ui.invoke_sort_tracks(column(&ui, "Loved"));
+            assert_eq!(first(&ui), ["Harbour Lights", "Fugue", "Song 3"]);
+            assert!(loved(&ui, 2));
+            ui.invoke_toggle_line_love(2);
+            wait_for("the refused unstar", || ui.get_page_problem() != "").await;
+            assert!(loved(&ui, 2));
+            ui.set_page_problem("".into());
+            ui.invoke_sort_tracks(column(&ui, "Year"));
+            // A right-click selects a row, with the cards' selection, and it
+            // stays selected through sorting. Its menu goes to its album and
+            // artists.
+            let selected =
+                |ui: &AppWindow, row: usize| ui.get_track_lines().row_data(row).unwrap().selected;
+            let before = ui.get_selected_tiles();
+            ui.invoke_select_line(0);
+            assert!(selected(&ui, 0));
+            assert_eq!(ui.get_selected_tiles(), before + 1);
+            ui.invoke_sort_tracks(column(&ui, "Title"));
+            assert!(!selected(&ui, 0) && selected(&ui, 1));
+            ui.invoke_sort_tracks(column(&ui, "Year"));
+            assert!(selected(&ui, 0));
+            let line = ui.get_track_lines().row_data(0).unwrap();
+            assert_eq!(line.album.link, "album:a1");
+            let artists: Vec<String> = line.artists.iter().map(|a| a.link.into()).collect();
+            assert_eq!(artists, ["artist:r1"]);
+            assert_eq!(ui.get_track_lines().row_data(1).unwrap().album.link, "");
+            ui.invoke_clear_selection();
+            assert!(!selected(&ui, 0));
+            assert_eq!(ui.get_selected_tiles(), 0);
+            // Kept for the session, columns, order and all.
+            click(&ui, "Albums");
+            click(&ui, "Tracks");
+            assert_eq!(ui.get_track_lines().row_count(), 100);
+            assert!(titles(&ui).contains(&"Year".to_owned()));
+            assert_eq!(sorted(&ui), [("Year".to_owned(), false)]);
+            assert_eq!(first(&ui), ["Harbour Lights", "Fugue", "Song 3"]);
 
             // A second start finds the saved account, with its server down.
             DOWN.store(true, Relaxed);
