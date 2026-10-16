@@ -22,7 +22,7 @@ use slint::{
     VecModel,
 };
 
-use crate::{AlbumTile, AppWindow, ColumnChoice, Name, Page, Track, TrackColumn, TrackLine};
+use crate::{AlbumTile, AppWindow, ColumnChoice, Name, Page, Track, TrackColumn, TrackLine, prefs};
 
 /// Tiles added to the albums or artists page at a time.
 const TILES_AT_ONCE: usize = 100;
@@ -121,8 +121,8 @@ pub fn start(
         b.client = Some(Rc::new(client));
         b.listenbrainz = listenbrainz.map(Rc::new);
         b.history.clear();
-        b.columns = COLUMNS.iter().map(|column| column.shown).collect();
     }
+    load_prefs(ui, browser);
     ui.set_album_filter("".into());
     ui.set_artist_filter("".into());
     sidebar(ui, browser);
@@ -190,7 +190,11 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     });
     ui.on_sort_albums({
         let (weak, browser) = (ui.as_weak(), browser.clone());
-        move || show(&weak.unwrap(), &browser)
+        move || {
+            let ui = weak.unwrap();
+            save_prefs(&ui, &browser);
+            show(&ui, &browser);
+        }
     });
     ui.on_sort_tracks({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -1100,6 +1104,7 @@ fn sort_tracks(ui: &AppWindow, browser: &Shared, index: usize) {
         // From the top, where the page scrolls to.
         clear_lines(ui, &mut b);
     }
+    save_prefs(ui, browser);
     show_columns(ui, browser);
     arrange_tracks(ui, browser);
 }
@@ -1121,8 +1126,43 @@ fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
         b.lines.set_vec(lines);
         want_line_covers(&mut b, 0);
     }
+    save_prefs(ui, browser);
     show_columns(ui, browser);
     fetch_covers(ui, browser);
+}
+
+/// Picks up the preferences saved on this device, on sign-in.
+fn load_prefs(ui: &AppWindow, browser: &Shared) {
+    let prefs = prefs::load();
+    let mut b = browser.borrow_mut();
+    b.columns = COLUMNS
+        .iter()
+        .map(|column| match &prefs.track_columns {
+            Some(titles) => titles.iter().any(|title| title == column.title),
+            None => column.shown,
+        })
+        .collect();
+    b.track_sort = prefs
+        .track_sort
+        .and_then(|title| COLUMNS.iter().position(|column| column.title == title));
+    b.track_descending = prefs.track_descending;
+    // The Sort menu has four entries.
+    ui.set_album_sort(prefs.album_sort.clamp(0, 3));
+    ui.set_album_descending(prefs.album_descending);
+}
+
+/// Saves the order of the albums and tracks and the tracks table's columns
+/// on this device.
+fn save_prefs(ui: &AppWindow, browser: &Shared) {
+    let b = browser.borrow();
+    let title = |c: usize| COLUMNS[c].title.to_owned();
+    prefs::save(&prefs::Prefs {
+        album_sort: ui.get_album_sort(),
+        album_descending: ui.get_album_descending(),
+        track_columns: Some(shown_columns(&b).into_iter().map(title).collect()),
+        track_sort: b.track_sort.map(title),
+        track_descending: b.track_descending,
+    });
 }
 
 /// What is typed in the filter of the page on screen, if it has one.

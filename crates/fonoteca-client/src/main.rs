@@ -1,6 +1,7 @@
 slint::include_modules!();
 
 mod browse;
+mod prefs;
 mod store;
 
 use std::cell::RefCell;
@@ -1235,6 +1236,10 @@ mod tests {
                 ui.invoke_toggle_track_column(choice(&ui, title));
             }
             ui.invoke_toggle_track_column(choice(&ui, "Artists"));
+            // Saved on this device at once.
+            let columns = crate::prefs::load().track_columns.unwrap();
+            assert!(columns.contains(&"Year".to_owned()));
+            assert!(!columns.contains(&"Artists".to_owned()));
             assert_eq!(
                 titles(&ui),
                 [
@@ -1338,6 +1343,12 @@ mod tests {
             assert!(titles(&ui).contains(&"Year".to_owned()));
             assert_eq!(sorted(&ui), [("Year".to_owned(), false)]);
             assert_eq!(first(&ui), ["Harbour Lights", "Fugue", "Song 3"]);
+            // The order is saved on this device too.
+            ui.invoke_sort_tracks(column(&ui, "Year"));
+            let saved = crate::prefs::load();
+            assert_eq!(saved.track_sort.as_deref(), Some("Year"));
+            assert!(saved.track_descending);
+            sort(1, true);
 
             // A second start finds the saved account, with its server down.
             DOWN.store(true, Relaxed);
@@ -1351,6 +1362,13 @@ mod tests {
             })
             .await;
             assert_eq!(again.get_offline(), "");
+            // It picks up the preferences saved on this device.
+            assert_eq!(again.get_album_sort(), 1);
+            assert!(again.get_album_descending());
+            click(&again, "Tracks");
+            wait_for("the tracks", || again.get_track_lines().row_count() == 100).await;
+            assert_eq!(titles(&again), titles(&ui));
+            assert_eq!(sorted(&again), [("Year".to_owned(), true)]);
             drop(again);
 
             click(&ui, "Account");
