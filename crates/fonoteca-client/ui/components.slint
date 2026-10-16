@@ -113,6 +113,8 @@ export component Link inherits Pressable {
 // continues on the next line.
 export component Links inherits FlexboxLayout {
     in property <[Name]> names;
+    // The first `split` names are one group, set apart from the rest by a dot.
+    in property <int> split;
     in property <length> font-size: Theme.body;
     in property <brush> text-color: Theme.muted;
     callback open(link: string);
@@ -120,7 +122,7 @@ export component Links inherits FlexboxLayout {
     spacing-horizontal: 4px;
 
     for name[i] in root.names: Link {
-        text: i < root.names.length - 1 ? name.label + "," : name.label;
+        text: i == root.names.length - 1 ? name.label : i == root.split - 1 ? name.label + " ·" : name.label + ",";
         label: name.label;
         enabled: name.link != "";
         font-size: root.font-size;
@@ -283,38 +285,22 @@ export component PersonTile inherits Pressable {
     }
 }
 
-// The head of a run of tracks that make up one work, as on a classical
-// album: the work's title and its composers.
-export component WorkHeading inherits VerticalLayout {
-    in property <string> title;
-    in property <[Name]> composers;
-    callback open(link: string);
-    padding-left: 8px;
-    padding-right: 8px;
-    padding-top: 16px;
-    padding-bottom: 4px;
-    spacing: 2px;
-
-    Text {
-        text: root.title;
-        font-size: Theme.body;
-        font-weight: 600;
-        color: Theme.text;
-        wrap: word-wrap;
-    }
-    if root.composers.length > 0: Links {
-        names: root.composers;
-        font-size: Theme.small;
-        open(link) => { root.open(link); }
-    }
-}
-
+// A track, or on a classical album a work: a work's row is strong, and the
+// rows of its movements under it are parts, indented. Its names are its
+// composers, `split` of them, then its performers.
 export component TrackRow inherits Pressable {
-    in property <string> number;
     in property <string> title;
     in property <[Name]> names;
+    in property <int> split;
     in property <string> duration;
+    // When a work was written, after its title, and when and where it was
+    // recorded, under its names.
+    in property <string> years;
+    in property <string> performed;
     in property <bool> loved;
+    in property <bool> lovable: true;
+    in property <bool> strong;
+    in property <bool> part;
     callback open(link: string);
     callback toggle-love();
     label: self.title;
@@ -326,32 +312,47 @@ export component TrackRow inherits Pressable {
     HorizontalLayout {
         padding: 8px;
         spacing: 12px;
-        Text {
-            width: 28px;
-            text: root.number;
-            font-size: Theme.body;
-            color: Theme.muted;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-        }
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
+            padding-left: root.part ? 20px : 0px;
             spacing: 2px;
-            Text {
-                text: root.title;
-                font-size: Theme.body;
-                color: Theme.text;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.title;
+                    font-size: Theme.body;
+                    min-width: root.strong ? 96px : 0px;
+                    font-weight: root.strong ? 600 : 400;
+                    color: Theme.text;
+                    wrap: root.strong ? word-wrap : no-wrap;
+                    overflow: elide;
+                }
+                if root.years != "": Text {
+                    text: root.years;
+                    font-size: Theme.small;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
             }
             if root.names.length > 0: Links {
                 names: root.names;
+                split: root.split;
                 font-size: Theme.small;
                 open(link) => { root.open(link); }
+            }
+            if root.performed != "": Text {
+                text: root.performed;
+                font-size: Theme.small;
+                color: Theme.muted;
+                overflow: elide;
             }
         }
         IconButton {
             cross-axis-self-alignment: center;
+            visible: root.lovable;
+            enabled: root.lovable;
             icon: Icons.heart;
             filled: root.loved;
             color: root.loved ? Theme.accent : Theme.muted;

@@ -379,10 +379,11 @@ mod tests {
         7, 16, 81, 255, 254, 7, 34, 162, 255, 1, 0,
     ];
 
-    /// A classical album: two movements of a symphony, an overture known by
-    /// its composer's name alone, an encore that belongs to no work, and the
-    /// symphony's finale after it.
-    const CLASSICAL: &str = r#""id":"a2","name":"Symphonies","songCount":4,"duration":1629,"created":"2021-01-01T00:00:00Z","song":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","track":1,"duration":441,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"movements":[{"name":"I. Allegro con brio","number":1,"count":4}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}],"displayComposer":"Ludwig van Beethoven"},{"id":"c2","isDir":false,"title":"Symphony No. 5: II. Andante con moto","track":2,"duration":588,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}]},{"id":"c3","isDir":false,"title":"Egmont Overture","track":3,"duration":500,"works":[{"name":"Egmont Overture"}],"displayComposer":"Ludwig van Beethoven"},{"id":"c4","isDir":false,"title":"Encore","track":4,"duration":100},{"id":"c5","isDir":false,"title":"Symphony No. 5: IV. Allegro","track":5,"duration":660,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"displayComposer":"Ludwig van Beethoven"}]"#;
+    /// A classical album: two movements of a symphony by one orchestra, the
+    /// second with its conductor too, an overture whose composer has no artist
+    /// id, two encores that belong to no work, and two more movements of the
+    /// symphony after them, one of unknown length.
+    const CLASSICAL: &str = r#""id":"a2","name":"Symphonies","songCount":4,"duration":1629,"created":"2021-01-01T00:00:00Z","song":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","track":1,"duration":441,"artist":"Wiener Philharmoniker","artistId":"r7","works":[{"name":"Symphony No. 5","musicBrainzId":"w5","composed":{"from":{"year":1804},"to":{"year":1808}}}],"movements":[{"name":"I. Allegro con brio","number":1,"count":4}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}],"displayComposer":"Ludwig van Beethoven","recorded":{"from":{"year":1974,"month":3,"day":2},"to":{"year":1974,"month":3,"day":2},"places":["Musikverein"]}},{"id":"c2","isDir":false,"title":"Symphony No. 5: II. Andante con moto","track":2,"duration":588,"artists":[{"id":"r7","name":"Wiener Philharmoniker"},{"id":"r8","name":"Carlos Kleiber"}],"works":[{"name":"Symphony No. 5","musicBrainzId":"w5","composed":{"from":{"year":1804},"to":{"year":1808}}}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}],"recorded":{"from":{"year":1974,"month":4},"to":{"year":1974,"month":4},"places":["Musikverein"]}},{"id":"c3","isDir":false,"title":"Egmont Overture","track":3,"duration":500,"artist":"Wiener Philharmoniker","artistId":"r7","works":[{"name":"Egmont Overture","composed":{"from":{"year":1809},"to":{"year":1810}}}],"contributors":[{"role":"composer","artist":{"id":"","name":"Ludwig van Beethoven"}}],"recorded":{"from":{"year":1975},"to":{"year":1975},"places":["Sofiensaal"]}},{"id":"c4","isDir":false,"title":"Encore","track":4,"duration":100,"recorded":{"from":{"year":1975},"to":{"year":1975},"places":["Sofiensaal"]}},{"id":"c6","isDir":false,"title":"Bows","track":5,"duration":30},{"id":"c7","isDir":false,"title":"Symphony No. 5: III. Scherzo","track":6,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"displayComposer":"Ludwig van Beethoven"},{"id":"c5","isDir":false,"title":"Symphony No. 5: IV. Allegro","track":7,"duration":660,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"displayComposer":"Ludwig van Beethoven"}]"#;
 
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -746,8 +747,8 @@ mod tests {
             assert_eq!(ui.get_header_title(), "Night Harbour");
             assert_eq!(ui.get_header_facts(), "2021 · Folk · 2 tracks, 8 minutes");
             let tracks = ui.get_tracks();
-            assert_eq!(tracks.row_data(0).unwrap().number, "1.1");
-            assert_eq!(tracks.row_data(1).unwrap().number, "2.1");
+            assert_eq!(tracks.row_data(0).unwrap().title, "Harbour Lights");
+            assert_eq!(tracks.row_data(1).unwrap().title, "Rope and Anchor");
             assert_eq!(tracks.row_data(0).unwrap().duration, "4:12");
             assert!(tracks.row_data(0).unwrap().loved);
             assert!(!tracks.row_data(1).unwrap().loved);
@@ -800,28 +801,93 @@ mod tests {
             wait_for("the album before them", || ui.get_tracks().row_count() == 2).await;
 
             ui.invoke_open("album:a2".into());
-            wait_for("the classical album", || ui.get_tracks().row_count() == 5).await;
+            wait_for("the classical album", || ui.get_tracks().row_count() == 7).await;
             let tracks: Vec<Track> = ui.get_tracks().iter().collect();
-            let heading = |row: usize| {
-                let track = &tracks[row];
-                let composer = track.composers.row_data(0).map(|name| name.link);
-                (track.work.as_str(), composer, track.title.as_str())
+            let links = |names: &slint::ModelRc<Name>| -> Vec<String> {
+                names.iter().map(|name| name.link.to_string()).collect()
             };
-            let beethoven = Some("artist:r9".into());
+            let work = |row: usize| {
+                let track = &tracks[row];
+                let names = links(&track.work_names);
+                (
+                    track.work.as_str(),
+                    names,
+                    track.work_split,
+                    track.work_duration.as_str(),
+                )
+            };
+            let row = |row: usize| {
+                let track = &tracks[row];
+                let names = links(&track.names);
+                (
+                    track.title.as_str(),
+                    names,
+                    track.split,
+                    track.part,
+                    track.alone,
+                )
+            };
+            let to = |links: &[&str]| -> Vec<String> {
+                links.iter().map(|link| link.to_string()).collect()
+            };
+            let none = || ("", to(&[]), 0, "");
+            let performance = |row: usize| {
+                let track = &tracks[row];
+                (
+                    track.work_years.as_str(),
+                    track.work_performed.as_str(),
+                    track.years.as_str(),
+                    track.performed.as_str(),
+                )
+            };
             assert_eq!(
-                heading(0),
-                ("Symphony No. 5", beethoven, "I. Allegro con brio")
+                work(0),
+                (
+                    "Symphony No. 5",
+                    to(&["artist:r9", "artist:r7"]),
+                    1,
+                    "17:09"
+                )
             );
-            assert_eq!(heading(1), ("", None, "II. Andante con moto"));
+            assert_eq!(row(0), ("I. Allegro con brio", to(&[]), 0, true, false));
             assert_eq!(
-                heading(2),
-                ("Egmont Overture", Some("".into()), "Egmont Overture")
+                performance(0),
+                (
+                    "1804 – 1808",
+                    "Performed 2 Mar 1974 – Apr 1974, Musikverein",
+                    "",
+                    ""
+                )
             );
-            assert_eq!(heading(3), ("", None, "Encore"));
+            assert_eq!(performance(1), ("", "", "", ""));
+            assert_eq!(work(1), none());
             assert_eq!(
-                heading(4),
-                ("Symphony No. 5", Some("".into()), "IV. Allegro")
+                row(1),
+                (
+                    "II. Andante con moto",
+                    to(&["artist:r7", "artist:r8"]),
+                    0,
+                    true,
+                    false
+                )
             );
+            assert_eq!(work(2), none());
+            assert_eq!(
+                row(2),
+                ("Egmont Overture", to(&["", "artist:r7"]), 1, false, true)
+            );
+            assert_eq!(
+                performance(2),
+                ("", "", "1809 – 1810", "Performed 1975, Sofiensaal")
+            );
+            assert_eq!(row(3), ("Encore", to(&[]), 0, false, false));
+            assert_eq!(performance(3), ("", "", "", ""));
+            assert_eq!(row(4), ("Bows", to(&[]), 0, false, false));
+            assert_eq!(work(5), ("Symphony No. 5", to(&[""]), 1, ""));
+            assert_eq!(performance(5), ("", "", "", ""));
+            assert_eq!(row(5), ("III. Scherzo", to(&[]), 0, true, false));
+            assert_eq!(work(6), none());
+            assert_eq!(row(6), ("IV. Allegro", to(&[]), 0, true, false));
             // Red or blue, as far as encoding lets them be.
             let colour = || {
                 let picture = ui.get_header_image().to_rgba8()?;

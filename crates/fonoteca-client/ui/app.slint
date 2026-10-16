@@ -1,5 +1,5 @@
 import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow, WorkHeading } from "components.slint";
+import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
 
 export { AlbumTile, Name }
 
@@ -8,15 +8,30 @@ export enum Step { opening, server, sign-in, listenbrainz, done }
 export enum Page { albums, album, artist, account }
 
 export struct Track {
-    number: string,
     title: string,
+    // Who wrote this track, `split` of them, then who plays it, as far as its
+    // row says: a movement names only performers its work's row doesn't.
     names: [Name],
+    split: int,
     duration: string,
     loved: bool,
-    // The work this track starts, and its composers; empty on the tracks
-    // that continue it and on tracks of no work.
+    // For a work's only track: the years the work was written, and when and
+    // where the track was recorded.
+    years: string,
+    performed: string,
+    // The work of several tracks this one starts, its names, length, years
+    // and recording as above, for the row that heads them; empty on every
+    // other track.
     work: string,
-    composers: [Name],
+    work-names: [Name],
+    work-split: int,
+    work-duration: string,
+    work-years: string,
+    work-performed: string,
+    // A movement, under its work's row.
+    part: bool,
+    // A work's only track on the album, a row as strong as a work's.
+    alone: bool,
 }
 
 component Heading inherits Text {
@@ -275,18 +290,27 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.album: VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
-                            if track.work != "": WorkHeading {
-                                padding-top: row == 0 ? 0px : 16px;
+                            if track.work != "": TrackRow {
                                 title: track.work;
-                                composers: track.composers;
+                                names: track.work-names;
+                                split: track.work-split;
+                                duration: track.work-duration;
+                                years: track.work-years;
+                                performed: track.work-performed;
+                                lovable: false;
+                                strong: true;
                                 open(link) => { root.open(link); }
                             }
                             TrackRow {
-                                number: track.number;
                                 title: track.title;
                                 names: track.names;
+                                split: track.split;
                                 duration: track.duration;
                                 loved: track.loved;
+                                years: track.years;
+                                performed: track.performed;
+                                strong: track.alone;
+                                part: track.part;
                                 open(link) => { root.open(link); }
                                 toggle-love => { root.toggle-love(row); }
                             }

@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TopBar, TrackRow, WorkHeading } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Shelf, Sidebar, Theme, TopBar, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -230,7 +230,6 @@ export component Workbench inherits Window {
                     if root.current == 4: Example {
                         caption: "Click a row, a name or the heart";
                         TrackRow {
-                            number: "1";
                             title: "Harbour Lights";
                             names: root.mara;
                             duration: "4:12";
@@ -240,7 +239,6 @@ export component Workbench inherits Window {
                             toggle-love => { root.loved-1 = !root.loved-1; }
                         }
                         TrackRow {
-                            number: "2";
                             title: root.long-text ? root.long-title : "Rope and Anchor";
                             names: root.credits;
                             duration: "3:48";
@@ -250,7 +248,6 @@ export component Workbench inherits Window {
                             toggle-love => { root.loved-2 = !root.loved-2; }
                         }
                         TrackRow {
-                            number: "3";
                             title: "Inland";
                             duration: "11:27";
                             loved: root.loved-3;
@@ -260,30 +257,46 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 4: Example {
-                        caption: "A work heads its movements, as on a classical album";
-                        WorkHeading {
-                            padding-top: 0px;
+                        caption: "A work's row over its movements, and a work on one track, as on a classical album";
+                        TrackRow {
                             title: root.long-text ? root.long-title : "Symphony No. 5 in C minor, Op. 67";
-                            composers: root.long-text ? root.many : [{ label: "Ludwig van Beethoven", link: "artist:8" }];
+                            names: root.long-text ? root.many : [{ label: "Ludwig van Beethoven", link: "artist:8" }, { label: "Mara Lind", link: "artist:1" }];
+                            split: root.long-text ? 3 : 1;
+                            duration: "17:09";
+                            years: "1804 – 1808";
+                            performed: root.long-text ? "Performed " + root.long-title : "Performed 30 Mar 2006 – 31 Oct 2006, Teldex Studio Berlin";
+                            lovable: false;
+                            strong: true;
+                            clicked => { root.event = "play work:5"; }
                             open(link) => { root.event = "open " + link; }
                         }
                         TrackRow {
-                            number: "1";
                             title: "I. Allegro con brio";
-                            names: root.mara;
                             duration: "7:21";
+                            part: true;
                             clicked => { root.event = "play track:4"; }
-                            open(link) => { root.event = "open " + link; }
                             toggle-love => { root.event = "love track:4"; }
                         }
                         TrackRow {
-                            number: "2";
-                            title: "II. Andante con moto";
-                            names: root.mara;
+                            title: root.long-text ? root.long-title : "II. Andante con moto";
+                            names: [{ label: "Mara Lind", link: "artist:1" }, { label: "Ove Strand", link: "artist:2" }];
                             duration: "9:48";
+                            part: true;
                             clicked => { root.event = "play track:5"; }
                             open(link) => { root.event = "open " + link; }
                             toggle-love => { root.event = "love track:5"; }
+                        }
+                        TrackRow {
+                            title: root.long-text ? root.long-title : "Egmont Overture, Op. 84";
+                            names: [{ label: "Ludwig van Beethoven", link: "artist:8" }, { label: "Mara Lind", link: "artist:1" }];
+                            split: 1;
+                            duration: "8:20";
+                            years: "1809 – 1810";
+                            performed: "Performed Nov 1992, Concertgebouw";
+                            strong: true;
+                            clicked => { root.event = "play track:6"; }
+                            open(link) => { root.event = "open " + link; }
+                            toggle-love => { root.event = "love track:6"; }
                         }
                     }
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
-use opensubsonic::{AlbumID3, AlbumListType, ArtistID3, Child, Client, ListOptions};
+use opensubsonic::{AlbumID3, AlbumListType, ArtistID3, Child, Client, ItemDate, ListOptions};
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, Timer, TimerMode, VecModel,
 };
@@ -456,26 +456,79 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             header_image(ui, browser, album.cover_art);
             header_motion(ui, browser, album.id);
 
-            let discs = songs.iter().any(|song| song.disc_number.unwrap_or(1) > 1);
             let mut b = browser.borrow_mut();
-            // Consecutive tracks of one work are headed by it, as on a
-            // classical album.
-            let mut piece = None;
-            for song in &songs {
-                let (work, composers) = match song.works.first() {
-                    Some(work) if Some(work) != piece => (work.name.as_str(), composer_names(song)),
-                    _ => ("", Vec::new()),
+            // As Roon draws a classical album: consecutive tracks of one work
+            // are headed by a row for the work, the years it was written, its
+            // composers, the performers all its movements share, and when and
+            // where they were recorded, with the movements under it; a work's
+            // only track is such a row itself.
+            let runs = songs.chunk_by(|one, next| {
+                !one.works.is_empty() && one.works.first() == next.works.first()
+            });
+            for run in runs {
+                let parts = run.len() > 1;
+                let length: i64 = run.iter().filter_map(|song| song.duration).sum();
+                let length = if run.iter().all(|song| song.duration.is_some()) {
+                    duration(length)
+                } else {
+                    String::new()
                 };
-                piece = song.works.first();
-                b.tracks.push(Track {
-                    number: track_number(song, discs).into(),
-                    title: track_title(song).into(),
-                    names: names(song_names(song)),
-                    duration: song.duration.map(duration).unwrap_or_default().into(),
-                    loved: song.starred.is_some(),
-                    work: work.into(),
-                    composers: names(composers),
-                });
+                let performers: Vec<Vec<Name>> = run.iter().map(song_names).collect();
+                let shared: Vec<Name> = performers[0]
+                    .iter()
+                    .filter(|name| performers.iter().all(|them| them.contains(name)))
+                    .cloned()
+                    .collect();
+                let performed = performed(run);
+                for (i, song) in run.iter().enumerate() {
+                    let alone = !parts && !song.works.is_empty();
+                    let own = performers[i].clone();
+                    let (title, composers, credits) = match (parts, alone) {
+                        (true, _) if own.iter().all(|name| shared.contains(name)) => {
+                            (track_title(song), Vec::new(), Vec::new())
+                        }
+                        (true, _) => (track_title(song), Vec::new(), own),
+                        (false, true) => (song.title.clone(), composer_names(song), own),
+                        (false, false) => (song.title.clone(), Vec::new(), own),
+                    };
+                    let (years, performed_alone) = if alone {
+                        (composed(song), performed.as_str())
+                    } else {
+                        (String::new(), "")
+                    };
+                    let (work, work_composers, work_performers, work_duration) =
+                        match song.works.first() {
+                            Some(work) if parts && i == 0 => (
+                                work.name.as_str(),
+                                composer_names(song),
+                                shared.clone(),
+                                length.as_str(),
+                            ),
+                            _ => ("", Vec::new(), Vec::new(), ""),
+                        };
+                    let (work_years, work_performed) = if work.is_empty() {
+                        (String::new(), "")
+                    } else {
+                        (composed(song), performed.as_str())
+                    };
+                    b.tracks.push(Track {
+                        title: title.into(),
+                        split: composers.len() as i32,
+                        names: names([composers, credits].concat()),
+                        duration: song.duration.map(duration).unwrap_or_default().into(),
+                        loved: song.starred.is_some(),
+                        years: years.into(),
+                        performed: performed_alone.into(),
+                        work: work.into(),
+                        work_split: work_composers.len() as i32,
+                        work_names: names([work_composers, work_performers].concat()),
+                        work_duration: work_duration.into(),
+                        work_years: work_years.into(),
+                        work_performed: work_performed.into(),
+                        part: parts,
+                        alone,
+                    });
+                }
             }
             b.songs = songs
                 .into_iter()
@@ -744,10 +797,16 @@ fn names(names: Vec<Name>) -> ModelRc<Name> {
     ModelRc::new(VecModel::from(names))
 }
 
+/// An artist that links to its page, unless the server gives it no id.
 fn linked(artist: &ArtistID3) -> Name {
+    let link = if artist.id.is_empty() {
+        String::new()
+    } else {
+        format!("artist:{}", artist.id)
+    };
     Name {
         label: artist.name.as_str().into(),
-        link: format!("artist:{}", artist.id).into(),
+        link: link.into(),
     }
 }
 
@@ -802,6 +861,75 @@ fn track_title(song: &Child) -> String {
         .to_owned()
 }
 
+/// "1804 – 1805", the years a song's work was written.
+fn composed(song: &Child) -> String {
+    let span = song.works.first().and_then(|work| work.composed.as_ref());
+    let year = |date: &Option<ItemDate>| date.as_ref().and_then(|date| date.year);
+    match span.map(|span| (year(&span.from), year(&span.to))) {
+        Some((Some(from), Some(to))) if from != to => format!("{from} – {to}"),
+        Some((Some(year), _) | (None, Some(year))) => year.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// "Performed 30 Mar 2006 – 31 Oct 2006, Teldex Studio Berlin": from the
+/// first day any of `songs` was recorded to the last, and every place.
+fn performed(songs: &[Child]) -> String {
+    let recorded: Vec<_> = songs
+        .iter()
+        .filter_map(|song| song.recorded.as_ref())
+        .collect();
+    let order = |date: &&ItemDate| (date.year, date.month, date.day);
+    let from = recorded
+        .iter()
+        .filter_map(|r| r.from.as_ref().filter(|date| date.year.is_some()))
+        .min_by_key(order);
+    let to = recorded
+        .iter()
+        .filter_map(|r| r.to.as_ref().filter(|date| date.year.is_some()))
+        .max_by_key(order);
+    let when = match (from, to) {
+        (Some(from), Some(to)) if from != to => format!("{} – {}", date(from), date(to)),
+        (Some(day), _) | (None, Some(day)) => date(day),
+        (None, None) => String::new(),
+    };
+    let mut places: Vec<&str> = Vec::new();
+    for place in recorded.iter().flat_map(|r| &r.places) {
+        if !places.contains(&place.as_str()) {
+            places.push(place);
+        }
+    }
+    let said: Vec<String> = [when, places.join(", ")]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+    if said.is_empty() {
+        String::new()
+    } else {
+        format!("Performed {}", said.join(", "))
+    }
+}
+
+/// "30 Mar 2006", "Mar 2006" or "2006", as far as it is known.
+fn date(date: &ItemDate) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = date
+        .month
+        .and_then(|month| MONTHS.get(usize::try_from(month).ok()?.checked_sub(1)?));
+    let day = date.day.filter(|_| month.is_some());
+    [
+        day.map(|day| day.to_string()),
+        month.map(|month| month.to_string()),
+        date.year.map(|year| year.to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
 fn named(artists: &[ArtistID3], artist: &Option<String>, id: &Option<String>) -> Vec<Name> {
     if !artists.is_empty() {
         return artists.iter().map(linked).collect();
@@ -850,16 +978,6 @@ fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// "3", or "2.3" for the third track of the second disc on albums with more
-/// than one disc.
-fn track_number(song: &Child, discs: bool) -> String {
-    match (song.track, discs) {
-        (Some(track), true) => format!("{}.{track}", song.disc_number.unwrap_or(1)),
-        (Some(track), false) => track.to_string(),
-        (None, _) => String::new(),
-    }
-}
-
 /// "4:05", or "1:02:05" from an hour on.
 fn duration(seconds: i64) -> String {
     let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -881,5 +999,65 @@ mod tests {
         assert_eq!(duration(3725), "1:02:05");
         assert_eq!(count(1, "track", "tracks"), "1 track");
         assert_eq!(count(9, "track", "tracks"), "9 tracks");
+    }
+
+    #[test]
+    fn performances() {
+        let day = |year, month, day| ItemDate {
+            year: Some(year),
+            month,
+            day,
+        };
+        assert_eq!(date(&day(2006, Some(3), Some(30))), "30 Mar 2006");
+        assert_eq!(date(&day(1992, Some(11), None)), "Nov 1992");
+        assert_eq!(date(&day(1992, Some(13), Some(2))), "1992");
+        assert_eq!(date(&day(1817, None, None)), "1817");
+
+        let song = |json: &str| -> Child {
+            serde_json::from_str(&format!(r#"{{"id":"s","isDir":false,"title":"t",{json}}}"#))
+                .unwrap()
+        };
+        let symphony = [
+            song(
+                r#""recorded":{"from":{"year":1992,"month":11},"to":{"year":1992,"month":11},"places":["Concertgebouw"]}"#,
+            ),
+            song(r#""genre":"Classical""#),
+            song(
+                r#""recorded":{"from":{"year":1992,"month":5,"day":2},"to":{"year":1992,"month":5,"day":4},"places":["Concertgebouw","Amsterdam"]}"#,
+            ),
+        ];
+        assert_eq!(
+            performed(&symphony),
+            "Performed 2 May 1992 – Nov 1992, Concertgebouw, Amsterdam"
+        );
+        assert_eq!(
+            performed(&symphony[..1]),
+            "Performed Nov 1992, Concertgebouw"
+        );
+        assert_eq!(performed(&symphony[1..2]), "");
+        assert_eq!(
+            performed(&[song(r#""recorded":{"places":["Apollo Theater"]}"#)]),
+            "Performed Apollo Theater"
+        );
+        assert_eq!(
+            performed(&[song(
+                r#""recorded":{"from":{"month":3},"to":{"year":1992,"month":5}}"#
+            )]),
+            "Performed May 1992"
+        );
+
+        let written = |span: &str| composed(&song(&format!(r#""works":[{{"name":"w"{span}}}]"#)));
+        assert_eq!(
+            written(r#","composed":{"from":{"year":1804},"to":{"year":1805,"month":2}}"#),
+            "1804 – 1805"
+        );
+        assert_eq!(
+            written(
+                r#","composed":{"from":{"year":1817,"month":11},"to":{"year":1817,"month":11}}"#
+            ),
+            "1817"
+        );
+        assert_eq!(written(r#","composed":{"to":{"year":1955}}"#), "1955");
+        assert_eq!(written(""), "");
     }
 }
