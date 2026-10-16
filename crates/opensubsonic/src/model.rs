@@ -161,6 +161,9 @@ pub struct Work {
     pub name: String,
     /// The MusicBrainz Work ID.
     pub music_brainz_id: Option<String>,
+    /// Not in the spec: when the work was written, from Fonoteca's
+    /// `fonotecaPerformance` extension.
+    pub composed: Option<Span>,
 }
 
 /// A movement associated with a song.
@@ -297,6 +300,9 @@ pub struct Child {
     /// The list of groupings associated with the song.
     #[serde(default)]
     pub groupings: Vec<String>,
+    /// Not in the spec: when and where the song was recorded, from Fonoteca's
+    /// `fonotecaPerformance` extension.
+    pub recorded: Option<Recorded>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -339,6 +345,27 @@ pub struct ItemDate {
     pub month: Option<i64>,
     /// The day (1-31)
     pub day: Option<i64>,
+}
+
+/// Not in the spec: a stretch of time from Fonoteca's `fonotecaPerformance`
+/// extension, each end as precise as it is known.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Span {
+    pub from: Option<ItemDate>,
+    pub to: Option<ItemDate>,
+}
+
+/// Not in the spec: when and where a song was recorded, from Fonoteca's
+/// `fonotecaPerformance` extension.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Recorded {
+    pub from: Option<ItemDate>,
+    pub to: Option<ItemDate>,
+    /// The studios, halls or areas it was recorded at.
+    #[serde(default)]
+    pub places: Vec<String>,
 }
 
 /// A disc title for an album with an optional cover art
