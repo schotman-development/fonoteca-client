@@ -729,137 +729,160 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.step != Step.done: VerticalLayout {
-        alignment: root.phone ? LayoutAlignment.start : LayoutAlignment.center;
-        padding: 16px;
-        padding-top: (root.phone ? 32px : 16px) + root.safe-area-insets.top;
-        padding-bottom: 16px + root.bottom-inset;
+    // Clear of the bars a phone draws over the window and of its keyboard.
+    // A form taller than what is left scrolls, to the field being typed in.
+    if root.step != Step.done: form := ScrollView {
+        y: root.safe-area-insets.top;
+        height: root.height - root.safe-area-insets.top - root.bottom-inset;
+        content-width: self.visible-width;
+        content-height: steps.height;
+        // Slint measures an `if` element's height at its preferred width,
+        // which for wrapped text is the whole text on one line. So each one
+        // here prefers the column's width, and the form's height counts its
+        // wrapped lines.
+        property <length> column-width: min(420px, self.visible-width - 32px);
 
-        HorizontalLayout {
-            alignment: center;
+        steps := VerticalLayout {
+            width: form.visible-width;
+            height: max(form.visible-height, self.preferred-height);
+            alignment: root.phone ? LayoutAlignment.start : LayoutAlignment.center;
+            padding: 16px;
+            padding-top: root.phone ? 32px : 16px;
 
-            VerticalLayout {
-                preferred-width: 420px;
-                max-width: 420px;
-                spacing: 12px;
+            HorizontalLayout {
+                alignment: center;
 
-                if root.step == Step.opening: Note {
-                    text: "Reading your saved sign-in…";
-                    font-size: root.phone ? 16px : 0px;
-                }
-
-                if root.step == Step.server: VerticalLayout {
+                VerticalLayout {
+                    preferred-width: 420px;
+                    max-width: 420px;
                     spacing: 12px;
-                    Heading { text: "Connect to your music server"; }
-                    Note {
-                        text: "The address of an OpenSubsonic or Subsonic server, such as Navidrome.";
-                        font-size: root.phone ? 16px : 0px;
-                    }
-                    LineEdit {
-                        placeholder-text: "https://music.example.org";
-                        text <=> root.address;
-                        enabled: !root.busy;
-                        accepted => { root.find-server(); }
-                    }
-                    if root.problem != "": Problem {
-                        text: root.problem;
-                        font-size: root.phone ? 16px : 0px;
-                    }
-                    StepButtons {
-                        phone: root.phone;
-                        busy: root.busy;
-                        main: root.busy ? "Checking…" : "Continue";
-                        main-enabled: !root.busy && root.address != "";
-                        main-clicked => { root.find-server(); }
-                    }
-                }
 
-                if root.step == Step.sign-in: VerticalLayout {
-                    spacing: 12px;
-                    Heading { text: "Sign in"; }
-                    Note {
-                        text: root.address;
+                    if root.step == Step.opening: Note {
+                        preferred-width: form.column-width;
+                        text: "Reading your saved sign-in…";
                         font-size: root.phone ? 16px : 0px;
                     }
-                    if root.unencrypted: Problem {
-                        text: "This address isn't encrypted (http). Anyone on the network between you and the server can read what you send.";
-                        font-size: root.phone ? 16px : 0px;
-                    }
-                    if root.api-key-offered: ComboBox {
-                        model: ["API key", "Username and password"];
-                        current-index <=> root.login-method;
-                        enabled: !root.busy;
-                    }
-                    if root.api-key-offered && root.login-method == 0: LineEdit {
-                        placeholder-text: "API key";
-                        input-type: InputType.password;
-                        text <=> root.api-key;
-                        enabled: !root.busy;
-                        accepted => { root.sign-in(); }
-                    }
-                    if !root.api-key-offered || root.login-method == 1: VerticalLayout {
+
+                    if root.step == Step.server: VerticalLayout {
+                        preferred-width: form.column-width;
                         spacing: 12px;
-                        LineEdit {
-                            placeholder-text: "Username";
-                            text <=> root.username;
-                            enabled: !root.busy;
+                        Heading { text: "Connect to your music server"; }
+                        Note {
+                            text: "The address of an OpenSubsonic or Subsonic server, such as Navidrome.";
+                            font-size: root.phone ? 16px : 0px;
                         }
                         LineEdit {
-                            placeholder-text: "Password";
+                            placeholder-text: "https://music.example.org";
+                            text <=> root.address;
+                            enabled: !root.busy;
+                            accepted => { root.find-server(); }
+                        }
+                        if root.problem != "": Problem {
+                            preferred-width: form.column-width;
+                            text: root.problem;
+                            font-size: root.phone ? 16px : 0px;
+                        }
+                        StepButtons {
+                            phone: root.phone;
+                            busy: root.busy;
+                            main: root.busy ? "Checking…" : "Continue";
+                            main-enabled: !root.busy && root.address != "";
+                            main-clicked => { root.find-server(); }
+                        }
+                    }
+
+                    if root.step == Step.sign-in: VerticalLayout {
+                        preferred-width: form.column-width;
+                        spacing: 12px;
+                        Heading { text: "Sign in"; }
+                        Note {
+                            text: root.address;
+                            font-size: root.phone ? 16px : 0px;
+                        }
+                        if root.unencrypted: Problem {
+                            preferred-width: form.column-width;
+                            text: "This address isn't encrypted (http). Anyone on the network between you and the server can read what you send.";
+                            font-size: root.phone ? 16px : 0px;
+                        }
+                        if root.api-key-offered: ComboBox {
+                            model: ["API key", "Username and password"];
+                            current-index <=> root.login-method;
+                            enabled: !root.busy;
+                        }
+                        if root.api-key-offered && root.login-method == 0: LineEdit {
+                            placeholder-text: "API key";
                             input-type: InputType.password;
-                            text <=> root.password;
+                            text <=> root.api-key;
                             enabled: !root.busy;
                             accepted => { root.sign-in(); }
                         }
-                    }
-                    if root.problem != "": Problem {
-                        text: root.problem;
-                        font-size: root.phone ? 16px : 0px;
-                    }
-                    StepButtons {
-                        phone: root.phone;
-                        busy: root.busy;
-                        back: true;
-                        main: root.busy ? "Signing in…" : "Sign in";
-                        main-enabled: !root.busy;
-                        main-clicked => { root.sign-in(); }
-                        back-clicked => {
-                            root.problem = "";
-                            root.step = Step.server;
+                        if !root.api-key-offered || root.login-method == 1: VerticalLayout {
+                            spacing: 12px;
+                            LineEdit {
+                                placeholder-text: "Username";
+                                text <=> root.username;
+                                enabled: !root.busy;
+                            }
+                            LineEdit {
+                                placeholder-text: "Password";
+                                input-type: InputType.password;
+                                text <=> root.password;
+                                enabled: !root.busy;
+                                accepted => { root.sign-in(); }
+                            }
+                        }
+                        if root.problem != "": Problem {
+                            preferred-width: form.column-width;
+                            text: root.problem;
+                            font-size: root.phone ? 16px : 0px;
+                        }
+                        StepButtons {
+                            phone: root.phone;
+                            busy: root.busy;
+                            back: true;
+                            main: root.busy ? "Signing in…" : "Sign in";
+                            main-enabled: !root.busy;
+                            main-clicked => { root.sign-in(); }
+                            back-clicked => {
+                                root.problem = "";
+                                root.step = Step.server;
+                            }
                         }
                     }
-                }
 
-                if root.step == Step.listenbrainz: VerticalLayout {
-                    spacing: 12px;
-                    Heading { text: "ListenBrainz"; }
-                    Note {
-                        text: "Optional. The app doesn't use ListenBrainz yet. Your user token is on https://listenbrainz.org/settings/";
-                        font-size: root.phone ? 16px : 0px;
-                    }
-                    LineEdit {
-                        placeholder-text: "User token";
-                        input-type: InputType.password;
-                        text <=> root.listenbrainz-token;
-                        enabled: !root.busy;
-                        accepted => { root.connect-listenbrainz(); }
-                    }
-                    if root.problem != "": Problem {
-                        text: root.problem;
-                        font-size: root.phone ? 16px : 0px;
-                    }
-                    StepButtons {
-                        phone: root.phone;
-                        busy: root.busy;
-                        back: true;
-                        other: "Skip";
-                        main: root.busy ? "Checking…" : "Connect";
-                        main-enabled: !root.busy && root.listenbrainz-token != "";
-                        main-clicked => { root.connect-listenbrainz(); }
-                        other-clicked => { root.skip-listenbrainz(); }
-                        back-clicked => {
-                            root.problem = "";
-                            root.step = Step.sign-in;
+                    if root.step == Step.listenbrainz: VerticalLayout {
+                        preferred-width: form.column-width;
+                        spacing: 12px;
+                        Heading { text: "ListenBrainz"; }
+                        Note {
+                            text: "Optional. The app doesn't use ListenBrainz yet. Your user token is on https://listenbrainz.org/settings/";
+                            font-size: root.phone ? 16px : 0px;
+                        }
+                        LineEdit {
+                            placeholder-text: "User token";
+                            input-type: InputType.password;
+                            text <=> root.listenbrainz-token;
+                            enabled: !root.busy;
+                            accepted => { root.connect-listenbrainz(); }
+                        }
+                        if root.problem != "": Problem {
+                            preferred-width: form.column-width;
+                            text: root.problem;
+                            font-size: root.phone ? 16px : 0px;
+                        }
+                        StepButtons {
+                            phone: root.phone;
+                            busy: root.busy;
+                            back: true;
+                            other: "Skip";
+                            main: root.busy ? "Checking…" : "Connect";
+                            main-enabled: !root.busy && root.listenbrainz-token != "";
+                            main-clicked => { root.connect-listenbrainz(); }
+                            other-clicked => { root.skip-listenbrainz(); }
+                            back-clicked => {
+                                root.problem = "";
+                                root.step = Step.sign-in;
+                            }
                         }
                     }
                 }

@@ -735,6 +735,20 @@ mod tests {
             wait_for("the refused sign-in", || !ui.get_busy()).await;
             assert!(ui.get_problem().contains("40"), "{}", ui.get_problem());
 
+            // On a small phone, or above an open keyboard, the form scrolls
+            // to its last button, wrapped lines and all.
+            ui.window().set_size(slint::LogicalSize::new(360.0, 340.0));
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(180.0, 170.0),
+                    delta_x: 0.0,
+                    delta_y: -2000.0,
+                });
+            let back = button(&ui, "Back");
+            let bottom = back.absolute_position().y + back.size().height;
+            assert!(bottom <= 340.0, "Back ends at {bottom}");
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+
             ui.set_username("joe".into());
             click(&ui, "Sign in");
             wait_for("the ListenBrainz step", || {
