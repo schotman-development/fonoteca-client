@@ -200,6 +200,38 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
 
+    // On a phone-sized screen everything is drawn a quarter larger than the
+    // browser's pixel ratio. This runs whenever the width or the scale
+    // changes, since the backend sets its own scale at startup and on zoom
+    // without laying the window out again.
+    #[cfg(target_family = "wasm")]
+    ui.on_resized({
+        let weak = ui.as_weak();
+        move || {
+            use slint::platform::WindowEvent;
+            let ui = weak.unwrap();
+            let window = ui.window();
+            let Some(page) = web_sys::window() else {
+                return;
+            };
+            let page_width = page.inner_width().ok().and_then(|width| width.as_f64());
+            let ratio = page.device_pixel_ratio() as f32;
+            let scale = if page_width.is_some_and(|width| width < 600.0) {
+                ratio * 1.25
+            } else {
+                ratio
+            };
+            if scale != window.scale_factor() {
+                window.dispatch_event(WindowEvent::ScaleFactorChanged {
+                    scale_factor: scale,
+                });
+            }
+            window.dispatch_event(WindowEvent::Resized {
+                size: window.size().to_logical(scale),
+            });
+        }
+    });
+
     ui.on_find_server({
         let weak = ui.as_weak();
         move || {

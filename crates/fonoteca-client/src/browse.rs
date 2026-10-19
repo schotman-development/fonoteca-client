@@ -40,7 +40,8 @@ const TYPING_PAUSE: Duration = Duration::from_millis(200);
 const COVERS_AT_ONCE: usize = 6;
 /// The sizes covers are asked for, in logical pixels. Grid tiles are at least
 /// 200 wide and widen to fill their row, which keeps them under 300 on all
-/// but the narrowest windows; page headers are 220.
+/// but the narrowest windows, where the grid keeps two columns and a tile is
+/// under half the window wide (see `tile_pixels`); page headers are 220.
 const TILE_SIZE: f32 = 300.0;
 const HEADER_SIZE: f32 = 220.0;
 /// The size of a cover in a row of the tracks table.
@@ -1530,7 +1531,7 @@ fn artist_tile(artist: &ArtistID3) -> (AlbumTile, Option<String>) {
 /// Adds the tiles, each with its cover when it has been seen this session,
 /// and fetches the others.
 fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<String>)>) {
-    let size = pixels(ui, TILE_SIZE);
+    let size = tile_pixels(ui);
     {
         let mut b = browser.borrow_mut();
         for (mut tile, cover) in tiles {
@@ -1555,7 +1556,7 @@ fn fetch_covers(ui: &AppWindow, browser: &Shared) {
     let size = if ui.get_page() == Page::Tracks {
         pixels(ui, LINE_COVER_SIZE)
     } else {
-        pixels(ui, TILE_SIZE)
+        tile_pixels(ui)
     };
     let mut b = browser.borrow_mut();
     let wanted = b
@@ -1819,6 +1820,13 @@ fn love(
 /// `logical` pixels in physical ones, which is what the server should scale to.
 fn pixels(ui: &AppWindow, logical: f32) -> u32 {
     (logical * ui.window().scale_factor()).ceil() as u32
+}
+
+/// The size grid covers are asked for, in physical pixels.
+fn tile_pixels(ui: &AppWindow) -> u32 {
+    let window = ui.window();
+    let width = window.size().to_logical(window.scale_factor()).width;
+    pixels(ui, (width / 2.0).clamp(100.0, TILE_SIZE))
 }
 
 fn names(names: Vec<Name>) -> ModelRc<Name> {

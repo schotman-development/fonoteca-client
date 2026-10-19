@@ -238,11 +238,25 @@ export component AppWindow inherits Window {
     callback select-tile(index: int);
     callback select-line(index: int);
     callback clear-selection();
+    callback resized();
 
-    property <length> sidebar-width: 200px;
+    // One physical pixel, which changes with the scale.
+    property <length> physical-pixel: 1phx;
+
+    changed width => { root.resized(); }
+    changed physical-pixel => { root.resized(); }
+
+    // The sidebar sits beside the pages on a wide window, wider the wider it
+    // is; on a narrow one, such as a phone's, it stays closed until the top
+    // bar's menu button opens it over the page.
+    property <bool> docked: root.width >= 720px;
+    property <length> sidebar-width: root.docked ? clamp(root.width * 0.14, 240px, 320px) : 0px;
+    property <bool> sidebar-open;
+
+    changed docked => { root.sidebar-open = false; }
 
     if root.step == Step.done: HorizontalLayout {
-        Sidebar {
+        if root.docked: Sidebar {
             width: root.sidebar-width;
             items: root.sections;
             groups: root.section-groups;
@@ -254,8 +268,10 @@ export component AppWindow inherits Window {
                 can-go-back: root.can-go-back;
                 can-go-forward: root.can-go-forward;
                 searchable: false;
+                menu: !root.docked;
                 back => { root.back(); }
                 forward => { root.forward(); }
+                open-menu => { root.sidebar-open = true; }
             }
             // The tracks page's heading and the table's headings stay put
             // while the rows scroll, and follow them sideways.
@@ -331,11 +347,14 @@ export component AppWindow inherits Window {
                         root.show-more();
                     }
                 }
-                content-width: stage.width;
+                content-width: max(scroll.visible-width, stage.width);
                 content-height: stage.preferred-height;
                 stage := VerticalLayout {
-                    // Wider than the page when the table's columns don't fit.
-                    width: root.page == Page.tracks ? max(scroll.visible-width, root.track-table-width + 48px) : scroll.visible-width;
+                    // At most 1600px wide and centred, but for the tracks
+                    // table, which is wider than the page when its columns
+                    // don't fit.
+                    x: max(0px, (scroll.visible-width - self.width) / 2);
+                    width: root.page == Page.tracks ? max(scroll.visible-width, root.track-table-width + 48px) : min(scroll.visible-width, 1600px);
                     padding: 24px;
                     padding-top: 8px;
                     // Room to scroll the last tiles out from under the bar.
@@ -532,6 +551,25 @@ export component AppWindow inherits Window {
         height: self.preferred-height;
         count: root.selected-tiles;
         clear => { root.clear-selection(); }
+    }
+
+    // The sidebar opened over a narrow window; a tap beside it closes it.
+    if root.step == Step.done && !root.docked && root.sidebar-open: Rectangle {
+        background: #0000004d;
+        TouchArea {
+            clicked => { root.sidebar-open = false; }
+        }
+        Sidebar {
+            x: 0;
+            width: min(280px, root.width - 48px);
+            items: root.sections;
+            groups: root.section-groups;
+            current <=> root.section;
+            selected(index) => {
+                root.sidebar-open = false;
+                root.show-section(index);
+            }
+        }
     }
 
     if root.step != Step.done: VerticalLayout {

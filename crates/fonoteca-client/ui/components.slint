@@ -44,6 +44,7 @@ export global Icons {
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
     out property <string> check: "M5 12.5l4.5 4.5 9.5-10";
     out property <string> close: "M6 6l12 12 M18 6L6 18";
+    out property <string> menu: "M4 7h16 M4 12h16 M4 17h16";
     // Filled.
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
@@ -726,7 +727,8 @@ export component CoverGrid {
 
     property <length> gap: Theme.gap;
     property <length> row-gap: 24px;
-    property <int> columns: max(1, floor((self.width + self.gap) / (self.min-size + self.gap)));
+    // Two at least, so a phone doesn't get one cover the width of the screen.
+    property <int> columns: max(2, floor((self.width + self.gap) / (self.min-size + self.gap)));
     property <length> size: (self.width - (self.columns - 1) * self.gap) / self.columns;
     property <int> rows: ceil(self.tiles.length / self.columns);
     property <length> row-height: probe.preferred-height;
@@ -950,18 +952,27 @@ export component Sidebar inherits Rectangle {
 }
 
 // Back and forward through the pages seen, and search across the library.
+// With `menu`, a button first that opens the sidebar.
 export component TopBar inherits HorizontalLayout {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
     in property <bool> searchable: true;
+    in property <bool> menu;
     in-out property <string> query;
     callback back();
     callback forward();
     callback search(query: string);
+    callback open-menu();
 
     padding: 8px;
     spacing: 4px;
 
+    if root.menu: IconButton {
+        cross-axis-self-alignment: center;
+        icon: Icons.menu;
+        label: "Menu";
+        clicked => { root.open-menu(); }
+    }
     IconButton {
         cross-axis-self-alignment: center;
         icon: Icons.back;
