@@ -1,0 +1,68 @@
+# Builds the Android app on every push to main and puts it in the one `edge`
+# pre-release, replacing the build before. The version stays as it is in
+# Cargo.toml; each build is called <version>-dev.<run number>, which is also
+# the release's title, for Obtainium's "Use release title as version string".
+name: Rolling release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rolling-release
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name the build
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "APP_VERSION=$version-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      # Linked for Android 9 (API 28), the app's oldest. Not with cargo-ndk:
+      # it tells Slint's build script to compile its Java helper against
+      # that platform too, which lacks the classes the helper uses. The
+      # helper gets the platform the app is compiled against.
+      - name: Build the Rust library
+        env:
+          ANDROID_PLATFORM: 36
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;30.0.16248370" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          tools="$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$tools/aarch64-linux-android28-clang"
+          export CC_aarch64_linux_android="$tools/aarch64-linux-android28-clang"
+          export AR_aarch64_linux_android="$tools/llvm-ar"
+          rustup target add aarch64-linux-android
+          cargo rustc --locked -p fonoteca-client --lib --release --target aarch64-linux-android --crate-type cdylib
+          mkdir -p android/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/libfonoteca_client.so android/src/main/jniLibs/arm64-v8a/
+
+      - name: Build the APK
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: fonoteca
+        run: |
+          export SIGNING_STORE_FILE="$RUNNER_TEMP/release.p12"
+          echo "$KEYSTORE" | base64 -d > "$SIGNING_STORE_FILE"
+          cd android
+          ./gradlew --no-daemon assembleRelease -PappVersion="$APP_VERSION" -PappVersionCode="$GITHUB_RUN_NUMBER"
+
+      - name: Replace the edge release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="fonoteca-$APP_VERSION.apk"
+          cp android/build/outputs/apk/release/fonoteca-release.apk "$apk"
+          gh release delete edge --yes --cleanup-tag || true
+          gh release create edge "$apk" --prerelease --target "$GITHUB_SHA" --title "$APP_VERSION" \
+            --notes "A development build of $GITHUB_SHA, replaced on every push to main. Not a release."
