@@ -11,7 +11,9 @@ services:
       dockerfile: Containerfile
     restart: unless-stopped
     working_dir: /src/crates/fonoteca-client
-    command: trunk serve
+    # Optimized, since the UI code Slint generates runs in this crate and
+    # scrolling on a phone stutters without it.
+    command: trunk serve --release
     ports:
       - '8090:8090'
     volumes:
