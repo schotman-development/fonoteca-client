@@ -219,6 +219,7 @@ export component IconButton inherits Pressable {
     in property <string> icon;
     in property <bool> filled;
     in property <brush> color: Theme.text;
+    in property <length> icon-size: 20px;
 
     width: 32px;
     height: 32px;
@@ -228,8 +229,8 @@ export component IconButton inherits Pressable {
         background: root.hovered ? Theme.hover : transparent;
     }
     Path {
-        width: 20px;
-        height: 20px;
+        width: root.icon-size;
+        height: root.icon-size;
         viewbox-width: 24;
         viewbox-height: 24;
         commands: root.icon;
@@ -957,29 +958,42 @@ export component Sidebar inherits Rectangle {
 }
 
 // Back and forward through the pages seen, and search across the library.
-// With `menu`, a button first that opens the sidebar.
+// With `menu`, a button first that opens the sidebar. On a `phone` the
+// buttons are a finger's size.
 export component TopBar inherits HorizontalLayout {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
     in property <bool> searchable: true;
     in property <bool> menu;
+    in property <bool> phone;
     in-out property <string> query;
     callback back();
     callback forward();
     callback search(query: string);
     callback open-menu();
 
+    property <length> button-size: root.phone ? 48px : 32px;
+    property <length> icon-size: root.phone ? 24px : 20px;
+
     padding: 8px;
+    // The first icon lines up with the pages' 24px margin.
+    padding-left: 24px - (root.button-size - root.icon-size) / 2;
     spacing: 4px;
 
     if root.menu: IconButton {
         cross-axis-self-alignment: center;
+        width: root.button-size;
+        height: root.button-size;
+        icon-size: root.icon-size;
         icon: Icons.menu;
         label: "Menu";
         clicked => { root.open-menu(); }
     }
     IconButton {
         cross-axis-self-alignment: center;
+        width: root.button-size;
+        height: root.button-size;
+        icon-size: root.icon-size;
         icon: Icons.back;
         label: "Back";
         enabled: root.can-go-back;
@@ -987,6 +1001,9 @@ export component TopBar inherits HorizontalLayout {
     }
     IconButton {
         cross-axis-self-alignment: center;
+        width: root.button-size;
+        height: root.button-size;
+        icon-size: root.icon-size;
         icon: Icons.forward;
         label: "Forward";
         enabled: root.can-go-forward;

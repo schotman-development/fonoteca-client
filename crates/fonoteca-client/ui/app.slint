@@ -376,6 +376,7 @@ export component AppWindow inherits Window {
                 can-go-forward: root.can-go-forward;
                 searchable: false;
                 menu: !root.docked;
+                phone: root.phone;
                 back => { root.back(); }
                 forward => { root.forward(); }
                 open-menu => { root.sidebar-open = true; }

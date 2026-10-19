@@ -1843,6 +1843,14 @@ mod tests {
             assert_eq!(sorted(&again), [("Date".to_owned(), true)]);
             drop(again);
 
+            // A phone's top bar has buttons a finger can hit, the first
+            // one's icon on the pages' 24px margin.
+            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            let menu = button(&ui, "Menu");
+            assert_eq!(menu.size(), slint::LogicalSize::new(48.0, 48.0));
+            assert_eq!(menu.absolute_position().x, 12.0);
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+
             click(&ui, "Account");
             click(&ui, "Sign out");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
