@@ -293,6 +293,11 @@ export component AppWindow inherits Window {
     changed docked => { root.sidebar-open = false; }
 
     if root.step == Step.done: HorizontalLayout {
+        // Clear of the bars a phone draws over the window.
+        padding-top: root.safe-area-insets.top;
+        padding-bottom: root.safe-area-insets.bottom;
+        padding-left: root.safe-area-insets.left;
+        padding-right: root.safe-area-insets.right;
         if root.docked: Sidebar {
             width: root.sidebar-width;
             items: root.sections;
@@ -631,7 +636,7 @@ export component AppWindow inherits Window {
 
     if root.step == Step.done && root.selected-tiles > 0: SelectionBar {
         x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
-        y: root.height - self.height - 24px;
+        y: root.height - self.height - 24px - root.safe-area-insets.bottom;
         width: self.preferred-width;
         height: self.preferred-height;
         count: root.selected-tiles;
@@ -646,7 +651,9 @@ export component AppWindow inherits Window {
         }
         Sidebar {
             x: 0;
+            y: root.safe-area-insets.top;
             width: min(280px, root.width - 48px);
+            height: parent.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
             items: root.sections;
             groups: root.section-groups;
             current <=> root.section;
@@ -660,6 +667,8 @@ export component AppWindow inherits Window {
     if root.step != Step.done: VerticalLayout {
         alignment: center;
         padding: 16px;
+        padding-top: 16px + root.safe-area-insets.top;
+        padding-bottom: 16px + root.safe-area-insets.bottom;
 
         HorizontalLayout {
             alignment: center;
