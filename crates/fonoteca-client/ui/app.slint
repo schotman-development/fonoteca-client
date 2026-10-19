@@ -117,6 +117,64 @@ component FilterHeading inherits VerticalLayout {
     }
 }
 
+// The buttons under an onboarding step: in a row with the main one on the
+// right, or on a phone stacked full width, the main one first. An empty
+// `other` or a false `back` leaves that button out.
+component StepButtons inherits VerticalLayout {
+    in property <bool> phone;
+    in property <bool> busy;
+    in property <string> main;
+    in property <bool> main-enabled: true;
+    in property <string> other;
+    in property <bool> back;
+    callback main-clicked();
+    callback other-clicked();
+    callback back-clicked();
+
+    if !root.phone: HorizontalLayout {
+        spacing: 8px;
+        if root.back: Button {
+            text: "Back";
+            enabled: !root.busy;
+            clicked => { root.back-clicked(); }
+        }
+        Rectangle { }
+        if root.other != "": Button {
+            text: root.other;
+            enabled: !root.busy;
+            clicked => { root.other-clicked(); }
+        }
+        Button {
+            text: root.main;
+            primary: true;
+            enabled: root.main-enabled;
+            clicked => { root.main-clicked(); }
+        }
+    }
+    if root.phone: VerticalLayout {
+        spacing: 8px;
+        Button {
+            height: 48px;
+            text: root.main;
+            primary: true;
+            enabled: root.main-enabled;
+            clicked => { root.main-clicked(); }
+        }
+        if root.other != "": Button {
+            height: 48px;
+            text: root.other;
+            enabled: !root.busy;
+            clicked => { root.other-clicked(); }
+        }
+        if root.back: Button {
+            height: 48px;
+            text: "Back";
+            enabled: !root.busy;
+            clicked => { root.back-clicked(); }
+        }
+    }
+}
+
 // The albums page's Sort menu and direction.
 component SortControls inherits HorizontalLayout {
     in-out property <int> sort;
@@ -292,6 +350,9 @@ export component AppWindow inherits Window {
 
     changed docked => { root.sidebar-open = false; }
 
+    // A phone-sized window, where the onboarding is a form from the top
+    // with bigger text and buttons.
+    property <bool> phone: root.width < 600px;
     // What a phone covers at the bottom: its navigation bar, or the keyboard
     // when that is open, which the pages and forms stay above.
     property <length> bottom-inset: max(root.safe-area-insets.bottom, root.virtual-keyboard-size.height);
@@ -669,9 +730,9 @@ export component AppWindow inherits Window {
     }
 
     if root.step != Step.done: VerticalLayout {
-        alignment: center;
+        alignment: root.phone ? LayoutAlignment.start : LayoutAlignment.center;
         padding: 16px;
-        padding-top: 16px + root.safe-area-insets.top;
+        padding-top: (root.phone ? 32px : 16px) + root.safe-area-insets.top;
         padding-bottom: 16px + root.bottom-inset;
 
         HorizontalLayout {
@@ -682,36 +743,47 @@ export component AppWindow inherits Window {
                 max-width: 420px;
                 spacing: 12px;
 
-                if root.step == Step.opening: Note { text: "Reading your saved sign-in…"; }
+                if root.step == Step.opening: Note {
+                    text: "Reading your saved sign-in…";
+                    font-size: root.phone ? 16px : 0px;
+                }
 
                 if root.step == Step.server: VerticalLayout {
                     spacing: 12px;
                     Heading { text: "Connect to your music server"; }
-                    Note { text: "The address of an OpenSubsonic or Subsonic server, such as Navidrome."; }
+                    Note {
+                        text: "The address of an OpenSubsonic or Subsonic server, such as Navidrome.";
+                        font-size: root.phone ? 16px : 0px;
+                    }
                     LineEdit {
                         placeholder-text: "https://music.example.org";
                         text <=> root.address;
                         enabled: !root.busy;
                         accepted => { root.find-server(); }
                     }
-                    if root.problem != "": Problem { text: root.problem; }
-                    HorizontalLayout {
-                        alignment: end;
-                        Button {
-                            text: root.busy ? "Checking…" : "Continue";
-                            primary: true;
-                            enabled: !root.busy && root.address != "";
-                            clicked => { root.find-server(); }
-                        }
+                    if root.problem != "": Problem {
+                        text: root.problem;
+                        font-size: root.phone ? 16px : 0px;
+                    }
+                    StepButtons {
+                        phone: root.phone;
+                        busy: root.busy;
+                        main: root.busy ? "Checking…" : "Continue";
+                        main-enabled: !root.busy && root.address != "";
+                        main-clicked => { root.find-server(); }
                     }
                 }
 
                 if root.step == Step.sign-in: VerticalLayout {
                     spacing: 12px;
                     Heading { text: "Sign in"; }
-                    Note { text: root.address; }
+                    Note {
+                        text: root.address;
+                        font-size: root.phone ? 16px : 0px;
+                    }
                     if root.unencrypted: Problem {
                         text: "This address isn't encrypted (http). Anyone on the network between you and the server can read what you send.";
+                        font-size: root.phone ? 16px : 0px;
                     }
                     if root.api-key-offered: ComboBox {
                         model: ["API key", "Username and password"];
@@ -740,23 +812,20 @@ export component AppWindow inherits Window {
                             accepted => { root.sign-in(); }
                         }
                     }
-                    if root.problem != "": Problem { text: root.problem; }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Button {
-                            text: "Back";
-                            enabled: !root.busy;
-                            clicked => {
-                                root.problem = "";
-                                root.step = Step.server;
-                            }
-                        }
-                        Rectangle { }
-                        Button {
-                            text: root.busy ? "Signing in…" : "Sign in";
-                            primary: true;
-                            enabled: !root.busy;
-                            clicked => { root.sign-in(); }
+                    if root.problem != "": Problem {
+                        text: root.problem;
+                        font-size: root.phone ? 16px : 0px;
+                    }
+                    StepButtons {
+                        phone: root.phone;
+                        busy: root.busy;
+                        back: true;
+                        main: root.busy ? "Signing in…" : "Sign in";
+                        main-enabled: !root.busy;
+                        main-clicked => { root.sign-in(); }
+                        back-clicked => {
+                            root.problem = "";
+                            root.step = Step.server;
                         }
                     }
                 }
@@ -764,7 +833,10 @@ export component AppWindow inherits Window {
                 if root.step == Step.listenbrainz: VerticalLayout {
                     spacing: 12px;
                     Heading { text: "ListenBrainz"; }
-                    Note { text: "Optional. The app doesn't use ListenBrainz yet. Your user token is on https://listenbrainz.org/settings/"; }
+                    Note {
+                        text: "Optional. The app doesn't use ListenBrainz yet. Your user token is on https://listenbrainz.org/settings/";
+                        font-size: root.phone ? 16px : 0px;
+                    }
                     LineEdit {
                         placeholder-text: "User token";
                         input-type: InputType.password;
@@ -772,28 +844,22 @@ export component AppWindow inherits Window {
                         enabled: !root.busy;
                         accepted => { root.connect-listenbrainz(); }
                     }
-                    if root.problem != "": Problem { text: root.problem; }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Button {
-                            text: "Back";
-                            enabled: !root.busy;
-                            clicked => {
-                                root.problem = "";
-                                root.step = Step.sign-in;
-                            }
-                        }
-                        Rectangle { }
-                        Button {
-                            text: "Skip";
-                            enabled: !root.busy;
-                            clicked => { root.skip-listenbrainz(); }
-                        }
-                        Button {
-                            text: root.busy ? "Checking…" : "Connect";
-                            primary: true;
-                            enabled: !root.busy && root.listenbrainz-token != "";
-                            clicked => { root.connect-listenbrainz(); }
+                    if root.problem != "": Problem {
+                        text: root.problem;
+                        font-size: root.phone ? 16px : 0px;
+                    }
+                    StepButtons {
+                        phone: root.phone;
+                        busy: root.busy;
+                        back: true;
+                        other: "Skip";
+                        main: root.busy ? "Checking…" : "Connect";
+                        main-enabled: !root.busy && root.listenbrainz-token != "";
+                        main-clicked => { root.connect-listenbrainz(); }
+                        other-clicked => { root.skip-listenbrainz(); }
+                        back-clicked => {
+                            root.problem = "";
+                            root.step = Step.sign-in;
                         }
                     }
                 }
