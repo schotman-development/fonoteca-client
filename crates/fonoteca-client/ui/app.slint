@@ -292,10 +292,14 @@ export component AppWindow inherits Window {
 
     changed docked => { root.sidebar-open = false; }
 
+    // What a phone covers at the bottom: its navigation bar, or the keyboard
+    // when that is open, which the pages and forms stay above.
+    property <length> bottom-inset: max(root.safe-area-insets.bottom, root.virtual-keyboard-size.height);
+
     if root.step == Step.done: HorizontalLayout {
         // Clear of the bars a phone draws over the window.
         padding-top: root.safe-area-insets.top;
-        padding-bottom: root.safe-area-insets.bottom;
+        padding-bottom: root.bottom-inset;
         padding-left: root.safe-area-insets.left;
         padding-right: root.safe-area-insets.right;
         if root.docked: Sidebar {
@@ -636,7 +640,7 @@ export component AppWindow inherits Window {
 
     if root.step == Step.done && root.selected-tiles > 0: SelectionBar {
         x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
-        y: root.height - self.height - 24px - root.safe-area-insets.bottom;
+        y: root.height - self.height - 24px - root.bottom-inset;
         width: self.preferred-width;
         height: self.preferred-height;
         count: root.selected-tiles;
@@ -653,7 +657,7 @@ export component AppWindow inherits Window {
             x: 0;
             y: root.safe-area-insets.top;
             width: min(280px, root.width - 48px);
-            height: parent.height - root.safe-area-insets.top - root.safe-area-insets.bottom;
+            height: parent.height - root.safe-area-insets.top - root.bottom-inset;
             items: root.sections;
             groups: root.section-groups;
             current <=> root.section;
@@ -668,7 +672,7 @@ export component AppWindow inherits Window {
         alignment: center;
         padding: 16px;
         padding-top: 16px + root.safe-area-insets.top;
-        padding-bottom: 16px + root.safe-area-insets.bottom;
+        padding-bottom: 16px + root.bottom-inset;
 
         HorizontalLayout {
             alignment: center;
