@@ -5,7 +5,7 @@ export { AlbumTile, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { albums, artists, tracks, playlists, album, artist, playlist, account }
+export enum Page { albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition }
 
 // A column the tracks table can show, and whether it does.
 export struct ColumnChoice {
@@ -39,6 +39,9 @@ export struct Track {
     part: bool,
     // A work's only track on the album, a row as strong as a work's.
     alone: bool,
+    // The page a click on the row opens: a composition's, or on its page a
+    // performance's album. Empty on albums and playlists.
+    link: string,
 }
 
 component Heading inherits Text {
@@ -85,6 +88,33 @@ component Filter inherits LineEdit {
     min-width: 64px;
     preferred-width: 240px;
     placeholder-text: "Filter";
+}
+
+// The heading of the composers page, with its filter beside it, or under
+// it when `narrow`.
+component FilterHeading inherits VerticalLayout {
+    in property <string> title;
+    in property <bool> narrow;
+    in-out property <string> filter;
+    callback edited();
+    spacing: 12px;
+    HorizontalLayout {
+        spacing: 12px;
+        Heading {
+            horizontal-stretch: 1;
+            text: root.title;
+            vertical-alignment: center;
+        }
+        if !root.narrow: Filter {
+            horizontal-stretch: 0;
+            text <=> root.filter;
+            edited => { root.edited(); }
+        }
+    }
+    if root.narrow: Filter {
+        text <=> root.filter;
+        edited => { root.edited(); }
+    }
 }
 
 // The albums page's Sort menu and direction.
@@ -199,8 +229,9 @@ export component AppWindow inherits Window {
     in property <[Name]> header-names;
     in property <string> header-facts;
     in property <[Track]> tracks;
-    // The tracks page's table: the columns shown, their rows, how wide they
-    // are together, and every column there is to pick from.
+    // The tracks or compositions page's table: the columns shown, their
+    // rows, how wide they are together, and every column there is to pick
+    // from.
     in property <[TrackColumn]> track-columns;
     in property <[TrackLine]> track-lines;
     in property <length> track-table-width;
@@ -215,6 +246,9 @@ export component AppWindow inherits Window {
     in-out property <bool> album-descending;
     in-out property <string> album-filter;
     in-out property <string> artist-filter;
+    in-out property <string> composer-filter;
+    in-out property <string> composition-filter;
+    in-out property <string> track-filter;
 
     callback open(link: string);
     callback back();
@@ -224,12 +258,15 @@ export component AppWindow inherits Window {
     callback sort-albums();
     callback filter-albums();
     callback filter-artists();
+    callback filter-composers();
+    callback filter-compositions();
+    callback filter-tracks();
     // The tiles or tracks table rows whose covers to fetch next.
     callback tiles-in-view(first: int, last: int);
     callback toggle-love(row: int);
     callback toggle-line-love(row: int);
     callback toggle-track-column(index: int);
-    // Sorts the tracks table by its `index`th column shown, or turns that
+    // Sorts the page's table by its `index`th column shown, or turns that
     // around.
     callback sort-tracks(index: int);
     callback reconnect();
@@ -273,9 +310,10 @@ export component AppWindow inherits Window {
                 forward => { root.forward(); }
                 open-menu => { root.sidebar-open = true; }
             }
-            // The tracks page's heading and the table's headings stay put
-            // while the rows scroll, and follow them sideways.
-            if root.page == Page.tracks: VerticalLayout {
+            // The tracks or compositions page's heading, filter and the
+            // table's headings stay put while the rows scroll, and follow
+            // them sideways.
+            if root.page == Page.tracks || root.page == Page.compositions: VerticalLayout {
                 vertical-stretch: 0;
                 padding-top: 8px;
                 spacing: 12px;
@@ -285,13 +323,35 @@ export component AppWindow inherits Window {
                     spacing: 12px;
                     Heading {
                         horizontal-stretch: 1;
-                        text: "Tracks";
+                        text: root.page == Page.compositions ? "Compositions" : "Tracks";
                         vertical-alignment: center;
+                    }
+                    if root.page == Page.tracks && root.width - root.sidebar-width >= 600px: Filter {
+                        horizontal-stretch: 0;
+                        text <=> root.track-filter;
+                        edited => { root.filter-tracks(); }
+                    }
+                    if root.page == Page.compositions && root.width - root.sidebar-width >= 600px: Filter {
+                        horizontal-stretch: 0;
+                        text <=> root.composition-filter;
+                        edited => { root.filter-compositions(); }
                     }
                     Button {
                         horizontal-stretch: 0;
                         text: "Columns";
                         clicked => { columns.show(); }
+                    }
+                }
+                if root.width - root.sidebar-width < 600px: HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    if root.page == Page.tracks: Filter {
+                        text <=> root.track-filter;
+                        edited => { root.filter-tracks(); }
+                    }
+                    if root.page == Page.compositions: Filter {
+                        text <=> root.composition-filter;
+                        edited => { root.filter-compositions(); }
                     }
                 }
                 Rectangle {
@@ -343,7 +403,7 @@ export component AppWindow inherits Window {
             scroll := PageScroll {
                 visit: root.visit;
                 near-end => {
-                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks) && root.more-tiles && !root.loading && root.page-problem == "" {
+                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.composers || root.page == Page.compositions) && root.more-tiles && !root.loading && root.page-problem == "" {
                         root.show-more();
                     }
                 }
@@ -354,7 +414,7 @@ export component AppWindow inherits Window {
                     // table, which is wider than the page when its columns
                     // don't fit.
                     x: max(0px, (scroll.visible-width - self.width) / 2);
-                    width: root.page == Page.tracks ? max(scroll.visible-width, root.track-table-width + 48px) : min(scroll.visible-width, 1600px);
+                    width: root.page == Page.tracks || root.page == Page.compositions ? max(scroll.visible-width, root.track-table-width + 48px) : min(scroll.visible-width, 1600px);
                     padding: 24px;
                     padding-top: 8px;
                     // Room to scroll the last tiles out from under the bar.
@@ -423,19 +483,25 @@ export component AppWindow inherits Window {
                             edited => { root.filter-artists(); }
                         }
                     }
+                    if root.page == Page.composers: FilterHeading {
+                        title: "Composers";
+                        narrow: scroll.visible-width < 600px;
+                        filter <=> root.composer-filter;
+                        edited => { root.filter-composers(); }
+                    }
                     if root.page == Page.playlists: Heading { text: "Playlists"; }
-                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist: PageHeader {
+                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition: PageHeader {
                         artwork: root.header-image;
-                        round: root.page == Page.artist;
-                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : "Album";
+                        round: root.page == Page.artist || root.page == Page.composer;
+                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : "Album";
                         title: root.header-title;
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
                     }
-                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist: CoverGrid {
+                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist || root.page == Page.composers: CoverGrid {
                         tiles: root.tiles;
-                        round: root.page == Page.artists;
+                        round: root.page == Page.artists || root.page == Page.composers;
                         view-top: -scroll.content-y - self.y;
                         view-height: scroll.visible-height;
                         open(link) => { root.open(link); }
@@ -443,7 +509,7 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index) => { root.select-tile(index); }
                     }
-                    if root.page == Page.tracks: VerticalLayout {
+                    if root.page == Page.tracks || root.page == Page.compositions: VerticalLayout {
                         // The rows on screen and a screen below, by
                         // TrackLineRow's height, whose covers to fetch.
                         property <length> view-top: -scroll.content-y - self.y;
@@ -498,13 +564,32 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if ((root.page == Page.albums && root.album-filter != "") || (root.page == Page.artists && root.artist-filter != "")) && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
-                        text: root.page == Page.artists ? "No artists match." : "No albums match.";
+                    // A composer's compositions or a composition's
+                    // performances, each a row that opens its page. A
+                    // composition is a strong row, as a work is on an album.
+                    if root.page == Page.composer || root.page == Page.composition: VerticalLayout {
+                        for track in root.tracks: TrackRow {
+                            title: track.title;
+                            names: track.names;
+                            split: track.split;
+                            duration: track.duration;
+                            years: track.years;
+                            performed: track.performed;
+                            strong: root.page != Page.composition;
+                            lovable: false;
+                            enabled: track.link != "";
+                            clicked => { root.open(track.link); }
+                            open(link) => { root.open(link); }
+                        }
                     }
+                    if ((root.page == Page.albums && root.album-filter != "") || (root.page == Page.artists && root.artist-filter != "") || (root.page == Page.composers && root.composer-filter != "")) && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
+                        text: root.page == Page.artists ? "No artists match." : root.page == Page.composers ? "No composers match." : "No albums match.";
+                    }
+                    if root.page == Page.compositions && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.composition-filter != "" ? "No compositions match." : "No compositions yet."; }
                     if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
-                    if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: "No tracks yet."; }
+                    if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" ? "No tracks match." : "No tracks yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.playlists) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.playlists || root.page == Page.composers || root.page == Page.compositions) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";
@@ -666,7 +751,7 @@ export component AppWindow inherits Window {
                 if root.step == Step.listenbrainz: VerticalLayout {
                     spacing: 12px;
                     Heading { text: "ListenBrainz"; }
-                    Note { text: "Optional. Connect ListenBrainz to love and hate recordings there. Your user token is on https://listenbrainz.org/settings/"; }
+                    Note { text: "Optional. The app doesn't use ListenBrainz yet. Your user token is on https://listenbrainz.org/settings/"; }
                     LineEdit {
                         placeholder-text: "User token";
                         input-type: InputType.password;

@@ -95,18 +95,12 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
         match signed_in {
             Ok((name, client)) => {
                 ui.set_server_name(name.into());
-                browse::start(&ui, &browser, client, listenbrainz_client(&account));
+                browse::start(&ui, &browser, client);
             }
             Err(e) => ui.set_offline(format!("Your server didn't answer: {e}").into()),
         }
     })
     .expect("the event loop is running");
-}
-
-/// The ListenBrainz client for loves, when the account has a token.
-fn listenbrainz_client(account: &Account) -> Option<listenbrainz::Client> {
-    let token = account.listenbrainz.as_ref()?.token.clone();
-    listenbrainz::Client::new(token).ok()
 }
 
 async fn connect_listenbrainz(token: String) -> Result<ListenBrainz, String> {
@@ -166,7 +160,7 @@ fn show(ui: &AppWindow, account: &Account) {
 /// it saves, so it can't be overtaken by the save.
 fn finish(ui: &AppWindow, browser: &browse::Shared, account: Account, client: Client) {
     show(ui, &account);
-    browse::start(ui, browser, client, listenbrainz_client(&account));
+    browse::start(ui, browser, client);
     ui.set_saved_note("Saving…".into());
     run(
         ui,
@@ -422,6 +416,10 @@ mod tests {
     /// symphony after them, one of unknown length.
     const CLASSICAL: &str = r#""id":"a2","name":"Symphonies","songCount":4,"duration":1629,"created":"2021-01-01T00:00:00Z","song":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","track":1,"duration":441,"artist":"Wiener Philharmoniker","artistId":"r7","works":[{"name":"Symphony No. 5","musicBrainzId":"w5","composed":{"from":{"year":1804},"to":{"year":1808}}}],"movements":[{"name":"I. Allegro con brio","number":1,"count":4}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}],"displayComposer":"Ludwig van Beethoven","recorded":{"from":{"year":1974,"month":3,"day":2},"to":{"year":1974,"month":3,"day":2},"places":["Musikverein"]}},{"id":"c2","isDir":false,"title":"Symphony No. 5: II. Andante con moto","track":2,"duration":588,"artists":[{"id":"r7","name":"Wiener Philharmoniker"},{"id":"r8","name":"Carlos Kleiber"}],"works":[{"name":"Symphony No. 5","musicBrainzId":"w5","composed":{"from":{"year":1804},"to":{"year":1808}}}],"contributors":[{"role":"composer","artist":{"id":"r9","name":"Ludwig van Beethoven"}}],"recorded":{"from":{"year":1974,"month":4},"to":{"year":1974,"month":4},"places":["Musikverein"]}},{"id":"c3","isDir":false,"title":"Egmont Overture","track":3,"duration":500,"artist":"Wiener Philharmoniker","artistId":"r7","works":[{"name":"Egmont Overture","composed":{"from":{"year":1809},"to":{"year":1810}}}],"contributors":[{"role":"composer","artist":{"id":"","name":"Ludwig van Beethoven"}}],"recorded":{"from":{"year":1975},"to":{"year":1975},"places":["Sofiensaal"]}},{"id":"c4","isDir":false,"title":"Encore","track":4,"duration":100,"recorded":{"from":{"year":1975},"to":{"year":1975},"places":["Sofiensaal"]}},{"id":"c6","isDir":false,"title":"Bows","track":5,"duration":30},{"id":"c7","isDir":false,"title":"Symphony No. 5: III. Scherzo","track":6,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"displayComposer":"Ludwig van Beethoven"},{"id":"c5","isDir":false,"title":"Symphony No. 5: IV. Allegro","track":7,"duration":660,"works":[{"name":"Symphony No. 5","musicBrainzId":"w5"}],"displayComposer":"Ludwig van Beethoven"}]"#;
 
+    /// A composition with its movements and its recordings on two albums, the
+    /// second album's between the first's.
+    const SYMPHONY: &str = r#""id":"w5","name":"Symphony No. 5","composers":[{"id":"r9","name":"Ludwig van Beethoven"}],"composed":{"from":{"year":1804},"to":{"year":1808}},"albumCount":2,"coverArt":"al-a2","movement":[{"name":"I. Allegro con brio","number":1},{"name":"II. Andante con moto","number":2},{"name":"III. Scherzo","number":3},{"name":"IV. Allegro","number":4}],"song":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","album":"Symphonies","albumId":"a2","year":1974,"duration":441,"artist":"Wiener Philharmoniker","artistId":"r7","recorded":{"from":{"year":1974,"month":3,"day":2},"to":{"year":1974,"month":3,"day":2},"places":["Musikverein"]}},{"id":"k1","isDir":false,"title":"Symphony No. 5","album":"Live in Munich","albumId":"a3","year":1982,"duration":1900,"artists":[{"id":"r8","name":"Carlos Kleiber"},{"id":"r12","name":"Bayerisches Staatsorchester"}]},{"id":"c2","isDir":false,"title":"Symphony No. 5: II. Andante con moto","album":"Symphonies","albumId":"a2","year":1974,"duration":588,"artists":[{"id":"r7","name":"Wiener Philharmoniker"},{"id":"r8","name":"Carlos Kleiber"}],"recorded":{"from":{"year":1974,"month":4},"to":{"year":1974,"month":4},"places":["Musikverein"]}}]"#;
+
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// While set, the flow test's server answers every request with an error.
@@ -433,6 +431,8 @@ mod tests {
     /// but its first part.
     static LISTS: AtomicUsize = AtomicUsize::new(0);
     static LATER_DOWN: AtomicBool = AtomicBool::new(false);
+    /// How many hearts were refused: every unstar, and the symphony's star.
+    static REFUSED: AtomicUsize = AtomicUsize::new(0);
 
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
@@ -462,7 +462,7 @@ mod tests {
         let id = param("id");
         if request.contains("getOpenSubsonicExtensions") {
             ok(
-                r#""openSubsonicExtensions":[{"name":"songLyrics","versions":[1]},{"name":"fonotecaAlbumMotion","versions":[1]}]"#,
+                r#""openSubsonicExtensions":[{"name":"songLyrics","versions":[1]},{"name":"fonotecaAlbumMotion","versions":[1]},{"name":"fonotecaCompositions","versions":[1]}]"#,
             )
         } else if !request.contains("u=joe&") {
             json(WRONG_PASSWORD)
@@ -551,12 +551,33 @@ mod tests {
         } else if request.contains("/rest/getPlaylist") {
             let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}]"#;
             ok(&format!(r#""playlist":{{{ROAD_TRIP},"entry":{songs}}}"#))
+        } else if request.contains("/rest/getComposers") {
+            ok(
+                r#""composers":{"index":[{"name":"B","composer":[{"id":"r9","name":"Ludwig van Beethoven","sortName":"Beethoven, Ludwig van","coverArt":"ar-r9","compositionCount":2}]},{"name":"M","composer":[{"id":"r10","name":"Wolfgang Amadeus Mozart","compositionCount":1}]}]}"#,
+            )
+        } else if request.contains("/rest/getCompositions") && id == Some("w5") {
+            ok(&format!(
+                r#""compositions":{{"composition":[{{{SYMPHONY}}}]}}"#
+            ))
+        } else if request.contains("/rest/getCompositions") {
+            let egmont = r#"{"id":"w9","name":"Egmont Overture","composers":[{"id":"r9","name":"Ludwig van Beethoven"}],"composed":{"from":{"year":1809},"to":{"year":1810}},"albumCount":1}"#;
+            let requiem = r#"{"id":"w7","name":"Requiem","composers":[{"id":"r10","name":"Wolfgang Amadeus Mozart"},{"id":"r11","name":"Franz Xaver Süssmayr"}],"albumCount":3,"form":"Requiem","period":"Classical","starred":"2026-10-19T08:00:00Z","key":"D minor","movementCount":14,"duration":3300,"lyricists":[{"id":"r12","name":"Thomas of Celano"},{"id":"","name":"Liturgy"}],"languages":["lat","deu"]}"#;
+            let symphony = r#"{"id":"w5","name":"Symphony No. 5","composers":[{"id":"r9","name":"Ludwig van Beethoven"}],"composed":{"from":{"year":1804},"to":{"year":1808}},"albumCount":2,"movementCount":4}"#;
+            let pieces = if param("composerId") == Some("r9") {
+                [egmont, symphony].join(",")
+            } else {
+                [egmont, requiem, symphony].join(",")
+            };
+            ok(&format!(r#""compositions":{{"composition":[{pieces}]}}"#))
         } else if request.contains("/rest/getCoverArt") {
             if COVERS.fetch_add(1, Relaxed) < 6 {
                 FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
             }
             reply("200 OK", "image/png", PNG)
-        } else if request.contains("/rest/unstar") {
+        } else if request.contains("/rest/unstar")
+            || (request.contains("/rest/star") && id == Some("w5"))
+        {
+            REFUSED.fetch_add(1, Relaxed);
             json(
                 r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Not allowed"}}}"#,
             )
@@ -945,12 +966,12 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 5);
+            assert_eq!(ui.get_sections().row_count(), 7);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Playlists);
-            assert_eq!(ui.get_section(), 3);
+            assert_eq!(ui.get_section(), 5);
             DOWN.store(false, Relaxed);
             click(&ui, "Try again");
             wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
@@ -970,6 +991,8 @@ mod tests {
                     "Albums",
                     "Artists",
                     "Tracks",
+                    "Composers",
+                    "Compositions",
                     "Playlists",
                     "Road Trip",
                     "Empty",
@@ -983,15 +1006,17 @@ mod tests {
                     "Library",
                     "Library",
                     "Library",
+                    "Library",
+                    "Library",
                     "Playlists",
                     "Playlists",
                     ""
                 ]
             );
-            ui.invoke_show_section(4);
+            ui.invoke_show_section(6);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
-            assert_eq!(ui.get_section(), 4);
+            assert_eq!(ui.get_section(), 6);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
             // Each track with its artists, then its album.
@@ -1006,7 +1031,7 @@ mod tests {
             assert_eq!(links(&tracks[1]), [""]);
             assert!(!tracks[1].loved);
             click(&ui, "Account");
-            assert_eq!(ui.get_section(), 6);
+            assert_eq!(ui.get_section(), 8);
             // Shown again at once, while they are asked for again.
             click(&ui, "Playlists");
             assert_eq!(ui.get_tiles().row_count(), 2);
@@ -1178,6 +1203,308 @@ mod tests {
             wait_for("a few frames' time", || Instant::now() > later).await;
             assert_ne!(ui.get_header_image().size().width, 2);
 
+            // A composer's page opened before the composers have arrived asks
+            // for them too, for the picture.
+            ui.invoke_open("composer:r9".into());
+            wait_for("his picture", || ui.get_header_image().size().width > 0).await;
+            // With Fonoteca's compositions, composers are round tiles and
+            // filter like the artists.
+            click(&ui, "Composers");
+            wait_for("the composers", || ui.get_tiles().row_count() == 2).await;
+            assert_eq!(ui.get_page(), Page::Composers);
+            assert_eq!(ui.get_section(), 3);
+            let tile = ui.get_tiles().row_data(0).unwrap();
+            assert_eq!(
+                (tile.title.as_str(), tile.link.as_str()),
+                ("Ludwig van Beethoven", "composer:r9")
+            );
+            assert_eq!(tile.names.row_data(0).unwrap().label, "2 compositions");
+            ui.set_composer_filter("moz".into());
+            ui.invoke_filter_composers();
+            wait_for("one composer", || ui.get_tiles().row_count() == 1).await;
+            assert_eq!(ui.get_tiles().row_data(0).unwrap().link, "composer:r10");
+            ui.set_composer_filter("".into());
+            ui.invoke_filter_composers();
+            wait_for("both composers", || ui.get_tiles().row_count() == 2).await;
+            // A composer's page lists their pieces, without their own name on
+            // each.
+            click(&ui, "Ludwig van Beethoven");
+            wait_for("his pieces", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_page(), Page::Composer);
+            assert_eq!(ui.get_header_title(), "Ludwig van Beethoven");
+            assert_eq!(ui.get_header_facts(), "2 compositions");
+            let rows = |ui: &AppWindow| -> Vec<(String, String, String, String, Vec<String>)> {
+                ui.get_tracks()
+                    .iter()
+                    .map(|track| {
+                        let names = track.names.iter().map(|name| name.link.into()).collect();
+                        (
+                            track.title.into(),
+                            track.years.into(),
+                            track.duration.into(),
+                            track.link.into(),
+                            names,
+                        )
+                    })
+                    .collect()
+            };
+            let row = |title: &str, years: &str, end: &str, link: &str, names: &[&str]| {
+                let names = names.iter().map(|name| name.to_string()).collect();
+                (title.into(), years.into(), end.into(), link.into(), names)
+            };
+            assert_eq!(
+                rows(&ui),
+                [
+                    row(
+                        "Egmont Overture",
+                        "1809 – 1810",
+                        "1 album",
+                        "composition:w9",
+                        &[]
+                    ),
+                    row(
+                        "Symphony No. 5",
+                        "1804 – 1808",
+                        "2 albums",
+                        "composition:w5",
+                        &[]
+                    ),
+                ]
+            );
+            // The compositions page is a table like the tracks page's, with
+            // the composers linked, found by name or composer.
+            click(&ui, "Compositions");
+            wait_for("the compositions", || ui.get_track_lines().row_count() == 3).await;
+            assert_eq!(ui.get_page(), Page::Compositions);
+            let headings: Vec<String> = ui
+                .get_track_columns()
+                .iter()
+                .map(|column| column.title.into())
+                .collect();
+            assert_eq!(
+                headings,
+                [
+                    "Cover",
+                    "Composition",
+                    "Composer",
+                    "Date",
+                    "Period",
+                    "Form",
+                    "Performances",
+                    "Loved"
+                ]
+            );
+            let piece = |ui: &AppWindow, row: usize| {
+                let line = ui.get_track_lines().row_data(row).unwrap();
+                let cells: Vec<Vec<(String, String)>> = line
+                    .cells
+                    .iter()
+                    .map(|names| {
+                        names
+                            .iter()
+                            .map(|name| (name.label.into(), name.link.into()))
+                            .collect()
+                    })
+                    .collect();
+                cells
+            };
+            let plain = |label: &str| vec![(label.to_owned(), String::new())];
+            let composers = vec![
+                (
+                    "Wolfgang Amadeus Mozart".to_owned(),
+                    "composer:r10".to_owned(),
+                ),
+                ("Franz Xaver Süssmayr".to_owned(), "composer:r11".to_owned()),
+            ];
+            let requiem = vec![("Requiem".to_owned(), "composition:w7".to_owned())];
+            assert_eq!(
+                piece(&ui, 1),
+                [
+                    vec![],
+                    requiem,
+                    composers,
+                    vec![],
+                    plain("Classical"),
+                    plain("Requiem"),
+                    plain("3"),
+                    vec![]
+                ]
+            );
+            assert!(ui.get_track_lines().row_data(1).unwrap().loved);
+            assert_eq!(piece(&ui, 2)[3], plain("1804 – 1808"));
+            // By the year begun, either way with the undated last.
+            let order = |ui: &AppWindow| -> Vec<String> {
+                ui.get_track_lines()
+                    .iter()
+                    .map(|line| {
+                        line.cells
+                            .row_data(1)
+                            .unwrap()
+                            .row_data(0)
+                            .unwrap()
+                            .link
+                            .into()
+                    })
+                    .collect()
+            };
+            // Loved ones last, by the hearts the server sent.
+            ui.invoke_sort_tracks(7);
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w5", "composition:w7"]
+            );
+            ui.invoke_sort_tracks(3);
+            assert_eq!(
+                order(&ui),
+                ["composition:w5", "composition:w9", "composition:w7"]
+            );
+            ui.invoke_sort_tracks(3);
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w5", "composition:w7"]
+            );
+            // The columns hidden at first hold the rest of what the server
+            // knows of a piece.
+            let more = ["Key", "Movements", "Duration", "Lyricists", "Languages"];
+            let choose = |ui: &AppWindow, title: &str| {
+                let at = ui
+                    .get_track_choices()
+                    .iter()
+                    .position(|choice| choice.title == title)
+                    .unwrap();
+                ui.invoke_toggle_track_column(at as i32);
+            };
+            for title in more {
+                choose(&ui, title);
+            }
+            let heading = |ui: &AppWindow, title: &str| {
+                ui.get_track_columns()
+                    .iter()
+                    .position(|column| column.title == title)
+                    .unwrap()
+            };
+            let cells = piece(&ui, 2);
+            let cell = |title: &str| cells[heading(&ui, title)].clone();
+            assert_eq!(cell("Key"), plain("D minor"));
+            assert_eq!(cell("Movements"), plain("14"));
+            assert_eq!(cell("Duration"), plain("55:00"));
+            assert_eq!(
+                cell("Lyricists"),
+                [
+                    ("Thomas of Celano".to_owned(), "artist:r12".to_owned()),
+                    ("Liturgy".to_owned(), String::new())
+                ]
+            );
+            assert_eq!(cell("Languages"), plain("Latin, German"));
+            ui.invoke_sort_tracks(heading(&ui, "Movements") as i32);
+            assert_eq!(
+                order(&ui),
+                ["composition:w5", "composition:w7", "composition:w9"]
+            );
+            ui.invoke_sort_tracks(heading(&ui, "Duration") as i32);
+            assert_eq!(
+                order(&ui),
+                ["composition:w7", "composition:w9", "composition:w5"]
+            );
+            for title in more {
+                choose(&ui, title);
+            }
+            ui.invoke_sort_tracks(3);
+            ui.invoke_sort_tracks(3);
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w5", "composition:w7"]
+            );
+            let saved = crate::prefs::load();
+            assert_eq!(saved.composition_sort.as_deref(), Some("Date"));
+            assert!(saved.composition_descending);
+            // Its columns are picked apart from the tracks table's, and the
+            // composition's name takes the room left over.
+            let mbid = ui
+                .get_track_choices()
+                .iter()
+                .position(|choice| choice.title == "MusicBrainz ID")
+                .unwrap();
+            ui.invoke_toggle_track_column(mbid as i32);
+            let last = ui.get_track_columns().iter().last().unwrap();
+            assert_eq!(last.title, "MusicBrainz ID");
+            let line = ui.get_track_lines().row_data(0).unwrap();
+            assert_eq!(line.cells.row_count(), 9);
+            assert!(ui.get_track_columns().row_data(1).unwrap().stretch);
+            let saved = crate::prefs::load().composition_columns.unwrap();
+            assert!(saved.contains(&"MusicBrainz ID".to_owned()));
+            // Its rows are the tracks table's: the heart loves the piece on
+            // the server, a right-click selects it, the menu goes to its
+            // composers.
+            assert_eq!(line.artists.row_data(0).unwrap().link, "composer:r9");
+            ui.invoke_toggle_line_love(0);
+            assert!(ui.get_track_lines().row_data(0).unwrap().loved);
+            wait_for("the piece's star", || {
+                STARRED.lock().unwrap().contains(&"w9".to_owned())
+            })
+            .await;
+            ui.invoke_select_line(1);
+            assert!(ui.get_track_lines().row_data(1).unwrap().selected);
+            assert_eq!(ui.get_selected_tiles(), 1);
+            // It stays selected in another order.
+            ui.invoke_sort_tracks(3);
+            assert!(ui.get_track_lines().row_data(0).unwrap().selected);
+            ui.invoke_sort_tracks(3);
+            ui.invoke_clear_selection();
+            assert!(!ui.get_track_lines().row_data(1).unwrap().selected);
+            ui.set_composition_filter("beethoven SYMPH".into());
+            ui.invoke_filter_compositions();
+            wait_for("one composition", || ui.get_track_lines().row_count() == 1).await;
+            // Its page has a row for each album that holds it, which opens
+            // the album.
+            click(&ui, "Symphony No. 5");
+            wait_for("the symphony", || {
+                ui.get_page() == Page::Composition && ui.get_tracks().row_count() == 2
+            })
+            .await;
+            assert_eq!(ui.get_header_title(), "Symphony No. 5");
+            assert_eq!(
+                ui.get_header_facts(),
+                "1804 – 1808 · 4 movements · 2 performances"
+            );
+            let header: Vec<String> = ui
+                .get_header_names()
+                .iter()
+                .map(|n| n.link.into())
+                .collect();
+            assert_eq!(header, ["composer:r9"]);
+            assert_eq!(
+                rows(&ui),
+                [
+                    row("Symphonies", "1974", "17:09", "album:a2", &["artist:r7"]),
+                    row(
+                        "Live in Munich",
+                        "1982",
+                        "31:40",
+                        "album:a3",
+                        &["artist:r8", "artist:r12"]
+                    ),
+                ]
+            );
+            let performed: Vec<String> =
+                ui.get_tracks().iter().map(|t| t.performed.into()).collect();
+            assert_eq!(
+                performed,
+                ["Performed 2 Mar 1974 – Apr 1974, Musikverein", ""]
+            );
+            click(&ui, "Live in Munich");
+            wait_for("its album", || ui.get_page() == Page::Album).await;
+            click(&ui, "Back");
+            wait_for("the symphony again", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Ludwig van Beethoven");
+            wait_for("his page", || ui.get_page() == Page::Composer).await;
+            // The filter is kept for the session.
+            click(&ui, "Compositions");
+            assert_eq!(ui.get_track_lines().row_count(), 1);
+            ui.set_composition_filter("".into());
+            ui.invoke_filter_compositions();
+            wait_for("all compositions", || ui.get_track_lines().row_count() == 3).await;
+
             // The tracks page lists every song in the columns picked, a page
             // at a time.
             click(&ui, "Tracks");
@@ -1228,6 +1555,17 @@ mod tests {
             assert_eq!(ui.get_track_lines().row_count(), 230);
             wait_for("the empty part after the last", || !ui.get_more_tiles()).await;
             assert_eq!(ui.get_track_lines().row_count(), 230);
+            // The filter finds songs by title, artist or album.
+            ui.set_track_filter("mara night".into());
+            ui.invoke_filter_tracks();
+            wait_for("one track", || ui.get_track_lines().row_count() == 1).await;
+            assert_eq!(cell(&ui, 0, 1), one("Harbour Lights", ""));
+            ui.set_track_filter("".into());
+            ui.invoke_filter_tracks();
+            wait_for("the tracks again", || {
+                ui.get_track_lines().row_count() == 100
+            })
+            .await;
             // A song loved on another page is loved here too.
             let loved =
                 |ui: &AppWindow, row: usize| ui.get_track_lines().row_data(row).unwrap().loved;
@@ -1346,6 +1684,65 @@ mod tests {
             wait_for("the refused unstar", || ui.get_page_problem() != "").await;
             assert!(loved(&ui, 2));
             ui.set_page_problem("".into());
+            // Refused after the page has changed, the heart goes back on its
+            // song, not on the row in its place on the compositions page.
+            assert!(loved(&ui, 1));
+            let unstars = REFUSED.load(Relaxed);
+            ui.invoke_toggle_line_love(1);
+            click(&ui, "Compositions");
+            let hearts = |ui: &AppWindow| -> Vec<bool> {
+                ui.get_track_lines().iter().map(|line| line.loved).collect()
+            };
+            assert_eq!(hearts(&ui), [true, false, true]);
+            wait_for("the song's refused unstar", || {
+                REFUSED.load(Relaxed) > unstars
+            })
+            .await;
+            // A piece's refused heart goes back too; its answer comes after
+            // the song's, so that one has been handled by then.
+            ui.invoke_toggle_line_love(2);
+            assert_eq!(hearts(&ui), [true, false, false]);
+            wait_for("the piece's refused unstar", || ui.get_page_problem() != "").await;
+            assert_eq!(hearts(&ui), [true, false, true]);
+            ui.set_page_problem("".into());
+            click(&ui, "Tracks");
+            assert!(loved(&ui, 1));
+            // The same the other way: the symphony's refused heart doesn't
+            // land on the loved song in its place on the tracks page...
+            click(&ui, "Compositions");
+            let refused = REFUSED.load(Relaxed);
+            ui.invoke_toggle_line_love(1);
+            click(&ui, "Tracks");
+            wait_for("the symphony's refused star", || {
+                REFUSED.load(Relaxed) > refused
+            })
+            .await;
+            ui.invoke_toggle_line_love(0);
+            wait_for("the song's refused unstar", || ui.get_page_problem() != "").await;
+            ui.set_page_problem("".into());
+            assert!(loved(&ui, 0) && loved(&ui, 1));
+            // ...nor a playlist song's on the unloved symphony.
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            let fugue = ui
+                .get_tracks()
+                .iter()
+                .position(|song| song.title == "Fugue")
+                .unwrap() as i32;
+            let refused = REFUSED.load(Relaxed);
+            ui.invoke_toggle_love(fugue);
+            ui.invoke_toggle_love(fugue);
+            click(&ui, "Compositions");
+            wait_for("the song's refused unstar", || {
+                REFUSED.load(Relaxed) > refused
+            })
+            .await;
+            ui.invoke_toggle_line_love(0);
+            wait_for("the piece's refused unstar", || ui.get_page_problem() != "").await;
+            ui.set_page_problem("".into());
+            assert_eq!(hearts(&ui), [true, false, true]);
+            click(&ui, "Tracks");
+            assert!(loved(&ui, 1));
             ui.invoke_sort_tracks(column(&ui, "Year"));
             // A right-click selects a row, with the cards' selection, and it
             // stays selected through sorting. Its menu goes to its album and
@@ -1401,6 +1798,13 @@ mod tests {
             wait_for("the tracks", || again.get_track_lines().row_count() == 100).await;
             assert_eq!(titles(&again), titles(&ui));
             assert_eq!(sorted(&again), [("Year".to_owned(), true)]);
+            click(&again, "Compositions");
+            wait_for("the compositions", || {
+                again.get_track_lines().row_count() == 3
+            })
+            .await;
+            assert_eq!(titles(&again).last().unwrap(), "MusicBrainz ID");
+            assert_eq!(sorted(&again), [("Date".to_owned(), true)]);
             drop(again);
 
             click(&ui, "Account");

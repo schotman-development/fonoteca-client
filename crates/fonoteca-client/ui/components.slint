@@ -625,6 +625,7 @@ export component TrackLineRow inherits Rectangle {
                 width: parent.width;
                 alignment: start;
                 names: slot.names;
+                text-color: column.stretch ? Theme.text : Theme.muted;
                 open(link) => { root.open(link); }
                 context-clicked => { root.select(); }
             }

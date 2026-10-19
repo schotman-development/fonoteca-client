@@ -1,7 +1,8 @@
 //! The library pages after sign-in: what each page shows, where its links lead,
 //! and the history behind back and forward. A link is a page's address, such
 //! as "albums", "artists", "tracks", "playlists", "album:<id>", "artist:<id>"
-//! or "playlist:<id>".
+//! or "playlist:<id>", and on servers with Fonoteca's compositions
+//! "composers", "compositions", "composer:<id>" or "composition:<id>".
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -14,8 +15,8 @@ use std::time::Duration;
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
-    AlbumID3, AlbumListType, ArtistID3, Child, Client, ExplicitStatus, GenericMediaType, ItemDate,
-    ListOptions, MediaType, Playlist, SearchOptions,
+    AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
+    GenericMediaType, ItemDate, ListOptions, MediaType, Playlist, SearchOptions, Span,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -48,19 +49,20 @@ const HEADER_SIZE: f32 = 220.0;
 const LINE_COVER_SIZE: f32 = 42.0;
 /// Fonoteca's extension for motion covers.
 const MOTION: &str = "fonotecaAlbumMotion";
+/// Fonoteca's extension for composers and compositions.
+const COMPOSITIONS: &str = "fonotecaCompositions";
 
 #[derive(Default)]
 pub struct Browser {
     client: Option<Rc<Client>>,
-    listenbrainz: Option<Rc<listenbrainz::Client>>,
     history: Vec<String>,
     at: usize,
     /// Counts the pages shown, so an answer for a page left behind is dropped.
     visit: i32,
     tiles: Rc<VecModel<AlbumTile>>,
     tracks: Rc<VecModel<Track>>,
-    /// Song id and MusicBrainz recording id of each track row.
-    songs: Vec<(String, Option<String>)>,
+    /// Song id of each track row.
+    songs: Vec<String>,
     /// Tile or tracks table rows whose covers are still to fetch, the rows on
     /// screen or just below it, and how many fetches run.
     covers: BTreeMap<usize, String>,
@@ -79,6 +81,12 @@ pub struct Browser {
     /// Every artist on the server, once they have arrived.
     artists: Vec<ArtistID3>,
     artists_loaded: bool,
+    /// Every composer and every composition, on servers with Fonoteca's
+    /// compositions, once they have arrived.
+    composers: Vec<Composer>,
+    composers_loaded: bool,
+    compositions: Vec<Composition>,
+    compositions_loaded: bool,
     /// The playlists, for the sidebar and the playlists page, asked for on
     /// sign-in and on every visit to that page.
     playlists: Vec<Playlist>,
@@ -92,11 +100,10 @@ pub struct Browser {
     song_list_loaded: bool,
     song_view: Vec<usize>,
     lines: Rc<VecModel<TrackLine>>,
-    /// Which of `COLUMNS` the tracks table shows, the one it is sorted by and
-    /// whether that is turned around.
-    columns: Vec<bool>,
-    track_sort: Option<usize>,
-    track_descending: bool,
+    /// What the tracks table shows of `COLUMNS` and the compositions table
+    /// of `PIECE_COLUMNS`, and how they are sorted.
+    track_table: Table,
+    piece_table: Table,
     /// The filter of the albums or artists page on screen, and what it
     /// shows, as indexes into `library` or `artists` in the page's order.
     filter: String,
@@ -111,21 +118,18 @@ pub struct Browser {
 pub type Shared = Rc<RefCell<Browser>>;
 
 /// Opens the albums page with a signed-in client.
-pub fn start(
-    ui: &AppWindow,
-    browser: &Shared,
-    client: Client,
-    listenbrainz: Option<listenbrainz::Client>,
-) {
+pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     {
         let mut b = browser.borrow_mut();
         b.client = Some(Rc::new(client));
-        b.listenbrainz = listenbrainz.map(Rc::new);
         b.history.clear();
     }
     load_prefs(ui, browser);
     ui.set_album_filter("".into());
     ui.set_artist_filter("".into());
+    ui.set_composer_filter("".into());
+    ui.set_composition_filter("".into());
+    ui.set_track_filter("".into());
     sidebar(ui, browser);
     load_playlists(ui, browser);
     open(ui, browser, "albums".into());
@@ -155,7 +159,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         move |index| {
             let link = usize::try_from(index).ok().and_then(|index| {
                 let b = browser.borrow();
-                sections(&b.playlists)
+                sections(&b.playlists, offers_compositions(&b))
                     .into_iter()
                     .nth(index)
                     .map(|(link, ..)| link)
@@ -217,7 +221,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         }
     };
     ui.on_filter_albums(filter.clone());
-    ui.on_filter_artists(filter);
+    ui.on_filter_artists(filter.clone());
+    ui.on_filter_composers(filter.clone());
+    ui.on_filter_compositions(filter.clone());
+    ui.on_filter_tracks(filter);
     ui.on_tiles_in_view({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |first, last| {
@@ -265,18 +272,25 @@ fn select_tile(ui: &AppWindow, browser: &Shared, row: usize) {
     ui.set_selected_tiles(count as i32);
 }
 
-/// Selects the song of a row of the tracks table, or lets it go if it is
-/// selected.
+/// Selects the song or composition of a row of the tracks or compositions
+/// table, or lets it go if it is selected.
 fn select_line(ui: &AppWindow, browser: &Shared, row: usize) {
     let count = {
         let mut b = browser.borrow_mut();
-        let Some(&song) = b.song_view.get(row) else {
-            return;
+        let link = if ui.get_page() == Page::Compositions {
+            let Some(&piece) = b.view.get(row) else {
+                return;
+            };
+            piece_link(&b.compositions[piece])
+        } else {
+            let Some(&song) = b.song_view.get(row) else {
+                return;
+            };
+            song_link(&b.song_list[song])
         };
         let Some(mut line) = b.lines.row_data(row) else {
             return;
         };
-        let link = song_link(&b.song_list[song]);
         line.selected = match b.selected.iter().position(|picked| *picked == link) {
             Some(at) => {
                 b.selected.remove(at);
@@ -401,6 +415,22 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Playlist);
             playlist(ui, browser, id);
         }
+        "composers" => {
+            ui.set_page(Page::Composers);
+            composers(ui, browser);
+        }
+        "compositions" => {
+            ui.set_page(Page::Compositions);
+            compositions(ui, browser);
+        }
+        "composer" => {
+            ui.set_page(Page::Composer);
+            composer(ui, browser, id);
+        }
+        "composition" => {
+            ui.set_page(Page::Composition);
+            composition(ui, browser, id);
+        }
         "account" => ui.set_page(Page::Account),
         _ => {
             ui.set_page(Page::Albums);
@@ -409,16 +439,28 @@ fn show(ui: &AppWindow, browser: &Shared) {
     }
 }
 
+/// Whether the server has Fonoteca's composers and compositions.
+fn offers_compositions(b: &Browser) -> bool {
+    b.client
+        .as_ref()
+        .is_some_and(|client| client.supports(COMPOSITIONS))
+}
+
 /// The sidebar's entries, as links, labels and groups: the library's pages,
-/// the playlists and the account.
-fn sections(playlists: &[Playlist]) -> Vec<(String, &str, &str)> {
+/// with the composers and compositions where the server has them, the
+/// playlists and the account.
+fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &str)> {
     let library = [
-        ("albums", "Albums"),
-        ("artists", "Artists"),
-        ("tracks", "Tracks"),
-        ("playlists", "Playlists"),
+        ("albums", "Albums", true),
+        ("artists", "Artists", true),
+        ("tracks", "Tracks", true),
+        ("composers", "Composers", compositions),
+        ("compositions", "Compositions", compositions),
+        ("playlists", "Playlists", true),
     ]
-    .map(|(link, label)| (link.to_owned(), label, "Library"));
+    .into_iter()
+    .filter(|&(.., shown)| shown)
+    .map(|(link, label, _)| (link.to_owned(), label, "Library"));
     let playlists = playlists.iter().map(|playlist| {
         let link = format!("playlist:{}", playlist.id);
         (link, playlist.name.as_str(), "Playlists")
@@ -433,7 +475,7 @@ fn sections(playlists: &[Playlist]) -> Vec<(String, &str, &str)> {
 /// The sidebar entry of the page on screen, or -1 when it has none.
 fn section(b: &Browser) -> i32 {
     let link = b.history.get(b.at);
-    let at = sections(&b.playlists)
+    let at = sections(&b.playlists, offers_compositions(b))
         .iter()
         .position(|section| Some(&section.0) == link);
     at.map_or(-1, |at| at as i32)
@@ -442,10 +484,11 @@ fn section(b: &Browser) -> i32 {
 /// Lists the sidebar's entries, the page on screen's current.
 fn sidebar(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
-    let (labels, groups): (Vec<SharedString>, Vec<SharedString>) = sections(&b.playlists)
-        .into_iter()
-        .map(|(_, label, group)| (label.into(), group.into()))
-        .unzip();
+    let (labels, groups): (Vec<SharedString>, Vec<SharedString>) =
+        sections(&b.playlists, offers_compositions(&b))
+            .into_iter()
+            .map(|(_, label, group)| (label.into(), group.into()))
+            .unzip();
     ui.set_sections(ModelRc::new(VecModel::from(labels)));
     ui.set_section_groups(ModelRc::new(VecModel::from(groups)));
     ui.set_section(section(&b));
@@ -579,6 +622,55 @@ fn artists(ui: &AppWindow, browser: &Shared) {
     );
 }
 
+/// Shows every composer on the composers page, asking for them first if they
+/// haven't arrived yet.
+fn composers(ui: &AppWindow, browser: &Shared) {
+    if browser.borrow().composers_loaded {
+        arrange(ui, browser);
+        return;
+    }
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_composers().await },
+        |ui, browser, composers| {
+            {
+                let mut b = browser.borrow_mut();
+                b.composers = composers
+                    .index
+                    .into_iter()
+                    .flat_map(|index| index.composer)
+                    .collect();
+                b.composers_loaded = true;
+            }
+            arrange(ui, browser);
+        },
+    );
+}
+
+/// Shows every composition on the compositions page, asking for them first if
+/// they haven't arrived yet.
+fn compositions(ui: &AppWindow, browser: &Shared) {
+    show_columns(ui, browser);
+    if browser.borrow().compositions_loaded {
+        arrange(ui, browser);
+        return;
+    }
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_compositions(None).await },
+        |ui, browser, compositions| {
+            {
+                let mut b = browser.borrow_mut();
+                b.compositions = compositions.composition;
+                b.compositions_loaded = true;
+            }
+            arrange(ui, browser);
+        },
+    );
+}
+
 /// Asks for the playlists, for the sidebar and the playlists page.
 fn load_playlists(ui: &AppWindow, browser: &Shared) {
     let Some(client) = browser.borrow().client.clone() else {
@@ -664,19 +756,18 @@ fn show_playlists(ui: &AppWindow, browser: &Shared) {
     add_tiles(ui, browser, tiles);
 }
 
-/// A column the tracks table can show: its heading, its width in logical
-/// pixels, whether it is shown at first, what it shows of a song, and for
-/// numbers the value it sorts by; other columns sort by what they show. One
-/// for every field of a song in OpenSubsonic but the ids, which its links use.
-struct Column {
+/// A column a table can show: its heading, its width in logical pixels,
+/// whether it is shown at first, what it shows of a row's item, and for
+/// numbers the value it sorts by; other columns sort by what they show.
+struct Column<T> {
     title: &'static str,
     width: f32,
     shown: bool,
-    cell: fn(&Child) -> Vec<Name>,
-    number: Option<fn(&Child) -> Option<f64>>,
+    cell: fn(&T) -> Vec<Name>,
+    number: Option<fn(&T) -> Option<f64>>,
 }
 
-const fn column(title: &'static str, width: f32, cell: fn(&Child) -> Vec<Name>) -> Column {
+const fn column<T>(title: &'static str, width: f32, cell: fn(&T) -> Vec<Name>) -> Column<T> {
     Column {
         title,
         width,
@@ -686,26 +777,45 @@ const fn column(title: &'static str, width: f32, cell: fn(&Child) -> Vec<Name>) 
     }
 }
 
-const fn numeric(
+const fn numeric<T>(
     title: &'static str,
     width: f32,
-    cell: fn(&Child) -> Vec<Name>,
-    number: fn(&Child) -> Option<f64>,
-) -> Column {
+    cell: fn(&T) -> Vec<Name>,
+    number: fn(&T) -> Option<f64>,
+) -> Column<T> {
     Column {
         number: Some(number),
         ..column(title, width, cell)
     }
 }
 
-/// The column with the album's cover, the one that takes the room left over,
-/// and the one with the heart.
+/// Which of a table's columns it shows, the one it is sorted by and whether
+/// that is turned around.
+#[derive(Default)]
+struct Table {
+    shown: Vec<bool>,
+    sort: Option<usize>,
+    descending: bool,
+}
+
+impl Table {
+    /// The indexes of the columns shown.
+    fn shown(&self) -> Vec<usize> {
+        (0..self.shown.len()).filter(|&c| self.shown[c]).collect()
+    }
+}
+
+/// The column with the cover, the ones that take the room left over, and the
+/// one with the heart.
 const COVER: &str = "Cover";
 const TITLE: &str = "Title";
+const COMPOSITION: &str = "Composition";
 const LOVED: &str = "Loved";
 
+/// The tracks table's columns: one for every field of a song in OpenSubsonic
+/// but the ids, which its links use.
 #[rustfmt::skip]
-const COLUMNS: &[Column] = &[
+const COLUMNS: &[Column<Child>] = &[
     Column { shown: true, ..column(COVER, LINE_COVER_SIZE, |_| Vec::new()) },
     Column { shown: true, ..column(TITLE, 240.0, |song| text(&song.title)) },
     Column { shown: true, ..column("Artists", 180.0, song_names) },
@@ -775,6 +885,34 @@ const COLUMNS: &[Column] = &[
     numeric("Width", 64.0, |song| number(song.original_width), |song| float(song.original_width)),
     numeric("Height", 64.0, |song| number(song.original_height), |song| float(song.original_height)),
     numeric("Bookmark", 80.0, |song| text(&song.bookmark_position.map(duration).unwrap_or_default()), |song| float(song.bookmark_position)),
+];
+
+/// The compositions table's columns, as Roon's: one for every field of a
+/// composition in Fonoteca's compositions but the ids. Dates sort by the
+/// year it was begun, periods by when they were.
+#[rustfmt::skip]
+const PIECE_COLUMNS: &[Column<Composition>] = &[
+    Column { shown: true, ..column(COVER, LINE_COVER_SIZE, |_| Vec::new()) },
+    Column { shown: true, ..column(COMPOSITION, 200.0, |piece| vec![Name { label: piece.name.as_str().into(), link: piece_link(piece).into() }]) },
+    Column { shown: true, ..column("Composer", 170.0, |piece| piece.composers.iter().map(composer_name).collect()) },
+    Column { shown: true, ..numeric("Date", 88.0, |piece| text(&years(piece.composed.as_ref())), |piece| {
+        let span = piece.composed.as_ref()?;
+        float(span.from.as_ref().or(span.to.as_ref())?.year)
+    }) },
+    Column { shown: true, ..numeric("Period", 96.0, |piece| text_of(&piece.period), |piece| {
+        let period = piece.period.as_deref()?;
+        PERIODS.iter().position(|known| *known == period).map(|at| at as f64)
+    }) },
+    Column { shown: true, ..column("Form", 104.0, |piece| text_of(&piece.form)) },
+    column("Key", 104.0, |piece| text_of(&piece.key)),
+    numeric("Movements", 88.0, |piece| number(piece.movement_count), |piece| float(piece.movement_count)),
+    numeric("Duration", 72.0, |piece| text(&piece.duration.map(duration).unwrap_or_default()), |piece| float(piece.duration)),
+    column("Lyricists", 170.0, |piece| piece.lyricists.iter().map(lyricist_name).collect()),
+    column("Languages", 120.0, |piece| text(&piece.languages.iter().map(|code| language(code)).collect::<Vec<_>>().join(", "))),
+    Column { shown: true, ..numeric("Performances", 96.0, |piece| number(piece.album_count), |piece| float(piece.album_count)) },
+    Column { shown: true, ..numeric(LOVED, 40.0, |_| Vec::new(), |piece| Some(if piece.starred.is_some() { 1.0 } else { 0.0 })) },
+    column("Starred", 100.0, |piece| day(&piece.starred)),
+    column("MusicBrainz ID", 290.0, |piece| text_of(&piece.music_brainz_id)),
 ];
 
 /// A cell of one plain value, or an empty one.
@@ -853,20 +991,29 @@ fn tracks(ui: &AppWindow, browser: &Shared) {
     arrange_tracks(ui, browser);
 }
 
-/// The tracks table's columns, the one it is sorted by, and the choices.
+/// The table's columns, the one it is sorted by, and the choices: the
+/// compositions table's on that page, else the tracks table's.
 fn show_columns(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
-    let shown = shown_columns(&b);
-    let columns: Vec<TrackColumn> = shown
-        .iter()
-        .map(|&c| TrackColumn {
-            title: COLUMNS[c].title.into(),
-            width: COLUMNS[c].width,
-            stretch: COLUMNS[c].title == TITLE,
-            heart: COLUMNS[c].title == LOVED,
-            cover: COLUMNS[c].title == COVER,
-            sorted: b.track_sort == Some(c),
-            descending: b.track_descending,
+    if ui.get_page() == Page::Compositions {
+        set_columns(ui, PIECE_COLUMNS, &b.piece_table);
+    } else {
+        set_columns(ui, COLUMNS, &b.track_table);
+    }
+}
+
+fn set_columns<T>(ui: &AppWindow, all: &[Column<T>], table: &Table) {
+    let columns: Vec<TrackColumn> = table
+        .shown()
+        .into_iter()
+        .map(|c| TrackColumn {
+            title: all[c].title.into(),
+            width: all[c].width,
+            stretch: [TITLE, COMPOSITION].contains(&all[c].title),
+            heart: all[c].title == LOVED,
+            cover: all[c].title == COVER,
+            sorted: table.sort == Some(c),
+            descending: table.descending,
         })
         .collect();
     // The columns, the menu button, the gaps between them, and the row's
@@ -875,9 +1022,9 @@ fn show_columns(ui: &AppWindow, browser: &Shared) {
         + 32.0
         + 12.0 * columns.len() as f32
         + 16.0;
-    let choices: Vec<ColumnChoice> = COLUMNS
+    let choices: Vec<ColumnChoice> = all
         .iter()
-        .zip(&b.columns)
+        .zip(&table.shown)
         .map(|(column, &shown)| ColumnChoice {
             title: column.title.into(),
             shown,
@@ -886,13 +1033,6 @@ fn show_columns(ui: &AppWindow, browser: &Shared) {
     ui.set_track_columns(ModelRc::new(VecModel::from(columns)));
     ui.set_track_table_width(width);
     ui.set_track_choices(ModelRc::new(VecModel::from(choices)));
-}
-
-/// The indexes into `COLUMNS` of the columns shown.
-fn shown_columns(b: &Browser) -> Vec<usize> {
-    (0..COLUMNS.len())
-        .filter(|&c| b.columns.get(c) == Some(&true))
-        .collect()
 }
 
 /// The tracks table's row for a song, with its cover if it was fetched
@@ -922,27 +1062,139 @@ fn track_line(b: &Browser, song: &Child, columns: &[usize], size: u32) -> TrackL
     }
 }
 
-/// Lists the covers still to fetch for the tracks table's rows from
-/// `start` on, when it shows them.
-fn want_line_covers(b: &mut Browser, start: usize) {
-    let shown = COLUMNS
+/// The compositions table's row for a composition, as `track_line` for a
+/// song, its composers in place of the artists and no album.
+fn piece_line(b: &Browser, piece: &Composition, columns: &[usize], size: u32) -> TrackLine {
+    let cells: Vec<ModelRc<Name>> = columns
         .iter()
-        .zip(&b.columns)
-        .any(|(column, &shown)| shown && column.title == COVER);
+        .map(|&c| names((PIECE_COLUMNS[c].cell)(piece)))
+        .collect();
+    let cover = piece
+        .cover_art
+        .as_ref()
+        .and_then(|cover| b.pictures.get(&(cover.clone(), size)).cloned());
+    let composers: Vec<Name> = piece
+        .composers
+        .iter()
+        .map(composer_name)
+        .filter(|composer| !composer.link.is_empty())
+        .collect();
+    TrackLine {
+        cells: ModelRc::new(VecModel::from(cells)),
+        loved: piece.starred.is_some(),
+        cover: cover.unwrap_or_default(),
+        selected: b.selected.contains(&piece_link(piece)),
+        album: Name::default(),
+        artists: names(composers),
+    }
+}
+
+/// The periods Fonoteca puts compositions in, in order.
+const PERIODS: &[&str] = &[
+    "Medieval",
+    "Renaissance",
+    "Baroque",
+    "Classical",
+    "Romantic",
+    "Modern",
+    "Contemporary",
+];
+
+/// The English name of the languages words are mostly sung in, by their ISO
+/// 639-3 code; others keep the code.
+// ponytail: a short table; the full ISO 639-3 list when other codes turn up.
+fn language(code: &str) -> &str {
+    const NAMES: &[(&str, &str)] = &[
+        ("ang", "Old English"),
+        ("ces", "Czech"),
+        ("cre", "Cree"),
+        ("dan", "Danish"),
+        ("deu", "German"),
+        ("ell", "Greek"),
+        ("eng", "English"),
+        ("fin", "Finnish"),
+        ("fra", "French"),
+        ("heb", "Hebrew"),
+        ("hun", "Hungarian"),
+        ("ita", "Italian"),
+        ("jpn", "Japanese"),
+        ("kat", "Georgian"),
+        ("lat", "Latin"),
+        ("mul", "Multiple languages"),
+        ("nld", "Dutch"),
+        ("nor", "Norwegian"),
+        ("pol", "Polish"),
+        ("por", "Portuguese"),
+        ("qaa", "Artificial"),
+        ("qya", "Quenya"),
+        ("rus", "Russian"),
+        ("san", "Sanskrit"),
+        ("sjn", "Sindarin"),
+        ("smo", "Samoan"),
+        ("spa", "Spanish"),
+        ("swe", "Swedish"),
+        ("tkl", "Tokelauan"),
+        ("ukr", "Ukrainian"),
+        ("zho", "Chinese"),
+        ("zul", "Zulu"),
+        ("zxx", "No words"),
+    ];
+    NAMES
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map_or(code, |(_, name)| name)
+}
+
+/// A lyricist's name, linked to their artist page where they have one.
+fn lyricist_name(lyricist: &Composer) -> Name {
+    let link = if lyricist.id.is_empty() {
+        String::new()
+    } else {
+        format!("artist:{}", lyricist.id)
+    };
+    Name {
+        label: lyricist.name.as_str().into(),
+        link: link.into(),
+    }
+}
+
+/// A composition's page, which also stands for it in the selection.
+fn piece_link(piece: &Composition) -> String {
+    format!("composition:{}", piece.id)
+}
+
+/// Lists the covers still to fetch for the rows of the tracks or, on `page`,
+/// compositions table from `start` on, when it shows them.
+fn want_line_covers(b: &mut Browser, page: Page, start: usize) {
+    let pieces = page == Page::Compositions;
+    let shown = if pieces {
+        shows_cover(PIECE_COLUMNS, &b.piece_table)
+    } else {
+        shows_cover(COLUMNS, &b.track_table)
+    };
     if !shown {
         return;
     }
     for row in start..b.lines.row_count() {
-        let song = &b.song_list[b.song_view[row]];
+        let cover = if pieces {
+            b.compositions[b.view[row]].cover_art.clone()
+        } else {
+            b.song_list[b.song_view[row]].cover_art.clone()
+        };
         let missing = b
             .lines
             .row_data(row)
             .is_some_and(|line| line.cover.size().width == 0);
-        if let (true, Some(cover)) = (missing, &song.cover_art) {
-            let cover = cover.clone();
+        if let (true, Some(cover)) = (missing, cover) {
             b.covers.insert(row, cover);
         }
     }
+}
+
+fn shows_cover<T>(all: &[Column<T>], table: &Table) -> bool {
+    all.iter()
+        .zip(&table.shown)
+        .any(|(column, &shown)| shown && column.title == COVER)
 }
 
 /// Starts the tracks table's rows over, dropping the covers they waited for.
@@ -1014,12 +1266,15 @@ fn load_songs(ui: &AppWindow, browser: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Puts the songs in the tracks table's order, showing as many rows as
-/// before and at least a page.
+/// Puts the songs in the tracks table's order, with its filter, showing as
+/// many rows as before and at least a page.
 fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
+    let filter = typed_filter(ui).unwrap_or_default();
     let shown = {
         let mut b = browser.borrow_mut();
-        let view = sorted(&b.song_list, b.track_sort, b.track_descending);
+        let found = filtered(&b.song_list, &filter, song_text);
+        let view = sorted(&b.song_list, found, COLUMNS, &b.track_table);
+        b.filter = filter;
         let shown = b.lines.row_count();
         if view.get(..shown) != b.song_view.get(..shown) {
             clear_lines(ui, &mut b);
@@ -1037,12 +1292,12 @@ fn show_lines(ui: &AppWindow, browser: &Shared, upto: usize) {
         let mut b = browser.borrow_mut();
         let end = upto.min(b.song_view.len());
         let start = b.lines.row_count().min(end);
-        let columns = shown_columns(&b);
+        let columns = b.track_table.shown();
         for &song in &b.song_view[start..end] {
             b.lines
                 .push(track_line(&b, &b.song_list[song], &columns, size));
         }
-        want_line_covers(&mut b, start);
+        want_line_covers(&mut b, Page::Tracks, start);
         (
             end < b.song_view.len() || !b.song_list_loaded,
             b.song_list_loading && b.song_view.is_empty(),
@@ -1053,23 +1308,28 @@ fn show_lines(ui: &AppWindow, browser: &Shared, upto: usize) {
     fetch_covers(ui, browser);
 }
 
-/// The order of the tracks table, as indexes into `songs`: the server's, or
-/// by the column at `sort` into `COLUMNS`, with the songs that have nothing
-/// in it last either way. Equal songs keep the server's order.
-fn sorted(songs: &[Child], sort: Option<usize>, descending: bool) -> Vec<usize> {
-    let mut view: Vec<usize> = (0..songs.len()).collect();
-    let Some(column) = sort.and_then(|c| COLUMNS.get(c)) else {
+/// `view`, indexes into `items`, in the table's order: by the column of
+/// `all` it is sorted by, with the items that have nothing in it last either
+/// way. Equal items, and all of them when it isn't sorted, keep their order.
+fn sorted<T>(items: &[T], mut view: Vec<usize>, all: &[Column<T>], table: &Table) -> Vec<usize> {
+    let Some(column) = table.sort.and_then(|c| all.get(c)) else {
         return view;
     };
-    let turn = |order: Ordering| if descending { order.reverse() } else { order };
+    let turn = |order: Ordering| {
+        if table.descending {
+            order.reverse()
+        } else {
+            order
+        }
+    };
     if let Some(number) = column.number {
-        let keys: Vec<Option<f64>> = songs.iter().map(number).collect();
+        let keys: Vec<Option<f64>> = items.iter().map(number).collect();
         view.sort_by(|&a, &b| last_if_empty(&keys[a], &keys[b], |a, b| turn(a.total_cmp(b))));
     } else {
-        let keys: Vec<Option<String>> = songs
+        let keys: Vec<Option<String>> = items
             .iter()
-            .map(|song| {
-                let labels: Vec<String> = (column.cell)(song)
+            .map(|item| {
+                let labels: Vec<String> = (column.cell)(item)
                     .iter()
                     .map(|name| name.label.to_lowercase())
                     .collect();
@@ -1088,44 +1348,69 @@ fn last_if_empty<T>(a: &Option<T>, b: &Option<T>, order: impl Fn(&T, &T) -> Orde
     }
 }
 
-/// Sorts the tracks table by its `index`th column shown, or turns the order
-/// around when it already is.
+/// Sorts the tracks or compositions table by its `index`th column shown, or
+/// turns the order around when it already is.
 fn sort_tracks(ui: &AppWindow, browser: &Shared, index: usize) {
+    let pieces = ui.get_page() == Page::Compositions;
     {
         let mut b = browser.borrow_mut();
-        let Some(&column) = shown_columns(&b).get(index) else {
+        let table = if pieces {
+            &mut b.piece_table
+        } else {
+            &mut b.track_table
+        };
+        let Some(&column) = table.shown().get(index) else {
             return;
         };
-        if b.track_sort == Some(column) {
-            b.track_descending = !b.track_descending;
+        if table.sort == Some(column) {
+            table.descending = !table.descending;
         } else {
-            b.track_sort = Some(column);
-            b.track_descending = false;
+            table.sort = Some(column);
+            table.descending = false;
         }
         // From the top, where the page scrolls to.
         clear_lines(ui, &mut b);
     }
     save_prefs(ui, browser);
     show_columns(ui, browser);
-    arrange_tracks(ui, browser);
+    if pieces {
+        arrange(ui, browser);
+    } else {
+        arrange_tracks(ui, browser);
+    }
 }
 
-/// Shows the tracks table's column at `index` into `COLUMNS`, or hides it.
+/// Shows the tracks or compositions table's column at `index` into
+/// `COLUMNS` or `PIECE_COLUMNS`, or hides it.
 fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
     let size = pixels(ui, LINE_COVER_SIZE);
+    let page = ui.get_page();
     {
         let mut b = browser.borrow_mut();
-        let Some(shown) = b.columns.get_mut(index) else {
+        let table = if page == Page::Compositions {
+            &mut b.piece_table
+        } else {
+            &mut b.track_table
+        };
+        let Some(shown) = table.shown.get_mut(index) else {
             return;
         };
         *shown = !*shown;
-        let columns = shown_columns(&b);
-        let lines: Vec<TrackLine> = b.song_view[..b.lines.row_count()]
-            .iter()
-            .map(|&song| track_line(&b, &b.song_list[song], &columns, size))
-            .collect();
+        let columns = table.shown();
+        let rows = b.lines.row_count();
+        let lines: Vec<TrackLine> = if page == Page::Compositions {
+            b.view[..rows]
+                .iter()
+                .map(|&i| piece_line(&b, &b.compositions[i], &columns, size))
+                .collect()
+        } else {
+            b.song_view[..rows]
+                .iter()
+                .map(|&song| track_line(&b, &b.song_list[song], &columns, size))
+                .collect()
+        };
         b.lines.set_vec(lines);
-        want_line_covers(&mut b, 0);
+        want_line_covers(&mut b, page, 0);
     }
     save_prefs(ui, browser);
     show_columns(ui, browser);
@@ -1136,34 +1421,71 @@ fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
 fn load_prefs(ui: &AppWindow, browser: &Shared) {
     let prefs = prefs::load();
     let mut b = browser.borrow_mut();
-    b.columns = COLUMNS
-        .iter()
-        .map(|column| match &prefs.track_columns {
-            Some(titles) => titles.iter().any(|title| title == column.title),
-            None => column.shown,
-        })
-        .collect();
-    b.track_sort = prefs
-        .track_sort
-        .and_then(|title| COLUMNS.iter().position(|column| column.title == title));
-    b.track_descending = prefs.track_descending;
+    b.track_table = saved_table(
+        COLUMNS,
+        &prefs.track_columns,
+        &prefs.track_sort,
+        prefs.track_descending,
+    );
+    b.piece_table = saved_table(
+        PIECE_COLUMNS,
+        &prefs.composition_columns,
+        &prefs.composition_sort,
+        prefs.composition_descending,
+    );
     // The Sort menu has four entries.
     ui.set_album_sort(prefs.album_sort.clamp(0, 3));
     ui.set_album_descending(prefs.album_descending);
 }
 
-/// Saves the order of the albums and tracks and the tracks table's columns
-/// on this device.
+/// A table as saved: the columns of `all` with the headings `shown`, or
+/// those shown at first when none are saved, sorted by the one headed `sort`.
+fn saved_table<T>(
+    all: &[Column<T>],
+    shown: &Option<Vec<String>>,
+    sort: &Option<String>,
+    descending: bool,
+) -> Table {
+    Table {
+        shown: all
+            .iter()
+            .map(|column| match shown {
+                Some(titles) => titles.iter().any(|title| title == column.title),
+                None => column.shown,
+            })
+            .collect(),
+        sort: sort
+            .as_ref()
+            .and_then(|title| all.iter().position(|column| column.title == title)),
+        descending,
+    }
+}
+
+/// Saves the order of the albums, tracks and compositions and the tables'
+/// columns on this device.
 fn save_prefs(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
-    let title = |c: usize| COLUMNS[c].title.to_owned();
+    let (track_columns, track_sort) = titles(COLUMNS, &b.track_table);
+    let (composition_columns, composition_sort) = titles(PIECE_COLUMNS, &b.piece_table);
     prefs::save(&prefs::Prefs {
         album_sort: ui.get_album_sort(),
         album_descending: ui.get_album_descending(),
-        track_columns: Some(shown_columns(&b).into_iter().map(title).collect()),
-        track_sort: b.track_sort.map(title),
-        track_descending: b.track_descending,
+        track_columns: Some(track_columns),
+        track_sort,
+        track_descending: b.track_table.descending,
+        composition_columns: Some(composition_columns),
+        composition_sort,
+        composition_descending: b.piece_table.descending,
     });
+}
+
+/// The headings of the table's columns shown and of the one it is sorted by.
+fn titles<T>(all: &[Column<T>], table: &Table) -> (Vec<String>, Option<String>) {
+    let title = |c: usize| all[c].title.to_owned();
+    (
+        table.shown().into_iter().map(title).collect(),
+        table.sort.map(title),
+    )
 }
 
 /// What is typed in the filter of the page on screen, if it has one.
@@ -1171,29 +1493,37 @@ fn typed_filter(ui: &AppWindow) -> Option<String> {
     let typed = match ui.get_page() {
         Page::Albums => ui.get_album_filter(),
         Page::Artists => ui.get_artist_filter(),
+        Page::Composers => ui.get_composer_filter(),
+        Page::Compositions => ui.get_composition_filter(),
+        Page::Tracks => ui.get_track_filter(),
         _ => return None,
     };
     Some(typed.trim().to_owned())
 }
 
-/// Puts the library in the albums page's order, or the artists in the
-/// server's, with the page's filter. The tiles shown stay when they are still
-/// the first ones; otherwise as many are shown again, and at least a page.
+/// Puts the library in the albums page's order, or the artists, composers or
+/// compositions in the server's, with the page's filter. The tiles or rows
+/// shown stay when they are still the first ones; otherwise as many are shown
+/// again, and at least a page.
 fn arrange(ui: &AppWindow, browser: &Shared) {
     let (sort, descending) = (ui.get_album_sort(), ui.get_album_descending());
     let filter = typed_filter(ui).unwrap_or_default();
+    let page = ui.get_page();
     let mut b = browser.borrow_mut();
-    let view = if ui.get_page() == Page::Artists {
-        filtered(&b.artists, &filter)
-    } else {
-        arranged(&b.library, &filter, sort, descending)
+    let view = match page {
+        Page::Artists => filtered(&b.artists, &filter, |artist| artist.name.clone()),
+        Page::Composers => filtered(&b.composers, &filter, |composer| composer.name.clone()),
+        Page::Compositions => {
+            let view = filtered(&b.compositions, &filter, composition_text);
+            sorted(&b.compositions, view, PIECE_COLUMNS, &b.piece_table)
+        }
+        _ => arranged(&b.library, &filter, sort, descending),
     };
     b.filter = filter;
-    let shown = b.tiles.row_count();
+    let shown = on_page(&b, page);
     if view.get(..shown) != b.view.get(..shown) {
         b.tiles = Rc::default();
-        b.covers.clear();
-        b.fetching = 0;
+        clear_lines(ui, &mut b);
         ui.set_tiles(ModelRc::from(b.tiles.clone()));
     }
     b.view = view;
@@ -1219,51 +1549,77 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
         show_lines(ui, browser, shown + TILES_AT_ONCE);
         return;
     }
-    if ui.get_page() == Page::Playlists {
+    let page = ui.get_page();
+    if page == Page::Playlists {
         playlists(ui, browser);
         return;
     }
-    if ui.get_page() == Page::Artists {
-        if !browser.borrow().artists_loaded {
-            artists(ui, browser);
-            return;
-        }
-    } else {
-        let ask = {
-            let b = browser.borrow();
-            !b.library_loaded && !b.library_loading
-        };
-        if ask {
-            load_library(ui, browser);
+    let (have_artists, have_composers, have_compositions) = {
+        let b = browser.borrow();
+        (b.artists_loaded, b.composers_loaded, b.compositions_loaded)
+    };
+    match page {
+        Page::Artists if !have_artists => return artists(ui, browser),
+        Page::Composers if !have_composers => return composers(ui, browser),
+        Page::Compositions if !have_compositions => return compositions(ui, browser),
+        Page::Artists | Page::Composers | Page::Compositions => {}
+        _ => {
+            let ask = {
+                let b = browser.borrow();
+                !b.library_loaded && !b.library_loading
+            };
+            if ask {
+                load_library(ui, browser);
+            }
         }
     }
-    let shown = browser.borrow().tiles.row_count();
+    let shown = on_page(&browser.borrow(), page);
     show_tiles(ui, browser, shown + TILES_AT_ONCE);
 }
 
-/// Shows the page's albums or artists up to the `upto`th.
+/// How many tiles the page shows, or rows on the compositions page.
+fn on_page(b: &Browser, page: Page) -> usize {
+    if page == Page::Compositions {
+        b.lines.row_count()
+    } else {
+        b.tiles.row_count()
+    }
+}
+
+/// Shows the page's albums, artists, composers or compositions up to the
+/// `upto`th.
 fn show_tiles(ui: &AppWindow, browser: &Shared, upto: usize) {
-    let artists_page = ui.get_page() == Page::Artists;
+    let page = ui.get_page();
+    let (columns, size) = (
+        browser.borrow().piece_table.shown(),
+        pixels(ui, LINE_COVER_SIZE),
+    );
     let (tiles, more, waiting) = {
-        let b = browser.borrow();
+        let mut b = browser.borrow_mut();
         let end = upto.min(b.view.len());
-        let start = b.tiles.row_count().min(end);
-        let tiles: Vec<_> = b.view[start..end]
-            .iter()
-            .map(|&i| {
-                if artists_page {
-                    artist_tile(&b.artists[i])
-                } else {
-                    album_tile(&b.library[i], album_names(&b.library[i]))
+        let start = on_page(&b, page).min(end);
+        let mut tiles = Vec::new();
+        for &i in &b.view[start..end] {
+            match page {
+                Page::Artists => tiles.push(artist_tile(&b.artists[i])),
+                Page::Composers => tiles.push(composer_tile(&b.composers[i])),
+                Page::Compositions => {
+                    b.lines
+                        .push(piece_line(&b, &b.compositions[i], &columns, size))
                 }
-            })
-            .collect();
-        // The artists arrive at once, the library a part at a time.
-        let more = end < b.view.len() || (!artists_page && !b.library_loaded);
+                _ => tiles.push(album_tile(&b.library[i], album_names(&b.library[i]))),
+            }
+        }
+        if page == Page::Compositions {
+            want_line_covers(&mut b, page, start);
+        }
+        // The library arrives a part at a time, the others at once.
+        let library = page == Page::Albums;
+        let more = end < b.view.len() || (library && !b.library_loaded);
         (
             tiles,
             more,
-            !artists_page && b.library_loading && b.view.is_empty(),
+            library && b.library_loading && b.view.is_empty(),
         )
     };
     ui.set_more_tiles(more);
@@ -1304,14 +1660,34 @@ fn arranged(library: &[AlbumID3], filter: &str, sort: i32, descending: bool) -> 
     view
 }
 
-/// The artists where every word of `filter` starts a word of their name, as
-/// indexes into `artists`, in the server's order.
-fn filtered(artists: &[ArtistID3], filter: &str) -> Vec<usize> {
+/// The items where every word of `filter` starts a word of their `text`, as
+/// indexes into `items`, in the server's order.
+fn filtered<T>(items: &[T], filter: &str, text: impl Fn(&T) -> String) -> Vec<usize> {
     let filter = filter.to_lowercase();
     let wanted: Vec<&str> = words(&filter).collect();
-    (0..artists.len())
-        .filter(|&i| matches(&wanted, &artists[i].name.to_lowercase()))
+    (0..items.len())
+        .filter(|&i| matches(&wanted, &text(&items[i]).to_lowercase()))
         .collect()
+}
+
+/// What a song is found by: its title, artists and album.
+fn song_text(song: &Child) -> String {
+    let album = song.album.as_deref().unwrap_or_default();
+    song_names(song)
+        .iter()
+        .fold(format!("{} {album}", song.title), |text, name| {
+            text + " " + name.label.as_str()
+        })
+}
+
+/// What a composition is found by: its name and its composers'.
+fn composition_text(composition: &Composition) -> String {
+    composition
+        .composers
+        .iter()
+        .fold(composition.name.clone(), |text, composer| {
+            text + " " + &composer.name
+        })
 }
 
 /// Whether every word of `wanted` starts a word of `text`.
@@ -1421,13 +1797,11 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
                         work_performed: work_performed.into(),
                         part: parts,
                         alone,
+                        ..Track::default()
                     });
                 }
             }
-            b.songs = songs
-                .into_iter()
-                .map(|song| (song.id, song.music_brainz_id))
-                .collect();
+            b.songs = songs.into_iter().map(|song| song.id).collect();
         },
     );
 }
@@ -1482,12 +1856,194 @@ fn playlist(ui: &AppWindow, browser: &Shared, id: String) {
                     ..Track::default()
                 });
             }
-            b.songs = songs
-                .into_iter()
-                .map(|song| (song.id, song.music_brainz_id))
-                .collect();
+            b.songs = songs.into_iter().map(|song| song.id).collect();
         },
     );
+}
+
+/// A composer's page: their picture and name, and their compositions. The
+/// picture comes with the composers, asked for first if they aren't here.
+fn composer(ui: &AppWindow, browser: &Shared, id: String) {
+    let known = browser.borrow().composers_loaded;
+    let wanted = id.clone();
+    load(
+        ui,
+        browser,
+        |client| async move {
+            let composers = if known {
+                None
+            } else {
+                Some(client.get_composers().await?)
+            };
+            Ok((composers, client.get_compositions(Some(&wanted)).await?))
+        },
+        move |ui, browser, (composers, compositions)| {
+            let mut b = browser.borrow_mut();
+            if let Some(composers) = composers {
+                b.composers = composers
+                    .index
+                    .into_iter()
+                    .flat_map(|index| index.composer)
+                    .collect();
+                b.composers_loaded = true;
+            }
+            let pieces = compositions.composition;
+            let named = pieces
+                .iter()
+                .flat_map(|piece| &piece.composers)
+                .chain(&b.composers)
+                .find(|composer| composer.id == id);
+            ui.set_header_title(named.map(|c| c.name.as_str()).unwrap_or_default().into());
+            ui.set_header_facts(count(pieces.len(), "composition", "compositions").into());
+            let picture = b
+                .composers
+                .iter()
+                .find(|composer| composer.id == id)
+                .and_then(|composer| composer.cover_art.clone());
+            for piece in &pieces {
+                b.tracks.push(composition_row(piece, Some(&id)));
+            }
+            drop(b);
+            header_image(ui, browser, picture);
+        },
+    );
+}
+
+/// A composition's page: who wrote it and when, and a row for each album
+/// that holds a performance of it, which opens that album.
+fn composition(ui: &AppWindow, browser: &Shared, id: String) {
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_composition(&id).await },
+        |ui, browser, composition| {
+            let rows = performances(&composition.song);
+            ui.set_header_title(composition.name.as_str().into());
+            ui.set_header_names(names(
+                composition.composers.iter().map(composer_name).collect(),
+            ));
+            let movements = match composition.movement.len() {
+                0 => String::new(),
+                n => count(n, "movement", "movements"),
+            };
+            let facts = [
+                years(composition.composed.as_ref()),
+                movements,
+                count(rows.len(), "performance", "performances"),
+            ];
+            let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
+            ui.set_header_facts(facts.join(" · ").into());
+            header_image(ui, browser, composition.cover_art);
+            let b = browser.borrow();
+            for row in rows {
+                b.tracks.push(row);
+            }
+        },
+    );
+}
+
+/// A row for each album's recordings of a composition, in the order the
+/// albums first come: the album and its year, the performers all of them
+/// share, when and where they were recorded, and how long they last. Songs
+/// the server puts on no album have no row.
+// ponytail: one performance per album; split by performers if an album holds two.
+fn performances(songs: &[Child]) -> Vec<Track> {
+    let mut albums: Vec<&Option<String>> = Vec::new();
+    for song in songs {
+        if !albums.contains(&&song.album_id) {
+            albums.push(&song.album_id);
+        }
+    }
+    let mut songs = songs.to_vec();
+    songs.sort_by_key(|song| albums.iter().position(|album| **album == song.album_id));
+    songs
+        .chunk_by(|one, next| one.album_id == next.album_id)
+        .filter(|run| run[0].album_id.is_some())
+        .map(|run| {
+            let performers: Vec<Vec<Name>> = run.iter().map(song_names).collect();
+            let shared: Vec<Name> = performers[0]
+                .iter()
+                .filter(|name| performers.iter().all(|them| them.contains(name)))
+                .cloned()
+                .collect();
+            let length = if run.iter().all(|song| song.duration.is_some()) {
+                duration(run.iter().filter_map(|song| song.duration).sum())
+            } else {
+                String::new()
+            };
+            let first = &run[0];
+            Track {
+                title: first.album.clone().unwrap_or_default().into(),
+                names: names(shared),
+                years: first
+                    .year
+                    .map(|year| year.to_string())
+                    .unwrap_or_default()
+                    .into(),
+                performed: performed(run).into(),
+                duration: length.into(),
+                link: first
+                    .album_id
+                    .as_ref()
+                    .map(|id| format!("album:{id}"))
+                    .unwrap_or_default()
+                    .into(),
+                ..Track::default()
+            }
+        })
+        .collect()
+}
+
+/// A composition's row: when it was written, its composers but `except`, and
+/// how many albums hold it.
+fn composition_row(composition: &Composition, except: Option<&str>) -> Track {
+    let composers: Vec<Name> = composition
+        .composers
+        .iter()
+        .filter(|composer| Some(composer.id.as_str()) != except)
+        .map(composer_name)
+        .collect();
+    let albums = composition
+        .album_count
+        .and_then(|n| usize::try_from(n).ok())
+        .map(|n| count(n, "album", "albums"));
+    Track {
+        title: composition.name.as_str().into(),
+        names: names(composers),
+        years: years(composition.composed.as_ref()).into(),
+        duration: albums.unwrap_or_default().into(),
+        link: format!("composition:{}", composition.id).into(),
+        ..Track::default()
+    }
+}
+
+/// A composer's tile, with how many compositions they have, and their
+/// picture's id.
+fn composer_tile(composer: &Composer) -> (AlbumTile, Option<String>) {
+    let pieces = composer
+        .composition_count
+        .and_then(|n| usize::try_from(n).ok())
+        .map(|n| unlinked(count(n, "composition", "compositions")));
+    let tile = AlbumTile {
+        title: composer.name.as_str().into(),
+        names: names(pieces.into_iter().collect()),
+        link: composer_name(composer).link,
+        ..AlbumTile::default()
+    };
+    (tile, composer.cover_art.clone())
+}
+
+/// A composer that links to their page, unless the server gives no id.
+fn composer_name(composer: &Composer) -> Name {
+    let link = if composer.id.is_empty() {
+        String::new()
+    } else {
+        format!("composer:{}", composer.id)
+    };
+    Name {
+        label: composer.name.as_str().into(),
+        link: link.into(),
+    }
 }
 
 /// A playlist's tile, with how many tracks it has, and its cover's id.
@@ -1553,7 +2109,7 @@ fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<Str
 /// Fetches the covers of the tiles or tracks table rows in view, top to
 /// bottom, a few at a time. The others wait until they are scrolled to.
 fn fetch_covers(ui: &AppWindow, browser: &Shared) {
-    let size = if ui.get_page() == Page::Tracks {
+    let size = if matches!(ui.get_page(), Page::Tracks | Page::Compositions) {
         pixels(ui, LINE_COVER_SIZE)
     } else {
         tile_pixels(ui)
@@ -1707,54 +2263,101 @@ async fn cover_art(
 /// Loves or unloves an album's or playlist's track.
 fn toggle_love(ui: &AppWindow, browser: &Shared, row: usize) {
     let mut b = browser.borrow_mut();
-    let (Some((id, recording)), Some(mut track)) =
-        (b.songs.get(row).cloned(), b.tracks.row_data(row))
-    else {
+    let (Some(id), Some(mut track)) = (b.songs.get(row).cloned(), b.tracks.row_data(row)) else {
         return;
     };
     let loved = !track.loved;
     track.loved = loved;
     b.tracks.set_row_data(row, track);
-    mark_loved(&mut b, &id, loved);
+    mark_loved(&mut b, ui.get_page(), &id, loved);
     let tracks = b.tracks.clone();
     drop(b);
     let undo = {
         let id = id.clone();
-        move |browser: &Shared| {
+        move |ui: &AppWindow, browser: &Shared| {
             if let Some(mut track) = tracks.row_data(row) {
                 track.loved = !loved;
                 tracks.set_row_data(row, track);
             }
-            mark_loved(&mut browser.borrow_mut(), &id, !loved);
+            mark_loved(&mut browser.borrow_mut(), ui.get_page(), &id, !loved);
         }
     };
-    love(ui, browser, id, recording, loved, undo);
+    love(ui, browser, id, loved, undo);
 }
 
 /// Loves or unloves the song of a row of the tracks table.
 fn toggle_line_love(ui: &AppWindow, browser: &Shared, row: usize) {
+    if ui.get_page() == Page::Compositions {
+        toggle_piece_love(ui, browser, row);
+        return;
+    }
     let mut b = browser.borrow_mut();
     let Some(song) = b.song_view.get(row).and_then(|&song| b.song_list.get(song)) else {
         return;
     };
-    let (id, recording) = (song.id.clone(), song.music_brainz_id.clone());
+    let id = song.id.clone();
     let loved = song.starred.is_none();
-    mark_loved(&mut b, &id, loved);
+    mark_loved(&mut b, Page::Tracks, &id, loved);
     drop(b);
     let undo = {
         let id = id.clone();
-        move |browser: &Shared| mark_loved(&mut browser.borrow_mut(), &id, !loved)
+        move |ui: &AppWindow, browser: &Shared| {
+            mark_loved(&mut browser.borrow_mut(), ui.get_page(), &id, !loved);
+        }
     };
-    love(ui, browser, id, recording, loved, undo);
+    love(ui, browser, id, loved, undo);
+}
+
+/// Loves the composition of a row of the compositions table on the server,
+/// or stops loving it.
+fn toggle_piece_love(ui: &AppWindow, browser: &Shared, row: usize) {
+    let mut b = browser.borrow_mut();
+    let Some(&piece) = b.view.get(row) else {
+        return;
+    };
+    let id = b.compositions[piece].id.clone();
+    let loved = b.compositions[piece].starred.is_none();
+    mark_piece_loved(&mut b, Page::Compositions, &id, loved);
+    drop(b);
+    let undo = {
+        let id = id.clone();
+        move |ui: &AppWindow, browser: &Shared| {
+            mark_piece_loved(&mut browser.borrow_mut(), ui.get_page(), &id, !loved);
+        }
+    };
+    love(ui, browser, id, loved, undo);
+}
+
+/// Keeps whether a composition is loved with the compositions, and on its
+/// row when `page`, the one on screen, is the compositions table.
+fn mark_piece_loved(b: &mut Browser, page: Page, id: &str, loved: bool) {
+    let Some(piece) = b.compositions.iter().position(|piece| piece.id == id) else {
+        return;
+    };
+    b.compositions[piece].starred = loved.then(String::new);
+    if page != Page::Compositions {
+        return;
+    }
+    let row = b.view.iter().position(|&shown| shown == piece);
+    if let Some(row) = row
+        && let Some(mut line) = b.lines.row_data(row)
+    {
+        line.loved = loved;
+        b.lines.set_row_data(row, line);
+    }
 }
 
 /// Keeps whether a song is loved with the tracks page's songs, wherever it
-/// was loved, and on its row there when that is shown.
-fn mark_loved(b: &mut Browser, id: &str, loved: bool) {
+/// was loved, and on its row there when `page`, the one on screen, is the
+/// tracks table.
+fn mark_loved(b: &mut Browser, page: Page, id: &str, loved: bool) {
     let Some(song) = b.song_list.iter().position(|song| song.id == id) else {
         return;
     };
     b.song_list[song].starred = loved.then(String::new);
+    if page != Page::Tracks {
+        return;
+    }
     let row = b.song_view.iter().position(|&shown| shown == song);
     if let Some(row) = row
         && let Some(mut line) = b.lines.row_data(row)
@@ -1764,22 +2367,20 @@ fn mark_loved(b: &mut Browser, id: &str, loved: bool) {
     }
 }
 
-/// Stars or unstars a song on the server, and loves it on ListenBrainz or
-/// clears that when it's connected and knows the recording. `undo` puts the
-/// heart back when the server doesn't take it.
+/// Stars or unstars a song or composition on the server. `undo` puts the
+/// heart back when the server doesn't take it, on the page then on screen.
 fn love(
     ui: &AppWindow,
     browser: &Shared,
     id: String,
-    recording: Option<String>,
     loved: bool,
-    undo: impl FnOnce(&Shared) + 'static,
+    undo: impl FnOnce(&AppWindow, &Shared) + 'static,
 ) {
     let b = browser.borrow();
     let Some(client) = b.client.clone() else {
         return;
     };
-    let (listenbrainz, visit) = (b.listenbrainz.clone(), b.visit);
+    let visit = b.visit;
     drop(b);
 
     let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -1789,29 +2390,11 @@ fn love(
         } else {
             client.unstar(&[&id], &[], &[]).await
         };
-        let problem = match (starred, listenbrainz, recording) {
-            (Err(e), _, _) => {
-                undo(&browser);
-                Some(format!("Your server didn't take that: {e}"))
+        if let (Err(e), Some(ui)) = (starred, weak.upgrade()) {
+            undo(&ui, &browser);
+            if browser.borrow().visit == visit {
+                ui.set_page_problem(format!("Your server didn't take that: {e}").into());
             }
-            (Ok(()), Some(listenbrainz), Some(recording)) => {
-                let score = if loved {
-                    listenbrainz::Score::Love
-                } else {
-                    listenbrainz::Score::Clear
-                };
-                listenbrainz
-                    .submit_feedback(&recording, score)
-                    .await
-                    .err()
-                    .map(|e| format!("Saved on your server, but ListenBrainz didn't take it: {e}"))
-            }
-            (Ok(()), _, _) => None,
-        };
-        if let (Some(problem), Some(ui)) = (problem, weak.upgrade())
-            && browser.borrow().visit == visit
-        {
-            ui.set_page_problem(problem.into());
         }
     })
     .expect("the event loop is running");
@@ -1899,7 +2482,11 @@ fn track_title(song: &Child) -> String {
 
 /// "1804 – 1805", the years a song's work was written.
 fn composed(song: &Child) -> String {
-    let span = song.works.first().and_then(|work| work.composed.as_ref());
+    years(song.works.first().and_then(|work| work.composed.as_ref()))
+}
+
+/// "1804 – 1805", or one year, as far as `span` is known.
+fn years(span: Option<&Span>) -> String {
     let year = |date: &Option<ItemDate>| date.as_ref().and_then(|date| date.year);
     match span.map(|span| (year(&span.from), year(&span.to))) {
         Some((Some(from), Some(to))) if from != to => format!("{from} – {to}"),
@@ -2039,6 +2626,74 @@ mod tests {
         assert_eq!(duration(3725), "1:02:05");
         assert_eq!(count(1, "track", "tracks"), "1 track");
         assert_eq!(count(9, "track", "tracks"), "9 tracks");
+    }
+
+    #[test]
+    fn a_heart_put_back_lands_only_on_its_own_table() {
+        let mut b = Browser {
+            song_list: serde_json::from_str(r#"[{"id":"s1","isDir":false,"title":"A"}]"#).unwrap(),
+            song_view: vec![0],
+            compositions: serde_json::from_str(r#"[{"id":"w1","name":"B"}]"#).unwrap(),
+            view: vec![0],
+            ..Browser::default()
+        };
+        b.lines.push(TrackLine::default());
+        let hearts = |b: &Browser| b.lines.row_data(0).unwrap().loved;
+        // A song's heart put back while the compositions are on screen.
+        mark_loved(&mut b, Page::Compositions, "s1", true);
+        assert!(b.song_list[0].starred.is_some());
+        assert!(!hearts(&b));
+        mark_piece_loved(&mut b, Page::Compositions, "w1", true);
+        assert!(hearts(&b));
+        // A composition's put back while the tracks are.
+        mark_piece_loved(&mut b, Page::Tracks, "w1", false);
+        assert!(b.compositions[0].starred.is_none());
+        assert!(hearts(&b));
+        mark_loved(&mut b, Page::Tracks, "s1", false);
+        assert!(!hearts(&b));
+    }
+
+    #[test]
+    fn periods_in_the_order_they_came_and_languages_by_name() {
+        let pieces: Vec<Composition> = serde_json::from_str(
+            r#"[{"id":"w1","name":"A","period":"Romantic"},{"id":"w2","name":"B"},
+                {"id":"w3","name":"C","period":"Baroque"},{"id":"w4","name":"D","period":"Modern"}]"#,
+        )
+        .unwrap();
+        let table = Table {
+            sort: PIECE_COLUMNS.iter().position(|c| c.title == "Period"),
+            ..Table::default()
+        };
+        let all = vec![0, 1, 2, 3];
+        assert_eq!(sorted(&pieces, all, PIECE_COLUMNS, &table), [2, 0, 3, 1]);
+        assert_eq!(language("lat"), "Latin");
+        assert_eq!(language("xyz"), "xyz");
+    }
+
+    #[test]
+    fn composers_only_where_the_server_has_them() {
+        let labels = |compositions| -> Vec<String> {
+            sections(&[], compositions)
+                .into_iter()
+                .map(|(_, label, _)| label.to_owned())
+                .collect()
+        };
+        assert_eq!(
+            labels(false),
+            ["Albums", "Artists", "Tracks", "Playlists", "Account"]
+        );
+        assert_eq!(
+            labels(true),
+            [
+                "Albums",
+                "Artists",
+                "Tracks",
+                "Composers",
+                "Compositions",
+                "Playlists",
+                "Account"
+            ]
+        );
     }
 
     #[test]
