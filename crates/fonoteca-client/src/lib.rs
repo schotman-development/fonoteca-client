@@ -187,6 +187,27 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The Android app's entry point, which android-activity calls on its own
+/// thread once the activity starts.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+fn android_main(app: slint::android::AndroidApp) {
+    // reqwest checks certificates with Android's own verifier, which calls
+    // into Java and so needs the VM and the activity.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    vm.attach_current_thread(|env| {
+        let activity =
+            unsafe { jni::objects::JObject::from_raw(env, app.activity_as_ptr().cast()) };
+        rustls_platform_verifier::android::init_with_env(env, activity)
+    })
+    .expect("Android's certificate verifier");
+    if let Some(folder) = app.internal_data_path() {
+        let _ = prefs::FOLDER.set(folder);
+    }
+    slint::android::init(app).expect("Slint's Android backend");
+    main().expect("the app");
+}
+
 /// Builds the window, wires up its screens and loads the saved account in the
 /// background, so a store waiting on an unlock prompt doesn't hold it back.
 fn start() -> Result<AppWindow, slint::PlatformError> {

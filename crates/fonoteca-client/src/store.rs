@@ -1,5 +1,6 @@
 //! Keeps the [`Account`] in the OS secret store: the Keychain on macOS, the
-//! Secret Service (GNOME Keyring, KWallet, KeePassXC) on Linux. It is never
+//! Secret Service (GNOME Keyring, KWallet, KeePassXC) on Linux, and on Android
+//! the app's preferences, encrypted with a key in the Keystore. It is never
 //! written anywhere else, so without a secret store nothing is saved.
 //!
 //! The browser preview has no secret store and keeps it, unencrypted, in the
@@ -34,6 +35,8 @@ mod native {
                 let store = zbus_secret_service_keyring_store::Store::new();
                 #[cfg(all(not(test), target_os = "macos"))]
                 let store = apple_native_keyring_store::keychain::Store::new();
+                #[cfg(all(not(test), target_os = "android"))]
+                let store = android_native_keyring_store::Store::new();
                 store
                     .map(|store| keyring_core::set_default_store(store))
                     .map_err(|e| e.to_string())

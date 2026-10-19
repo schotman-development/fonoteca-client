@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- No backups: the saved sign-in is encrypted with a key that stays in
+         this phone's Keystore, so a copy restored elsewhere couldn't be read. -->
+    <application
+        android:allowBackup="false"
+        android:label="${label}"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <!-- Turning the phone or changing its settings would restart the
+             activity, and with it the app; Slint redraws for the new size. -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|locale|layoutDirection"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="fonoteca_client" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

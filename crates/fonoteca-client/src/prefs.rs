@@ -68,18 +68,26 @@ fn write(json: &str) {
     }
 }
 
+/// The app's own folder on Android, which the system hands it at start.
+#[cfg(target_os = "android")]
+pub static FOLDER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 /// preferences.json in a fonoteca-client folder in the system's settings
-/// folder.
+/// folder, or the app's own folder on Android.
 #[cfg(all(not(test), not(target_family = "wasm")))]
 fn file() -> Option<std::path::PathBuf> {
+    #[cfg(not(target_os = "android"))]
     use std::env::var_os;
+    #[cfg(not(target_os = "android"))]
     use std::path::PathBuf;
 
+    #[cfg(target_os = "android")]
+    let folder = FOLDER.get().cloned();
     #[cfg(target_os = "macos")]
     let folder = var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"));
     #[cfg(windows)]
     let folder = var_os("APPDATA").map(PathBuf::from);
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "android", windows)))]
     let folder = var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|folder| folder.is_absolute())

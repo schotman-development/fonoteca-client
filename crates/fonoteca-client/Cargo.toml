@@ -28,6 +28,12 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypt
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+android-native-keyring-store = "1"
+jni = { version = "0.22", default-features = false }
+rustls-platform-verifier = "0.7"
+slint = { version = "1.18", features = ["backend-android-activity-06"] }
+
 [dev-dependencies]
 i-slint-backend-testing = "1.18"
 
