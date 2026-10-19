@@ -94,6 +94,12 @@ impl Client {
         if !matches!(url.scheme(), "http" | "https") {
             return Err(invalid("not an http or https address"));
         }
+        // Android's own setting against plain http only covers its Java
+        // networking, not these sockets.
+        #[cfg(target_os = "android")]
+        if url.scheme() == "http" {
+            return Err(invalid("the app only connects to https:// addresses"));
+        }
         // The browser quotes the whole URL, credentials included, when it
         // refuses one with a login in it.
         if !url.username().is_empty() || url.password().is_some() {
