@@ -544,7 +544,7 @@ export component TrackLineRow inherits Rectangle {
 
     height: 54px;
     border-radius: Theme.radius;
-    background: root.striped && !root.line.selected ? Theme.hover.transparentize(50%) : transparent;
+    background: root.line.selected ? transparent : touch.has-hover ? Theme.hover : root.striped ? Theme.hover.transparentize(50%) : transparent;
     accessible-role: list-item;
     accessible-item-selectable: root.selecting;
     accessible-item-selected: root.line.selected;
@@ -564,7 +564,8 @@ export component TrackLineRow inherits Rectangle {
         }
     }
 
-    TouchArea {
+    // The row's content sits in it, so the row stays hovered over its links.
+    touch := TouchArea {
         mouse-cursor: root.selecting ? MouseCursor.pointer : MouseCursor.default;
         clicked => {
             if root.selecting {
@@ -576,94 +577,94 @@ export component TrackLineRow inherits Rectangle {
                 root.select();
             }
         }
-    }
 
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 12px;
-        for column[c] in root.columns: slot := TableCell {
-            property <[Name]> names: root.line.cells[c];
-            // Most cells are one plain value, which a Text draws for less.
-            property <bool> plain: self.names.length <= 1 && self.names[0].link == "";
-            column: column;
-            if column.heart: IconButton {
-                y: (parent.height - self.height) / 2;
-                icon: Icons.heart;
-                filled: root.line.loved;
-                color: root.line.loved ? Theme.accent : Theme.muted;
-                label: root.line.loved ? "Loved" : "Love";
-                accessible-checkable: true;
-                accessible-checked: root.line.loved;
-                clicked => { root.toggle-love(); }
-            }
-            if column.cover: Rectangle {
-                y: (parent.height - self.height) / 2;
-                width: parent.width;
-                height: self.width;
-                border-radius: 3px;
-                background: Theme.hover;
-                clip: true;
-                Image {
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 12px;
+            for column[c] in root.columns: slot := TableCell {
+                property <[Name]> names: root.line.cells[c];
+                // Most cells are one plain value, which a Text draws for less.
+                property <bool> plain: self.names.length <= 1 && self.names[0].link == "";
+                column: column;
+                if column.heart: IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: Icons.heart;
+                    filled: root.line.loved;
+                    color: root.line.loved ? Theme.accent : Theme.muted;
+                    label: root.line.loved ? "Loved" : "Love";
+                    accessible-checkable: true;
+                    accessible-checked: root.line.loved;
+                    clicked => { root.toggle-love(); }
+                }
+                if column.cover: Rectangle {
+                    y: (parent.height - self.height) / 2;
                     width: parent.width;
-                    height: parent.height;
-                    source: root.line.cover;
-                    image-fit: cover;
-                }
-            }
-            if !column.heart && !column.cover && slot.plain: Text {
-                width: parent.width;
-                height: parent.height;
-                text: slot.names[0].label;
-                font-size: Theme.body;
-                color: column.stretch ? Theme.text : Theme.muted;
-                overflow: elide;
-                vertical-alignment: center;
-            }
-            if !column.heart && !column.cover && !slot.plain: LinksLine {
-                y: (parent.height - self.height) / 2;
-                width: parent.width;
-                alignment: start;
-                names: slot.names;
-                text-color: column.stretch ? Theme.text : Theme.muted;
-                open(link) => { root.open(link); }
-                context-clicked => { root.select(); }
-            }
-        }
-        menu := ContextMenuArea {
-            width: 32px;
-            Menu {
-                MenuItem {
-                    title: root.line.loved ? "Unlove" : "Love";
-                    activated => { root.toggle-love(); }
-                }
-                if root.line.album.link != "": MenuItem {
-                    title: "Go to album";
-                    activated => { root.open(root.line.album.link); }
-                }
-                if root.line.artists.length == 1: MenuItem {
-                    title: "Go to artist";
-                    activated => { root.open(root.line.artists[0].link); }
-                }
-                if root.line.artists.length > 1: Menu {
-                    title: "Go to artist";
-                    for artist in root.line.artists: MenuItem {
-                        title: artist.label;
-                        activated => { root.open(artist.link); }
+                    height: self.width;
+                    border-radius: 3px;
+                    background: Theme.hover;
+                    clip: true;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.line.cover;
+                        image-fit: cover;
                     }
                 }
-                MenuItem {
-                    title: root.line.selected ? "Deselect" : "Select";
-                    activated => { root.select(); }
+                if !column.heart && !column.cover && slot.plain: Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: slot.names[0].label;
+                    font-size: Theme.body;
+                    color: column.stretch ? Theme.text : Theme.muted;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if !column.heart && !column.cover && !slot.plain: LinksLine {
+                    y: (parent.height - self.height) / 2;
+                    width: parent.width;
+                    alignment: start;
+                    names: slot.names;
+                    text-color: column.stretch ? Theme.text : Theme.muted;
+                    open(link) => { root.open(link); }
+                    context-clicked => { root.select(); }
                 }
             }
-            IconButton {
-                y: (parent.height - self.height) / 2;
-                icon: Icons.more;
-                filled: true;
-                color: Theme.muted;
-                label: "More";
-                clicked => { menu.show({ x: 0, y: self.y + self.height }); }
+            menu := ContextMenuArea {
+                width: 32px;
+                Menu {
+                    MenuItem {
+                        title: root.line.loved ? "Unlove" : "Love";
+                        activated => { root.toggle-love(); }
+                    }
+                    if root.line.album.link != "": MenuItem {
+                        title: "Go to album";
+                        activated => { root.open(root.line.album.link); }
+                    }
+                    if root.line.artists.length == 1: MenuItem {
+                        title: "Go to artist";
+                        activated => { root.open(root.line.artists[0].link); }
+                    }
+                    if root.line.artists.length > 1: Menu {
+                        title: "Go to artist";
+                        for artist in root.line.artists: MenuItem {
+                            title: artist.label;
+                            activated => { root.open(artist.link); }
+                        }
+                    }
+                    MenuItem {
+                        title: root.line.selected ? "Deselect" : "Select";
+                        activated => { root.select(); }
+                    }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: Icons.more;
+                    filled: true;
+                    color: Theme.muted;
+                    label: "More";
+                    clicked => { menu.show({ x: 0, y: self.y + self.height }); }
+                }
             }
         }
     }
