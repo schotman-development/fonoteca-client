@@ -368,6 +368,91 @@ pub struct Recorded {
     pub places: Vec<String>,
 }
 
+/// Not in the spec: the composers of classical pieces, indexed by letter, from
+/// Fonoteca's `fonotecaCompositions` extension.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Composers {
+    #[serde(default)]
+    pub index: Vec<ComposerIndex>,
+}
+
+/// Not in the spec: the composers under one letter, from Fonoteca's
+/// `fonotecaCompositions` extension.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerIndex {
+    pub name: String,
+    #[serde(default)]
+    pub composer: Vec<Composer>,
+}
+
+/// Not in the spec: a composer, from Fonoteca's `fonotecaCompositions`
+/// extension. A composition names its composers by id and name only.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Composer {
+    /// The composer's artist id.
+    pub id: String,
+    pub name: String,
+    pub sort_name: Option<String>,
+    pub music_brainz_id: Option<String>,
+    pub cover_art: Option<String>,
+    pub composition_count: Option<i64>,
+}
+
+/// Not in the spec: classical pieces, from Fonoteca's `fonotecaCompositions`
+/// extension.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Compositions {
+    #[serde(default)]
+    pub composition: Vec<Composition>,
+}
+
+/// Not in the spec: a classical piece, the work rather than a performance of
+/// it, from Fonoteca's `fonotecaCompositions` extension. Its movements and
+/// recordings come only when it is asked for by id.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Composition {
+    pub id: String,
+    pub name: String,
+    pub music_brainz_id: Option<String>,
+    #[serde(default)]
+    pub composers: Vec<Composer>,
+    /// When it was written.
+    pub composed: Option<Span>,
+    /// The albums holding a recording of it or its movements.
+    pub album_count: Option<i64>,
+    /// The cover of one of those albums.
+    pub cover_art: Option<String>,
+    /// When it was loved, as songs are, with `star`/`unstar` by its id.
+    pub starred: Option<String>,
+    /// Its MusicBrainz type ("Concerto", "Ballet").
+    pub form: Option<String>,
+    /// Its MusicBrainz key ("B-flat minor").
+    pub key: Option<String>,
+    /// Medieval, Renaissance, Baroque, Classical, Romantic, Modern or
+    /// Contemporary, by the year it was begun, else its composer's life.
+    pub period: Option<String>,
+    /// Its parts on MusicBrainz, else the movements held.
+    pub movement_count: Option<i64>,
+    /// The longest held performance, in seconds.
+    pub duration: Option<i64>,
+    /// Who wrote its words.
+    #[serde(default)]
+    pub lyricists: Vec<Composer>,
+    /// The languages of its words, as ISO 639-3 codes.
+    #[serde(default)]
+    pub languages: Vec<String>,
+    #[serde(default)]
+    pub movement: Vec<Movement>,
+    /// Every recording of it and its movements, across all albums.
+    #[serde(default)]
+    pub song: Vec<Child>,
+}
+
 /// A disc title for an album with an optional cover art
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/disctitle/>

@@ -662,4 +662,44 @@ mod tests {
         assert_eq!(log.len(), 1);
         assert!(!log[0].contains("sesame"), "{}", log[0]);
     }
+
+    #[tokio::test]
+    async fn composers_and_compositions_in_fonotecas_shape() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("getComposers") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","composers":{"index":[{"name":"B","composer":[{"id":"ar-1","name":"Ludwig van Beethoven","sortName":"Beethoven, Ludwig van","musicBrainzId":"1f9df192","coverArt":"ar-1","compositionCount":2}]}]}}}"#
+            } else if request.contains("id=wk-5") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","compositions":{"composition":[{"id":"wk-5","name":"Symphony No. 5","composers":[{"id":"ar-1","name":"Ludwig van Beethoven"}],"composed":{"from":{"year":1804},"to":{"year":1808}},"albumCount":1,"coverArt":"al-9","movement":[{"name":"Allegro con brio","number":1}],"song":[{"id":"tr-1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","albumId":"al-9"}]}]}}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","compositions":{"composition":[{"id":"wk-5","name":"Symphony No. 5","composers":[{"id":"ar-1","name":"Ludwig van Beethoven"}],"albumCount":1,"form":"Symphony","key":"C minor","period":"Classical","movementCount":4,"duration":1840,"lyricists":[{"id":"","name":"Nobody"}],"languages":["zxx"],"starred":"2026-10-19T08:00:00Z"}]}}}"#
+            })
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let composers = client.get_composers().await.unwrap();
+        assert_eq!(composers.index[0].composer[0].composition_count, Some(2));
+        let list = client.get_compositions(Some("ar-1")).await.unwrap();
+        assert_eq!(
+            list.composition[0].composers[0].name,
+            "Ludwig van Beethoven"
+        );
+        let first = &list.composition[0];
+        assert!(first.song.is_empty());
+        assert_eq!(first.form.as_deref(), Some("Symphony"));
+        assert_eq!(first.key.as_deref(), Some("C minor"));
+        assert_eq!(first.period.as_deref(), Some("Classical"));
+        assert_eq!(
+            (first.movement_count, first.duration),
+            (Some(4), Some(1840))
+        );
+        assert_eq!(first.lyricists[0].id, "");
+        assert_eq!(first.languages, ["zxx"]);
+        assert!(first.starred.is_some());
+        let piece = client.get_composition("wk-5").await.unwrap();
+        assert_eq!(piece.movement[0].number, Some(1));
+        assert_eq!(piece.song[0].album_id.as_deref(), Some("al-9"));
+        let years = piece.composed.unwrap();
+        assert_eq!(years.to.and_then(|to| to.year), Some(1808));
+        let log = log.lock().unwrap();
+        assert!(log[1].contains("composerId=ar-1"), "{}", log[1]);
+    }
 }

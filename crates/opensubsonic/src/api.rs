@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use serde_json::Value;
 
 use crate::model::*;
-use crate::{Client, Params, Result, ServerInfo};
+use crate::{Client, Error, Params, Result, ServerInfo};
 
 /// Which albums `getAlbumList` and `getAlbumList2` return.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -581,6 +581,42 @@ impl Client {
             Params::new().req("id", id).opt("size", size),
         )
         .await
+    }
+
+    /// Everyone credited as composer of a classical piece the server holds,
+    /// indexed by letter. Not in the spec: Fonoteca's own call, offered where
+    /// the client [`supports`](Client::supports) `fonotecaCompositions`.
+    pub async fn get_composers(&self) -> Result<Composers> {
+        self.call("getComposers", Params::new(), "composers").await
+    }
+
+    /// The classical pieces the server holds, or only those `composer_id`
+    /// wrote, sorted by name. Not in the spec: Fonoteca's own call, offered
+    /// where the client [`supports`](Client::supports) `fonotecaCompositions`.
+    pub async fn get_compositions(&self, composer_id: Option<&str>) -> Result<Compositions> {
+        self.call(
+            "getCompositions",
+            Params::new().opt("composerId", composer_id),
+            "compositions",
+        )
+        .await
+    }
+
+    /// One classical piece with its movements and every recording of it.
+    /// Not in the spec: Fonoteca's `getCompositions` with an `id`, offered
+    /// where the client [`supports`](Client::supports) `fonotecaCompositions`.
+    pub async fn get_composition(&self, id: &str) -> Result<Composition> {
+        let list: Compositions = self
+            .call(
+                "getCompositions",
+                Params::new().req("id", id),
+                "compositions",
+            )
+            .await?;
+        list.composition
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Unexpected(format!("no composition {id}")))
     }
 
     /// Lyrics found by artist name and song title.
