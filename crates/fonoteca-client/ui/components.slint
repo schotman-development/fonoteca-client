@@ -150,10 +150,11 @@ export component Links inherits FlexboxLayout {
     }
 }
 
-// Links kept to one line: the names that don't fit are left out, and the
+// Links kept to `lines` lines: the names that don't fit are left out, and the
 // comma before them shows there are more.
 export component LinksLine inherits Rectangle {
     in property <[Name]> names;
+    in property <int> lines: 1;
     // How the names that fit share the line.
     in property <LayoutAlignment> alignment: LayoutAlignment.stretch;
     in property <length> font-size: Theme.body;
@@ -161,7 +162,7 @@ export component LinksLine inherits Rectangle {
     callback open(link: string);
     callback context-clicked();
 
-    height: line.preferred-height;
+    height: min(links.preferred-height, line.preferred-height * root.lines);
     clip: true;
 
     line := Text {
@@ -169,7 +170,7 @@ export component LinksLine inherits Rectangle {
         text: " ";
         font-size: root.font-size;
     }
-    Links {
+    links := Links {
         alignment: root.alignment;
         names: root.names;
         font-size: root.font-size;
@@ -625,6 +626,8 @@ export component TrackLineRow inherits Rectangle {
                     width: parent.width;
                     alignment: start;
                     names: slot.names;
+                    // Two names, such as a piece's composers, fit the row.
+                    lines: 2;
                     text-color: column.stretch ? Theme.text : Theme.muted;
                     open(link) => { root.open(link); }
                     context-clicked => { root.select(); }
