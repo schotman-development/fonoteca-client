@@ -462,12 +462,14 @@ export struct TrackColumn {
 }
 
 // A row of the tracks table: what it shows in each column, in the columns'
-// order, whether its song is loved, its album's cover, whether it is
-// selected, and its album and artists for its menu, where they have a page.
+// order, whether its song is loved, its album's cover, whether it is a
+// folder, whether it is selected, and its album and artists for its menu,
+// where they have a page.
 export struct TrackLine {
     cells: [[Name]],
     loved: bool,
     cover: image,
+    folder: bool,
     selected: bool,
     album: Name,
     artists: [Name],
@@ -617,6 +619,17 @@ export component TrackLineRow inherits Rectangle {
                         height: parent.height;
                         source: root.line.cover;
                         image-fit: cover;
+                    }
+                    if root.line.folder && root.line.cover.width == 0: Path {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: 22px;
+                        height: 22px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: Icons.folder;
+                        stroke: Theme.muted;
+                        stroke-width: 1.5px;
                     }
                 }
                 if !column.heart && !column.cover && slot.plain: Text {

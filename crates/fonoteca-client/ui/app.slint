@@ -5,7 +5,7 @@ export { AlbumTile, Icons, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders }
 
 // What a track's page says about it under one heading, such as its album.
 export struct Detail {
@@ -384,6 +384,7 @@ export component AppWindow inherits Window {
     in-out property <string> composer-filter;
     in-out property <string> composition-filter;
     in-out property <string> track-filter;
+    in-out property <string> folder-filter;
 
     callback open(link: string);
     callback back();
@@ -396,6 +397,7 @@ export component AppWindow inherits Window {
     callback filter-composers();
     callback filter-compositions();
     callback filter-tracks();
+    callback filter-folders();
     // The tiles or tracks table rows whose covers to fetch next.
     callback tiles-in-view(first: int, last: int);
     callback toggle-love(row: int);
@@ -411,6 +413,8 @@ export component AppWindow inherits Window {
     callback select-line(index: int);
     callback clear-selection();
     callback resized();
+    // A page that is a table: the tracks, the compositions or a folder.
+    property <bool> table: root.page == Page.tracks || root.page == Page.compositions || root.page == Page.folders;
 
     // One physical pixel, which changes with the scale.
     property <length> physical-pixel: 1phx;
@@ -459,10 +463,10 @@ export component AppWindow inherits Window {
                 forward => { root.forward(); }
                 open-menu => { root.sidebar-open = true; }
             }
-            // The tracks or compositions page's heading, filter and the
-            // table's headings stay put while the rows scroll, and follow
-            // them sideways.
-            if root.page == Page.tracks || root.page == Page.compositions: VerticalLayout {
+            // A table page's heading, filter and the table's headings stay
+            // put while the rows scroll, and follow them sideways. A
+            // folder's heading is its name.
+            if root.table: VerticalLayout {
                 vertical-stretch: 0;
                 padding-top: 8px;
                 spacing: 12px;
@@ -472,7 +476,7 @@ export component AppWindow inherits Window {
                     spacing: 12px;
                     Heading {
                         horizontal-stretch: 1;
-                        text: root.page == Page.compositions ? "Compositions" : "Tracks";
+                        text: root.page == Page.compositions ? "Compositions" : root.page == Page.folders ? root.header-title : "Tracks";
                         vertical-alignment: center;
                     }
                     if root.page == Page.tracks && root.width - root.sidebar-width >= 600px: Filter {
@@ -484,6 +488,11 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 0;
                         text <=> root.composition-filter;
                         edited => { root.filter-compositions(); }
+                    }
+                    if root.page == Page.folders && root.width - root.sidebar-width >= 600px: Filter {
+                        horizontal-stretch: 0;
+                        text <=> root.folder-filter;
+                        edited => { root.filter-folders(); }
                     }
                     Button {
                         horizontal-stretch: 0;
@@ -501,6 +510,10 @@ export component AppWindow inherits Window {
                     if root.page == Page.compositions: Filter {
                         text <=> root.composition-filter;
                         edited => { root.filter-compositions(); }
+                    }
+                    if root.page == Page.folders: Filter {
+                        text <=> root.folder-filter;
+                        edited => { root.filter-folders(); }
                     }
                 }
                 Rectangle {
@@ -552,18 +565,18 @@ export component AppWindow inherits Window {
             scroll := PageScroll {
                 visit: root.visit;
                 near-end => {
-                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.composers || root.page == Page.compositions) && root.more-tiles && !root.loading && root.page-problem == "" {
+                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.table) && root.more-tiles && !root.loading && root.page-problem == "" {
                         root.show-more();
                     }
                 }
                 content-width: max(scroll.visible-width, stage.width);
                 content-height: stage.preferred-height;
                 stage := VerticalLayout {
-                    // At most 1600px wide and centred, but for the tracks
-                    // table, which is wider than the page when its columns
-                    // don't fit.
+                    // At most 1600px wide and centred, but for a table,
+                    // which is wider than the page when its columns don't
+                    // fit.
                     x: max(0px, (scroll.visible-width - self.width) / 2);
-                    width: root.page == Page.tracks || root.page == Page.compositions ? max(scroll.visible-width, root.track-table-width + 48px) : min(scroll.visible-width, 1600px);
+                    width: root.table ? max(scroll.visible-width, root.track-table-width + 48px) : min(scroll.visible-width, 1600px);
                     padding: 24px;
                     padding-top: 8px;
                     // Room to scroll the last tiles out from under the bar.
@@ -703,7 +716,7 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index) => { root.select-tile(index); }
                     }
-                    if root.page == Page.tracks || root.page == Page.compositions: VerticalLayout {
+                    if root.table: VerticalLayout {
                         // The rows on screen and a screen below, by
                         // TrackLineRow's height, whose covers to fetch.
                         property <length> view-top: -scroll.content-y - self.y;
@@ -782,8 +795,9 @@ export component AppWindow inherits Window {
                     if root.page == Page.compositions && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.composition-filter != "" ? "No compositions match." : "No compositions yet."; }
                     if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
                     if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" ? "No tracks match." : "No tracks yet."; }
+                    if root.page == Page.folders && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "Nothing here matches." : "This folder is empty."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.home || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.playlists || root.page == Page.composers || root.page == Page.compositions) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.home || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

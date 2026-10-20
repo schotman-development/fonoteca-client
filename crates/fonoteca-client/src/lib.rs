@@ -531,6 +531,14 @@ mod tests {
             ok(&format!(r#""album":{{{ALBUM},"song":{songs}}}"#))
         } else if request.contains("/rest/getSong") && id == Some("t1") {
             ok(&format!(r#""song":{HARBOUR_LIGHTS}"#))
+        } else if request.contains("/rest/getIndexes") {
+            ok(
+                r#""indexes":{"ignoredArticles":"The","lastModified":1,"index":[{"name":"M","artist":[{"id":"d1","name":"Mara Lind"}]},{"name":"S","artist":[{"id":"d3","name":"Singles","starred":"2024-01-01T00:00:00Z"}]}],"child":[{"id":"t9","isDir":false,"title":"Loose Song","duration":30}]}"#,
+            )
+        } else if request.contains("/rest/getMusicDirectory") && id == Some("d1") {
+            ok(
+                r#""directory":{"id":"d1","parent":"root","name":"Mara Lind","child":[{"id":"d2","parent":"d1","isDir":true,"title":"Night Harbour","coverArt":"al-a1"},{"id":"t1","parent":"d1","isDir":false,"title":"Harbour Lights","duration":252}]}"#,
+            )
         } else if request.contains("/rest/getArtists") {
             let others: Vec<String> = (1..=120)
                 .map(|n| {
@@ -1008,12 +1016,12 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 8);
+            assert_eq!(ui.get_sections().row_count(), 9);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Playlists);
-            assert_eq!(ui.get_section(), 6);
+            assert_eq!(ui.get_section(), 7);
             DOWN.store(false, Relaxed);
             click(&ui, "Try again");
             wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
@@ -1036,6 +1044,7 @@ mod tests {
                     "Tracks",
                     "Composers",
                     "Compositions",
+                    "Folders",
                     "Playlists",
                     "Road Trip",
                     "Empty",
@@ -1051,6 +1060,7 @@ mod tests {
                     "Library",
                     "Library",
                     "Library",
+                    "Library",
                     "Playlists",
                     "Playlists",
                     "Playlists",
@@ -1060,7 +1070,7 @@ mod tests {
             // Each with its icon in front, but for the playlists.
             let icons = ui.global::<Icons>();
             let pictures = strings(ui.get_section_icons());
-            assert_eq!(pictures.len(), 10);
+            assert_eq!(pictures.len(), 11);
             assert_eq!(pictures[0], icons.get_home().as_str());
             let library = [
                 icons.get_album(),
@@ -1068,14 +1078,15 @@ mod tests {
                 icons.get_note(),
                 icons.get_composer(),
                 icons.get_composition(),
+                icons.get_folder(),
             ];
-            assert_eq!(pictures[1..6], library.map(String::from));
-            assert_eq!(pictures[6..9], ["", "", ""]);
-            assert_eq!(pictures[9], icons.get_person().as_str());
-            ui.invoke_show_section(7);
+            assert_eq!(pictures[1..7], library.map(String::from));
+            assert_eq!(pictures[7..10], ["", "", ""]);
+            assert_eq!(pictures[10], icons.get_person().as_str());
+            ui.invoke_show_section(8);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
-            assert_eq!(ui.get_section(), 7);
+            assert_eq!(ui.get_section(), 8);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
             // Each track with its artists, then its album.
@@ -1090,7 +1101,7 @@ mod tests {
             assert_eq!(links(&tracks[1]), [""]);
             assert!(!tracks[1].loved);
             click(&ui, "Account");
-            assert_eq!(ui.get_section(), 9);
+            assert_eq!(ui.get_section(), 10);
             // Shown again at once, while they are asked for again.
             click(&ui, "Playlists");
             assert_eq!(ui.get_tiles().row_count(), 2);
@@ -1896,6 +1907,91 @@ mod tests {
             assert_eq!(saved.track_sort.as_deref(), Some("Year"));
             assert!(saved.track_descending);
             sort(1, true);
+
+            // The folders page lists the music folders' top level in a table
+            // like the tracks page's, folders first, then the files beside
+            // them. A folder's title opens it, a song's its page.
+            click(&ui, "Folders");
+            wait_for("the folders", || ui.get_track_lines().row_count() == 3).await;
+            assert_eq!(ui.get_page(), Page::Folders);
+            assert_eq!(ui.get_header_title(), "Folders");
+            assert_eq!(ui.get_section(), 6);
+            let entry = |ui: &AppWindow, row: usize| -> (String, String) {
+                let title = titles(ui).iter().position(|t| t == "Title").unwrap();
+                let line = ui.get_track_lines().row_data(row).unwrap();
+                let name = line.cells.row_data(title).unwrap().row_data(0).unwrap();
+                (name.label.into(), name.link.into())
+            };
+            let named = |label: &str, link: &str| (label.to_owned(), link.to_owned());
+            assert_eq!(entry(&ui, 0), named("Mara Lind", "folder:d1"));
+            assert_eq!(entry(&ui, 1), named("Singles", "folder:d3"));
+            assert_eq!(entry(&ui, 2), named("Loose Song", "song:t9"));
+            let line = |ui: &AppWindow, row: usize| ui.get_track_lines().row_data(row).unwrap();
+            assert!(line(&ui, 0).folder && !line(&ui, 2).folder);
+            assert!(line(&ui, 1).loved && !line(&ui, 0).loved);
+            // Its columns and filter are its own.
+            assert_eq!(
+                titles(&ui),
+                ["Cover", "Title", "Artists", "Album", "Duration", "Loved"]
+            );
+            ui.set_folder_filter("sing".into());
+            ui.invoke_filter_folders();
+            wait_for("one folder", || ui.get_track_lines().row_count() == 1).await;
+            assert_eq!(entry(&ui, 0), named("Singles", "folder:d3"));
+            assert_eq!(ui.get_track_filter(), "");
+            ui.set_folder_filter("".into());
+            ui.invoke_filter_folders();
+            wait_for("the three again", || ui.get_track_lines().row_count() == 3).await;
+            click(&ui, "Mara Lind");
+            wait_for("her folder", || ui.get_header_title() == "Mara Lind").await;
+            assert_eq!(ui.get_section(), -1);
+            assert_eq!(entry(&ui, 0), named("Night Harbour", "folder:d2"));
+            assert_eq!(entry(&ui, 1), named("Harbour Lights", "song:t1"));
+            // A folder shows its cover, as an album does.
+            ui.root_element().query_descendants().find_all();
+            wait_for("the folder's cover", || line(&ui, 0).cover.size().width > 0).await;
+            // The heart loves a song, a right-click selects a folder.
+            ui.invoke_toggle_line_love(1);
+            assert!(line(&ui, 1).loved);
+            wait_for("the song's star", || {
+                STARRED.lock().unwrap().contains(&"t1".to_owned())
+            })
+            .await;
+            ui.invoke_select_line(0);
+            assert!(line(&ui, 0).selected);
+            ui.invoke_clear_selection();
+            // It sorts by a heading, kept apart from the tracks table's.
+            ui.invoke_sort_tracks(1);
+            assert_eq!(entry(&ui, 0), named("Harbour Lights", "song:t1"));
+            let saved = crate::prefs::load();
+            assert_eq!(saved.folder_sort.as_deref(), Some("Title"));
+            assert_eq!(saved.track_sort.as_deref(), Some("Year"));
+            click(&ui, "Harbour Lights");
+            wait_for("the song", || ui.get_details().row_count() > 0).await;
+            assert_eq!(ui.get_page(), Page::Track);
+            click(&ui, "Back");
+            wait_for("her folder again", || ui.get_track_lines().row_count() == 2).await;
+            // The song loved here is still loved, and a column hidden here
+            // leaves its rows at once and stays hidden.
+            assert!(line(&ui, 0).loved);
+            let album = ui
+                .get_track_choices()
+                .iter()
+                .position(|choice| choice.title == "Album")
+                .unwrap();
+            ui.invoke_toggle_track_column(album as i32);
+            assert!(!titles(&ui).contains(&"Album".to_owned()));
+            assert_eq!(line(&ui, 0).cells.row_count(), titles(&ui).len());
+            let saved = crate::prefs::load().folder_columns.unwrap();
+            assert!(!saved.contains(&"Album".to_owned()));
+            ui.invoke_toggle_track_column(album as i32);
+            click(&ui, "Back");
+            wait_for("the top level again", || {
+                ui.get_header_title() == "Folders" && ui.get_track_lines().row_count() == 3
+            })
+            .await;
+            click(&ui, "Tracks");
+            wait_for("the tracks", || ui.get_track_lines().row_count() == 100).await;
 
             // A second start finds the saved account, with its server down.
             DOWN.store(true, Relaxed);

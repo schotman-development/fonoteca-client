@@ -183,7 +183,7 @@ pub struct Movement {
 /// A media.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/child/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Child {
     /// The id of the media.

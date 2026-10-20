@@ -1,5 +1,5 @@
-//! Preferences kept on this device: how the albums, tracks and compositions
-//! are sorted and which columns the tables show. They aren't secrets, so a plain file
+//! Preferences kept on this device: how the albums, tracks, compositions and
+//! folders are sorted and which columns the tables show. They aren't secrets, so a plain file
 //! in the system's settings folder keeps them, and the browser preview its
 //! localStorage. Where neither works they last until the app closes.
 
@@ -20,6 +20,10 @@ pub struct Prefs {
     pub composition_columns: Option<Vec<String>>,
     pub composition_sort: Option<String>,
     pub composition_descending: bool,
+    /// The same for the folders' tables.
+    pub folder_columns: Option<Vec<String>>,
+    pub folder_sort: Option<String>,
+    pub folder_descending: bool,
 }
 
 /// The preferences saved, or the first choices when there are none.

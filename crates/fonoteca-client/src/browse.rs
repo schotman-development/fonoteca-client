@@ -1,8 +1,9 @@
 //! The library pages after sign-in: what each page shows, where its links lead,
 //! and the history behind back and forward. A link is a page's address, such
-//! as "albums", "artists", "tracks", "playlists", "album:<id>", "artist:<id>"
-//! or "playlist:<id>", and on servers with Fonoteca's compositions
-//! "composers", "compositions", "composer:<id>" or "composition:<id>".
+//! as "home", "albums", "artists", "tracks", "playlists", "album:<id>",
+//! "artist:<id>", "playlist:<id>" or "song:<id>", the files' "folders" and
+//! "folder:<id>", and on servers with Fonoteca's compositions "composers",
+//! "compositions", "composer:<id>" or "composition:<id>".
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -16,7 +17,7 @@ use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
-    GenericMediaType, ItemDate, ListOptions, MediaType, Playlist, SearchOptions, Span,
+    GenericMediaType, Indexes, ItemDate, ListOptions, MediaType, Playlist, SearchOptions, Span,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -105,10 +106,18 @@ pub struct Browser {
     song_list_loaded: bool,
     song_view: Vec<usize>,
     lines: Rc<VecModel<TrackLine>>,
+    /// The folder the folders page shows, by its link, its name, and what is
+    /// in it: folders first, then files, as the server sends them. Their
+    /// order on the page is `view`.
+    folder: String,
+    folder_name: String,
+    entries: Vec<Child>,
     /// What the tracks table shows of `COLUMNS` and the compositions table
     /// of `PIECE_COLUMNS`, and how they are sorted.
     track_table: Table,
     piece_table: Table,
+    /// The same for the folders' tables, of `COLUMNS` too.
+    entry_table: Table,
     /// The filter of the albums or artists page on screen, and what it
     /// shows, as indexes into `library` or `artists` in the page's order.
     filter: String,
@@ -135,6 +144,7 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_composer_filter("".into());
     ui.set_composition_filter("".into());
     ui.set_track_filter("".into());
+    ui.set_folder_filter("".into());
     sidebar(ui, browser);
     load_playlists(ui, browser);
     open(ui, browser, "home".into());
@@ -229,7 +239,8 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_filter_artists(filter.clone());
     ui.on_filter_composers(filter.clone());
     ui.on_filter_compositions(filter.clone());
-    ui.on_filter_tracks(filter);
+    ui.on_filter_tracks(filter.clone());
+    ui.on_filter_folders(filter);
     ui.on_tiles_in_view({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |first, last| {
@@ -288,10 +299,11 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize) {
             };
             piece_link(&b.compositions[piece])
         } else {
-            let Some(&song) = b.song_view.get(row) else {
+            let (songs, order) = listed(&b, ui.get_page());
+            let Some(&song) = order.get(row) else {
                 return;
             };
-            song_link(&b.song_list[song])
+            song_link(&songs[song])
         };
         let Some(mut line) = b.lines.row_data(row) else {
             return;
@@ -312,9 +324,14 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize) {
     ui.set_selected_tiles(count as i32);
 }
 
-/// What stands for a song in the selection; songs have no page of their own.
+/// A song's page, or a folder's for a folder in one, which also stands for
+/// it in the selection.
 fn song_link(song: &Child) -> String {
-    format!("song:{}", song.id)
+    if song.is_dir {
+        format!("folder:{}", song.id)
+    } else {
+        format!("song:{}", song.id)
+    }
 }
 
 fn clear_selection(ui: &AppWindow, browser: &Shared) {
@@ -429,6 +446,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Track);
             song(ui, browser, id);
         }
+        "folders" | "folder" => {
+            ui.set_page(Page::Folders);
+            folders(ui, browser, link.clone());
+        }
         "composers" => {
             ui.set_page(Page::Composers);
             composers(ui, browser);
@@ -470,6 +491,7 @@ fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &s
         ("tracks", "Tracks", true),
         ("composers", "Composers", compositions),
         ("compositions", "Compositions", compositions),
+        ("folders", "Folders", true),
     ]
     .into_iter()
     .filter(|&(.., shown)| shown)
@@ -912,6 +934,34 @@ impl Table {
     }
 }
 
+/// The songs a table of `COLUMNS` on `page` lists and their order there: the
+/// folder's entries on the folders page, else every song.
+fn listed(b: &Browser, page: Page) -> (&[Child], &[usize]) {
+    if page == Page::Folders {
+        (&b.entries, &b.view)
+    } else {
+        (&b.song_list, &b.song_view)
+    }
+}
+
+/// The table of `COLUMNS` on `page`: the folders', else the tracks page's.
+fn song_table(b: &Browser, page: Page) -> &Table {
+    if page == Page::Folders {
+        &b.entry_table
+    } else {
+        &b.track_table
+    }
+}
+
+/// The table on `page`, to change.
+fn table_mut(b: &mut Browser, page: Page) -> &mut Table {
+    match page {
+        Page::Compositions => &mut b.piece_table,
+        Page::Folders => &mut b.entry_table,
+        _ => &mut b.track_table,
+    }
+}
+
 /// The column with the cover, the ones that take the room left over, and the
 /// one with the heart.
 const COVER: &str = "Cover";
@@ -1099,13 +1149,14 @@ fn tracks(ui: &AppWindow, browser: &Shared) {
 }
 
 /// The table's columns, the one it is sorted by, and the choices: the
-/// compositions table's on that page, else the tracks table's.
+/// compositions table's on that page, the folders' on theirs, else the
+/// tracks table's.
 fn show_columns(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     if ui.get_page() == Page::Compositions {
         set_columns(ui, PIECE_COLUMNS, &b.piece_table);
     } else {
-        set_columns(ui, COLUMNS, &b.track_table);
+        set_columns(ui, COLUMNS, song_table(&b, ui.get_page()));
     }
 }
 
@@ -1163,6 +1214,7 @@ fn track_line(b: &Browser, song: &Child, columns: &[usize], size: u32) -> TrackL
         cells: ModelRc::new(VecModel::from(cells)),
         loved: song.starred.is_some(),
         cover: cover.unwrap_or_default(),
+        folder: song.is_dir,
         selected: b.selected.contains(&link),
         album: album.unwrap_or_default(),
         artists: names(artists),
@@ -1190,6 +1242,7 @@ fn piece_line(b: &Browser, piece: &Composition, columns: &[usize], size: u32) ->
         cells: ModelRc::new(VecModel::from(cells)),
         loved: piece.starred.is_some(),
         cover: cover.unwrap_or_default(),
+        folder: false,
         selected: b.selected.contains(&piece_link(piece)),
         album: Name::default(),
         artists: names(composers),
@@ -1270,14 +1323,14 @@ fn piece_link(piece: &Composition) -> String {
     format!("composition:{}", piece.id)
 }
 
-/// Lists the covers still to fetch for the rows of the tracks or, on `page`,
-/// compositions table from `start` on, when it shows them.
+/// Lists the covers still to fetch for the rows of the table on `page` from
+/// `start` on, when it shows them.
 fn want_line_covers(b: &mut Browser, page: Page, start: usize) {
     let pieces = page == Page::Compositions;
     let shown = if pieces {
         shows_cover(PIECE_COLUMNS, &b.piece_table)
     } else {
-        shows_cover(COLUMNS, &b.track_table)
+        shows_cover(COLUMNS, song_table(b, page))
     };
     if !shown {
         return;
@@ -1286,7 +1339,8 @@ fn want_line_covers(b: &mut Browser, page: Page, start: usize) {
         let cover = if pieces {
             b.compositions[b.view[row]].cover_art.clone()
         } else {
-            b.song_list[b.song_view[row]].cover_art.clone()
+            let (songs, order) = listed(b, page);
+            songs[order[row]].cover_art.clone()
         };
         let missing = b
             .lines
@@ -1373,42 +1427,51 @@ fn load_songs(ui: &AppWindow, browser: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Puts the songs in the tracks table's order, with its filter, showing as
-/// many rows as before and at least a page.
+/// Puts the songs of the tracks or folders page in its table's order, with
+/// its filter, showing as many rows as before and at least a page.
 fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
+    let page = ui.get_page();
     let filter = typed_filter(ui).unwrap_or_default();
     let shown = {
         let mut b = browser.borrow_mut();
-        let found = filtered(&b.song_list, &filter, song_text);
-        let view = sorted(&b.song_list, found, COLUMNS, &b.track_table);
-        b.filter = filter;
+        let (songs, order) = listed(&b, page);
+        let found = filtered(songs, &filter, song_text);
+        let view = sorted(songs, found, COLUMNS, song_table(&b, page));
         let shown = b.lines.row_count();
-        if view.get(..shown) != b.song_view.get(..shown) {
+        let kept = view.get(..shown) == order.get(..shown);
+        b.filter = filter;
+        if !kept {
             clear_lines(ui, &mut b);
         }
-        b.song_view = view;
+        if page == Page::Folders {
+            b.view = view;
+        } else {
+            b.song_view = view;
+        }
         shown
     };
     show_lines(ui, browser, shown.max(TILES_AT_ONCE));
 }
 
-/// Shows the tracks page's rows up to the `upto`th.
+/// Shows the tracks or folders page's rows up to the `upto`th.
 fn show_lines(ui: &AppWindow, browser: &Shared, upto: usize) {
+    let page = ui.get_page();
     let size = pixels(ui, LINE_COVER_SIZE);
     let (more, waiting) = {
         let mut b = browser.borrow_mut();
-        let end = upto.min(b.song_view.len());
+        let (songs, order) = listed(&b, page);
+        let end = upto.min(order.len());
         let start = b.lines.row_count().min(end);
-        let columns = b.track_table.shown();
-        for &song in &b.song_view[start..end] {
-            b.lines
-                .push(track_line(&b, &b.song_list[song], &columns, size));
+        let columns = song_table(&b, page).shown();
+        for &song in &order[start..end] {
+            b.lines.push(track_line(&b, &songs[song], &columns, size));
         }
-        want_line_covers(&mut b, Page::Tracks, start);
-        (
-            end < b.song_view.len() || !b.song_list_loaded,
-            b.song_list_loading && b.song_view.is_empty(),
-        )
+        // The folder's entries arrive at once, the songs a part at a time.
+        let tracks = page == Page::Tracks;
+        let more = end < order.len() || (tracks && !b.song_list_loaded);
+        let waiting = tracks && b.song_list_loading && b.song_view.is_empty();
+        want_line_covers(&mut b, page, start);
+        (more, waiting)
     };
     ui.set_more_tiles(more);
     ui.set_loading(waiting);
@@ -1461,11 +1524,7 @@ fn sort_tracks(ui: &AppWindow, browser: &Shared, index: usize) {
     let pieces = ui.get_page() == Page::Compositions;
     {
         let mut b = browser.borrow_mut();
-        let table = if pieces {
-            &mut b.piece_table
-        } else {
-            &mut b.track_table
-        };
+        let table = table_mut(&mut b, ui.get_page());
         let Some(&column) = table.shown().get(index) else {
             return;
         };
@@ -1487,18 +1546,14 @@ fn sort_tracks(ui: &AppWindow, browser: &Shared, index: usize) {
     }
 }
 
-/// Shows the tracks or compositions table's column at `index` into
-/// `COLUMNS` or `PIECE_COLUMNS`, or hides it.
+/// Shows the column at `index` into `COLUMNS` or `PIECE_COLUMNS` of the
+/// tracks, folders or compositions table, or hides it.
 fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
     let size = pixels(ui, LINE_COVER_SIZE);
     let page = ui.get_page();
     {
         let mut b = browser.borrow_mut();
-        let table = if page == Page::Compositions {
-            &mut b.piece_table
-        } else {
-            &mut b.track_table
-        };
+        let table = table_mut(&mut b, page);
         let Some(shown) = table.shown.get_mut(index) else {
             return;
         };
@@ -1511,9 +1566,10 @@ fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
                 .map(|&i| piece_line(&b, &b.compositions[i], &columns, size))
                 .collect()
         } else {
-            b.song_view[..rows]
+            let (songs, order) = listed(&b, page);
+            order[..rows]
                 .iter()
-                .map(|&song| track_line(&b, &b.song_list[song], &columns, size))
+                .map(|&song| track_line(&b, &songs[song], &columns, size))
                 .collect()
         };
         b.lines.set_vec(lines);
@@ -1539,6 +1595,12 @@ fn load_prefs(ui: &AppWindow, browser: &Shared) {
         &prefs.composition_columns,
         &prefs.composition_sort,
         prefs.composition_descending,
+    );
+    b.entry_table = saved_table(
+        COLUMNS,
+        &prefs.folder_columns,
+        &prefs.folder_sort,
+        prefs.folder_descending,
     );
     // The Sort menu has four entries.
     ui.set_album_sort(prefs.album_sort.clamp(0, 3));
@@ -1568,12 +1630,13 @@ fn saved_table<T>(
     }
 }
 
-/// Saves the order of the albums, tracks and compositions and the tables'
-/// columns on this device.
+/// Saves the order of the albums, tracks, compositions and folders and the
+/// tables' columns on this device.
 fn save_prefs(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let (track_columns, track_sort) = titles(COLUMNS, &b.track_table);
     let (composition_columns, composition_sort) = titles(PIECE_COLUMNS, &b.piece_table);
+    let (folder_columns, folder_sort) = titles(COLUMNS, &b.entry_table);
     prefs::save(&prefs::Prefs {
         album_sort: ui.get_album_sort(),
         album_descending: ui.get_album_descending(),
@@ -1583,6 +1646,9 @@ fn save_prefs(ui: &AppWindow, browser: &Shared) {
         composition_columns: Some(composition_columns),
         composition_sort,
         composition_descending: b.piece_table.descending,
+        folder_columns: Some(folder_columns),
+        folder_sort,
+        folder_descending: b.entry_table.descending,
     });
 }
 
@@ -1603,6 +1669,7 @@ fn typed_filter(ui: &AppWindow) -> Option<String> {
         Page::Composers => ui.get_composer_filter(),
         Page::Compositions => ui.get_composition_filter(),
         Page::Tracks => ui.get_track_filter(),
+        Page::Folders => ui.get_folder_filter(),
         _ => return None,
     };
     Some(typed.trim().to_owned())
@@ -1665,6 +1732,19 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
     let page = ui.get_page();
     if page == Page::Playlists {
         playlists(ui, browser);
+        return;
+    }
+    if page == Page::Folders {
+        let (link, held, shown) = {
+            let b = browser.borrow();
+            let link = b.history[b.at].clone();
+            (link.clone(), b.folder == link, b.lines.row_count())
+        };
+        if held {
+            show_lines(ui, browser, shown + TILES_AT_ONCE);
+        } else {
+            folders(ui, browser, link);
+        }
         return;
     }
     let (have_artists, have_composers, have_compositions) = {
@@ -2007,6 +2087,75 @@ fn song(ui: &AppWindow, browser: &Shared, id: String) {
     );
 }
 
+/// The folders page: at "folders" the music folders' top level, at
+/// "folder:<id>" what is in that folder, as the server's file structure has
+/// it. Each is a table like the tracks page's, whose titles open a folder or
+/// a song's page. A folder shown again, as when filtering, isn't asked for
+/// again.
+fn folders(ui: &AppWindow, browser: &Shared, link: String) {
+    show_columns(ui, browser);
+    let held = {
+        let b = browser.borrow();
+        (b.folder == link).then(|| b.folder_name.clone())
+    };
+    if let Some(name) = held {
+        ui.set_header_title(name.into());
+        arrange_tracks(ui, browser);
+        return;
+    }
+    ui.set_folder_filter("".into());
+    {
+        let mut b = browser.borrow_mut();
+        b.folder.clear();
+        b.entries.clear();
+        b.view.clear();
+    }
+    let id = link.strip_prefix("folder:").map(str::to_owned);
+    load(
+        ui,
+        browser,
+        |client| async move {
+            let Some(id) = id else {
+                let indexes = client.get_indexes(None, None).await?;
+                return Ok((
+                    "Folders".to_owned(),
+                    indexes.map(top_level).unwrap_or_default(),
+                ));
+            };
+            let folder = client.get_music_directory(&id).await?;
+            Ok((folder.name, folder.child))
+        },
+        move |ui, browser, (name, entries)| {
+            {
+                let mut b = browser.borrow_mut();
+                b.folder = link;
+                b.folder_name = name.clone();
+                b.entries = entries;
+            }
+            ui.set_header_title(name.into());
+            arrange_tracks(ui, browser);
+        },
+    );
+}
+
+/// The music folders' top level as entries of a folder: the folders under
+/// each index letter, then the files beside them.
+fn top_level(indexes: Indexes) -> Vec<Child> {
+    let folders = indexes.index.into_iter().flat_map(|index| index.artist);
+    folders
+        .map(|folder| Child {
+            id: folder.id,
+            is_dir: true,
+            title: folder.name,
+            starred: folder.starred,
+            user_rating: folder.user_rating,
+            average_rating: folder.average_rating,
+            ..Child::default()
+        })
+        .chain(indexes.child)
+        .collect()
+}
+
 /// A composer's page: their picture and name, and their compositions. The
 /// picture comes with the composers, asked for first if they aren't here.
 fn composer(ui: &AppWindow, browser: &Shared, id: String) {
@@ -2255,7 +2404,10 @@ fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<Str
 /// Fetches the covers of the tiles or tracks table rows in view, top to
 /// bottom, a few at a time. The others wait until they are scrolled to.
 fn fetch_covers(ui: &AppWindow, browser: &Shared) {
-    let size = if matches!(ui.get_page(), Page::Tracks | Page::Compositions) {
+    let size = if matches!(
+        ui.get_page(),
+        Page::Tracks | Page::Compositions | Page::Folders
+    ) {
         pixels(ui, LINE_COVER_SIZE)
     } else {
         tile_pixels(ui)
@@ -2431,19 +2583,22 @@ fn toggle_love(ui: &AppWindow, browser: &Shared, row: usize) {
     love(ui, browser, id, loved, undo);
 }
 
-/// Loves or unloves the song of a row of the tracks table.
+/// Loves or unloves the song, or folder, of a row of the tracks or folders
+/// table.
 fn toggle_line_love(ui: &AppWindow, browser: &Shared, row: usize) {
-    if ui.get_page() == Page::Compositions {
+    let page = ui.get_page();
+    if page == Page::Compositions {
         toggle_piece_love(ui, browser, row);
         return;
     }
     let mut b = browser.borrow_mut();
-    let Some(song) = b.song_view.get(row).and_then(|&song| b.song_list.get(song)) else {
+    let (songs, order) = listed(&b, page);
+    let Some(song) = order.get(row).and_then(|&song| songs.get(song)) else {
         return;
     };
     let id = song.id.clone();
     let loved = song.starred.is_none();
-    mark_loved(&mut b, Page::Tracks, &id, loved);
+    mark_loved(&mut b, page, &id, loved);
     drop(b);
     let undo = {
         let id = id.clone();
@@ -2493,18 +2648,20 @@ fn mark_piece_loved(b: &mut Browser, page: Page, id: &str, loved: bool) {
     }
 }
 
-/// Keeps whether a song is loved with the tracks page's songs, wherever it
-/// was loved, and on its row there when `page`, the one on screen, is the
-/// tracks table.
+/// Keeps whether a song or folder is loved with the tracks page's songs and
+/// the folder's entries, wherever it was loved, and on its row when `page`,
+/// the one on screen, is the tracks or folders table.
 fn mark_loved(b: &mut Browser, page: Page, id: &str, loved: bool) {
-    let Some(song) = b.song_list.iter().position(|song| song.id == id) else {
-        return;
-    };
-    b.song_list[song].starred = loved.then(String::new);
-    if page != Page::Tracks {
+    for song in b.song_list.iter_mut().chain(&mut b.entries) {
+        if song.id == id {
+            song.starred = loved.then(String::new);
+        }
+    }
+    if !matches!(page, Page::Tracks | Page::Folders) {
         return;
     }
-    let row = b.song_view.iter().position(|&shown| shown == song);
+    let (songs, order) = listed(b, page);
+    let row = order.iter().position(|&shown| songs[shown].id == id);
     if let Some(row) = row
         && let Some(mut line) = b.lines.row_data(row)
     {
@@ -2831,6 +2988,7 @@ mod tests {
                 "Albums",
                 "Artists",
                 "Tracks",
+                "Folders",
                 "Playlists",
                 "Account"
             ]
@@ -2844,6 +3002,7 @@ mod tests {
                 "Tracks",
                 "Composers",
                 "Compositions",
+                "Folders",
                 "Playlists",
                 "Account"
             ]
