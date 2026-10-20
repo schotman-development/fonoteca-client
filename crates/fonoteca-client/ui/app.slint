@@ -1,11 +1,20 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, IconButton, Icons, Name, PageHeader, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Name, PageHeader, Pressable, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
-export { AlbumTile, Name, TrackColumn, TrackLine }
+export { AlbumTile, Icons, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition }
+
+// One of the library's counts on the home page, "…" until it is known, and
+// the page that lists them.
+export struct Stat {
+    icon: string,
+    label: string,
+    value: string,
+    link: string,
+}
 
 // A column the tracks table can show, and whether it does.
 export struct ColumnChoice {
@@ -88,6 +97,65 @@ component Filter inherits LineEdit {
     min-width: 64px;
     preferred-width: 240px;
     placeholder-text: "Filter";
+}
+
+// The library's counts in cards across the width, in as few rows as fit,
+// shared out evenly.
+component StatCards {
+    in property <[Stat]> stats;
+    callback open(link: string);
+    property <length> gap: Theme.gap;
+    property <length> card-height: 88px;
+    property <int> fit: max(1, floor((self.width + self.gap) / (180px + self.gap)));
+    property <int> rows: ceil(self.stats.length / self.fit);
+    property <int> columns: max(1, ceil(self.stats.length / max(1, self.rows)));
+    property <length> card-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
+    height: max(0px, self.rows * (self.card-height + self.gap) - self.gap);
+
+    for stat[i] in root.stats: card := Pressable {
+        x: mod(i, root.columns) * (root.card-width + root.gap);
+        y: floor(i / root.columns) * (root.card-height + root.gap);
+        width: root.card-width;
+        height: root.card-height;
+        label: stat.value + " " + stat.label.to-lowercase();
+        clicked => { root.open(stat.link); }
+        Rectangle {
+            border-radius: Theme.radius;
+            background: card.hovered ? Theme.hover : Theme.surface;
+        }
+        HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 16px;
+            spacing: 16px;
+            Path {
+                cross-axis-self-alignment: center;
+                width: 36px;
+                height: 36px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: stat.icon;
+                stroke: Theme.text;
+                stroke-width: 1.5px;
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: stat.value;
+                    font-size: 26px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+                Text {
+                    text: stat.label.to-uppercase();
+                    font-size: 11px;
+                    letter-spacing: 0.5px;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+            }
+        }
+    }
 }
 
 // The heading of the composers page, with its filter beside it, or under
@@ -282,6 +350,7 @@ export component AppWindow inherits Window {
     in-out property <int> section;
     in property <[AlbumTile]> tiles;
     in property <bool> more-tiles;
+    in property <[Stat]> stats;
     in property <image> header-image;
     in property <string> header-title;
     in property <[Name]> header-names;
@@ -504,6 +573,20 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // The library at a glance, its newest albums sliding by.
+                    if root.page == Page.home: Heading { text: root.username == "" ? "Welcome" : "Welcome, " + root.username; }
+                    if root.page == Page.home: StatCards {
+                        stats: root.stats;
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.home && root.tiles.length > 0: CoverShelf {
+                        title: "Recently added";
+                        tiles: root.tiles;
+                        open(link) => { root.open(link); }
+                        in-view(first, last) => { root.tiles-in-view(first, last); }
+                        selecting: root.selected-tiles > 0;
+                        select(index) => { root.select-tile(index); }
+                    }
                     // The filter and sort controls go beside the heading, or
                     // under it in two rows when the page is too narrow.
                     if root.page == Page.albums: VerticalLayout {
@@ -660,7 +743,7 @@ export component AppWindow inherits Window {
                     if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
                     if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" ? "No tracks match." : "No tracks yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.playlists || root.page == Page.composers || root.page == Page.compositions) && (root.more-tiles || root.tiles.length == 0) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.home || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.tracks || root.page == Page.playlists || root.page == Page.composers || root.page == Page.compositions) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

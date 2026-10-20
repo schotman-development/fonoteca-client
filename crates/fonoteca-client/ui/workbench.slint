@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -29,7 +29,7 @@ export component Workbench inherits Window {
         "Person tile",
         "Track row",
         "Shelf",
-        "Cover grid",
+        "Cover grid and shelf",
         "Page header",
         "Sidebar",
         "Top bar",
@@ -415,6 +415,15 @@ export component Workbench inherits Window {
                         PersonTile { photo: root.none; name: "Tomas Reed"; role: "Bass"; }
                     }
 
+                    if root.current == 6: Example {
+                        caption: "Swipe, drag, scroll sideways or use the buttons: it comes to rest in the grid's columns";
+                        CoverShelf {
+                            title: "Recently added";
+                            tiles: root.grid;
+                            open(link) => { root.event = "open " + link; }
+                            select(index) => { root.event = "select tile " + index; }
+                        }
+                    }
                     if root.current == 6: Example {
                         caption: "Resize the window: tiles widen to fill a row, then move to the next";
                         CoverGrid {

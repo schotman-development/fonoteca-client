@@ -137,13 +137,13 @@ fn run<T: 'static>(
 /// screens before it.
 fn show(ui: &AppWindow, account: &Account) {
     ui.set_address(account.server.as_str().into());
-    ui.set_signed_in(
-        match &account.login {
-            Login::ApiKey(_) => "Signed in with an API key".into(),
-            Login::Password { username, .. } => format!("Signed in as {username}"),
-        }
-        .into(),
-    );
+    let (signed_in, username) = match &account.login {
+        Login::ApiKey(_) => ("Signed in with an API key".into(), ""),
+        Login::Password { username, .. } => (format!("Signed in as {username}"), username.as_str()),
+    };
+    ui.set_signed_in(signed_in.into());
+    // The home page's welcome names them.
+    ui.set_username(username.into());
     let user = account
         .listenbrainz
         .as_ref()
@@ -369,7 +369,7 @@ mod tests {
 
     use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementRoot};
     use slint::Model;
-    use slint::platform::PointerEventButton;
+    use slint::platform::{PointerEventButton, WindowEvent};
 
     use super::*;
 
@@ -686,17 +686,17 @@ mod tests {
     }
 
     fn button(ui: &AppWindow, label: &str) -> ElementHandle {
+        find(ui, label).unwrap_or_else(|| panic!("no {label} button"))
+    }
+
+    /// The button with `label`, unless it is out of sight.
+    fn find(ui: &AppWindow, label: &str) -> Option<ElementHandle> {
         let label = label.to_owned();
-        let button = ui
-            .root_element()
+        ui.root_element()
             .query_descendants()
             .match_accessible_role(AccessibleRole::Button)
-            .match_predicate({
-                let label = label.clone();
-                move |button| button.accessible_label().is_some_and(|l| l == label)
-            })
-            .find_first();
-        button.unwrap_or_else(|| panic!("no {label} button"))
+            .match_predicate(move |button| button.accessible_label().is_some_and(|l| l == label))
+            .find_first()
     }
 
     fn click(ui: &AppWindow, label: &str) {
@@ -761,6 +761,7 @@ mod tests {
             DOWN.store(true, Relaxed);
             click(&ui, "Skip");
             assert_eq!(ui.get_step(), Step::Done);
+            assert_eq!(ui.get_page(), Page::Home);
             assert!(ui.get_busy(), "sign out waits while it saves");
             click(&ui, "Account");
             assert_eq!(ui.get_page(), Page::Account);
@@ -1002,12 +1003,12 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 7);
+            assert_eq!(ui.get_sections().row_count(), 8);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Playlists);
-            assert_eq!(ui.get_section(), 5);
+            assert_eq!(ui.get_section(), 6);
             DOWN.store(false, Relaxed);
             click(&ui, "Try again");
             wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
@@ -1024,6 +1025,7 @@ mod tests {
             assert_eq!(
                 strings(ui.get_sections()),
                 [
+                    "Home",
                     "Albums",
                     "Artists",
                     "Tracks",
@@ -1038,6 +1040,7 @@ mod tests {
             assert_eq!(
                 strings(ui.get_section_groups()),
                 [
+                    "",
                     "Library",
                     "Library",
                     "Library",
@@ -1049,10 +1052,10 @@ mod tests {
                     ""
                 ]
             );
-            ui.invoke_show_section(6);
+            ui.invoke_show_section(7);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
-            assert_eq!(ui.get_section(), 6);
+            assert_eq!(ui.get_section(), 7);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
             // Each track with its artists, then its album.
@@ -1067,7 +1070,7 @@ mod tests {
             assert_eq!(links(&tracks[1]), [""]);
             assert!(!tracks[1].loved);
             click(&ui, "Account");
-            assert_eq!(ui.get_section(), 8);
+            assert_eq!(ui.get_section(), 9);
             // Shown again at once, while they are asked for again.
             click(&ui, "Playlists");
             assert_eq!(ui.get_tiles().row_count(), 2);
@@ -1248,7 +1251,7 @@ mod tests {
             click(&ui, "Composers");
             wait_for("the composers", || ui.get_tiles().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Composers);
-            assert_eq!(ui.get_section(), 3);
+            assert_eq!(ui.get_section(), 4);
             let tile = ui.get_tiles().row_data(0).unwrap();
             assert_eq!(
                 (tile.title.as_str(), tile.link.as_str()),
@@ -1821,12 +1824,111 @@ mod tests {
             wait_for("the offline note", || again.get_offline() != "").await;
             assert_eq!(again.get_step(), Step::Done);
             DOWN.store(false, Relaxed);
+            again
+                .window()
+                .set_size(slint::LogicalSize::new(1100.0, 760.0));
             click(&again, "Try again");
-            wait_for("the albums after trying again", || {
-                again.get_tiles().row_count() == 100
+            // It opens on the home page: a welcome, the library's counts and
+            // its newest albums.
+            let stats = |ui: &AppWindow| -> Vec<(String, String)> {
+                let stats = ui.get_stats();
+                stats
+                    .iter()
+                    .map(|stat| (stat.label.into(), stat.value.into()))
+                    .collect()
+            };
+            wait_for("the home page", || {
+                again.get_tiles().row_count() == 24
+                    && stats(&again).iter().all(|(_, value)| value != "…")
             })
             .await;
             assert_eq!(again.get_offline(), "");
+            assert_eq!(again.get_page(), Page::Home);
+            assert_eq!(again.get_username(), "joe");
+            assert_eq!(
+                stats(&again),
+                [
+                    ("Artists", "122"),
+                    ("Albums", "603"),
+                    ("Tracks", "2"),
+                    ("Composers", "2"),
+                    ("Compositions", "3"),
+                ]
+                .map(|(label, value)| (label.to_owned(), value.to_owned()))
+            );
+            // Each opens its page.
+            let links: Vec<String> = again.get_stats().iter().map(|s| s.link.into()).collect();
+            assert_eq!(
+                links,
+                ["artists", "albums", "tracks", "composers", "compositions"]
+            );
+            let newest: Vec<String> = again.get_tiles().iter().map(|t| t.link.into()).collect();
+            assert_eq!(newest[..4], ids(&["b2", "b3", "b1", "a1"]));
+            // The shelf comes to rest with a tile at its left edge: Next and
+            // Previous move a width, three tiles here, a swipe or a sideways
+            // scroll on to the next tile its way.
+            let x = |title: &str| find(&again, title).map_or(f32::NAN, |b| b.absolute_position().x);
+            let tile =
+                |row: usize| -> String { again.get_tiles().row_data(row).unwrap().title.into() };
+            let (left, pitch) = (x(&tile(0)), x(&tile(1)) - x(&tile(0)));
+            // Whether the `row`th tile is at the left edge.
+            let rests = |row: usize| move || (x(&tile(row)) - left).abs() < 0.5;
+            click(&again, "Next");
+            wait_for("the next three", rests(3)).await;
+            let y = {
+                let tile = button(&again, "Night Harbour");
+                tile.absolute_position().y + tile.size().height / 2.0
+            };
+            let at = |x: f32| slint::LogicalPosition::new(x, y);
+            let window = again.window();
+            // Drags from the second tile `by` tiles sideways.
+            let swipe = |by: f32| {
+                let from = left + pitch;
+                window.dispatch_event(WindowEvent::PointerPressed {
+                    position: at(from),
+                    button: PointerEventButton::Left,
+                });
+                for step in 1..=6 {
+                    window.dispatch_event(WindowEvent::PointerMoved {
+                        position: at(from + by * pitch * step as f32 / 6.0),
+                    });
+                }
+                window.dispatch_event(WindowEvent::PointerReleased {
+                    position: at(from + by * pitch),
+                    button: PointerEventButton::Left,
+                });
+            };
+            swipe(-1.2);
+            wait_for("two tiles on", rests(5)).await;
+            assert_eq!(again.get_page(), Page::Home, "a swipe opens nothing");
+            swipe(0.3);
+            wait_for("one tile back", rests(4)).await;
+            click(&again, "Previous");
+            wait_for("three tiles back", rests(1)).await;
+            window.dispatch_event(WindowEvent::PointerScrolled {
+                position: at(left + pitch),
+                delta_x: -0.3 * pitch,
+                delta_y: 0.0,
+            });
+            wait_for("one tile on", rests(2)).await;
+            // Scrolling down over it scrolls the page, not the shelf.
+            window.dispatch_event(WindowEvent::PointerScrolled {
+                position: at(left + pitch),
+                delta_x: 0.0,
+                delta_y: -40.0,
+            });
+            let later = Instant::now() + Duration::from_millis(400);
+            wait_for("a pause", || Instant::now() > later).await;
+            assert!(rests(2)(), "the shelf stays put");
+            // Try again asks only for what's missing, and keeps the shelf.
+            again.invoke_show_more();
+            assert_eq!(again.get_tiles().row_count(), 24);
+            // Its tiles stand where the albums grid's do, which its count opens.
+            click(&again, "603 albums");
+            wait_for("the albums", || again.get_tiles().row_count() == 100).await;
+            let tiles = again.get_tiles();
+            let grid = |row: usize| x(tiles.row_data(row).unwrap().title.as_str());
+            assert_eq!((grid(0), grid(1) - grid(0)), (left, pitch));
             // It picks up the preferences saved on this device.
             assert_eq!(again.get_album_sort(), 1);
             assert!(again.get_album_descending());

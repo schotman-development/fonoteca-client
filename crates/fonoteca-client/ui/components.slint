@@ -45,13 +45,17 @@ export global Icons {
     out property <string> check: "M5 12.5l4.5 4.5 9.5-10";
     out property <string> close: "M6 6l12 12 M18 6L6 18";
     out property <string> menu: "M4 7h16 M4 12h16 M4 17h16";
+    out property <string> artist: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M19 18v-7l3 1 M19 18a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
+    out property <string> album: "M12 21a9 9 0 1 1 0-18a9 9 0 1 1 0 18z M12 14a2 2 0 1 1 0-4a2 2 0 1 1 0 4z";
+    out property <string> composer: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M15 21l1-3.5 5-5a1.4 1.4 0 0 1 2 2l-5 5z";
+    out property <string> composition: "M14 3H6v18h12V7z M14 3v4h4 M13 17v-6l3 1 M13 17a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
     // Filled.
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
 
 // Clicks, Enter and Space, and screen readers all end up in `clicked`; a
 // right-click, a two-finger click and the Menu key in `context-clicked`.
-component Pressable {
+export component Pressable {
     in property <bool> enabled: true;
     in property <string> label;
     out property <bool> hovered: root.enabled && touch.has-hover;
@@ -787,6 +791,197 @@ export component CoverGrid {
                 root.select(i);
             } else {
                 root.open(link);
+            }
+        }
+    }
+}
+
+// A titled row of album tiles that slides sideways: as many to the width, and
+// as wide, as a CoverGrid's of the same width, so the two line up. It comes to
+// rest with a tile at its left edge. A swipe, a drag or a sideways scroll goes
+// on to the next tile in its direction, the buttons a whole width at a time.
+export component CoverShelf {
+    in property <string> title;
+    in property <[AlbumTile]> tiles;
+    in property <length> min-size: 200px;
+    in property <bool> round;
+    in property <bool> selecting;
+    callback open(link: string);
+    callback select(index: int);
+    callback in-view(first: int, last: int);
+
+    property <length> gap: Theme.gap;
+    property <int> columns: max(2, floor((self.width + self.gap) / (self.min-size + self.gap)));
+    property <length> size: (self.width - (self.columns - 1) * self.gap) / self.columns;
+    property <length> pitch: self.size + self.gap;
+    // The tile at the left edge, and the furthest one that can be.
+    property <int> first;
+    property <int> last-first: max(0, self.tiles.length - self.columns);
+    // The tile at the left edge on its way there.
+    property <float> at: self.first;
+    animate at { duration: 250ms; easing: ease-out; }
+    // How far a sideways scroll has moved it, while scrolling.
+    property <length> scrolled;
+    property <bool> scrolling;
+
+    changed last-first => { self.first = min(self.first, self.last-first); }
+
+    // The tiles on screen and a screen to the right.
+    property <int> first-in-view: self.first;
+    property <int> last-in-view: min(self.tiles.length, self.first + 2 * self.columns) - 1;
+    init => {
+        self.in-view(self.first-in-view, self.last-in-view);
+    }
+    changed first-in-view => {
+        self.in-view(self.first-in-view, self.last-in-view);
+    }
+    changed last-in-view => {
+        self.in-view(self.first-in-view, self.last-in-view);
+    }
+
+    // Comes to rest on the next tile the way it was `moved`.
+    function settle(moved: length) {
+        if moved < 0 {
+            self.first = min(self.last-first, self.first + ceil(-moved / self.pitch));
+        } else if moved > 0 {
+            self.first = max(0, self.first - ceil(moved / self.pitch));
+        }
+    }
+
+    // Measures a tile's height at this width.
+    probe := CoverTile {
+        visible: false;
+        enabled: false;
+        size: root.size;
+        title: "Probe";
+        names: [{ label: "Probe", link: "" }];
+    }
+
+    // A sideways scroll settles once it pauses.
+    pause := Timer {
+        interval: 150ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.scrolling = false;
+            root.settle(root.scrolled);
+            root.scrolled = 0;
+        }
+    }
+
+    VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                horizontal-stretch: 1;
+                text: root.title;
+                font-size: Theme.heading;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.last-first > 0: IconButton {
+                icon: Icons.back;
+                label: "Previous";
+                enabled: root.first > 0;
+                clicked => { root.first = max(0, root.first - root.columns); }
+            }
+            if root.last-first > 0: IconButton {
+                icon: Icons.forward;
+                label: "Next";
+                enabled: root.first < root.last-first;
+                clicked => { root.first = min(root.last-first, root.first + root.columns); }
+            }
+        }
+        swipe := SwipeGestureHandler {
+            height: probe.preferred-height;
+            handle-swipe-left: root.first < root.last-first;
+            handle-swipe-right: root.first > 0;
+            swiped => { root.settle(self.current-position.x - self.pressed-position.x); }
+
+            TouchArea {
+                scroll-event(event) => {
+                    if abs(event.delta-x) <= abs(event.delta-y) {
+                        return reject;
+                    }
+                    root.scrolled = clamp(root.scrolled + event.delta-x, (root.first - root.last-first) * root.pitch, root.first * root.pitch);
+                    root.scrolling = true;
+                    if pause.running {
+                        pause.restart();
+                    } else {
+                        pause.start();
+                    }
+                    accept
+                }
+
+                // Cut off a little outside, so a selected tile's outline shows.
+                Rectangle {
+                    x: -8px;
+                    y: -8px;
+                    width: parent.width + 16px;
+                    height: parent.height + 16px;
+                    clip: true;
+                    Rectangle {
+                        // Where a finger or a scroll has the tiles, which
+                        // glide back from there to where they rest.
+                        property <length> offset;
+                        x: 8px - root.at * root.pitch + self.offset;
+                        y: 8px;
+                        states [
+                            swiping when swipe.swiping: {
+                                offset: clamp(swipe.current-position.x - swipe.pressed-position.x, (root.first - root.last-first) * root.pitch, root.first * root.pitch);
+                                out {
+                                    animate offset { duration: 250ms; easing: ease-out; }
+                                }
+                            }
+                            scrolling when root.scrolling: {
+                                offset: root.scrolled;
+                                out {
+                                    animate offset { duration: 250ms; easing: ease-out; }
+                                }
+                            }
+                        ]
+
+                        for tile[i] in root.tiles: CoverTile {
+                            x: i * root.pitch;
+                            y: 0;
+                            width: root.size;
+                            height: probe.preferred-height;
+                            size: root.size;
+                            round: root.round;
+                            cover: tile.cover;
+                            title: tile.title;
+                            names: tile.names;
+                            selecting: root.selecting;
+                            selected: tile.selected;
+                            // A tile reached with Tab slides into view.
+                            changed focused => {
+                                if self.focused && i < root.first {
+                                    root.first = i;
+                                } else if self.focused && i >= root.first + root.columns {
+                                    root.first = min(root.last-first, i - root.columns + 1);
+                                }
+                            }
+                            clicked => {
+                                if root.selecting {
+                                    root.select(i);
+                                } else {
+                                    root.open(tile.link);
+                                }
+                            }
+                            context-clicked => { root.select(i); }
+                            open(link) => {
+                                if root.selecting {
+                                    root.select(i);
+                                } else {
+                                    root.open(link);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

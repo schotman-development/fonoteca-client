@@ -23,8 +23,13 @@ use slint::{
     VecModel,
 };
 
-use crate::{AlbumTile, AppWindow, ColumnChoice, Name, Page, Track, TrackColumn, TrackLine, prefs};
+use crate::{
+    AlbumTile, AppWindow, ColumnChoice, Icons, Name, Page, Stat, Track, TrackColumn, TrackLine,
+    prefs,
+};
 
+/// The newest albums on the home page.
+const RECENT: usize = 24;
 /// Tiles added to the albums or artists page at a time.
 const TILES_AT_ONCE: usize = 100;
 /// Albums asked for at a time while the library loads, and at most how many,
@@ -117,7 +122,7 @@ pub struct Browser {
 
 pub type Shared = Rc<RefCell<Browser>>;
 
-/// Opens the albums page with a signed-in client.
+/// Opens the home page with a signed-in client.
 pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     {
         let mut b = browser.borrow_mut();
@@ -132,7 +137,7 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_track_filter("".into());
     sidebar(ui, browser);
     load_playlists(ui, browser);
-    open(ui, browser, "albums".into());
+    open(ui, browser, "home".into());
 }
 
 /// Whether the library is open: signed in, and not signed out since.
@@ -391,6 +396,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
     let (page, id) = link.split_once(':').unwrap_or((&link, ""));
     let id = id.to_owned();
     match page {
+        "home" => {
+            ui.set_page(Page::Home);
+            home(ui, browser);
+        }
         "artists" => {
             ui.set_page(Page::Artists);
             artists(ui, browser);
@@ -446,9 +455,9 @@ fn offers_compositions(b: &Browser) -> bool {
         .is_some_and(|client| client.supports(COMPOSITIONS))
 }
 
-/// The sidebar's entries, as links, labels and groups: the library's pages,
-/// with the composers and compositions where the server has them, the
-/// playlists and the account.
+/// The sidebar's entries, as links, labels and groups: the home page, the
+/// library's pages, with the composers and compositions where the server has
+/// them, the playlists and the account.
 fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &str)> {
     let library = [
         ("albums", "Albums", true),
@@ -465,8 +474,9 @@ fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &s
         let link = format!("playlist:{}", playlist.id);
         (link, playlist.name.as_str(), "Playlists")
     });
-    library
+    [("home".to_owned(), "Home", "")]
         .into_iter()
+        .chain(library)
         .chain(playlists)
         .chain([("account".to_owned(), "Account", "")])
         .collect()
@@ -524,6 +534,79 @@ fn load<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
     .expect("the event loop is running");
 }
 
+/// Shows the library's counts and its newest albums on the home page, asking
+/// for what hasn't arrived yet.
+fn home(ui: &AppWindow, browser: &Shared) {
+    let (ask, more) = {
+        let b = browser.borrow();
+        (
+            !b.library_loaded && !b.library_loading,
+            offers_compositions(&b),
+        )
+    };
+    show_home(ui, browser);
+    if ask {
+        load_library(ui, browser);
+    }
+    artists(ui, browser);
+    if more {
+        composers(ui, browser);
+        compositions(ui, browser);
+    }
+}
+
+/// The home page's counts, each once all of it has arrived, and the newest
+/// albums once the library has.
+fn show_home(ui: &AppWindow, browser: &Shared) {
+    let icons = ui.global::<Icons>();
+    let stat = |icon: SharedString, label: &str, n: Option<usize>| Stat {
+        icon,
+        label: label.into(),
+        value: n.map_or("…".into(), |n| n.to_string().into()),
+        link: label.to_lowercase().into(),
+    };
+    let tiles: Vec<_> = {
+        let b = browser.borrow();
+        let library = b.library_loaded.then_some(&b.library);
+        let mut stats = vec![
+            stat(
+                icons.get_artist(),
+                "Artists",
+                b.artists_loaded.then_some(b.artists.len()),
+            ),
+            stat(icons.get_album(), "Albums", library.map(Vec::len)),
+            stat(
+                icons.get_note(),
+                "Tracks",
+                library.map(|albums| albums.iter().map(|a| a.song_count.max(0) as usize).sum()),
+            ),
+        ];
+        if offers_compositions(&b) {
+            stats.push(stat(
+                icons.get_composer(),
+                "Composers",
+                b.composers_loaded.then_some(b.composers.len()),
+            ));
+            stats.push(stat(
+                icons.get_composition(),
+                "Compositions",
+                b.compositions_loaded.then_some(b.compositions.len()),
+            ));
+        }
+        ui.set_stats(ModelRc::new(VecModel::from(stats)));
+        if library.is_none() || b.tiles.row_count() > 0 {
+            return;
+        }
+        let newest = arranged(&b.library, "", 2, true);
+        newest
+            .iter()
+            .take(RECENT)
+            .map(|&i| album_tile(&b.library[i], album_names(&b.library[i])))
+            .collect()
+    };
+    add_tiles(ui, browser, tiles);
+}
+
 /// Shows the library on the albums page, asking for it first if it isn't all
 /// there.
 fn albums(ui: &AppWindow, browser: &Shared) {
@@ -564,7 +647,7 @@ fn load_library(ui: &AppWindow, browser: &Shared) {
             if !signed_in {
                 return;
             }
-            let shown = ui.get_page() == Page::Albums;
+            let shown = matches!(ui.get_page(), Page::Albums | Page::Home);
             let list = match list {
                 Ok(list) => list.album,
                 Err(e) => {
@@ -1504,8 +1587,11 @@ fn typed_filter(ui: &AppWindow) -> Option<String> {
 /// Puts the library in the albums page's order, or the artists, composers or
 /// compositions in the server's, with the page's filter. The tiles or rows
 /// shown stay when they are still the first ones; otherwise as many are shown
-/// again, and at least a page.
+/// again, and at least a page. On the home page, shows what has arrived.
 fn arrange(ui: &AppWindow, browser: &Shared) {
+    if ui.get_page() == Page::Home {
+        return show_home(ui, browser);
+    }
     let (sort, descending) = (ui.get_album_sort(), ui.get_album_descending());
     let filter = typed_filter(ui).unwrap_or_default();
     let page = ui.get_page();
@@ -1532,9 +1618,12 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
 }
 
 /// Shows the next tiles or rows, and asks for the library, the artists, the
-/// songs or the playlists again if that failed.
+/// songs or the playlists again if that failed, or what the home page lacks.
 fn more_tiles(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
+    if ui.get_page() == Page::Home {
+        return home(ui, browser);
+    }
     if ui.get_page() == Page::Tracks {
         let (ask, shown) = {
             let b = browser.borrow();
@@ -2680,11 +2769,19 @@ mod tests {
         };
         assert_eq!(
             labels(false),
-            ["Albums", "Artists", "Tracks", "Playlists", "Account"]
+            [
+                "Home",
+                "Albums",
+                "Artists",
+                "Tracks",
+                "Playlists",
+                "Account"
+            ]
         );
         assert_eq!(
             labels(true),
             [
+                "Home",
                 "Albums",
                 "Artists",
                 "Tracks",
