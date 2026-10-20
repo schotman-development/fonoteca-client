@@ -804,6 +804,22 @@ mod tests {
         wait_for("the time to pass", || Instant::now() >= until).await;
     }
 
+    /// Holds the left button, or a finger with `Input.touch` on, at
+    /// `position` for `ms`, moved `drift` to the right.
+    async fn hold(ui: &AppWindow, position: slint::LogicalPosition, drift: f32, ms: u64) {
+        let (window, button) = (ui.window(), PointerEventButton::Left);
+        window.dispatch_event(WindowEvent::PointerPressed { position, button });
+        let position = slint::LogicalPosition::new(position.x + drift, position.y);
+        window.dispatch_event(WindowEvent::PointerMoved { position });
+        idle(Duration::from_millis(ms)).await;
+        window.dispatch_event(WindowEvent::PointerReleased { position, button });
+    }
+
+    fn middle(element: &ElementHandle) -> slint::LogicalPosition {
+        let (at, size) = (element.absolute_position(), element.size());
+        slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0)
+    }
+
     fn button(ui: &AppWindow, label: &str) -> ElementHandle {
         find(ui, label).unwrap_or_else(|| panic!("no {label} button"))
     }
@@ -1032,6 +1048,15 @@ mod tests {
                 .single_click(PointerEventButton::Right)
                 .await;
             assert!(selected(&ui).is_empty());
+            // On a phone a finger held on a tile, or on its name, does the
+            // same, and the tile doesn't open.
+            ui.global::<Input>().set_touch(true);
+            hold(&ui, middle(&button(&ui, "Night Harbour")), 0.0, 800).await;
+            assert_eq!(selected(&ui), [0]);
+            hold(&ui, middle(&button(&ui, "Mara Lind")), 0.0, 800).await;
+            assert!(selected(&ui).is_empty());
+            assert_eq!(ui.get_page(), Page::Albums);
+            ui.global::<Input>().set_touch(false);
             ui.invoke_select_tile(1, false);
             ui.invoke_clear_selection();
             assert!(selected(&ui).is_empty());
@@ -2250,6 +2275,24 @@ mod tests {
             window.dispatch_event(WindowEvent::KeyReleased { text: shift.into() });
             let rows: Vec<bool> = (0..5).map(|row| selected(&ui, row)).collect();
             assert_eq!(rows, [false, true, true, true, false]);
+            ui.invoke_clear_selection();
+            // A finger held on a row picks it; a mouse button held, a finger
+            // that moves, or one lifted sooner, doesn't.
+            hold(&ui, beside(2), 0.0, 800).await;
+            assert!(!selected(&ui, 2));
+            ui.global::<Input>().set_touch(true);
+            hold(&ui, beside(2), 20.0, 800).await;
+            assert!(!selected(&ui, 2));
+            hold(&ui, beside(2), 0.0, 300).await;
+            idle(Duration::from_millis(500)).await;
+            assert!(!selected(&ui, 2));
+            hold(&ui, beside(2), 0.0, 800).await;
+            let rows: Vec<bool> = (0..5).map(|row| selected(&ui, row)).collect();
+            assert_eq!(rows, [false, false, true, false, false]);
+            // The next tap on it is a tap again.
+            hold(&ui, beside(2), 0.0, 0).await;
+            assert!(!selected(&ui, 2));
+            ui.global::<Input>().set_touch(false);
             ui.invoke_clear_selection();
             // Kept for the session, columns, order and all.
             click(&ui, "Albums");

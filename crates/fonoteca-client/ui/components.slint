@@ -83,8 +83,49 @@ export global Icons {
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
 
+// Whether every press counts as a finger's. Tests turn it on, since Slint's
+// test backend can only send mouse presses.
+export global Input {
+    in-out property <bool> touch;
+}
+
+// A finger held still on a TouchArea for half a second, which a phone takes
+// for a long press; a mouse never makes one. The area hands on its pointer
+// events and moves, and skips the click that ends a long press: `done`.
+component Hold {
+    callback held();
+    out property <bool> done;
+
+    public function pointer(event: PointerEvent) {
+        if event.kind == PointerEventKind.down {
+            root.done = false;
+            timer.running = event.button == PointerEventButton.left && (Input.touch || event.touch-finger-id != 0);
+        } else if event.kind != PointerEventKind.move {
+            timer.running = false;
+        }
+    }
+
+    // The finger is this far from where it went down.
+    public function moved(dx: length, dy: length) {
+        if abs(dx) > 8px || abs(dy) > 8px {
+            timer.running = false;
+        }
+    }
+
+    timer := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.done = true;
+            root.held();
+        }
+    }
+}
+
 // Clicks, Enter and Space, and screen readers all end up in `clicked`; a
-// right-click, a two-finger click and the Menu key in `context-clicked`.
+// right-click, a two-finger click, a long press and the Menu key in
+// `context-clicked`.
 export component Pressable {
     in property <bool> enabled: true;
     in property <string> label;
@@ -134,7 +175,11 @@ export component Pressable {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
-        clicked => { root.clicked(); }
+        clicked => {
+            if !hold.done {
+                root.clicked();
+            }
+        }
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
                 root.shift = event.modifiers.shift;
@@ -142,7 +187,13 @@ export component Pressable {
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.context-clicked();
             }
+            hold.pointer(event);
         }
+        moved => { hold.moved(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y); }
+    }
+
+    hold := Hold {
+        held => { root.context-clicked(); }
     }
 
     @children
@@ -918,9 +969,9 @@ export component TrackHeader inherits HorizontalLayout {
 }
 
 // A row of the tracks table, cells lined up under `TrackHeader`'s headings.
-// Names in it are links, and the heart loves its song. A right-click selects
-// it, as do clicks while the page is selecting; the button at its end opens
-// its menu.
+// Names in it are links, and the heart loves its song. A right-click or a
+// long press selects it, as do clicks while the page is selecting; the button
+// at its end opens its menu.
 export component TrackLineRow inherits Rectangle {
     in property <[TrackColumn]> columns;
     in property <TrackLine> line;
@@ -965,7 +1016,7 @@ export component TrackLineRow inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: root.selecting ? MouseCursor.pointer : MouseCursor.default;
         clicked => {
-            if root.selecting {
+            if root.selecting && !hold.done {
                 root.select(root.shift);
             }
         }
@@ -976,6 +1027,12 @@ export component TrackLineRow inherits Rectangle {
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.select(root.shift);
             }
+            hold.pointer(event);
+        }
+        moved => { hold.moved(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y); }
+
+        hold := Hold {
+            held => { root.select(false); }
         }
 
         HorizontalLayout {
