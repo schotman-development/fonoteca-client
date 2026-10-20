@@ -714,6 +714,24 @@ impl Client {
             .opt("count", count);
         self.call("findSonicPath", params, "sonicMatch").await
     }
+
+    // Media library scanning
+
+    /// Whether the server is scanning its libraries, and how many items it
+    /// has scanned.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/getscanstatus/>
+    pub async fn get_scan_status(&self) -> Result<ScanStatus> {
+        self.call("getScanStatus", Params::new(), "scanStatus")
+            .await
+    }
+
+    /// Starts a rescan of the server's libraries.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/startscan/>
+    pub async fn start_scan(&self) -> Result<ScanStatus> {
+        self.call("startScan", Params::new(), "scanStatus").await
+    }
 }
 
 fn album_list_params(list: &AlbumListType, options: &ListOptions<'_>) -> Params {

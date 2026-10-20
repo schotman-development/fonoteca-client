@@ -1149,6 +1149,18 @@ pub struct SearchResult3 {
     pub song: Vec<Child>,
 }
 
+/// Scan status information.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/scanstatus/>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStatus {
+    /// The status of the scan
+    pub scanning: bool,
+    /// Scanned item count
+    pub count: Option<i64>,
+}
+
 /// Information about an API key
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/tokeninfo/>

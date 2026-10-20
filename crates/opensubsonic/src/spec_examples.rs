@@ -1,7 +1,7 @@
 //! Parses every JSON example on the spec pages of the calls and types this
 //! crate covers. `spec-examples/` holds them, copied from
 //! <https://github.com/opensubsonic/open-subsonic-api> at be131fb44a48 under
-//! its Apache-2.0 license. Ten examples had JSON typos (trailing or missing
+//! its Apache-2.0 license. Eleven examples had JSON typos (trailing or missing
 //! commas, an extra brace); their copies fix only those.
 //!
 //! Left out: the getIndexes and indexes examples, which give numbers and
@@ -66,6 +66,7 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
         "getSonicSimilarTracks" | "findSonicPath" => {
             check::<Vec<SonicMatch>>(response, name, "sonicMatch")
         }
+        "getScanStatus" | "startScan" => check::<ScanStatus>(response, name, "scanStatus"),
         "updatePlaylist" | "deletePlaylist" | "star" | "unstar" | "setRating" => Ok(()),
         _ => panic!("no check for endpoint {name}"),
     }
@@ -122,6 +123,7 @@ fn response(name: &str, json: &[u8]) -> Result<()> {
         "Playlists" => parse::<Playlists>(json),
         "RecordLabel" => parse::<RecordLabel>(json),
         "ReplayGain" => parse::<ReplayGain>(json),
+        "ScanStatus" => parse::<ScanStatus>(json),
         "SearchResult2" => parse::<SearchResult2>(json),
         "SearchResult3" => parse::<SearchResult3>(json),
         "SimilarSongs" => parse::<SimilarSongs>(json),
