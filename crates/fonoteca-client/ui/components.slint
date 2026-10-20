@@ -90,6 +90,8 @@ export component Pressable {
     in property <string> label;
     out property <bool> hovered: root.enabled && touch.has-hover;
     out property <bool> focused: focus.has-focus;
+    // Whether Shift was held on the press or key that clicked it.
+    out property <bool> shift;
     callback clicked();
     callback context-clicked();
 
@@ -116,6 +118,7 @@ export component Pressable {
         enabled: root.enabled;
         focus-on-click: false;
         key-pressed(event) => {
+            root.shift = event.modifiers.shift;
             if event.text == Key.Return || event.text == Key.Space {
                 root.clicked();
                 return accept;
@@ -133,6 +136,9 @@ export component Pressable {
         mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
         clicked => { root.clicked(); }
         pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.shift = event.modifiers.shift;
+            }
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.context-clicked();
             }
@@ -928,8 +934,10 @@ export component TrackLineRow inherits Rectangle {
     in property <[Name]> playlists;
     callback open(link: string);
     callback toggle-love();
-    callback select();
+    // With Shift held, everything from the row last picked to this one.
+    callback select(range: bool);
     callback add-to-playlist(id: string);
+    property <bool> shift;
 
     height: 54px;
     border-radius: Theme.radius;
@@ -958,12 +966,15 @@ export component TrackLineRow inherits Rectangle {
         mouse-cursor: root.selecting ? MouseCursor.pointer : MouseCursor.default;
         clicked => {
             if root.selecting {
-                root.select();
+                root.select(root.shift);
             }
         }
         pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.shift = event.modifiers.shift;
+            }
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                root.select();
+                root.select(root.shift);
             }
         }
 
@@ -1029,7 +1040,7 @@ export component TrackLineRow inherits Rectangle {
                     lines: 2;
                     text-color: column.stretch ? Theme.text : Theme.muted;
                     open(link) => { root.open(link); }
-                    context-clicked => { root.select(); }
+                    context-clicked => { root.select(false); }
                 }
             }
             MoreMenu {
@@ -1059,7 +1070,7 @@ export component TrackLineRow inherits Rectangle {
                     } else if id == "playlist" {
                         root.add-to-playlist(choice);
                     } else {
-                        root.select();
+                        root.select(false);
                     }
                 }
             }
@@ -1119,8 +1130,9 @@ export component CoverGrid {
     // selected one go, instead of opening it.
     in property <bool> selecting;
     callback open(link: string);
-    // A tile right-clicked, or clicked while selecting.
-    callback select(index: int);
+    // A tile right-clicked, or clicked while selecting; with Shift held,
+    // every tile from the one last picked to it.
+    callback select(index: int, range: bool);
     // The tiles on screen and a screen below it, whenever that changes.
     callback in-view(first: int, last: int);
 
@@ -1169,15 +1181,15 @@ export component CoverGrid {
         selected: tile.selected;
         clicked => {
             if root.selecting {
-                root.select(i);
+                root.select(i, self.shift);
             } else {
                 root.open(tile.link);
             }
         }
-        context-clicked => { root.select(i); }
+        context-clicked => { root.select(i, self.shift); }
         open(link) => {
             if root.selecting {
-                root.select(i);
+                root.select(i, false);
             } else {
                 root.open(link);
             }
@@ -1196,7 +1208,7 @@ export component CoverShelf {
     in property <bool> round;
     in property <bool> selecting;
     callback open(link: string);
-    callback select(index: int);
+    callback select(index: int, range: bool);
     callback in-view(first: int, last: int);
 
     property <length> gap: Theme.gap;
@@ -1355,15 +1367,15 @@ export component CoverShelf {
                             }
                             clicked => {
                                 if root.selecting {
-                                    root.select(i);
+                                    root.select(i, self.shift);
                                 } else {
                                     root.open(tile.link);
                                 }
                             }
-                            context-clicked => { root.select(i); }
+                            context-clicked => { root.select(i, self.shift); }
                             open(link) => {
                                 if root.selecting {
-                                    root.select(i);
+                                    root.select(i, false);
                                 } else {
                                     root.open(link);
                                 }

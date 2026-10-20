@@ -1010,7 +1010,7 @@ mod tests {
                     .filter(|row| tiles.row_data(*row).unwrap().selected)
                     .collect()
             };
-            ui.invoke_select_tile(2);
+            ui.invoke_select_tile(2, false);
             click(&ui, "Night Harbour");
             assert_eq!(ui.get_page(), Page::Albums);
             assert_eq!(selected(&ui), [0, 2]);
@@ -1032,10 +1032,51 @@ mod tests {
                 .single_click(PointerEventButton::Right)
                 .await;
             assert!(selected(&ui).is_empty());
-            ui.invoke_select_tile(1);
+            ui.invoke_select_tile(1, false);
             ui.invoke_clear_selection();
             assert!(selected(&ui).is_empty());
             assert_eq!(ui.get_selected_tiles(), 0);
+            // With Shift, every tile from the one last picked to it, either
+            // way; with none picked on the page, just the one.
+            ui.invoke_select_tile(3, true);
+            assert_eq!(selected(&ui), [3]);
+            ui.invoke_select_tile(1, false);
+            assert_eq!(selected(&ui), [1, 3]);
+            ui.invoke_select_tile(4, true);
+            assert_eq!(selected(&ui), [1, 2, 3, 4]);
+            ui.invoke_select_tile(0, true);
+            assert_eq!(selected(&ui), [0, 1, 2, 3, 4]);
+            assert_eq!(ui.get_selected_tiles(), 5);
+            ui.invoke_clear_selection();
+            // A click with Shift held is one.
+            let shift = |pressed: bool| {
+                let text = slint::platform::Key::Shift.into();
+                ui.window().dispatch_event(if pressed {
+                    WindowEvent::KeyPressed { text }
+                } else {
+                    WindowEvent::KeyReleased { text }
+                });
+            };
+            ui.invoke_select_tile(0, false);
+            let third = ui.get_tiles().row_data(2).unwrap().title;
+            shift(true);
+            button(&ui, &third)
+                .single_click(PointerEventButton::Left)
+                .await;
+            shift(false);
+            assert_eq!(selected(&ui), [0, 1, 2]);
+            button(&ui, &third)
+                .single_click(PointerEventButton::Left)
+                .await;
+            assert_eq!(selected(&ui), [0, 1]);
+            ui.invoke_clear_selection();
+            // A page shown again has nothing picked on it to start a range.
+            ui.invoke_select_tile(1, false);
+            ui.invoke_open("artists".into());
+            ui.invoke_open("albums".into());
+            ui.invoke_select_tile(3, true);
+            assert_eq!(selected(&ui), [1, 3]);
+            ui.invoke_clear_selection();
             // The selection lasts through sorting, filtering and other pages.
             let picked = |ui: &AppWindow| -> Vec<String> {
                 let links = links(ui);
@@ -1046,7 +1087,7 @@ mod tests {
             };
             filter("bach");
             wait_for("the Bach albums", || links(&ui) == ids(&["b2", "b1", "b3"])).await;
-            ui.invoke_select_tile(1);
+            ui.invoke_select_tile(1, false);
             sort(0, true);
             assert_eq!(links(&ui), ids(&["b3", "b1", "b2"]));
             assert_eq!(picked(&ui), ids(&["b1"]));
@@ -1150,7 +1191,7 @@ mod tests {
             filter_artists("");
             wait_for("all artists", || ui.get_tiles().row_count() == 100).await;
             // They join the albums' selection, and are kept for the session.
-            ui.invoke_select_tile(1);
+            ui.invoke_select_tile(1, false);
             click(&ui, "Albums");
             assert_eq!(ui.get_selected_tiles(), 1);
             click(&ui, "Artists");
@@ -1345,7 +1386,7 @@ mod tests {
             ui.invoke_open("albums".into());
             wait_for("the albums", || ui.get_tiles().row_count() == 100).await;
             PLAYLIST_WRITES.lock().unwrap().clear();
-            ui.invoke_select_tile(0);
+            ui.invoke_select_tile(0, false);
             ui.invoke_add_selection_to_playlist("p1".into());
             assert_eq!(ui.get_selected_tiles(), 0);
             wait_for("the album added", || {
@@ -1795,7 +1836,7 @@ mod tests {
                 STARRED.lock().unwrap().contains(&"w9".to_owned())
             })
             .await;
-            ui.invoke_select_line(1);
+            ui.invoke_select_line(1, false);
             assert!(ui.get_track_lines().row_data(1).unwrap().selected);
             assert_eq!(ui.get_selected_tiles(), 1);
             // It stays selected in another order.
@@ -2161,7 +2202,7 @@ mod tests {
             let selected =
                 |ui: &AppWindow, row: usize| ui.get_track_lines().row_data(row).unwrap().selected;
             let before = ui.get_selected_tiles();
-            ui.invoke_select_line(0);
+            ui.invoke_select_line(0, false);
             assert!(selected(&ui, 0));
             assert_eq!(ui.get_selected_tiles(), before + 1);
             ui.invoke_sort_tracks(column(&ui, "Title"));
@@ -2176,6 +2217,40 @@ mod tests {
             ui.invoke_clear_selection();
             assert!(!selected(&ui, 0));
             assert_eq!(ui.get_selected_tiles(), 0);
+            // With Shift, every row from the one last picked to it, in the
+            // order shown.
+            ui.invoke_select_line(1, false);
+            ui.invoke_select_line(3, true);
+            let rows: Vec<bool> = (0..5).map(|row| selected(&ui, row)).collect();
+            assert_eq!(rows, [false, true, true, true, false]);
+            assert_eq!(ui.get_selected_tiles(), 3);
+            ui.invoke_clear_selection();
+            // So does a click on a row with Shift held, beside its links.
+            let title = column(&ui, "Title") as usize;
+            let beside = |row: usize| {
+                let line = ui.get_track_lines().row_data(row).unwrap();
+                let name = line.cells.row_data(title).unwrap().row_data(0).unwrap();
+                let link = button(&ui, &name.label);
+                let at = link.absolute_position();
+                slint::LogicalPosition::new(at.x - 4.0, at.y + link.size().height / 2.0)
+            };
+            ui.invoke_select_line(1, false);
+            let window = ui.window();
+            let shift = slint::platform::Key::Shift;
+            window.dispatch_event(WindowEvent::KeyPressed { text: shift.into() });
+            let (position, left) = (beside(3), PointerEventButton::Left);
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: left,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: left,
+            });
+            window.dispatch_event(WindowEvent::KeyReleased { text: shift.into() });
+            let rows: Vec<bool> = (0..5).map(|row| selected(&ui, row)).collect();
+            assert_eq!(rows, [false, true, true, true, false]);
+            ui.invoke_clear_selection();
             // Kept for the session, columns, order and all.
             click(&ui, "Albums");
             click(&ui, "Tracks");
@@ -2239,7 +2314,7 @@ mod tests {
                 STARRED.lock().unwrap().contains(&"t1".to_owned())
             })
             .await;
-            ui.invoke_select_line(0);
+            ui.invoke_select_line(0, false);
             assert!(line(&ui, 0).selected);
             ui.invoke_clear_selection();
             // A song row goes in a playlist; of a selection, only its songs.
@@ -2250,7 +2325,7 @@ mod tests {
             })
             .await;
             PLAYLIST_WRITES.lock().unwrap().clear();
-            ui.invoke_select_line(0);
+            ui.invoke_select_line(0, false);
             ui.invoke_add_selection_to_playlist("p1".into());
             wait_for("nothing added", || {
                 ui.get_notice() == "Nothing selected goes in a playlist."

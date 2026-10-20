@@ -430,8 +430,8 @@ export component AppWindow inherits Window {
     callback reconnect();
     // Selects the tile or tracks table row at `index`, or lets it go if it
     // is selected.
-    callback select-tile(index: int);
-    callback select-line(index: int);
+    callback select-tile(index: int, range: bool);
+    callback select-line(index: int, range: bool);
     callback clear-selection();
     callback resized();
     // Playlists: a new one with this name; the one on screen renamed or
@@ -673,7 +673,7 @@ export component AppWindow inherits Window {
                         open(link) => { root.open(link); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                         selecting: root.selected-tiles > 0;
-                        select(index) => { root.select-tile(index); }
+                        select(index, range) => { root.select-tile(index, range); }
                     }
                     // The filter and sort controls go beside the heading, or
                     // under it in two rows when the page is too narrow.
@@ -875,7 +875,7 @@ export component AppWindow inherits Window {
                         open(link) => { root.open(link); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                         selecting: root.selected-tiles > 0;
-                        select(index) => { root.select-tile(index); }
+                        select(index, range) => { root.select-tile(index, range); }
                     }
                     if root.table: VerticalLayout {
                         // The rows on screen and a screen below, by
@@ -903,7 +903,7 @@ export component AppWindow inherits Window {
                             playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
                             open(link) => { root.open(link); }
                             toggle-love => { root.toggle-line-love(row); }
-                            select => { root.select-line(row); }
+                            select(range) => { root.select-line(row, range); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
                         }
                     }

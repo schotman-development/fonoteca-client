@@ -138,6 +138,9 @@ pub struct Browser {
     /// The links of the albums selected, in the order they were picked. They
     /// stay selected through sorting, filtering and other pages.
     selected: Vec<String>,
+    /// The link last picked or let go on the page on screen, where a range
+    /// picked with Shift starts.
+    anchor: Option<String>,
     /// Takes the notice down.
     notice: Timer,
     /// Asks how the server's scan is going while the account page is up.
@@ -266,11 +269,11 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     });
     ui.on_select_tile({
         let (weak, browser) = (ui.as_weak(), browser.clone());
-        move |row| select_tile(&weak.unwrap(), &browser, row as usize)
+        move |row, range| select_tile(&weak.unwrap(), &browser, row as usize, range)
     });
     ui.on_select_line({
         let (weak, browser) = (ui.as_weak(), browser.clone());
-        move |row| select_line(&weak.unwrap(), &browser, row as usize)
+        move |row, range| select_line(&weak.unwrap(), &browser, row as usize, range)
     });
     ui.on_clear_selection({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -330,65 +333,79 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     });
 }
 
-/// Selects the tile at `row`, or lets it go if it is selected.
-fn select_tile(ui: &AppWindow, browser: &Shared, row: usize) {
+/// Selects the tile at `row`, or lets it go if it is selected. With
+/// `range`, selects every tile from the one last picked to it instead.
+fn select_tile(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
     let tiles = browser.borrow().tiles.clone();
-    let Some(mut tile) = tiles.row_data(row) else {
-        return;
-    };
-    let count = {
-        let mut b = browser.borrow_mut();
-        let link = tile.link.to_string();
-        tile.selected = match b.selected.iter().position(|picked| *picked == link) {
-            Some(at) => {
-                b.selected.remove(at);
-                false
-            }
-            None => {
-                b.selected.push(link);
-                true
-            }
-        };
-        b.selected.len()
-    };
-    tiles.set_row_data(row, tile);
-    ui.set_selected_tiles(count as i32);
+    let links: Vec<String> = tiles.iter().map(|tile| tile.link.into()).collect();
+    let picked = pick(&mut browser.borrow_mut(), &links, row, range);
+    for (row, selected) in picked {
+        if let Some(mut tile) = tiles.row_data(row) {
+            tile.selected = selected;
+            tiles.set_row_data(row, tile);
+        }
+    }
+    ui.set_selected_tiles(browser.borrow().selected.len() as i32);
 }
 
 /// Selects the song or composition of a row of the tracks or compositions
-/// table, or lets it go if it is selected.
-fn select_line(ui: &AppWindow, browser: &Shared, row: usize) {
-    let count = {
-        let mut b = browser.borrow_mut();
-        let link = if ui.get_page() == Page::Compositions {
-            let Some(&piece) = b.view.get(row) else {
-                return;
-            };
-            piece_link(&b.compositions[piece])
-        } else {
-            let (songs, order) = listed(&b, ui.get_page());
-            let Some(&song) = order.get(row) else {
-                return;
-            };
-            song_link(&songs[song])
-        };
-        let Some(mut line) = b.lines.row_data(row) else {
-            return;
-        };
-        line.selected = match b.selected.iter().position(|picked| *picked == link) {
-            Some(at) => {
-                b.selected.remove(at);
-                false
-            }
-            None => {
-                b.selected.push(link);
-                true
-            }
-        };
-        b.lines.set_row_data(row, line);
-        b.selected.len()
+/// table, or lets it go if it is selected. With `range`, selects every row
+/// from the one last picked to it instead.
+fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
+    let page = ui.get_page();
+    let mut b = browser.borrow_mut();
+    let links: Vec<String> = if page == Page::Compositions {
+        b.view
+            .iter()
+            .map(|&piece| piece_link(&b.compositions[piece]))
+            .collect()
+    } else {
+        let (songs, order) = listed(&b, page);
+        order.iter().map(|&song| song_link(&songs[song])).collect()
     };
-    ui.set_selected_tiles(count as i32);
+    let lines = b.lines.clone();
+    for (row, selected) in pick(&mut b, &links, row, range) {
+        if let Some(mut line) = lines.row_data(row) {
+            line.selected = selected;
+            lines.set_row_data(row, line);
+        }
+    }
+    ui.set_selected_tiles(b.selected.len() as i32);
+}
+
+/// Picks the item at `row` of a page's `links`, or lets it go if it is
+/// picked, and makes it where a range starts. With `range` and such a start
+/// on the page, picks every item from there to `row` instead. Gives the rows
+/// changed and whether each is picked now.
+fn pick(b: &mut Browser, links: &[String], row: usize, range: bool) -> Vec<(usize, bool)> {
+    let Some(link) = links.get(row) else {
+        return Vec::new();
+    };
+    let start = b
+        .anchor
+        .as_ref()
+        .filter(|_| range)
+        .and_then(|anchor| links.iter().position(|link| link == anchor));
+    if let Some(start) = start {
+        let rows = start.min(row)..=start.max(row);
+        for link in &links[rows.clone()] {
+            if !b.selected.contains(link) {
+                b.selected.push(link.clone());
+            }
+        }
+        return rows.map(|row| (row, true)).collect();
+    }
+    b.anchor = Some(link.clone());
+    match b.selected.iter().position(|picked| picked == link) {
+        Some(at) => {
+            b.selected.remove(at);
+            vec![(row, false)]
+        }
+        None => {
+            b.selected.push(link.clone());
+            vec![(row, true)]
+        }
+    }
 }
 
 /// A song's page, or a folder's for a folder in one, which also stands for
@@ -405,6 +422,7 @@ fn clear_selection(ui: &AppWindow, browser: &Shared) {
     let (tiles, lines) = {
         let mut b = browser.borrow_mut();
         b.selected.clear();
+        b.anchor = None;
         (b.tiles.clone(), b.lines.clone())
     };
     for row in 0..tiles.row_count() {
@@ -460,6 +478,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         b.fetching = 0;
         b.motion = Timer::default();
         b.scan.stop();
+        b.anchor = None;
         ui.set_visit(b.visit);
         ui.set_can_go_back(b.at > 0);
         ui.set_can_go_forward(b.at + 1 < b.history.len());
