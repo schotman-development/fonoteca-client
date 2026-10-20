@@ -636,8 +636,16 @@ export component AppWindow inherits Window {
                     }
                 }
                 content-width: max(scroll.visible-width, stage.width);
-                content-height: stage.preferred-height;
+                // As far as the page's elements are drawn. Its preferred
+                // height falls short on a phone: Slint 1.18 measures some
+                // sections there with their text on fewer lines than it
+                // draws them, and lays them out overflowing it.
+                content-height: end.y - stage.spacing + stage.padding-bottom;
                 stage := VerticalLayout {
+                    // Set, so the content height doesn't depend on itself;
+                    // and at the top, where a set height would centre it.
+                    y: 0;
+                    height: self.preferred-height;
                     // At most 1600px wide and centred, but for a table,
                     // which is wider than the page when its columns don't
                     // fit.
@@ -989,6 +997,8 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // Where the page ends, for its content height.
+                    end := Rectangle { height: 0; }
                 }
             }
         }

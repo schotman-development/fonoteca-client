@@ -1605,6 +1605,22 @@ mod tests {
             assert_eq!(row(5), ("III. Scherzo", to(&[]), 0, true, false));
             assert_eq!(work(6), none());
             assert_eq!(row(6), ("IV. Allegro", to(&[]), 0, true, false));
+            // On a phone the rows wrap, and the page still scrolls to the end
+            // of the last one.
+            let window = ui.window();
+            window.set_size(slint::LogicalSize::new(360.0, 640.0));
+            window.dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(180.0, 400.0),
+                delta_x: 0.0,
+                delta_y: -100000.0,
+            });
+            let last = button(&ui, "IV. Allegro");
+            let bottom = last.absolute_position().y + last.size().height;
+            assert!(
+                (600.0..=640.0).contains(&bottom),
+                "the last row ends at {bottom}"
+            );
+            window.set_size(slint::LogicalSize::new(1100.0, 760.0));
             // Red or blue, as far as encoding lets them be.
             let colour = || {
                 let picture = ui.get_header_image().to_rgba8()?;
