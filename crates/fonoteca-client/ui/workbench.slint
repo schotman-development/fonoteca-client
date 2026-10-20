@@ -463,7 +463,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 8: Example {
-                        caption: "The current section is highlighted; sections are grouped under headings, such as the library's pages and the playlists, the last without one; more than fit scroll";
+                        caption: "The current section is highlighted; sections are grouped under headings, such as the library's pages and the playlists, the last without one; the playlists' heading is their page's section; more than fit scroll";
                         Sidebar {
                             width: 220px;
                             height: 380px;
@@ -472,7 +472,7 @@ export component Workbench inherits Window {
                                 root.long-text ? "Library on the server down the hall" : "Library",
                                 root.long-text ? "Library on the server down the hall" : "Library",
                                 root.long-text ? "Library on the server down the hall" : "Library",
-                                root.long-text ? "Library on the server down the hall" : "Library",
+                                "Playlists",
                                 "Playlists",
                                 "Playlists",
                                 "Playlists",
@@ -480,6 +480,7 @@ export component Workbench inherits Window {
                                 "Playlists",
                                 "Playlists",
                             ];
+                            icons: [Icons.album, Icons.artist, Icons.composer, "", "", "", "", "", "", "", Icons.person];
                             selected(index) => { root.event = "section " + index; }
                         }
                     }

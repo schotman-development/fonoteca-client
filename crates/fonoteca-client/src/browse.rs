@@ -465,7 +465,6 @@ fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &s
         ("tracks", "Tracks", true),
         ("composers", "Composers", compositions),
         ("compositions", "Compositions", compositions),
-        ("playlists", "Playlists", true),
     ]
     .into_iter()
     .filter(|&(.., shown)| shown)
@@ -477,6 +476,7 @@ fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &s
     [("home".to_owned(), "Home", "")]
         .into_iter()
         .chain(library)
+        .chain([("playlists".to_owned(), "Playlists", "Playlists")])
         .chain(playlists)
         .chain([("account".to_owned(), "Account", "")])
         .collect()
@@ -494,14 +494,33 @@ fn section(b: &Browser) -> i32 {
 /// Lists the sidebar's entries, the page on screen's current.
 fn sidebar(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
-    let (labels, groups): (Vec<SharedString>, Vec<SharedString>) =
-        sections(&b.playlists, offers_compositions(&b))
-            .into_iter()
-            .map(|(_, label, group)| (label.into(), group.into()))
-            .unzip();
+    let icons = ui.global::<Icons>();
+    let (mut labels, mut groups, mut pictures) = (Vec::new(), Vec::new(), Vec::new());
+    for (link, label, group) in sections(&b.playlists, offers_compositions(&b)) {
+        labels.push(SharedString::from(label));
+        groups.push(SharedString::from(group));
+        pictures.push(section_icon(&icons, &link));
+    }
     ui.set_sections(ModelRc::new(VecModel::from(labels)));
     ui.set_section_groups(ModelRc::new(VecModel::from(groups)));
+    ui.set_section_icons(ModelRc::new(VecModel::from(pictures)));
     ui.set_section(section(&b));
+}
+
+/// The icon in front of the sidebar's entry for `link`; none for the
+/// playlists, whose heading is their page's entry.
+fn section_icon(icons: &Icons, link: &str) -> SharedString {
+    match link.split_once(':').map_or(link, |(page, _)| page) {
+        "home" => icons.get_home(),
+        "albums" => icons.get_album(),
+        "artists" => icons.get_artist(),
+        "tracks" => icons.get_note(),
+        "composers" => icons.get_composer(),
+        "compositions" => icons.get_composition(),
+        "folders" => icons.get_folder(),
+        "playlists" | "playlist" => SharedString::new(),
+        _ => icons.get_person(),
+    }
 }
 
 /// Runs `task` for the page on screen, and drops its answer if that page has

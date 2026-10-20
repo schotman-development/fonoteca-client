@@ -1046,12 +1046,27 @@ mod tests {
                     "Library",
                     "Library",
                     "Library",
-                    "Library",
+                    "Playlists",
                     "Playlists",
                     "Playlists",
                     ""
                 ]
             );
+            // Each with its icon in front, but for the playlists.
+            let icons = ui.global::<Icons>();
+            let pictures = strings(ui.get_section_icons());
+            assert_eq!(pictures.len(), 10);
+            assert_eq!(pictures[0], icons.get_home().as_str());
+            let library = [
+                icons.get_album(),
+                icons.get_artist(),
+                icons.get_note(),
+                icons.get_composer(),
+                icons.get_composition(),
+            ];
+            assert_eq!(pictures[1..6], library.map(String::from));
+            assert_eq!(pictures[6..9], ["", "", ""]);
+            assert_eq!(pictures[9], icons.get_person().as_str());
             ui.invoke_show_section(7);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);

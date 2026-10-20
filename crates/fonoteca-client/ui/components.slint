@@ -49,6 +49,8 @@ export global Icons {
     out property <string> album: "M12 21a9 9 0 1 1 0-18a9 9 0 1 1 0 18z M12 14a2 2 0 1 1 0-4a2 2 0 1 1 0 4z";
     out property <string> composer: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M15 21l1-3.5 5-5a1.4 1.4 0 0 1 2 2l-5 5z";
     out property <string> composition: "M14 3H6v18h12V7z M14 3v4h4 M13 17v-6l3 1 M13 17a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
+    out property <string> home: "M3 11l9-7.5 9 7.5 M5.5 9v11h13V9 M10 20v-5.5h4V20";
+    out property <string> folder: "M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-15a1.5 1.5 0 0 1-1.5-1.5z";
     // Filled.
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
@@ -1083,6 +1085,7 @@ export component PageHeader inherits FlexboxLayout {
 
 component NavButton inherits Pressable {
     in property <string> text;
+    in property <string> icon;
     in property <bool> current;
     label: self.text;
     accessible-item-selectable: true;
@@ -1095,7 +1098,19 @@ component NavButton inherits Pressable {
     HorizontalLayout {
         padding: 8px;
         padding-left: 12px;
+        spacing: 12px;
+        if root.icon != "": Path {
+            cross-axis-self-alignment: center;
+            width: 18px;
+            height: 18px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon;
+            stroke: root.current ? Theme.text : Theme.muted;
+            stroke-width: 1.75px;
+        }
         Text {
+            horizontal-stretch: 1;
             text: root.text;
             font-size: Theme.body;
             font-weight: root.current ? 600 : 400;
@@ -1105,13 +1120,42 @@ component NavButton inherits Pressable {
     }
 }
 
+// A group's own section, drawn as the group's heading.
+component NavHeading inherits Pressable {
+    in property <string> text;
+    in property <bool> current;
+    label: self.text;
+    accessible-item-selectable: true;
+    accessible-item-selected: self.current;
+    min-height: 32px;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: root.current ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: root.text;
+            font-size: Theme.small;
+            font-weight: 600;
+            color: root.current ? Theme.text : Theme.muted;
+            overflow: elide;
+        }
+    }
+}
+
 // The list of library sections down the left side, scrolling when there are
 // more than fit. `groups[i]` names the group of `items[i]`: sections of one
 // group follow each other under its heading, and a section without one is set
-// apart by a gap.
+// apart by a gap. A group whose first section carries its name has that
+// section as its heading. `icons[i]` is drawn in front of `items[i]`.
 export component Sidebar inherits Rectangle {
     in property <[string]> items;
     in property <[string]> groups;
+    in property <[string]> icons;
     in-out property <int> current;
     callback selected(index: int);
 
@@ -1125,9 +1169,11 @@ export component Sidebar inherits Rectangle {
             padding: 12px;
             spacing: 2px;
             alignment: start;
-            for item[i] in root.items: VerticalLayout {
+            for item[i] in root.items: entry := VerticalLayout {
+                property <bool> starts: (i == 0 && root.groups[0] != "") || (i > 0 && root.groups[i] != root.groups[i - 1]);
+                property <bool> heading: self.starts && item == root.groups[i];
                 spacing: 2px;
-                if (i == 0 && root.groups[0] != "") || (i > 0 && root.groups[i] != root.groups[i - 1]): VerticalLayout {
+                if entry.starts && !entry.heading: VerticalLayout {
                     padding-top: i == 0 ? 0 : 16px;
                     padding-bottom: 4px;
                     padding-left: 12px;
@@ -1139,8 +1185,20 @@ export component Sidebar inherits Rectangle {
                         overflow: elide;
                     }
                 }
-                NavButton {
+                if entry.heading: VerticalLayout {
+                    padding-top: i == 0 ? 0 : 8px;
+                    NavHeading {
+                        text: item;
+                        current: i == root.current;
+                        clicked => {
+                            root.current = i;
+                            root.selected(i);
+                        }
+                    }
+                }
+                if !entry.heading: NavButton {
                     text: item;
+                    icon: root.icons[i];
                     current: i == root.current;
                     clicked => {
                         root.current = i;

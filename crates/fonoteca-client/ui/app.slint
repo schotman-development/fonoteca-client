@@ -347,6 +347,7 @@ export component AppWindow inherits Window {
     // playlists and the account. `section` is the current one.
     in property <[string]> sections;
     in property <[string]> section-groups;
+    in property <[string]> section-icons;
     in-out property <int> section;
     in property <[AlbumTile]> tiles;
     in property <bool> more-tiles;
@@ -436,6 +437,7 @@ export component AppWindow inherits Window {
             width: root.sidebar-width;
             items: root.sections;
             groups: root.section-groups;
+            icons: root.section-icons;
             current <=> root.section;
             selected(index) => { root.show-section(index); }
         }
@@ -805,6 +807,7 @@ export component AppWindow inherits Window {
             height: parent.height - root.safe-area-insets.top - root.bottom-inset;
             items: root.sections;
             groups: root.section-groups;
+            icons: root.section-icons;
             current <=> root.section;
             selected(index) => {
                 root.sidebar-open = false;
