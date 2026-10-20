@@ -1,11 +1,17 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Name, PageHeader, Pressable, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Links, Name, PageHeader, Pressable, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Icons, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track }
+
+// What a track's page says about it under one heading, such as its album.
+export struct Detail {
+    label: string,
+    names: [Name],
+}
 
 // One of the library's counts on the home page, "…" until it is known, and
 // the page that lists them.
@@ -356,6 +362,7 @@ export component AppWindow inherits Window {
     in property <string> header-title;
     in property <[Name]> header-names;
     in property <string> header-facts;
+    in property <[Detail]> details;
     in property <[Track]> tracks;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, and every column there is to pick
@@ -646,14 +653,45 @@ export component AppWindow inherits Window {
                         edited => { root.filter-composers(); }
                     }
                     if root.page == Page.playlists: Heading { text: "Playlists"; }
-                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition: PageHeader {
+                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;
                         round: root.page == Page.artist || root.page == Page.composer;
-                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : "Album";
+                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : "Album";
                         title: root.header-title;
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
+                    }
+                    // Each value at the width it has, so one that wraps
+                    // measures all its lines.
+                    if root.page == Page.track: about := VerticalLayout {
+                        property <length> value-width: min(scroll.visible-width, 1600px) - 48px - 156px;
+                        spacing: 8px;
+                        for detail in root.details: HorizontalLayout {
+                            spacing: 16px;
+                            Text {
+                                width: 140px;
+                                text: detail.label;
+                                font-size: Theme.body;
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            if detail.names.length == 1 && detail.names[0].link == "": Text {
+                                preferred-width: about.value-width;
+                                horizontal-stretch: 1;
+                                text: detail.names[0].label;
+                                font-size: Theme.body;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            if detail.names.length > 1 || detail.names[0].link != "": Links {
+                                preferred-width: about.value-width;
+                                horizontal-stretch: 1;
+                                names: detail.names;
+                                text-color: Theme.text;
+                                open(link) => { root.open(link); }
+                            }
+                        }
                     }
                     if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist || root.page == Page.composers: CoverGrid {
                         tiles: root.tiles;

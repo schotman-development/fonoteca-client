@@ -24,8 +24,8 @@ use slint::{
 };
 
 use crate::{
-    AlbumTile, AppWindow, ColumnChoice, Icons, Name, Page, Stat, Track, TrackColumn, TrackLine,
-    prefs,
+    AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, Track, TrackColumn,
+    TrackLine, prefs,
 };
 
 /// The newest albums on the home page.
@@ -392,6 +392,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_title("".into());
     ui.set_header_names(ModelRc::default());
     ui.set_header_facts("".into());
+    ui.set_details(ModelRc::default());
 
     let (page, id) = link.split_once(':').unwrap_or((&link, ""));
     let id = id.to_owned();
@@ -423,6 +424,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
         "playlist" => {
             ui.set_page(Page::Playlist);
             playlist(ui, browser, id);
+        }
+        "song" => {
+            ui.set_page(Page::Track);
+            song(ui, browser, id);
         }
         "composers" => {
             ui.set_page(Page::Composers);
@@ -919,7 +924,7 @@ const LOVED: &str = "Loved";
 #[rustfmt::skip]
 const COLUMNS: &[Column<Child>] = &[
     Column { shown: true, ..column(COVER, LINE_COVER_SIZE, |_| Vec::new()) },
-    Column { shown: true, ..column(TITLE, 240.0, |song| text(&song.title)) },
+    Column { shown: true, ..column(TITLE, 240.0, |song| vec![Name { label: song.title.as_str().into(), link: song_link(song).into() }]) },
     Column { shown: true, ..column("Artists", 180.0, song_names) },
     column("Display artist", 180.0, |song| text_of(&song.display_artist)),
     Column { shown: true, ..column("Album", 200.0, |song| album_name(song).into_iter().collect()) },
@@ -1965,6 +1970,39 @@ fn playlist(ui: &AppWindow, browser: &Shared, id: String) {
                 });
             }
             b.songs = songs.into_iter().map(|song| song.id).collect();
+        },
+    );
+}
+
+/// A song's page, as the server's getSong has it: its album's cover, its
+/// title and artists, and under them every field it has, named as the tracks
+/// table's columns are.
+fn song(ui: &AppWindow, browser: &Shared, id: String) {
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_song(&id).await },
+        |ui, browser, song| {
+            ui.set_header_title(song.title.as_str().into());
+            ui.set_header_names(names(song_names(&song)));
+            let facts = [
+                song.year.map(|year| year.to_string()).unwrap_or_default(),
+                song.duration.map(duration).unwrap_or_default(),
+            ];
+            let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
+            ui.set_header_facts(facts.join(" · ").into());
+            let details: Vec<Detail> = COLUMNS
+                .iter()
+                .filter(|column| column.title != TITLE)
+                .map(|column| (column.title, (column.cell)(&song)))
+                .filter(|(_, cell)| !cell.is_empty())
+                .map(|(label, cell)| Detail {
+                    label: label.into(),
+                    names: names(cell),
+                })
+                .collect();
+            ui.set_details(ModelRc::new(VecModel::from(details)));
+            header_image(ui, browser, song.cover_art);
         },
     );
 }

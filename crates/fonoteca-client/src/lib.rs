@@ -442,6 +442,9 @@ mod tests {
     /// second album's between the first's.
     const SYMPHONY: &str = r#""id":"w5","name":"Symphony No. 5","composers":[{"id":"r9","name":"Ludwig van Beethoven"}],"composed":{"from":{"year":1804},"to":{"year":1808}},"albumCount":2,"coverArt":"al-a2","movement":[{"name":"I. Allegro con brio","number":1},{"name":"II. Andante con moto","number":2},{"name":"III. Scherzo","number":3},{"name":"IV. Allegro","number":4}],"song":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","album":"Symphonies","albumId":"a2","year":1974,"duration":441,"artist":"Wiener Philharmoniker","artistId":"r7","recorded":{"from":{"year":1974,"month":3,"day":2},"to":{"year":1974,"month":3,"day":2},"places":["Musikverein"]}},{"id":"k1","isDir":false,"title":"Symphony No. 5","album":"Live in Munich","albumId":"a3","year":1982,"duration":1900,"artists":[{"id":"r8","name":"Carlos Kleiber"},{"id":"r12","name":"Bayerisches Staatsorchester"}]},{"id":"c2","isDir":false,"title":"Symphony No. 5: II. Andante con moto","album":"Symphonies","albumId":"a2","year":1974,"duration":588,"artists":[{"id":"r7","name":"Wiener Philharmoniker"},{"id":"r8","name":"Carlos Kleiber"}],"recorded":{"from":{"year":1974,"month":4},"to":{"year":1974,"month":4},"places":["Musikverein"]}}]"#;
 
+    /// The first song of the empty search, with more of its fields filled.
+    const HARBOUR_LIGHTS: &str = r#"{"id":"t1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","artists":[{"id":"r1","name":"Mara Lind"}],"year":2021,"duration":252,"starred":"2024-01-01T00:00:00Z","coverArt":"al-a1","genres":[{"name":"Folk"},{"name":"Pop"}],"contributors":[{"role":"performer","subRole":"piano","artist":{"id":"r3","name":"Anna Bach"}}],"replayGain":{"trackGain":-6.2},"size":4404019,"samplingRate":44100}"#;
+
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// While set, the flow test's server answers every request with an error.
@@ -526,6 +529,8 @@ mod tests {
         } else if request.contains("/rest/getAlbum") {
             let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","track":1,"discNumber":1,"duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s2","isDir":false,"title":"Rope and Anchor","track":1,"discNumber":2,"duration":218,"artist":"Mara Lind","artistId":"r1"}]"#;
             ok(&format!(r#""album":{{{ALBUM},"song":{songs}}}"#))
+        } else if request.contains("/rest/getSong") && id == Some("t1") {
+            ok(&format!(r#""song":{HARBOUR_LIGHTS}"#))
         } else if request.contains("/rest/getArtists") {
             let others: Vec<String> = (1..=120)
                 .map(|n| {
@@ -546,7 +551,7 @@ mod tests {
             let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
             let song = |n: usize| {
                 if n == 1 {
-                    r#"{"id":"t1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","artists":[{"id":"r1","name":"Mara Lind"}],"year":2021,"duration":252,"starred":"2024-01-01T00:00:00Z","coverArt":"al-a1","genres":[{"name":"Folk"},{"name":"Pop"}],"contributors":[{"role":"performer","subRole":"piano","artist":{"id":"r3","name":"Anna Bach"}}],"replayGain":{"trackGain":-6.2},"size":4404019,"samplingRate":44100}"#.to_owned()
+                    HARBOUR_LIGHTS.to_owned()
                 } else if n == 2 {
                     // Also on the Road Trip playlist.
                     r#"{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}"#.to_owned()
@@ -1584,11 +1589,70 @@ mod tests {
                     .collect()
             };
             let one = |label: &str, link: &str| vec![(label.to_owned(), link.to_owned())];
-            assert_eq!(cell(&ui, 0, 1), one("Harbour Lights", ""));
+            assert_eq!(cell(&ui, 0, 1), one("Harbour Lights", "song:t1"));
             assert_eq!(cell(&ui, 0, 2), one("Mara Lind", "artist:r1"));
             assert_eq!(cell(&ui, 0, 3), one("Night Harbour", "album:a1"));
             assert_eq!(cell(&ui, 0, 4), one("4:12", ""));
             assert!(cell(&ui, 1, 3).is_empty());
+            // A title opens its song's page: what the server's getSong says
+            // of it, under the names the columns have.
+            click(&ui, "Harbour Lights");
+            wait_for("the song", || ui.get_details().row_count() > 0).await;
+            assert_eq!(ui.get_page(), Page::Track);
+            assert_eq!(ui.get_header_title(), "Harbour Lights");
+            assert_eq!(ui.get_header_facts(), "2021 · 4:12");
+            let header: Vec<String> = ui
+                .get_header_names()
+                .iter()
+                .map(|n| n.link.into())
+                .collect();
+            assert_eq!(header, ["artist:r1"]);
+            let details: Vec<(String, Vec<(String, String)>)> = ui
+                .get_details()
+                .iter()
+                .map(|detail| {
+                    let names = detail
+                        .names
+                        .iter()
+                        .map(|name| (name.label.into(), name.link.into()))
+                        .collect();
+                    (detail.label.into(), names)
+                })
+                .collect();
+            let detail = |label: &str, names: &[(&str, &str)]| {
+                let names = names
+                    .iter()
+                    .map(|(label, link)| (label.to_string(), link.to_string()))
+                    .collect();
+                (label.to_owned(), names)
+            };
+            assert_eq!(
+                details,
+                [
+                    detail("Artists", &[("Mara Lind", "artist:r1")]),
+                    detail("Album", &[("Night Harbour", "album:a1")]),
+                    detail(
+                        "Contributors",
+                        &[("Anna Bach (performer, piano)", "artist:r3")]
+                    ),
+                    detail("Year", &[("2021", "")]),
+                    detail("Genres", &[("Folk, Pop", "")]),
+                    detail("Duration", &[("4:12", "")]),
+                    detail("Starred", &[("2024-01-01", "")]),
+                    detail("Track gain", &[("-6.20 dB", "")]),
+                    detail("Sample rate", &[("44.1 kHz", "")]),
+                    detail("Size", &[("4.2 MB", "")]),
+                ]
+            );
+            click(&ui, "Night Harbour");
+            wait_for("its album", || ui.get_page() == Page::Album).await;
+            click(&ui, "Back");
+            wait_for("the song again", || ui.get_details().row_count() == 10).await;
+            click(&ui, "Back");
+            wait_for("the tracks once more", || {
+                ui.get_track_lines().row_count() == 100
+            })
+            .await;
             // The rows in view get their album's cover, songs without one
             // none.
             ui.root_element().query_descendants().find_all();
@@ -1613,7 +1677,7 @@ mod tests {
             ui.set_track_filter("mara night".into());
             ui.invoke_filter_tracks();
             wait_for("one track", || ui.get_track_lines().row_count() == 1).await;
-            assert_eq!(cell(&ui, 0, 1), one("Harbour Lights", ""));
+            assert_eq!(cell(&ui, 0, 1), one("Harbour Lights", "song:t1"));
             ui.set_track_filter("".into());
             ui.invoke_filter_tracks();
             wait_for("the tracks again", || {
