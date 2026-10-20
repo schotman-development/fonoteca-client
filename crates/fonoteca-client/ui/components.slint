@@ -18,11 +18,34 @@ export global Theme {
 
     out property <length> gap: 16px;
     out property <length> radius: 6px;
+
+    out property <brush> danger: #d33;
+}
+
+// The window's size and what a phone draws over the bottom of it, for the
+// menus, which open as a sheet from the bottom on a phone.
+export global Screen {
+    in-out property <length> width;
+    in-out property <length> height;
+    in-out property <length> bottom;
+    out property <bool> phone: Screen.width < 600px;
 }
 
 export struct Name {
     label: string,
     link: string,
+}
+
+// An entry of a menu: its words, its icon, a path of `Icons`, and whether
+// it is red, for one that destroys. With `choices` it opens a submenu of
+// them, such as the playlists to add to. `id` tells the menu's owner which
+// entry was chosen.
+export struct MenuEntry {
+    id: string,
+    label: string,
+    icon: string,
+    danger: bool,
+    choices: [Name],
 }
 
 // An album or artist on a grid or shelf, and the page it opens.
@@ -44,12 +67,17 @@ export global Icons {
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
     out property <string> check: "M5 12.5l4.5 4.5 9.5-10";
     out property <string> close: "M6 6l12 12 M18 6L6 18";
+    out property <string> plus: "M12 5v14 M5 12h14";
     out property <string> menu: "M4 7h16 M4 12h16 M4 17h16";
     out property <string> artist: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M19 18v-7l3 1 M19 18a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
     out property <string> album: "M12 21a9 9 0 1 1 0-18a9 9 0 1 1 0 18z M12 14a2 2 0 1 1 0-4a2 2 0 1 1 0 4z";
     out property <string> composer: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M15 21l1-3.5 5-5a1.4 1.4 0 0 1 2 2l-5 5z";
     out property <string> composition: "M14 3H6v18h12V7z M14 3v4h4 M13 17v-6l3 1 M13 17a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
     out property <string> home: "M3 11l9-7.5 9 7.5 M5.5 9v11h13V9 M10 20v-5.5h4V20";
+    out property <string> playlist: "M4 6h11 M4 11h11 M4 16h7 M18 13v7 M14.5 16.5h7";
+    out property <string> unlist: "M4 6h11 M4 11h11 M4 16h7 M14.5 16.5h7";
+    out property <string> pencil: "M4 20h4L19 9l-4-4L4 16z M13.5 6.5l4 4";
+    out property <string> trash: "M4 7h16 M9.5 7V4.5h5V7 M6.5 7l1 13h9l1-13 M10 11v6 M14 11v6";
     out property <string> folder: "M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-15a1.5 1.5 0 0 1-1.5-1.5z";
     // Filled.
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
@@ -246,6 +274,328 @@ export component IconButton inherits Pressable {
     }
 }
 
+// A row of a menu: its icon, its words, red when it destroys, and an arrow
+// when it opens a submenu. Lit while `lit`, or pressed.
+component MenuRow {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> danger;
+    in property <bool> strong;
+    in property <bool> more;
+    in property <bool> lit;
+    in property <length> icon-size: 18px;
+    in property <length> font-size: Theme.body;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    Rectangle {
+        border-radius: 4px;
+        background: root.lit || touch.pressed ? Theme.hover : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        if root.icon != "": Path {
+            cross-axis-self-alignment: center;
+            width: root.icon-size;
+            height: root.icon-size;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon;
+            stroke: root.danger ? Theme.danger : Theme.muted;
+            stroke-width: 1.75px;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            font-size: root.font-size;
+            font-weight: root.strong ? 600 : 400;
+            color: root.danger ? Theme.danger : Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.more: Path {
+            cross-axis-self-alignment: center;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Icons.forward;
+            stroke: Theme.muted;
+            stroke-width: 2px;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The 3-dot button and its menu. On a desktop the menu opens under the
+// button, or over it near the window's bottom, and a submenu beside it on
+// the side with room. On a phone the menu is a sheet from the bottom of the
+// window, and a submenu takes the entries' place in it. A menu that changes
+// with what it is for sets `entries` in `opening`. `activated` gives the
+// entry chosen, and from a submenu the link of the choice.
+export component MoreMenu {
+    in-out property <[MenuEntry]> entries;
+    in property <string> label: "More";
+    in property <brush> color: Theme.muted;
+    callback opening();
+    callback activated(id: string, choice: string);
+
+    // The entry lit, the one whose submenu is open, and the choice lit in it.
+    property <int> current: -1;
+    property <int> open: -1;
+    property <int> choice: -1;
+    property <[Name]> choices: root.entries[root.open].choices;
+
+    property <length> row-height: 32px;
+    property <length> pad: 4px;
+    property <length> panel: 224px;
+    property <length> gap: 4px;
+    property <length> above: root.absolute-position.y - 8px;
+    property <length> below: Screen.height - Screen.bottom - root.absolute-position.y - root.height - 8px;
+    property <bool> up: root.below < 240px && root.above > root.below;
+    property <length> menu-x: root.absolute-position.x + root.panel > Screen.width - 8px ? root.width - root.panel : 0;
+    property <bool> sub-left: root.absolute-position.x + root.menu-x + 2 * root.panel + root.gap > Screen.width - 8px;
+    property <length> main-height: 2 * root.pad + root.entries.length * root.row-height;
+    // A long submenu scrolls.
+    property <length> sub-height: min(min(2 * root.pad + root.choices.length * root.row-height, 320px), (root.up ? root.above : root.below) - root.gap);
+    property <length> menu-height: root.open >= 0 ? max(root.main-height, root.sub-height) : root.main-height;
+    property <length> main-y: root.up ? root.menu-height - root.main-height : 0;
+    // Lined up with its entry, within the menu's height where it fits.
+    property <length> sub-y: clamp(root.main-y + root.open * root.row-height, 0, root.menu-height - root.sub-height);
+
+    width: 32px;
+    height: 32px;
+
+    // The item `by`, 1 or -1, from `i` of `n`, round the ends; from none,
+    // the first or the last.
+    function step(i: int, by: int, n: int) -> int {
+        i < 0 ? (by > 0 ? 0 : n - 1) : mod(i + by + n, n)
+    }
+
+    // Lights entry `i`, and opens its submenu or closes another's.
+    function light(i: int) {
+        root.current = i;
+        root.open = root.entries[i].choices.length > 0 ? i : -1;
+        root.choice = -1;
+    }
+
+    // Entry `i` chosen: opens its submenu, or is done.
+    function choose(i: int) {
+        root.light(i);
+        if root.open < 0 {
+            popup.close();
+            root.activated(root.entries[i].id, "");
+        }
+    }
+
+    function pick(j: int) {
+        popup.close();
+        root.activated(root.entries[root.open].id, root.choices[j].link);
+    }
+
+    IconButton {
+        icon: Icons.more;
+        filled: true;
+        color: root.color;
+        label: root.label;
+        clicked => {
+            root.opening();
+            root.current = -1;
+            root.open = -1;
+            root.choice = -1;
+            popup.show();
+        }
+    }
+
+    popup := PopupWindow {
+        x: Screen.phone ? -root.absolute-position.x : root.menu-x - (root.open >= 0 && root.sub-left ? root.panel + root.gap : 0);
+        y: Screen.phone ? -root.absolute-position.y : root.up ? -root.menu-height - root.gap : root.height + root.gap;
+        width: Screen.phone ? Screen.width : root.open >= 0 ? 2 * root.panel + root.gap : root.panel;
+        height: Screen.phone ? Screen.height : root.menu-height;
+        close-policy: close-on-click-outside;
+        forward-focus: keys;
+
+        keys := FocusScope {
+            key-pressed(event) => {
+                let by = event.text == Key.DownArrow ? 1 : event.text == Key.UpArrow ? -1 : 0;
+                if by != 0 && (root.choice >= 0 || (Screen.phone && root.open >= 0)) {
+                    root.choice = root.step(root.choice, by, root.choices.length);
+                    return accept;
+                }
+                if by != 0 {
+                    root.current = root.step(root.current, by, root.entries.length);
+                    root.open = -1;
+                    root.choice = -1;
+                    return accept;
+                }
+                if event.text == Key.RightArrow && root.choice < 0 && root.current >= 0 && root.entries[root.current].choices.length > 0 {
+                    root.light(root.current);
+                    root.choice = 0;
+                    return accept;
+                }
+                if (event.text == Key.LeftArrow || event.text == Key.Escape) && root.open >= 0 {
+                    root.open = -1;
+                    root.choice = -1;
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == Key.Space {
+                    if root.choice >= 0 {
+                        root.pick(root.choice);
+                    } else if root.current >= 0 {
+                        root.choose(root.current);
+                        if root.open >= 0 {
+                            root.choice = 0;
+                        }
+                    }
+                    return accept;
+                }
+                reject
+            }
+
+            // Off the menu a click closes it, as one outside the popup does;
+            // on a phone that is the dimmed window above the sheet.
+            Rectangle {
+                background: Screen.phone ? #0000004d : transparent;
+                TouchArea {
+                    clicked => { popup.close(); }
+                }
+            }
+
+            if !Screen.phone: Rectangle {
+                x: root.open >= 0 && root.sub-left ? root.panel + root.gap : 0;
+                y: root.main-y;
+                width: root.panel;
+                height: root.main-height;
+                background: Palette.background;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.hover;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #0000004d;
+                VerticalLayout {
+                    padding: root.pad;
+                    for entry[i] in root.entries: MenuRow {
+                        height: root.row-height;
+                        icon: entry.icon;
+                        label: entry.label;
+                        danger: entry.danger;
+                        more: entry.choices.length > 0;
+                        lit: root.current == i;
+                        // The mouse on an entry opens its submenu, or closes
+                        // another's.
+                        changed hovered => {
+                            if self.hovered {
+                                root.light(i);
+                            }
+                        }
+                        clicked => { root.choose(i); }
+                    }
+                }
+            }
+
+            if !Screen.phone && root.open >= 0: Rectangle {
+                x: root.sub-left ? 0 : root.panel + root.gap;
+                y: root.sub-y;
+                width: root.panel;
+                height: root.sub-height;
+                background: Palette.background;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.hover;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #0000004d;
+                sub-scroll := Flickable {
+                    content-height: 2 * root.pad + root.choices.length * root.row-height;
+                    VerticalLayout {
+                        padding: root.pad;
+                        for choice[j] in root.choices: MenuRow {
+                            height: root.row-height;
+                            label: choice.label;
+                            lit: root.choice == j;
+                            // Scrolled into view when the keys light it.
+                            changed lit => {
+                                if self.lit {
+                                    sub-scroll.content-y = clamp(sub-scroll.content-y, sub-scroll.height - self.y - self.height, -self.y);
+                                }
+                            }
+                            changed hovered => {
+                                if self.hovered {
+                                    root.choice = j;
+                                }
+                            }
+                            clicked => { root.pick(j); }
+                        }
+                    }
+                }
+            }
+
+            if Screen.phone: Rectangle {
+                y: parent.height - self.height;
+                height: min(sheet-list.preferred-height, Screen.height * 75%) + Screen.bottom;
+                background: Palette.background;
+                border-top-left-radius: 12px;
+                border-top-right-radius: 12px;
+                // Keeps taps on the sheet from closing it.
+                TouchArea { }
+                Flickable {
+                    y: 0;
+                    height: parent.height - Screen.bottom;
+                    content-height: sheet-list.preferred-height;
+                    sheet-list := VerticalLayout {
+                        padding: 8px;
+                        if root.open < 0: VerticalLayout {
+                            for entry[i] in root.entries: MenuRow {
+                                height: 48px;
+                                icon: entry.icon;
+                                label: entry.label;
+                                danger: entry.danger;
+                                more: entry.choices.length > 0;
+                                icon-size: 22px;
+                                font-size: 16px;
+                                lit: root.current == i;
+                                clicked => { root.choose(i); }
+                            }
+                        }
+                        if root.open >= 0: VerticalLayout {
+                            // Back to the entries.
+                            MenuRow {
+                                height: 48px;
+                                icon: Icons.back;
+                                label: root.entries[root.open].label;
+                                strong: true;
+                                icon-size: 22px;
+                                font-size: 16px;
+                                clicked => {
+                                    root.open = -1;
+                                    root.choice = -1;
+                                }
+                            }
+                            for choice[j] in root.choices: MenuRow {
+                                height: 48px;
+                                label: choice.label;
+                                font-size: 16px;
+                                lit: root.choice == j;
+                                clicked => { root.pick(j); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // An album, playlist or genre in a shelf or grid, or an artist, round.
 export component CoverTile inherits Pressable {
     in property <image> cover;
@@ -376,8 +726,14 @@ export component TrackRow inherits Pressable {
     in property <bool> lovable: true;
     in property <bool> strong;
     in property <bool> part;
+    // The playlists its menu can add it to, as names linking to their ids,
+    // and whether it can take it off the playlist it is on.
+    in property <[Name]> playlists;
+    in property <bool> removable;
     callback open(link: string);
     callback toggle-love();
+    callback add-to-playlist(id: string);
+    callback remove();
     label: self.title;
 
     Rectangle {
@@ -444,6 +800,25 @@ export component TrackRow inherits Pressable {
             color: Theme.muted;
             horizontal-alignment: right;
             vertical-alignment: center;
+        }
+        if root.playlists.length > 0 || root.removable: MoreMenu {
+            cross-axis-self-alignment: center;
+            opening => {
+                self.entries = [];
+                if root.playlists.length > 0 {
+                    self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlists });
+                }
+                if root.removable {
+                    self.entries.push({ id: "remove", label: "Remove from playlist", icon: Icons.unlist });
+                }
+            }
+            activated(id, choice) => {
+                if id == "playlist" {
+                    root.add-to-playlist(choice);
+                } else {
+                    root.remove();
+                }
+            }
         }
     }
 }
@@ -548,9 +923,13 @@ export component TrackLineRow inherits Rectangle {
     // Whether the rows above and below it are selected too.
     in property <bool> joined-above;
     in property <bool> joined-below;
+    // The playlists its menu can add its song to, as names linking to their
+    // ids; none for a row that isn't a song.
+    in property <[Name]> playlists;
     callback open(link: string);
     callback toggle-love();
     callback select();
+    callback add-to-playlist(id: string);
 
     height: 54px;
     border-radius: Theme.radius;
@@ -653,40 +1032,35 @@ export component TrackLineRow inherits Rectangle {
                     context-clicked => { root.select(); }
                 }
             }
-            menu := ContextMenuArea {
-                width: 32px;
-                Menu {
-                    MenuItem {
-                        title: root.line.loved ? "Unlove" : "Love";
-                        activated => { root.toggle-love(); }
+            MoreMenu {
+                cross-axis-self-alignment: center;
+                opening => {
+                    self.entries = [{ id: "love", label: root.line.loved ? "Unlove" : "Love", icon: Icons.heart }];
+                    if root.line.album.link != "" {
+                        self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
                     }
-                    if root.line.album.link != "": MenuItem {
-                        title: "Go to album";
-                        activated => { root.open(root.line.album.link); }
+                    if root.line.artists.length == 1 {
+                        self.entries.push({ id: "artist", label: "Go to artist", icon: Icons.artist });
+                    } else if root.line.artists.length > 1 {
+                        self.entries.push({ id: "artist", label: "Go to artist", icon: Icons.artist, choices: root.line.artists });
                     }
-                    if root.line.artists.length == 1: MenuItem {
-                        title: "Go to artist";
-                        activated => { root.open(root.line.artists[0].link); }
+                    if !root.line.folder && root.playlists.length > 0 {
+                        self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlists });
                     }
-                    if root.line.artists.length > 1: Menu {
-                        title: "Go to artist";
-                        for artist in root.line.artists: MenuItem {
-                            title: artist.label;
-                            activated => { root.open(artist.link); }
-                        }
-                    }
-                    MenuItem {
-                        title: root.line.selected ? "Deselect" : "Select";
-                        activated => { root.select(); }
-                    }
+                    self.entries.push({ id: "select", label: root.line.selected ? "Deselect" : "Select", icon: Icons.check });
                 }
-                IconButton {
-                    y: (parent.height - self.height) / 2;
-                    icon: Icons.more;
-                    filled: true;
-                    color: Theme.muted;
-                    label: "More";
-                    clicked => { menu.show({ x: 0, y: self.y + self.height }); }
+                activated(id, choice) => {
+                    if id == "love" {
+                        root.toggle-love();
+                    } else if id == "album" {
+                        root.open(root.line.album.link);
+                    } else if id == "artist" {
+                        root.open(choice != "" ? choice : root.line.artists[0].link);
+                    } else if id == "playlist" {
+                        root.add-to-playlist(choice);
+                    } else {
+                        root.select();
+                    }
                 }
             }
         }
@@ -1133,10 +1507,12 @@ component NavButton inherits Pressable {
     }
 }
 
-// A group's own section, drawn as the group's heading.
+// A group's own section, drawn as the group's heading, with a menu of what
+// the group offers: the playlists', creating one.
 component NavHeading inherits Pressable {
     in property <string> text;
     in property <bool> current;
+    callback new-playlist();
     label: self.text;
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
@@ -1157,6 +1533,11 @@ component NavHeading inherits Pressable {
             color: root.current ? Theme.text : Theme.muted;
             overflow: elide;
         }
+        MoreMenu {
+            cross-axis-self-alignment: center;
+            entries: [{ id: "new", label: "New playlist", icon: Icons.plus }];
+            activated => { root.new-playlist(); }
+        }
     }
 }
 
@@ -1171,6 +1552,7 @@ export component Sidebar inherits Rectangle {
     in property <[string]> icons;
     in-out property <int> current;
     callback selected(index: int);
+    callback new-playlist();
 
     background: Theme.surface;
 
@@ -1203,6 +1585,7 @@ export component Sidebar inherits Rectangle {
                     NavHeading {
                         text: item;
                         current: i == root.current;
+                        new-playlist => { root.new-playlist(); }
                         clicked => {
                             root.current = i;
                             root.selected(i);

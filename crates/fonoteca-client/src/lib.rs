@@ -447,6 +447,12 @@ mod tests {
 
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// The playlist changes the server was asked for, each its method and
+    /// its arguments but the credentials.
+    static PLAYLIST_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// While set, the Road Trip playlist is "Moved", with a new id, as a
+    /// server that names playlists by their files has it after a rename.
+    static MOVED: AtomicBool = AtomicBool::new(false);
     /// While set, the flow test's server answers every request with an error.
     static DOWN: AtomicBool = AtomicBool::new(false);
     /// How many covers the server was asked for, and the first ones' ids.
@@ -471,8 +477,10 @@ mod tests {
     /// 603 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
     /// refused. The second is classical, with a motion cover. The last three
     /// are by or about Bach, and each order puts them differently. It knows
-    /// 122 artists, in three indexes, two playlists, one of them empty, and
-    /// 230 songs for the empty search, more than the client asks for at once.
+    /// 122 artists, in three indexes, two playlists, one of them empty and
+    /// read-only, and 230 songs for the empty search, more than the client
+    /// asks for at once. It takes every playlist change but a rename to
+    /// "Taken".
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -580,9 +588,52 @@ mod tests {
                 songs.join(",")
             ))
         } else if request.contains("/rest/getPlaylists") {
+            let road_trip = if MOVED.load(Relaxed) {
+                ROAD_TRIP.replace(
+                    r#""id":"p1","name":"Road Trip""#,
+                    r#""id":"p4","name":"Moved""#,
+                )
+            } else {
+                ROAD_TRIP.to_owned()
+            };
             ok(&format!(
-                r#""playlists":{{"playlist":[{{{ROAD_TRIP}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z"}}]}}"#
+                r#""playlists":{{"playlist":[{{{road_trip}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}}]}}"#
             ))
+        } else if request.contains("/rest/getPlaylist") && id == Some("p2") {
+            ok(
+                r#""playlist":{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}"#,
+            )
+        } else if ["create", "update", "delete"]
+            .iter()
+            .any(|change| request.contains(&format!("/rest/{change}Playlist")))
+        {
+            let target = request.split_whitespace().nth(1).unwrap_or_default();
+            let (method, query) = target.split_once('?').unwrap_or((target, ""));
+            let credentials = ["u=", "t=", "s=", "p=", "v=", "c=", "f="];
+            let asked: Vec<&str> = query
+                .split('&')
+                .filter(|arg| !credentials.iter().any(|c| arg.starts_with(c)))
+                .collect();
+            let write = format!(
+                "{} {}",
+                method.trim_start_matches("/rest/"),
+                asked.join("&")
+            );
+            PLAYLIST_WRITES.lock().unwrap().push(write.clone());
+            if write.contains("name=Moved") {
+                MOVED.store(true, Relaxed);
+            }
+            if write.contains("name=Taken") {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"That name is taken"}}}"#,
+                )
+            } else if write.starts_with("createPlaylist") {
+                ok(
+                    r#""playlist":{"id":"p3","name":"Mix","songCount":0,"duration":0,"created":"2024-03-01T00:00:00Z","changed":"2024-03-01T00:00:00Z"}"#,
+                )
+            } else {
+                json(OK)
+            }
         } else if request.contains("/rest/getPlaylist") {
             let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}]"#;
             ok(&format!(r#""playlist":{{{ROAD_TRIP},"entry":{songs}}}"#))
@@ -1100,6 +1151,111 @@ mod tests {
             assert!(tracks[0].loved);
             assert_eq!(links(&tracks[1]), [""]);
             assert!(!tracks[1].loved);
+            // Songs go in the playlists the server doesn't call read-only.
+            let targets: Vec<(String, String)> = ui
+                .get_playlist_targets()
+                .iter()
+                .map(|name| (name.label.into(), name.link.into()))
+                .collect();
+            assert_eq!(targets, [("Road Trip".to_owned(), "p1".to_owned())]);
+            assert!(ui.get_playlist_editable());
+            // A track taken off leaves the page at once, and the playlist is
+            // asked for again.
+            let writes = || PLAYLIST_WRITES.lock().unwrap().clone();
+            PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_remove_from_playlist(0);
+            assert_eq!(ui.get_tracks().row_count(), 1);
+            assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Fugue");
+            wait_for("the track taken off", || {
+                writes() == ["updatePlaylist playlistId=p1&songIndexToRemove=0"]
+            })
+            .await;
+            wait_for("the playlist again", || ui.get_tracks().row_count() == 2).await;
+            // A new name shows at once; one the server refuses goes back.
+            ui.invoke_rename_playlist(" Drive ".into());
+            assert_eq!(ui.get_header_title(), "Drive");
+            wait_for("the rename", || {
+                writes().last().map(String::as_str)
+                    == Some("updatePlaylist playlistId=p1&name=Drive")
+            })
+            .await;
+            ui.invoke_rename_playlist("Taken".into());
+            wait_for("the refused rename", || ui.get_page_problem() != "").await;
+            assert!(ui.get_page_problem().contains("That name is taken"));
+            wait_for("the old name", || ui.get_header_title() == "Road Trip").await;
+            ui.set_page_problem("".into());
+            // Where a new name is a new id, the page moves to it, and a
+            // change made there goes to the new one.
+            ui.invoke_rename_playlist("Moved".into());
+            wait_for("the page moved", || {
+                let at = ui.get_section();
+                at >= 0 && ui.get_sections().row_data(at as usize).as_deref() == Some("Moved")
+            })
+            .await;
+            ui.invoke_remove_from_playlist(0);
+            wait_for("the track taken off the moved one", || {
+                writes().last().map(String::as_str)
+                    == Some("updatePlaylist playlistId=p4&songIndexToRemove=0")
+            })
+            .await;
+            MOVED.store(false, Relaxed);
+            ui.invoke_open("playlist:p1".into());
+            wait_for("Road Trip again", || {
+                ui.get_tracks().row_count() == 2
+                    && ui
+                        .get_playlist_targets()
+                        .iter()
+                        .any(|name| name.link == "p1")
+            })
+            .await;
+            // A song of the playlist on screen added to it.
+            ui.invoke_add_track_to_playlist(1, "p1".into());
+            wait_for("the song added", || {
+                writes().last().map(String::as_str)
+                    == Some("updatePlaylist playlistId=p1&songIdToAdd=s9")
+            })
+            .await;
+            wait_for("the notice", || ui.get_notice() != "").await;
+            assert_eq!(ui.get_notice(), "Added 1 track to Road Trip.");
+            ui.set_notice("".into());
+            // A selected album goes in a playlist song by song, and the
+            // selection is let go.
+            ui.invoke_open("albums".into());
+            wait_for("the albums", || ui.get_tiles().row_count() == 100).await;
+            PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_select_tile(0);
+            ui.invoke_add_selection_to_playlist("p1".into());
+            assert_eq!(ui.get_selected_tiles(), 0);
+            wait_for("the album added", || {
+                writes() == ["updatePlaylist playlistId=p1&songIdToAdd=s1&songIdToAdd=s2"]
+            })
+            .await;
+            wait_for("the notice", || ui.get_notice() != "").await;
+            assert_eq!(ui.get_notice(), "Added 2 tracks to Road Trip.");
+            ui.set_notice("".into());
+            // A read-only playlist offers no changes.
+            ui.invoke_open("playlist:p2".into());
+            wait_for("the empty playlist", || ui.get_header_title() == "Empty").await;
+            assert!(!ui.get_playlist_editable());
+            ui.invoke_remove_from_playlist(0);
+            // A new playlist needs a name, and opens.
+            let sent = writes().len();
+            ui.invoke_create_playlist("  ".into());
+            ui.invoke_create_playlist("Mix".into());
+            wait_for("the new playlist", || {
+                ui.get_page() == Page::Playlist && ui.get_tracks().row_count() == 2
+            })
+            .await;
+            assert_eq!(writes()[sent..], ["createPlaylist name=Mix"]);
+            // Deleting the one on screen leads to the playlists.
+            ui.invoke_delete_playlist();
+            wait_for("the playlists", || ui.get_page() == Page::Playlists).await;
+            assert_eq!(
+                writes().last().map(String::as_str),
+                Some("deletePlaylist id=p3")
+            );
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             click(&ui, "Account");
             assert_eq!(ui.get_section(), 10);
             // Shown again at once, while they are asked for again.
@@ -1960,6 +2116,21 @@ mod tests {
             ui.invoke_select_line(0);
             assert!(line(&ui, 0).selected);
             ui.invoke_clear_selection();
+            // A song row goes in a playlist; of a selection, only its songs.
+            ui.invoke_add_line_to_playlist(1, "p1".into());
+            wait_for("the song added", || {
+                PLAYLIST_WRITES.lock().unwrap().last().map(String::as_str)
+                    == Some("updatePlaylist playlistId=p1&songIdToAdd=t1")
+            })
+            .await;
+            PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_select_line(0);
+            ui.invoke_add_selection_to_playlist("p1".into());
+            wait_for("nothing added", || {
+                ui.get_notice() == "Nothing selected goes in a playlist."
+            })
+            .await;
+            assert!(PLAYLIST_WRITES.lock().unwrap().is_empty());
             // It sorts by a heading, kept apart from the tracks table's.
             ui.invoke_sort_tracks(1);
             assert_eq!(entry(&ui, 0), named("Harbour Lights", "song:t1"));

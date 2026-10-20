@@ -17,7 +17,8 @@ use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
-    GenericMediaType, Indexes, ItemDate, ListOptions, MediaType, Playlist, SearchOptions, Span,
+    GenericMediaType, Indexes, ItemDate, ListOptions, MediaType, Playlist, PlaylistUpdate,
+    PlaylistWithSongs, SearchOptions, Span,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -43,6 +44,8 @@ const LIBRARY_AT_MOST: usize = 50_000;
 const SONGS_AT_MOST: usize = 200_000;
 /// How long typing in the filter pauses before the albums are filtered.
 const TYPING_PAUSE: Duration = Duration::from_millis(200);
+/// How long a notice, such as songs added to a playlist, stays up.
+const NOTICE_TIME: Duration = Duration::from_secs(3);
 /// Tile covers fetched at the same time.
 const COVERS_AT_ONCE: usize = 6;
 /// The sizes covers are asked for, in logical pixels. Grid tiles are at least
@@ -127,6 +130,8 @@ pub struct Browser {
     /// The links of the albums selected, in the order they were picked. They
     /// stay selected through sorting, filtering and other pages.
     selected: Vec<String>,
+    /// Takes the notice down.
+    notice: Timer,
 }
 
 pub type Shared = Rc<RefCell<Browser>>;
@@ -260,6 +265,54 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_clear_selection({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || clear_selection(&weak.unwrap(), &browser)
+    });
+    ui.on_create_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name| create_playlist(&weak.unwrap(), &browser, name.trim().to_owned())
+    });
+    ui.on_rename_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name| rename_playlist(&weak.unwrap(), &browser, name.trim().to_owned())
+    });
+    ui.on_delete_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || delete_playlist(&weak.unwrap(), &browser)
+    });
+    ui.on_remove_from_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row| remove_from_playlist(&weak.unwrap(), &browser, row as usize)
+    });
+    ui.on_add_line_to_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row, id| {
+            let ui = weak.unwrap();
+            let song = {
+                let b = browser.borrow();
+                let (songs, order) = listed(&b, ui.get_page());
+                order.get(row as usize).map(|&song| song_link(&songs[song]))
+            };
+            add_to_playlist(&ui, &browser, id.into(), song.into_iter().collect());
+        }
+    });
+    ui.on_add_track_to_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row, id| {
+            let song = browser.borrow().songs.get(row as usize).cloned();
+            let links = song
+                .map(|song| format!("song:{song}"))
+                .into_iter()
+                .collect();
+            add_to_playlist(&weak.unwrap(), &browser, id.into(), links);
+        }
+    });
+    ui.on_add_selection_to_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |id| {
+            let ui = weak.unwrap();
+            let links = browser.borrow().selected.clone();
+            clear_selection(&ui, &browser);
+            add_to_playlist(&ui, &browser, id.into(), links);
+        }
     });
 }
 
@@ -410,6 +463,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_names(ModelRc::default());
     ui.set_header_facts("".into());
     ui.set_details(ModelRc::default());
+    ui.set_playlist_editable(false);
 
     let (page, id) = link.split_once(':').unwrap_or((&link, ""));
     let id = id.to_owned();
@@ -518,7 +572,8 @@ fn section(b: &Browser) -> i32 {
     at.map_or(-1, |at| at as i32)
 }
 
-/// Lists the sidebar's entries, the page on screen's current.
+/// Lists the sidebar's entries, the page on screen's current, and the
+/// playlists songs can be added to: those the server doesn't call read-only.
 fn sidebar(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let icons = ui.global::<Icons>();
@@ -532,6 +587,16 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     ui.set_section_groups(ModelRc::new(VecModel::from(groups)));
     ui.set_section_icons(ModelRc::new(VecModel::from(pictures)));
     ui.set_section(section(&b));
+    let targets: Vec<Name> = b
+        .playlists
+        .iter()
+        .filter(|playlist| playlist.readonly != Some(true))
+        .map(|playlist| Name {
+            label: playlist.name.as_str().into(),
+            link: playlist.id.as_str().into(),
+        })
+        .collect();
+    ui.set_playlist_targets(names(targets));
 }
 
 /// The icon in front of the sidebar's entry for `link`; none for the
@@ -2024,34 +2089,342 @@ fn playlist(ui: &AppWindow, browser: &Shared, id: String) {
         ui,
         browser,
         |client| async move { client.get_playlist(&id).await },
-        |ui, browser, playlist| {
-            let songs = playlist.entry;
-            let playlist = playlist.playlist;
-            ui.set_header_title(playlist.name.as_str().into());
-            let facts = [
-                playlist.comment.unwrap_or_default(),
-                length(playlist.song_count, playlist.duration),
-            ];
-            let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
-            ui.set_header_facts(facts.join(" · ").into());
-            header_image(ui, browser, playlist.cover_art);
+        show_playlist,
+    );
+}
 
-            let mut b = browser.borrow_mut();
-            for song in &songs {
-                let artists = song_names(song);
-                let album = album_name(song);
-                b.tracks.push(Track {
-                    title: song.title.as_str().into(),
-                    split: artists.len() as i32,
-                    names: names(artists.into_iter().chain(album).collect()),
-                    duration: song.duration.map(duration).unwrap_or_default().into(),
-                    loved: song.starred.is_some(),
-                    ..Track::default()
-                });
+/// Like `load`, for what a page shows beside its main content: no spinner,
+/// and nothing said when the server can't answer.
+fn aside<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
+    ui: &AppWindow,
+    browser: &Shared,
+    task: impl FnOnce(Rc<Client>) -> F,
+    done: impl FnOnce(&AppWindow, &Shared, T) + 'static,
+) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    let visit = browser.borrow().visit;
+    let task = task(client);
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let result = task.await;
+        let Some(ui) = weak.upgrade() else { return };
+        if browser.borrow().visit == visit
+            && let Ok(value) = result
+        {
+            done(&ui, &browser, value);
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// A song's row on a playlist or an artist's top songs: its artists, then
+/// its album, and its heart.
+fn song_track(song: &Child) -> Track {
+    let artists = song_names(song);
+    let album = album_name(song);
+    Track {
+        title: song.title.as_str().into(),
+        split: artists.len() as i32,
+        names: names(artists.into_iter().chain(album).collect()),
+        duration: song.duration.map(duration).unwrap_or_default().into(),
+        loved: song.starred.is_some(),
+        ..Track::default()
+    }
+}
+
+/// Puts a playlist on its page, in place of the tracks it showed.
+fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) {
+    let songs = playlist.entry;
+    let playlist = playlist.playlist;
+    ui.set_header_title(playlist.name.as_str().into());
+    ui.set_playlist_editable(playlist.readonly != Some(true));
+    let facts = [
+        playlist.comment.unwrap_or_default(),
+        length(playlist.song_count, playlist.duration),
+    ];
+    let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
+    ui.set_header_facts(facts.join(" · ").into());
+    header_image(ui, browser, playlist.cover_art);
+
+    let tracks: Vec<Track> = songs.iter().map(song_track).collect();
+    let mut b = browser.borrow_mut();
+    b.tracks.set_vec(tracks);
+    b.songs = songs.into_iter().map(|song| song.id).collect();
+}
+
+/// The id of the playlist on screen, if one is.
+fn playlist_on_screen(b: &Browser) -> Option<String> {
+    let link = b.history.get(b.at)?;
+    link.strip_prefix("playlist:").map(str::to_owned)
+}
+
+/// Runs a change to a playlist on the server, follows it with `done` when
+/// taken or says the server refused, on the page it was made on, then asks
+/// for the playlists again, and for the playlist on screen when that is
+/// `id`, without blanking it.
+fn change_playlist<F: Future<Output = opensubsonic::Result<()>> + 'static>(
+    ui: &AppWindow,
+    browser: &Shared,
+    id: Option<String>,
+    task: impl FnOnce(Rc<Client>) -> F,
+    done: impl FnOnce(&AppWindow, &Shared) + 'static,
+) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    let task = task(client.clone());
+    let visit = browser.borrow().visit;
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let result = task.await;
+        let Some(ui) = weak.upgrade() else { return };
+        let signed_in = browser
+            .borrow()
+            .client
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(current, &client));
+        if !signed_in {
+            return;
+        }
+        match result {
+            Ok(()) => done(&ui, &browser),
+            Err(e) if browser.borrow().visit == visit => {
+                ui.set_page_problem(format!("Your server didn't take that: {e}").into());
             }
-            b.songs = songs.into_iter().map(|song| song.id).collect();
+            Err(_) => {}
+        }
+        load_playlists(&ui, &browser);
+        let on_screen = id.filter(|id| playlist_on_screen(&browser.borrow()).as_ref() == Some(id));
+        if let Some(id) = on_screen {
+            refresh_playlist(&ui, &browser, id);
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Asks for the playlist on screen again and puts it in place of what its
+/// page shows, unless the page is left by then.
+fn refresh_playlist(ui: &AppWindow, browser: &Shared, id: String) {
+    aside(
+        ui,
+        browser,
+        |client| async move { client.get_playlist(&id).await },
+        show_playlist,
+    );
+}
+
+/// Makes an empty playlist with this name and opens it.
+fn create_playlist(ui: &AppWindow, browser: &Shared, name: String) {
+    if name.is_empty() {
+        return;
+    }
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let created = client.create_playlist(&name, &[]).await;
+        let Some(ui) = weak.upgrade() else { return };
+        load_playlists(&ui, &browser);
+        match created {
+            Ok(Some(playlist)) => open(&ui, &browser, format!("playlist:{}", playlist.playlist.id)),
+            Ok(None) => {}
+            Err(e) => ui.set_page_problem(format!("Your server didn't take that: {e}").into()),
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Renames the playlist on screen, at once on its page.
+fn rename_playlist(ui: &AppWindow, browser: &Shared, name: String) {
+    let Some(id) = playlist_on_screen(&browser.borrow()) else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    ui.set_header_title(name.as_str().into());
+    let (at, old) = (id.clone(), id.clone());
+    // A server that names a playlist by its file, as Fonoteca does, gives it
+    // a new id with a new name: the page and the history move to that one.
+    let moved = Rc::new(RefCell::new(None::<String>));
+    let found = moved.clone();
+    change_playlist(
+        ui,
+        browser,
+        Some(id),
+        |client| async move {
+            let update = PlaylistUpdate {
+                name: Some(&name),
+                ..PlaylistUpdate::default()
+            };
+            client.update_playlist(&at, &update).await?;
+            if let Ok(list) = client.get_playlists(None).await
+                && !list.playlist.iter().any(|playlist| playlist.id == at)
+            {
+                let renamed = list
+                    .playlist
+                    .into_iter()
+                    .find(|playlist| playlist.name == name);
+                *found.borrow_mut() = renamed.map(|playlist| playlist.id);
+            }
+            Ok(())
+        },
+        move |ui, browser| {
+            let Some(new) = moved.borrow_mut().take() else {
+                return;
+            };
+            let (old, link) = (format!("playlist:{old}"), format!("playlist:{new}"));
+            let on_screen = {
+                let mut b = browser.borrow_mut();
+                for seen in b.history.iter_mut().filter(|seen| **seen == old) {
+                    seen.clone_from(&link);
+                }
+                b.history.get(b.at) == Some(&link)
+            };
+            if on_screen {
+                refresh_playlist(ui, browser, new);
+            }
         },
     );
+}
+
+/// Deletes the playlist on screen and shows the playlists left.
+fn delete_playlist(ui: &AppWindow, browser: &Shared) {
+    let Some(id) = playlist_on_screen(&browser.borrow()) else {
+        return;
+    };
+    change_playlist(
+        ui,
+        browser,
+        None,
+        |client| async move { client.delete_playlist(&id).await },
+        |ui, browser| open(ui, browser, "playlists".into()),
+    );
+}
+
+/// Takes the `row`th track off the playlist on screen, at once on its page.
+fn remove_from_playlist(ui: &AppWindow, browser: &Shared, row: usize) {
+    let Some(id) = playlist_on_screen(&browser.borrow()) else {
+        return;
+    };
+    {
+        let mut b = browser.borrow_mut();
+        if row >= b.songs.len() || row >= b.tracks.row_count() {
+            return;
+        }
+        b.songs.remove(row);
+        b.tracks.remove(row);
+    }
+    let at = id.clone();
+    change_playlist(
+        ui,
+        browser,
+        Some(id),
+        |client| async move {
+            let update = PlaylistUpdate {
+                song_indexes_to_remove: &[row as u32],
+                ..PlaylistUpdate::default()
+            };
+            client.update_playlist(&at, &update).await
+        },
+        |_, _| {},
+    );
+}
+
+/// Adds the songs of `links` to the end of the playlist `id`, in their
+/// order, and says how many went in: a song's own, an album's, an artist's
+/// albums' or a playlist's. Folders and compositions add none.
+// ponytail: folders and compositions are skipped; walk them when someone selects those to add.
+fn add_to_playlist(ui: &AppWindow, browser: &Shared, id: String, links: Vec<String>) {
+    let name = browser
+        .borrow()
+        .playlists
+        .iter()
+        .find(|playlist| playlist.id == id)
+        .map_or_else(
+            || "the playlist".to_owned(),
+            |playlist| playlist.name.clone(),
+        );
+    let count = Rc::new(std::cell::Cell::new(0));
+    let added = count.clone();
+    change_playlist(
+        ui,
+        browser,
+        Some(id.clone()),
+        |client| async move {
+            let songs = songs_of(&client, &links).await?;
+            added.set(songs.len());
+            if songs.is_empty() {
+                return Ok(());
+            }
+            let songs: Vec<&str> = songs.iter().map(String::as_str).collect();
+            let update = PlaylistUpdate {
+                song_ids_to_add: &songs,
+                ..PlaylistUpdate::default()
+            };
+            client.update_playlist(&id, &update).await
+        },
+        move |ui, browser| {
+            let text = match count.get() {
+                0 => "Nothing selected goes in a playlist.".to_owned(),
+                1 => format!("Added 1 track to {name}."),
+                n => format!("Added {n} tracks to {name}."),
+            };
+            notify(ui, browser, text);
+        },
+    );
+}
+
+/// The songs of these links, in their order: a song's own, an album's, an
+/// artist's albums' or a playlist's.
+async fn songs_of(client: &Client, links: &[String]) -> opensubsonic::Result<Vec<String>> {
+    let mut songs = Vec::new();
+    for link in links {
+        let (kind, id) = link.split_once(':').unwrap_or((link, ""));
+        match kind {
+            "song" => songs.push(id.to_owned()),
+            "album" => songs.extend(client.get_album(id).await?.song.into_iter().map(|s| s.id)),
+            "playlist" => songs.extend(
+                client
+                    .get_playlist(id)
+                    .await?
+                    .entry
+                    .into_iter()
+                    .map(|s| s.id),
+            ),
+            "artist" => {
+                for album in client.get_artist(id).await?.album {
+                    songs.extend(
+                        client
+                            .get_album(&album.id)
+                            .await?
+                            .song
+                            .into_iter()
+                            .map(|s| s.id),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(songs)
+}
+
+/// Puts up a short notice for a few seconds.
+fn notify(ui: &AppWindow, browser: &Shared, text: String) {
+    ui.set_notice(text.into());
+    let weak = ui.as_weak();
+    browser
+        .borrow()
+        .notice
+        .start(TimerMode::SingleShot, NOTICE_TIME, move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_notice("".into());
+            }
+        });
 }
 
 /// A song's page, as the server's getSong has it: its album's cover, its

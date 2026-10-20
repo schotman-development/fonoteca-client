@@ -1,11 +1,15 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Links, Name, PageHeader, Pressable, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Links, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Icons, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
 export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders }
+
+// What the dialog over the page asks: a new playlist's name, the playlist's
+// new name, or whether to delete it.
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist }
 
 // What a track's page says about it under one heading, such as its album.
 export struct Detail {
@@ -375,6 +379,13 @@ export component AppWindow inherits Window {
     // any are, the selection bar is up and a click on a tile or row selects
     // it.
     in property <int> selected-tiles;
+    // The playlists a song can be added to, as names linking to their ids,
+    // and whether the playlist on screen can be changed.
+    in property <[Name]> playlist-targets;
+    in property <bool> playlist-editable;
+    property <[Name]> no-names;
+    // A short word on what was just done, such as songs added to a playlist.
+    in property <string> notice;
     // The albums page's order, as the index into its Sort menu, its
     // direction, and the filter typed on it.
     in-out property <int> album-sort;
@@ -413,14 +424,57 @@ export component AppWindow inherits Window {
     callback select-line(index: int);
     callback clear-selection();
     callback resized();
+    // Playlists: a new one with this name; the one on screen renamed or
+    // deleted, or its `row`th track taken off; a song added to the playlist
+    // with this id, from a row of the tracks table, of the album or playlist
+    // on screen, or every song selected.
+    callback create-playlist(name: string);
+    callback rename-playlist(name: string);
+    callback delete-playlist();
+    callback remove-from-playlist(row: int);
+    callback add-line-to-playlist(row: int, id: string);
+    callback add-track-to-playlist(row: int, id: string);
+    callback add-selection-to-playlist(id: string);
+
+    property <Asking> asking;
+    property <string> asked-name;
+
+    function ask(what: Asking) {
+        root.asked-name = what == Asking.rename-playlist ? root.header-title : "";
+        root.asking = what;
+    }
+
+    function answer() {
+        if root.asking == Asking.new-playlist {
+            root.create-playlist(root.asked-name);
+        } else if root.asking == Asking.rename-playlist {
+            root.rename-playlist(root.asked-name);
+        } else if root.asking == Asking.delete-playlist {
+            root.delete-playlist();
+        }
+        root.asking = Asking.nothing;
+    }
+
     // A page that is a table: the tracks, the compositions or a folder.
     property <bool> table: root.page == Page.tracks || root.page == Page.compositions || root.page == Page.folders;
 
     // One physical pixel, which changes with the scale.
     property <length> physical-pixel: 1phx;
 
-    changed width => { root.resized(); }
+    changed width => {
+        root.resized();
+        root.share-size();
+    }
     changed physical-pixel => { root.resized(); }
+    changed height => { root.share-size(); }
+    changed bottom-inset => { root.share-size(); }
+    init => { root.share-size(); }
+
+    function share-size() {
+        Screen.width = root.width;
+        Screen.height = root.height;
+        Screen.bottom = root.bottom-inset;
+    }
 
     // The sidebar sits beside the pages on a wide window, wider the wider it
     // is; on a narrow one, such as a phone's, it stays closed until the top
@@ -451,6 +505,7 @@ export component AppWindow inherits Window {
             icons: root.section-icons;
             current <=> root.section;
             selected(index) => { root.show-section(index); }
+            new-playlist => { root.ask(Asking.new-playlist); }
         }
         VerticalLayout {
             TopBar {
@@ -674,6 +729,14 @@ export component AppWindow inherits Window {
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
+                        if root.page == Page.playlist && root.playlist-editable: MoreMenu {
+                            label: "Playlist";
+                            entries: [
+                                { id: "rename", label: "Rename", icon: Icons.pencil },
+                                { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
+                            ];
+                            activated(id) => { root.ask(id == "rename" ? Asking.rename-playlist : Asking.delete-playlist); }
+                        }
                     }
                     // Each value at the width it has, so one that wraps
                     // measures all its lines.
@@ -738,9 +801,12 @@ export component AppWindow inherits Window {
                             selecting: root.selected-tiles > 0;
                             joined-above: row > 0 && root.track-lines[row - 1].selected;
                             joined-below: row + 1 < root.track-lines.length && root.track-lines[row + 1].selected;
+                            // A composition is no song to add.
+                            playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
                             open(link) => { root.open(link); }
                             toggle-love => { root.toggle-line-love(row); }
                             select => { root.select-line(row); }
+                            add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
                         }
                     }
                     if root.page == Page.album || root.page == Page.playlist: VerticalLayout {
@@ -766,7 +832,11 @@ export component AppWindow inherits Window {
                                 performed: track.performed;
                                 strong: track.alone;
                                 part: track.part;
+                                playlists: root.playlist-targets;
+                                removable: root.page == Page.playlist && root.playlist-editable;
                                 open(link) => { root.open(link); }
+                                add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
+                                remove => { root.remove-from-playlist(row); }
                                 toggle-love => { root.toggle-love(row); }
                             }
                         }
@@ -844,6 +914,32 @@ export component AppWindow inherits Window {
         height: self.preferred-height;
         count: root.selected-tiles;
         clear => { root.clear-selection(); }
+        if root.playlist-targets.length > 0: MoreMenu {
+            cross-axis-self-alignment: center;
+            color: Palette.accent-foreground;
+            entries: [{ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlist-targets }];
+            activated(id, choice) => { root.add-selection-to-playlist(choice); }
+        }
+    }
+
+    if root.step == Step.done && root.notice != "" && root.selected-tiles == 0: Rectangle {
+        x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
+        y: root.height - self.height - 24px - root.bottom-inset;
+        width: min(notice.preferred-width, root.width - root.sidebar-width - 32px);
+        height: notice.preferred-height;
+        border-radius: 12px;
+        background: Theme.text;
+        notice := HorizontalLayout {
+            padding: 12px;
+            padding-left: 16px;
+            padding-right: 16px;
+            Text {
+                text: root.notice;
+                font-size: Theme.body;
+                color: Palette.background;
+                wrap: word-wrap;
+            }
+        }
     }
 
     // The sidebar opened over a narrow window; a tap beside it closes it.
@@ -864,6 +960,10 @@ export component AppWindow inherits Window {
             selected(index) => {
                 root.sidebar-open = false;
                 root.show-section(index);
+            }
+            new-playlist => {
+                root.sidebar-open = false;
+                root.ask(Asking.new-playlist);
             }
         }
     }
@@ -1023,6 +1123,63 @@ export component AppWindow inherits Window {
                                 root.step = Step.sign-in;
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Asks for a playlist's name, or whether to delete it, over the page. A
+    // tap beside it lets it go.
+    if root.step == Step.done && root.asking != Asking.nothing: Rectangle {
+        background: #0000004d;
+        TouchArea {
+            clicked => { root.asking = Asking.nothing; }
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: max(24px, (parent.height - root.bottom-inset - self.height) / 3);
+            width: min(400px, parent.width - 32px);
+            height: dialog.preferred-height;
+            border-radius: 12px;
+            background: Palette.background;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #0000004d;
+            // Keeps clicks on the dialog from letting it go.
+            TouchArea { }
+            dialog := VerticalLayout {
+                padding: 20px;
+                spacing: 16px;
+                Text {
+                    text: root.asking == Asking.new-playlist ? "New playlist" : root.asking == Asking.rename-playlist ? "Rename playlist" : "Delete “" + root.header-title + "”?";
+                    font-size: Theme.heading;
+                    font-weight: 600;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if root.asking != Asking.delete-playlist: LineEdit {
+                    text <=> root.asked-name;
+                    placeholder-text: "Name";
+                    init => { self.focus(); }
+                    accepted => {
+                        if root.asked-name != "" {
+                            root.answer();
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.asking = Asking.nothing; }
+                    }
+                    Button {
+                        text: root.asking == Asking.new-playlist ? "Create" : root.asking == Asking.rename-playlist ? "Rename" : "Delete";
+                        primary: true;
+                        enabled: root.asking == Asking.delete-playlist || root.asked-name != "";
+                        clicked => { root.answer(); }
                     }
                 }
             }
