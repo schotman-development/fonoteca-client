@@ -1,0 +1,22 @@
+name: Feature request
+description: An idea for something the app could do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you want to do
+      description: The thing you can't do now, or that takes too many steps.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+      description: What you'd see and tap. Another player that does it well helps too.
+  - type: input
+    id: server
+    attributes:
+      label: Server
+      description: If it needs something from the server, which one you use.
+      placeholder: Fonoteca, Navidrome, ...
