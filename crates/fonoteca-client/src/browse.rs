@@ -18,7 +18,7 @@ use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
     GenericMediaType, Indexes, ItemDate, ListOptions, MediaType, Playlist, PlaylistUpdate,
-    PlaylistWithSongs, SearchOptions, Span,
+    PlaylistWithSongs, ScanStatus, SearchOptions, Span,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -46,6 +46,8 @@ const SONGS_AT_MOST: usize = 200_000;
 const TYPING_PAUSE: Duration = Duration::from_millis(200);
 /// How long a notice, such as songs added to a playlist, stays up.
 const NOTICE_TIME: Duration = Duration::from_secs(3);
+/// How often the account page asks again while the server scans.
+const SCAN_POLL: Duration = Duration::from_secs(2);
 /// Tile covers fetched at the same time.
 const COVERS_AT_ONCE: usize = 6;
 /// The sizes covers are asked for, in logical pixels. Grid tiles are at least
@@ -138,6 +140,8 @@ pub struct Browser {
     selected: Vec<String>,
     /// Takes the notice down.
     notice: Timer,
+    /// Asks how the server's scan is going while the account page is up.
+    scan: Timer,
 }
 
 pub type Shared = Rc<RefCell<Browser>>;
@@ -279,6 +283,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_rename_playlist({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |name| rename_playlist(&weak.unwrap(), &browser, name.trim().to_owned())
+    });
+    ui.on_start_scan({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || start_scan(&weak.unwrap(), &browser)
     });
     ui.on_delete_playlist({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -451,6 +459,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         b.covers.clear();
         b.fetching = 0;
         b.motion = Timer::default();
+        b.scan.stop();
         ui.set_visit(b.visit);
         ui.set_can_go_back(b.at > 0);
         ui.set_can_go_forward(b.at + 1 < b.history.len());
@@ -530,7 +539,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Composition);
             composition(ui, browser, id);
         }
-        "account" => ui.set_page(Page::Account),
+        "account" => {
+            ui.set_page(Page::Account);
+            scan_status(ui, browser);
+        }
         _ => {
             ui.set_page(Page::Albums);
             albums(ui, browser);
@@ -2543,6 +2555,75 @@ fn notify(ui: &AppWindow, browser: &Shared, text: String) {
                 ui.set_notice("".into());
             }
         });
+}
+
+/// Asks the server how its scan of the libraries stands, for the account
+/// page.
+fn scan_status(ui: &AppWindow, browser: &Shared) {
+    aside(
+        ui,
+        browser,
+        |client| async move { client.get_scan_status().await },
+        show_scan,
+    );
+}
+
+/// Has the server scan its libraries, and says how that goes.
+fn start_scan(ui: &AppWindow, browser: &Shared) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    ui.set_scanning(true);
+    ui.set_page_problem("".into());
+    let visit = browser.borrow().visit;
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let result = client.start_scan().await;
+        let Some(ui) = weak.upgrade() else { return };
+        if browser.borrow().visit != visit {
+            return;
+        }
+        match result {
+            Ok(status) => show_scan(&ui, &browser, status),
+            Err(e) => {
+                ui.set_scanning(false);
+                ui.set_page_problem(format!("Your server didn't take that: {e}").into());
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Puts a scan's status on the account page, and asks again every few
+/// seconds until the server is done.
+fn show_scan(ui: &AppWindow, browser: &Shared, status: ScanStatus) {
+    ui.set_scanning(status.scanning);
+    ui.set_scan_status(scan_text(&status).into());
+    let b = browser.borrow();
+    if !status.scanning {
+        b.scan.stop();
+    } else if !b.scan.running() {
+        let (weak, browser) = (ui.as_weak(), Rc::downgrade(browser));
+        b.scan.start(TimerMode::Repeated, SCAN_POLL, move || {
+            if let (Some(ui), Some(browser)) = (weak.upgrade(), browser.upgrade()) {
+                scan_status(&ui, &browser);
+            }
+        });
+    }
+}
+
+/// "Scanning, 12 items so far…" or "146 items scanned.", from what the
+/// server counted.
+fn scan_text(status: &ScanStatus) -> String {
+    let items = status
+        .count
+        .map(|n| count(usize::try_from(n).unwrap_or(0), "item", "items"));
+    match (status.scanning, items) {
+        (true, Some(items)) => format!("Scanning, {items} so far…"),
+        (true, None) => "Scanning…".to_owned(),
+        (false, Some(items)) => format!("{items} scanned."),
+        (false, None) => String::new(),
+    }
 }
 
 /// A song's page, as the server's getSong has it: its album's cover, its

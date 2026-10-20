@@ -467,6 +467,11 @@ mod tests {
     /// While set, the server takes only an artist's name for their top
     /// songs, not their id, as Fonoteca does.
     static NAMES_ONLY: AtomicBool = AtomicBool::new(false);
+    /// How many scans were asked for; the server refuses the first. Whether
+    /// the one it took is still going, and how often that was asked.
+    static SCANS: AtomicUsize = AtomicUsize::new(0);
+    static SCANNING: AtomicBool = AtomicBool::new(false);
+    static SCAN_ASKS: AtomicUsize = AtomicUsize::new(0);
 
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
@@ -681,6 +686,24 @@ mod tests {
                 [egmont, requiem, symphony].join(",")
             };
             ok(&format!(r#""compositions":{{"composition":[{pieces}]}}"#))
+        } else if request.contains("/rest/getScanStatus") {
+            SCAN_ASKS.fetch_add(1, Relaxed);
+            let scanning = SCANNING.load(Relaxed);
+            let count = match (scanning, SCANS.load(Relaxed)) {
+                (true, _) => 3,
+                (false, 0 | 1) => 146,
+                (false, _) => 150,
+            };
+            ok(&format!(
+                r#""scanStatus":{{"scanning":{scanning},"count":{count}}}"#
+            ))
+        } else if request.contains("/rest/startScan") && SCANS.fetch_add(1, Relaxed) == 0 {
+            json(
+                r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Not allowed"}}}"#,
+            )
+        } else if request.contains("/rest/startScan") {
+            SCANNING.store(true, Relaxed);
+            ok(r#""scanStatus":{"scanning":true,"count":3}"#)
         } else if request.contains("/rest/getCoverArt") {
             if COVERS.fetch_add(1, Relaxed) < 6 {
                 FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
@@ -773,6 +796,12 @@ mod tests {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             YieldNow(false).await;
         }
+    }
+
+    /// Lets the app run for `time`.
+    async fn idle(time: Duration) {
+        let until = Instant::now() + time;
+        wait_for("the time to pass", || Instant::now() >= until).await;
     }
 
     fn button(ui: &AppWindow, label: &str) -> ElementHandle {
@@ -1031,6 +1060,51 @@ mod tests {
             click(&ui, "Account");
             assert_eq!(ui.get_page(), Page::Account);
             assert_eq!(ui.get_selected_tiles(), 1);
+            // The server's scan: where it stands, one the server refuses,
+            // and one it takes, followed while the page is up until done.
+            wait_for("the scan status", || {
+                ui.get_scan_status() == "146 items scanned."
+            })
+            .await;
+            assert!(!ui.get_scanning());
+            click(&ui, "Scan library");
+            wait_for("the refusal", || ui.get_page_problem() != "").await;
+            assert_eq!(
+                ui.get_page_problem(),
+                "Your server didn't take that: server error 50: Not allowed"
+            );
+            assert!(!ui.get_scanning());
+            click(&ui, "Scan library");
+            assert_eq!(ui.get_page_problem(), "");
+            wait_for("the scan going", || {
+                ui.get_scan_status() == "Scanning, 3 items so far…"
+            })
+            .await;
+            assert!(ui.get_scanning());
+            let asked = SCAN_ASKS.load(Relaxed);
+            wait_for("a look at it", || SCAN_ASKS.load(Relaxed) > asked).await;
+            let quiet = || async {
+                idle(Duration::from_millis(300)).await;
+                let asked = SCAN_ASKS.load(Relaxed);
+                idle(Duration::from_millis(2500)).await;
+                SCAN_ASKS.load(Relaxed) == asked
+            };
+            ui.invoke_back();
+            assert!(quiet().await, "the scan is followed off its page");
+            ui.invoke_forward();
+            assert_eq!(ui.get_page(), Page::Account);
+            let asked = SCAN_ASKS.load(Relaxed);
+            wait_for("a look on its page again", || {
+                SCAN_ASKS.load(Relaxed) > asked + 1
+            })
+            .await;
+            SCANNING.store(false, Relaxed);
+            wait_for("the scan done", || {
+                ui.get_scan_status() == "150 items scanned."
+            })
+            .await;
+            assert!(!ui.get_scanning());
+            assert!(quiet().await, "the scan is followed once done");
             ui.invoke_back();
             wait_for("the albums page", || links(&ui).len() == 3).await;
             assert_eq!(picked(&ui), ids(&["b1"]));

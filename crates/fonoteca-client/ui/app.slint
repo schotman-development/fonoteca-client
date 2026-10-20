@@ -373,6 +373,10 @@ export component AppWindow inherits Window {
     in property <string> about-short;
     in-out property <bool> about-open;
     in property <[Name]> similar;
+    // The account page's word on the server's scan of its libraries, and
+    // whether one is going.
+    in property <string> scan-status;
+    in property <bool> scanning;
     in property <[Track]> tracks;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, and every column there is to pick
@@ -437,6 +441,7 @@ export component AppWindow inherits Window {
     callback create-playlist(name: string);
     callback rename-playlist(name: string);
     callback delete-playlist();
+    callback start-scan();
     callback remove-from-playlist(row: int);
     callback add-line-to-playlist(row: int, id: string);
     callback add-track-to-playlist(row: int, id: string);
@@ -960,6 +965,27 @@ export component AppWindow inherits Window {
                                 text: "Sign out";
                                 enabled: !root.busy;
                                 clicked => { root.sign-out(); }
+                            }
+                        }
+                        VerticalLayout {
+                            padding-top: 16px;
+                            Text {
+                                text: "Library";
+                                font-size: Theme.heading;
+                                font-weight: 600;
+                                color: Theme.text;
+                            }
+                        }
+                        if root.scan-status != "": Text {
+                            text: root.scan-status;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Scan library";
+                                enabled: !root.scanning;
+                                clicked => { root.start-scan(); }
                             }
                         }
                     }
