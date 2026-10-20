@@ -60,6 +60,12 @@ const LINE_COVER_SIZE: f32 = 42.0;
 const MOTION: &str = "fonotecaAlbumMotion";
 /// Fonoteca's extension for composers and compositions.
 const COMPOSITIONS: &str = "fonotecaCompositions";
+/// OpenSubsonic's extension for an artist's top songs by id, not name.
+const TOP_SONGS_BY_ID: &str = "topSongsByArtistId";
+/// How many of an artist's top songs their page shows.
+const TOP_SONGS: u32 = 5;
+/// About how long the start of a biography or notes is, before More.
+const ABOUT_SHORT: usize = 320;
 
 #[derive(Default)]
 pub struct Browser {
@@ -464,6 +470,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_facts("".into());
     ui.set_details(ModelRc::default());
     ui.set_playlist_editable(false);
+    ui.set_about("".into());
+    ui.set_about_short("".into());
+    ui.set_about_open(false);
+    ui.set_similar(ModelRc::default());
 
     let (page, id) = link.split_once(':').unwrap_or((&link, ""));
     let id = id.to_owned();
@@ -1971,6 +1981,13 @@ fn sort_artist(album: &AlbumID3) -> &str {
 }
 
 fn album(ui: &AppWindow, browser: &Shared, id: String) {
+    let notes = id.clone();
+    aside(
+        ui,
+        browser,
+        |client| async move { client.get_album_info2(&notes).await },
+        |ui, _, info| show_about(ui, info.notes.as_deref()),
+    );
     load(
         ui,
         browser,
@@ -2064,12 +2081,35 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
     );
 }
 
+/// An artist's page: their picture and name, what the server says about
+/// them, their top songs and the artists like them, and their albums.
 fn artist(ui: &AppWindow, browser: &Shared, id: String) {
+    let info = id.clone();
+    aside(
+        ui,
+        browser,
+        |client| async move { client.get_artist_info2(&info, None, None).await },
+        |ui, _, info| {
+            show_about(ui, info.biography.as_deref());
+            ui.set_similar(names(info.similar_artist.iter().map(linked).collect()));
+        },
+    );
+    let by_id = browser
+        .borrow()
+        .client
+        .as_ref()
+        .is_some_and(|client| client.supports(TOP_SONGS_BY_ID));
+    if by_id {
+        top_songs(ui, browser, id.clone(), true);
+    }
     load(
         ui,
         browser,
         |client| async move { client.get_artist(&id).await },
-        |ui, browser, artist| {
+        move |ui, browser, artist| {
+            if !by_id {
+                top_songs(ui, browser, artist.artist.name.clone(), false);
+            }
             ui.set_header_title(artist.artist.name.as_str().into());
             ui.set_header_facts(count(artist.album.len(), "album", "albums").into());
             header_image(ui, browser, artist.artist.cover_art);
@@ -2090,6 +2130,31 @@ fn playlist(ui: &AppWindow, browser: &Shared, id: String) {
         browser,
         |client| async move { client.get_playlist(&id).await },
         show_playlist,
+    );
+}
+
+/// The artist's top songs on their page, asked for by their id where the
+/// server takes one, else by `artist`, their name; each a row like a
+/// playlist's.
+fn top_songs(ui: &AppWindow, browser: &Shared, artist: String, by_id: bool) {
+    aside(
+        ui,
+        browser,
+        move |client| async move {
+            if by_id {
+                client
+                    .get_top_songs_by_artist_id(&artist, Some(TOP_SONGS))
+                    .await
+            } else {
+                client.get_top_songs(&artist, Some(TOP_SONGS)).await
+            }
+        },
+        |_, browser, top| {
+            let mut b = browser.borrow_mut();
+            b.tracks
+                .set_vec(top.song.iter().map(song_track).collect::<Vec<_>>());
+            b.songs = top.song.into_iter().map(|song| song.id).collect();
+        },
     );
 }
 
@@ -2117,6 +2182,59 @@ fn aside<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
         }
     })
     .expect("the event loop is running");
+}
+
+/// Shows a biography or notes as plain text, and its start until opened.
+fn show_about(ui: &AppWindow, about: Option<&str>) {
+    let about = plain(about.unwrap_or_default());
+    ui.set_about_short(start_of(&about).into());
+    ui.set_about(about.into());
+}
+
+/// Text sent as HTML, as biographies often are, without its tags and with
+/// its common entities read.
+fn plain(html: &str) -> String {
+    let mut text = String::new();
+    let mut rest = html;
+    while let Some(at) = rest.find('<') {
+        text.push_str(&rest[..at]);
+        let tag = &rest[at..];
+        let end = tag.find('>').map_or(tag.len(), |end| end + 1);
+        let name = tag[1..end].trim_start_matches('/').to_ascii_lowercase();
+        if name.starts_with("br") || name.starts_with("p>") || name.starts_with("p ") {
+            text.push('\n');
+        }
+        rest = &tag[end..];
+    }
+    text.push_str(rest);
+    let text = [
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&apos;", "'"),
+        ("&nbsp;", " "),
+        ("&amp;", "&"),
+    ]
+    .iter()
+    .fold(text, |text, (entity, plain)| text.replace(entity, plain));
+    text.trim().to_owned()
+}
+
+/// The first paragraph of `text`, cut at a word near `ABOUT_SHORT`
+/// characters when longer.
+fn start_of(text: &str) -> String {
+    let first = text
+        .split("\n")
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if first.chars().count() <= ABOUT_SHORT {
+        return first.to_owned();
+    }
+    let cut: String = first.chars().take(ABOUT_SHORT).collect();
+    let cut = cut.rfind(' ').map_or(cut.as_str(), |space| &cut[..space]);
+    format!("{}…", cut.trim_end_matches([',', ';', ':', ' ']))
 }
 
 /// A song's row on a playlist or an artist's top songs: its artists, then
@@ -3294,6 +3412,19 @@ fn duration(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn biographies_as_plain_text() {
+        let text = plain("<p>One &amp; two &lt;3</p><P>Three<br/>four <a href=\"x\">more</a></p>");
+        assert_eq!(text, "One & two <3\n\nThree\nfour more");
+        assert_eq!(start_of(&text), "One & two <3");
+        assert_eq!(plain("No tags at all."), "No tags at all.");
+        // A long paragraph is cut at a word, before the limit.
+        let long = "word, ".repeat(100);
+        let start = start_of(&long);
+        assert!(start.ends_with("word…"), "{start}");
+        assert!(start.chars().count() <= ABOUT_SHORT + 1);
+    }
 
     #[test]
     fn durations_and_counts() {

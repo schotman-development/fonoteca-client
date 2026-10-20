@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Links, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Link, Links, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Icons, Name, TrackColumn, TrackLine }
 
@@ -367,6 +367,12 @@ export component AppWindow inherits Window {
     in property <[Name]> header-names;
     in property <string> header-facts;
     in property <[Detail]> details;
+    // An artist's biography or an album's notes, and the start of it shown
+    // until opened; the artist's similar artists.
+    in property <string> about;
+    in property <string> about-short;
+    in-out property <bool> about-open;
+    in property <[Name]> similar;
     in property <[Track]> tracks;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, and every column there is to pick
@@ -769,6 +775,93 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // An artist's biography or an album's notes, the start
+                    // until opened, at the width it has so it wraps. In a
+                    // HorizontalLayout, which measures it at its 800px most
+                    // where a VerticalLayout would at its own whole width.
+                    if (root.page == Page.artist || root.page == Page.album) && root.about != "": VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            alignment: start;
+                            Text {
+                                preferred-width: min(scroll.visible-width - 48px, 800px);
+                                max-width: 800px;
+                                text: root.about-open ? root.about : root.about-short;
+                                font-size: Theme.body;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                        }
+                        if root.about-short != root.about: HorizontalLayout {
+                            alignment: start;
+                            Link {
+                                text: root.about-open ? "Less" : "More";
+                                font-weight: 600;
+                                clicked => { root.about-open = !root.about-open; }
+                            }
+                        }
+                    }
+                    // An artist's top tracks, the artists like them, and a
+                    // heading over their albums when the page has more.
+                    if root.page == Page.artist && root.tracks.length > 0: Text {
+                        text: "Top tracks";
+                        font-size: Theme.heading;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    if root.page == Page.album || root.page == Page.playlist || root.page == Page.artist: VerticalLayout {
+                        for track[row] in root.tracks: VerticalLayout {
+                            if track.work != "": TrackRow {
+                                title: track.work;
+                                names: track.work-names;
+                                split: track.work-split;
+                                duration: track.work-duration;
+                                years: track.work-years;
+                                performed: track.work-performed;
+                                lovable: false;
+                                strong: true;
+                                open(link) => { root.open(link); }
+                            }
+                            TrackRow {
+                                title: track.title;
+                                names: track.names;
+                                split: track.split;
+                                duration: track.duration;
+                                loved: track.loved;
+                                years: track.years;
+                                performed: track.performed;
+                                strong: track.alone;
+                                part: track.part;
+                                playlists: root.playlist-targets;
+                                removable: root.page == Page.playlist && root.playlist-editable;
+                                open(link) => { root.open(link); }
+                                add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
+                                remove => { root.remove-from-playlist(row); }
+                                toggle-love => { root.toggle-love(row); }
+                            }
+                        }
+                    }
+                    if root.page == Page.artist && root.similar.length > 0: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Similar artists";
+                            font-size: Theme.heading;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        Links {
+                            preferred-width: min(scroll.visible-width, 1600px) - 48px;
+                            names: root.similar;
+                            text-color: Theme.text;
+                            open(link) => { root.open(link); }
+                        }
+                    }
+                    if root.page == Page.artist && (root.tracks.length > 0 || root.similar.length > 0) && root.tiles.length > 0: Text {
+                        text: "Albums";
+                        font-size: Theme.heading;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
                     if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist || root.page == Page.composers: CoverGrid {
                         tiles: root.tiles;
                         round: root.page == Page.artists || root.page == Page.composers;
@@ -807,38 +900,6 @@ export component AppWindow inherits Window {
                             toggle-love => { root.toggle-line-love(row); }
                             select => { root.select-line(row); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
-                        }
-                    }
-                    if root.page == Page.album || root.page == Page.playlist: VerticalLayout {
-                        for track[row] in root.tracks: VerticalLayout {
-                            if track.work != "": TrackRow {
-                                title: track.work;
-                                names: track.work-names;
-                                split: track.work-split;
-                                duration: track.work-duration;
-                                years: track.work-years;
-                                performed: track.work-performed;
-                                lovable: false;
-                                strong: true;
-                                open(link) => { root.open(link); }
-                            }
-                            TrackRow {
-                                title: track.title;
-                                names: track.names;
-                                split: track.split;
-                                duration: track.duration;
-                                loved: track.loved;
-                                years: track.years;
-                                performed: track.performed;
-                                strong: track.alone;
-                                part: track.part;
-                                playlists: root.playlist-targets;
-                                removable: root.page == Page.playlist && root.playlist-editable;
-                                open(link) => { root.open(link); }
-                                add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
-                                remove => { root.remove-from-playlist(row); }
-                                toggle-love => { root.toggle-love(row); }
-                            }
                         }
                     }
                     // A composer's compositions or a composition's

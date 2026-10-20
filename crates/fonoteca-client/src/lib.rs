@@ -464,6 +464,9 @@ mod tests {
     static LATER_DOWN: AtomicBool = AtomicBool::new(false);
     /// How many hearts were refused: every unstar, and the symphony's star.
     static REFUSED: AtomicUsize = AtomicUsize::new(0);
+    /// While set, the server takes only an artist's name for their top
+    /// songs, not their id, as Fonoteca does.
+    static NAMES_ONLY: AtomicBool = AtomicBool::new(false);
 
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
@@ -494,9 +497,14 @@ mod tests {
         };
         let id = param("id");
         if request.contains("getOpenSubsonicExtensions") {
-            ok(
-                r#""openSubsonicExtensions":[{"name":"songLyrics","versions":[1]},{"name":"fonotecaAlbumMotion","versions":[1]},{"name":"fonotecaCompositions","versions":[1]}]"#,
-            )
+            let by_id = if NAMES_ONLY.load(Relaxed) {
+                ""
+            } else {
+                r#",{"name":"topSongsByArtistId","versions":[1]}"#
+            };
+            ok(&format!(
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{{"name":"fonotecaAlbumMotion","versions":[1]}},{{"name":"fonotecaCompositions","versions":[1]}}{by_id}]"#
+            ))
         } else if !request.contains("u=joe&") {
             json(WRONG_PASSWORD)
         } else if request.contains("/rest/getAlbumList2") {
@@ -532,6 +540,24 @@ mod tests {
                     r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Not found"}}}"#,
                 )
             }
+        } else if request.contains("/rest/getAlbumInfo2") {
+            ok(
+                r#""albumInfo":{"notes":"Recorded at sea &amp; on land.<br/><a href=\"https://example.org\">Read more</a>"}"#,
+            )
+        } else if request.contains("/rest/getArtistInfo2") {
+            ok(
+                r#""artistInfo2":{"biography":"<p>Mara Lind sings.</p>","similarArtist":[{"id":"r2","name":"Ove Strand"},{"id":"","name":"Nobody Here"}]}"#,
+            )
+        } else if request.contains("/rest/getTopSongs")
+            && if NAMES_ONLY.load(Relaxed) {
+                id.is_none() && request.contains("artist=Mara")
+            } else {
+                id == Some("r1")
+            }
+        {
+            ok(
+                r#""topSongs":{"song":[{"id":"s2","isDir":false,"title":"Rope and Anchor","album":"Night Harbour","albumId":"a1","duration":218,"artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z"}]}"#,
+            )
         } else if request.contains("/rest/getAlbum") && id == Some("a2") {
             ok(&format!(r#""album":{{{CLASSICAL}}}"#))
         } else if request.contains("/rest/getAlbum") {
@@ -1062,6 +1088,28 @@ mod tests {
                 ui.get_page() == Page::Artist && ui.get_tiles().row_count() == 1
             })
             .await;
+            // What the server says about her, her top songs by her id, and
+            // the artists like her, a link where they have a page.
+            wait_for("her top songs", || ui.get_tracks().row_count() == 2).await;
+            let top = ui.get_tracks().row_data(0).unwrap();
+            assert_eq!(top.title, "Rope and Anchor");
+            assert_eq!(top.duration, "3:38");
+            assert!(ui.get_tracks().row_data(1).unwrap().loved);
+            wait_for("her biography", || ui.get_about() != "").await;
+            assert_eq!(ui.get_about(), "Mara Lind sings.");
+            assert_eq!(ui.get_about_short(), "Mara Lind sings.");
+            let similar: Vec<(String, String)> = ui
+                .get_similar()
+                .iter()
+                .map(|name| (name.label.into(), name.link.into()))
+                .collect();
+            assert_eq!(
+                similar,
+                [
+                    ("Ove Strand".to_owned(), "artist:r2".to_owned()),
+                    ("Nobody Here".to_owned(), String::new())
+                ]
+            );
             click(&ui, "Albums");
             assert_eq!(ui.get_tiles().row_count(), 100);
 
@@ -1268,6 +1316,10 @@ mod tests {
             click(&ui, "Night Harbour");
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Album);
+            // Its notes as plain text, the first paragraph until opened.
+            wait_for("the notes", || ui.get_about() != "").await;
+            assert_eq!(ui.get_about(), "Recorded at sea & on land.\nRead more");
+            assert_eq!(ui.get_about_short(), "Recorded at sea & on land.");
             assert_eq!(ui.get_section(), -1, "an album has no sidebar entry");
             assert_eq!(ui.get_header_title(), "Night Harbour");
             assert_eq!(ui.get_header_facts(), "2021 · Folk · 2 tracks, 8 minutes");
@@ -2305,6 +2357,27 @@ mod tests {
             assert_eq!(ui.get_username(), "");
             assert!(store::load().await.is_none());
             store::forget().await.expect("forgetting twice is fine");
+
+            // A server that takes only an artist's name for their top songs,
+            // as Fonoteca does, is asked by name.
+            NAMES_ONLY.store(true, Relaxed);
+            ui.set_address(server.as_str().into());
+            click(&ui, "Continue");
+            wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
+            ui.set_username("joe".into());
+            ui.set_password("pw".into());
+            click(&ui, "Sign in");
+            wait_for("the ListenBrainz step", || {
+                ui.get_step() == Step::Listenbrainz
+            })
+            .await;
+            click(&ui, "Skip");
+            ui.invoke_open("artist:r1".into());
+            wait_for("her top songs by name", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the account saved", || !ui.get_busy()).await;
+            click(&ui, "Account");
+            click(&ui, "Sign out");
+            wait_for("the server step again", || ui.get_step() == Step::Server).await;
 
             slint::quit_event_loop().unwrap();
         })
