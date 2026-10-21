@@ -18,8 +18,9 @@ use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
-    GenericMediaType, Genre, Indexes, ItemDate, ListOptions, MediaType, Playlist, PlaylistUpdate,
-    PlaylistWithSongs, RadioStation, Roles, ScanStatus, SearchOptions, Span, User, UserUpdate,
+    GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate, ListOptions, MediaType,
+    Playlist, PlaylistUpdate, PlaylistWithSongs, RadioStation, Roles, ScanStatus, SearchOptions,
+    Span, User, UserUpdate,
 };
 use radiobrowser::Station;
 use slint::{
@@ -194,6 +195,10 @@ pub struct Browser {
     /// the users on the users page.
     me: Option<User>,
     users: Vec<User>,
+    /// The stations saved on the server as last asked, and the home page's
+    /// shelf of them.
+    server_stations: Vec<InternetRadioStation>,
+    saved: Rc<VecModel<AlbumTile>>,
     /// The radio directory once asked, its countries' names by code, its
     /// languages, each shelf's stations as they came, the shelves shown, the
     /// shelves asked for, each genre's place on the page, the shelves' tiles
@@ -220,6 +225,9 @@ pub struct Browser {
     genre_offset: u32,
     genre_more: bool,
     genre_loading: bool,
+    /// The pictures of saved stations by stream address, where the
+    /// directory has them.
+    favicons: HashMap<String, Option<String>>,
 }
 
 pub type Shared = Rc<RefCell<Browser>>;
@@ -458,6 +466,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_toggle_language({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| toggle_language(&weak.unwrap(), &browser, index as usize)
+    });
+    ui.on_save_station({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |shelf, index| save_station(&weak.unwrap(), &browser, shelf, index as usize)
     });
     ui.on_create_station({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -954,6 +966,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
     if ask {
         load_library(ui, browser);
     }
+    saved_stations(ui, browser);
     artists(ui, browser);
     if more {
         composers(ui, browser);
@@ -3055,6 +3068,8 @@ fn change_stations<F: Future<Output = opensubsonic::Result<()>> + 'static>(
     change(ui, browser, done, task, |ui, browser| {
         if ui.get_page() == Page::Radio {
             stations(ui, browser);
+        } else {
+            saved_stations(ui, browser);
         }
     });
 }
@@ -3095,7 +3110,8 @@ fn stations(ui: &AppWindow, browser: &Shared) {
         ui,
         browser,
         |client| async move { client.get_internet_radio_stations().await },
-        |ui, _, list| {
+        |ui, browser, list| {
+            browser.borrow_mut().server_stations = list.internet_radio_station.clone();
             let rows: Vec<StationRow> = list
                 .internet_radio_station
                 .into_iter()
@@ -3648,6 +3664,125 @@ fn more_stations(ui: &AppWindow, browser: &Shared) {
             Err(e) => {
                 let problem = format!("The radio directory didn't answer: {e}");
                 ui.set_page_problem(problem.into());
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Saves a station of a shelf, or of the genre page when `shelf` is -1, on
+/// the server, unless the server has its stream already.
+fn save_station(ui: &AppWindow, browser: &Shared, shelf: i32, index: usize) {
+    let station = {
+        let b = browser.borrow();
+        let stations = match usize::try_from(shelf) {
+            Ok(shelf) => b.shelves.get(&shelf),
+            Err(_) => Some(&b.genre_stations),
+        };
+        stations.and_then(|stations| stations.get(index)).cloned()
+    };
+    let Some(station) = station else { return };
+    let name = station.name.trim().to_owned();
+    let stream = match station.url_resolved.as_str() {
+        "" => station.url.clone(),
+        resolved => resolved.to_owned(),
+    };
+    let saved = browser
+        .borrow()
+        .server_stations
+        .iter()
+        .any(|saved| saved.stream_url == stream || saved.stream_url == station.url);
+    if saved {
+        notify(ui, browser, format!("{name} is saved already."));
+        return;
+    }
+    let homepage = station.homepage.trim().to_owned();
+    let done = format!("Saved {name}.");
+    change_stations(ui, browser, done, |client| async move {
+        let station = self::station(&name, &stream, &homepage);
+        client.create_internet_radio_station(&station).await
+    });
+}
+
+/// The stations saved on the server, kept for Save to know them, and shown
+/// on the home page as a shelf, with the directory's pictures of them. A
+/// server without radio stations shows none.
+fn saved_stations(ui: &AppWindow, browser: &Shared) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let Ok(list) = client.get_internet_radio_stations().await else {
+            return;
+        };
+        let Some(ui) = weak.upgrade() else { return };
+        let (tiles, wanted) = {
+            let mut b = browser.borrow_mut();
+            b.server_stations = list.internet_radio_station;
+            b.saved = Rc::default();
+            let mut wanted = Vec::new();
+            for (row, station) in b.server_stations.iter().enumerate() {
+                let address = station.home_page_url.as_deref().map(bare_address);
+                let known = b
+                    .shelves
+                    .values()
+                    .flatten()
+                    .chain(&b.genre_stations)
+                    .find(|s| s.url_resolved == station.stream_url || s.url == station.stream_url)
+                    .map(|s| Some(s.favicon.clone()))
+                    .or_else(|| b.favicons.get(&station.stream_url).cloned());
+                let seen = known.clone().flatten().map(|favicon| (favicon, 0));
+                let tile = AlbumTile {
+                    title: station.name.as_str().into(),
+                    names: names(
+                        address
+                            .filter(|a| !a.is_empty())
+                            .map(|a| unlinked(a.to_owned()))
+                            .into_iter()
+                            .collect(),
+                    ),
+                    cover: seen
+                        .and_then(|key| b.pictures.get(&key).cloned())
+                        .unwrap_or_default(),
+                    ..AlbumTile::default()
+                };
+                b.saved.push(tile);
+                wanted.push((row, station.name.clone(), station.stream_url.clone(), known));
+            }
+            ui.set_saved_stations(ModelRc::from(b.saved.clone()));
+            (b.saved.clone(), wanted)
+        };
+        let Some(directory) = directory(&browser).filter(|_| !wanted.is_empty()) else {
+            return;
+        };
+        for (row, name, stream, known) in wanted {
+            // The directory's station of the same name that streams from
+            // the same address; a lookup that failed is tried again later.
+            let favicon = match known {
+                Some(favicon) => favicon,
+                None => match directory.named(&name).await {
+                    Ok(found) => {
+                        let same = (found.into_iter())
+                            .find(|s| s.url == stream || s.url_resolved == stream);
+                        let favicon = same.map(|s| s.favicon);
+                        browser
+                            .borrow_mut()
+                            .favicons
+                            .insert(stream, favicon.clone());
+                        favicon
+                    }
+                    Err(_) => None,
+                },
+            };
+            let Some(favicon) = favicon.filter(|f| !f.is_empty()) else {
+                continue;
+            };
+            if let (Some(image), Some(mut tile)) =
+                (logo(&browser, favicon).await, tiles.row_data(row))
+            {
+                tile.cover = image;
+                tiles.set_row_data(row, tile);
             }
         }
     })

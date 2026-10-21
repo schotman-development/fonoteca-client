@@ -594,8 +594,9 @@ mod tests {
 
     /// The radio directory: two stations with the most votes, 65 of jazz
     /// with the server's Jazz first, one of rock, none of other genres, one
-    /// of the Netherlands, one of Dutch jazz, the countries' names, three
-    /// languages, one without a code, and a picture of each station.
+    /// of the Netherlands, one of Dutch jazz, two named News, the countries'
+    /// names, three languages, one without a code, and a picture of each
+    /// station.
     fn radio_directory(request: &str) -> Vec<u8> {
         let target = request.split_whitespace().nth(1).unwrap_or_default();
         let host = request
@@ -644,6 +645,15 @@ mod tests {
             && target.contains("language=dutch&")
         {
             list(vec![station(200, "Dutch Jazz", "NL")])
+        } else if target.starts_with("/json/stations/search?") && target.contains("name=News&") {
+            // Another News first, whose picture doesn't come, then the
+            // server's.
+            let other = station(5, "News", "GB").replace("/logo5.png", "/missing.png");
+            let same = station(6, "News", "NL").replace(
+                "https://s6.example.org/listen\"",
+                "http://news.example.org/live.mp3\"",
+            );
+            list(vec![other, same])
         } else if target.starts_with("/json/languages?") {
             json(
                 r#"[{"name":"english","iso_639":"en","stationcount":9},{"name":"dutch colombo","iso_639":null,"stationcount":1},{"name":"dutch","iso_639":"nl","stationcount":5}]"#,
@@ -1560,6 +1570,16 @@ mod tests {
             wait_for("a station's picture", || cover(shelf(0).tiles, 0).width > 0).await;
             assert_eq!(cover(shelf(0).tiles, 1).width, 0);
             assert_eq!(menus("ListRow"), 2);
+            assert!(menus("CoverTile") > 0);
+            // An admin saves a station on the server, unless it has it.
+            ui.invoke_save_station(0, 0);
+            wait_for("the station saved", || ui.get_notice() == "Saved Wave.").await;
+            assert_eq!(
+                radio_writes().last().unwrap(),
+                "createInternetRadioStation name=Wave&streamUrl=https%3A%2F%2Fs1.example.org%2Flisten&homepageUrl=https%3A%2F%2Fs1.example.org%2F"
+            );
+            ui.invoke_save_station(4, 0);
+            assert_eq!(ui.get_notice(), "Jazz is saved already.");
             // The languages picked go first in each genre, the order kept on
             // the device.
             let choices = || {
@@ -1590,8 +1610,24 @@ mod tests {
             ui.invoke_show_more();
             wait_for("the rest of the jazz", || ui.get_tiles().row_count() == 66).await;
             assert!(!ui.get_more_tiles());
+            ui.invoke_save_station(-1, 65);
+            wait_for("a jazz station saved", || ui.get_notice() == "Saved Jazz 64.").await;
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Radio);
+            // The home page has the saved stations, with the directory's
+            // pictures where it has them.
+            click(&ui, "Home");
+            wait_for("the saved stations", || ui.get_saved_stations().row_count() == 2).await;
+            let saved = |row| ui.get_saved_stations().row_data(row).unwrap();
+            assert_eq!(saved(0).title, "Jazz");
+            assert_eq!(saved(0).names.row_data(0).unwrap().label, "radio.example.org");
+            wait_for("Jazz's picture", || saved(0).cover.size().width > 0).await;
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Radio);
+            // News is found by name and told from another News by its
+            // stream. Waited for off the home page, which would otherwise
+            // have the artists loaded before the artists page below fails.
+            wait_for("News's picture", || saved(1).cover.size().width > 0).await;
             ui.set_notice("".into());
             // Anyone may see them, but only admins change them.
             ADMIN.store(false, Relaxed);

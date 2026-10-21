@@ -416,8 +416,9 @@ export component AppWindow inherits Window {
     in property <[UserRow]> user-rows;
     in property <[StationRow]> station-rows;
     // The radio directory's shelves, each a genre's stations with the most
-    // votes.
+    // votes, and the stations saved on the server, for the home page.
     in property <[StationShelf]> station-shelves;
+    in property <[AlbumTile]> saved-stations;
     // The radio directory's languages, ticked where the genres show their
     // stations first.
     in property <[ColumnChoice]> language-choices;
@@ -506,8 +507,10 @@ export component AppWindow inherits Window {
     callback create-station(name: string, stream: string, homepage: string);
     callback update-station(id: string, name: string, stream: string, homepage: string);
     callback delete-station(id: string, name: string);
-    // A shelf's tiles on screen, whose pictures to fetch.
+    // A shelf's tiles on screen, whose pictures to fetch; a station of a
+    // shelf, or of a genre's page when `shelf` is -1, to save on the server.
     callback station-shelf-in-view(shelf: int, first: int, last: int);
+    callback save-station(shelf: int, index: int);
     callback toggle-language(index: int);
 
     property <Asking> asking;
@@ -824,6 +827,12 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
                     }
+                    if root.page == Page.home && root.saved-stations.length > 0: CoverShelf {
+                        title: "Saved stations";
+                        tiles: root.saved-stations;
+                        more: true;
+                        see-all => { root.open("radio"); }
+                    }
                     // The filter and sort controls go beside the heading, or
                     // under it in two rows when the page is too narrow.
                     if root.page == Page.albums: VerticalLayout {
@@ -1032,6 +1041,8 @@ export component AppWindow inherits Window {
                         tiles: root.tiles;
                         view-top: -scroll.content-y - self.y;
                         view-height: scroll.visible-height;
+                        entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
+                        activated(index) => { root.save-station(-1, index); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                     }
                     if root.table: VerticalLayout {
@@ -1278,7 +1289,9 @@ export component AppWindow inherits Window {
                             title: shelf.title;
                             tiles: shelf.tiles;
                             more: true;
+                            entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
                             see-all => { root.open(shelf.link); }
+                            activated(index) => { root.save-station(shelf.shelf, index); }
                             in-view(first, last) => { root.station-shelf-in-view(shelf.shelf, first, last); }
                         }
                     }
