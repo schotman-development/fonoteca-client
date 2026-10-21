@@ -1,6 +1,7 @@
 //! Client for the [OpenSubsonic API](https://opensubsonic.netlify.app): the
 //! calls for browsing a music library, searching it, starring and rating,
-//! managing playlists and users. Responses are requested as JSON.
+//! managing playlists, internet radio stations and users. Responses are
+//! requested as JSON.
 //!
 //! Call [`Client::get_open_subsonic_extensions`] before anything else. It
 //! never sends credentials, it shows whether `apiKeyAuthentication` is offered
@@ -875,5 +876,62 @@ mod tests {
         );
         assert!(log[5].contains("password=other"), "{}", log[5]);
         assert!(log[6].contains("deleteUser"), "{}", log[6]);
+    }
+
+    #[tokio::test]
+    async fn radio_stations_in_navidromes_shape() {
+        let (server, log) = serve(|request| {
+            json(
+                if request.contains("getInternetRadioStations") && request.contains("first") {
+                    r#"{"subsonic-response":{"status":"ok","version":"1.16.1","internetRadioStations":{}}}"#
+                } else if request.contains("getInternetRadioStations") {
+                    r#"{"subsonic-response":{"status":"ok","version":"1.16.1","internetRadioStations":{"internetRadioStation":[{"id":"1QTg","name":"Probe","streamUrl":"http://example.org/s.mp3","coverArt":""}]}}}"#
+                } else {
+                    r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#
+                },
+            )
+        });
+        let client = Client::new(&server, Auth::ApiKey("first".into())).unwrap();
+        assert!(
+            client
+                .get_internet_radio_stations()
+                .await
+                .unwrap()
+                .internet_radio_station
+                .is_empty()
+        );
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let station = &client
+            .get_internet_radio_stations()
+            .await
+            .unwrap()
+            .internet_radio_station[0];
+        assert_eq!(
+            (station.name.as_str(), station.home_page_url.as_deref()),
+            ("Probe", None)
+        );
+        let probe = RadioStation {
+            name: "Probe",
+            stream_url: "http://example.org/s.mp3",
+            homepage_url: Some("https://example.org/"),
+        };
+        client.create_internet_radio_station(&probe).await.unwrap();
+        client
+            .update_internet_radio_station("1QTg", &probe)
+            .await
+            .unwrap();
+        client.delete_internet_radio_station("1QTg").await.unwrap();
+        let log = log.lock().unwrap();
+        assert!(
+            log[2].contains("name=Probe&streamUrl=http%3A%2F%2Fexample.org%2Fs.mp3&homepageUrl=https%3A%2F%2Fexample.org%2F"),
+            "{}",
+            log[2]
+        );
+        assert!(log[3].contains("id=1QTg&name=Probe"), "{}", log[3]);
+        assert!(
+            log[4].contains("deleteInternetRadioStation?") && log[4].contains("id=1QTg"),
+            "{}",
+            log[4]
+        );
     }
 }

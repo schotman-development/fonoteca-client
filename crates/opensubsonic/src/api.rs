@@ -177,6 +177,14 @@ pub struct UserUpdate<'a> {
     pub max_bit_rate: Option<u32>,
 }
 
+/// An internet radio station to add or change.
+#[derive(Debug, Clone)]
+pub struct RadioStation<'a> {
+    pub name: &'a str,
+    pub stream_url: &'a str,
+    pub homepage_url: Option<&'a str>,
+}
+
 impl Client {
     // System
 
@@ -795,6 +803,51 @@ impl Client {
         self.call("startScan", Params::new(), "scanStatus").await
     }
 
+    // Internet radio
+
+    /// All internet radio stations.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/getinternetradiostations/>
+    pub async fn get_internet_radio_stations(&self) -> Result<InternetRadioStations> {
+        self.call(
+            "getInternetRadioStations",
+            Params::new(),
+            "internetRadioStations",
+        )
+        .await
+    }
+
+    /// Adds an internet radio station. Admins only.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/createinternetradiostation/>
+    pub async fn create_internet_radio_station(&self, station: &RadioStation<'_>) -> Result<()> {
+        self.call_unit("createInternetRadioStation", station.params(Params::new()))
+            .await
+    }
+
+    /// Changes an internet radio station. Admins only.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/updateinternetradiostation/>
+    pub async fn update_internet_radio_station(
+        &self,
+        id: &str,
+        station: &RadioStation<'_>,
+    ) -> Result<()> {
+        self.call_unit(
+            "updateInternetRadioStation",
+            station.params(Params::new().req("id", id)),
+        )
+        .await
+    }
+
+    /// Deletes an internet radio station. Admins only.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/deleteinternetradiostation/>
+    pub async fn delete_internet_radio_station(&self, id: &str) -> Result<()> {
+        self.call_unit("deleteInternetRadioStation", Params::new().req("id", id))
+            .await
+    }
+
     // User management
 
     /// A user with its roles and folders. Only admins may ask for anyone but
@@ -870,6 +923,15 @@ impl Client {
             .req("username", username)
             .req("password", password);
         self.call_unit("changePassword", params).await
+    }
+}
+
+impl RadioStation<'_> {
+    fn params(&self, params: Params) -> Params {
+        params
+            .req("name", self.name)
+            .req("streamUrl", self.stream_url)
+            .opt("homepageUrl", self.homepage_url)
     }
 }
 

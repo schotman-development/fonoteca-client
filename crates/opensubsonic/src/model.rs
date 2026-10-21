@@ -1171,6 +1171,35 @@ pub struct TokenInfo {
     pub username: String,
 }
 
+/// An internet radio station.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/internetradiostation/>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InternetRadioStation {
+    /// The Id
+    pub id: String,
+    /// The name
+    pub name: String,
+    /// The radio url
+    pub stream_url: String,
+    /// The home page URL for the station.
+    pub home_page_url: Option<String>,
+    /// [OS] The cover art id.
+    pub cover_art: Option<String>,
+}
+
+/// Internet radio stations.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/internetradiostations/>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InternetRadioStations {
+    /// A list of internetRadioStation
+    #[serde(default)]
+    pub internet_radio_station: Vec<InternetRadioStation>,
+}
+
 /// A user, with what it may do.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/user/>

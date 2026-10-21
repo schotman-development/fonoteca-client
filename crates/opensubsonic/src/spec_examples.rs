@@ -70,8 +70,21 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
             check::<Vec<SonicMatch>>(response, name, "sonicMatch")
         }
         "getScanStatus" | "startScan" => check::<ScanStatus>(response, name, "scanStatus"),
-        "updatePlaylist" | "deletePlaylist" | "star" | "unstar" | "setRating" | "createUser"
-        | "updateUser" | "deleteUser" | "changePassword" => Ok(()),
+        "getInternetRadioStations" => {
+            check::<InternetRadioStations>(response, name, "internetRadioStations")
+        }
+        "updatePlaylist"
+        | "deletePlaylist"
+        | "star"
+        | "unstar"
+        | "setRating"
+        | "createInternetRadioStation"
+        | "updateInternetRadioStation"
+        | "deleteInternetRadioStation"
+        | "createUser"
+        | "updateUser"
+        | "deleteUser"
+        | "changePassword" => Ok(()),
         _ => panic!("no check for endpoint {name}"),
     }
 }
@@ -109,6 +122,8 @@ fn response(name: &str, json: &[u8]) -> Result<()> {
         "Genres" => parse::<Genres>(json),
         "Index" => parse::<Index>(json),
         "IndexID3" => parse::<IndexID3>(json),
+        "InternetRadioStation" => parse::<InternetRadioStation>(json),
+        "InternetRadioStations" => parse::<InternetRadioStations>(json),
         "Indexes" => parse::<Indexes>(json),
         "ItemDate" => parse::<ItemDate>(json),
         "ItemGenre" => parse::<ItemGenre>(json),
