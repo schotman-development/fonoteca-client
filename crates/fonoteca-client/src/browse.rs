@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Cursor;
 use std::ops::Range;
 use std::rc::Rc;
@@ -18,21 +18,62 @@ use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
-    GenericMediaType, Indexes, ItemDate, ListOptions, MediaType, Playlist, PlaylistUpdate,
+    GenericMediaType, Genre, Indexes, ItemDate, ListOptions, MediaType, Playlist, PlaylistUpdate,
     PlaylistWithSongs, RadioStation, Roles, ScanStatus, SearchOptions, Span, User, UserUpdate,
 };
+use radiobrowser::Station;
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
     VecModel,
 };
 
 use crate::{
-    AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, StationRow, Track,
-    TrackColumn, TrackLine, UserRow, prefs,
+    AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, StationRow, StationShelf,
+    Track, TrackColumn, TrackLine, UserRow, prefs, zone,
 };
 
 /// The newest albums on the home page.
 const RECENT: usize = 24;
+/// The radio directory's shelves on the radio page, by title and genre tag,
+/// music only; the first has the stations with the most votes of all.
+const GENRES: [(&str, &str); 27] = [
+    ("Top worldwide", ""),
+    ("Pop", "pop"),
+    ("Rock", "rock"),
+    ("Classical", "classical"),
+    ("Jazz", "jazz"),
+    ("Dance", "dance"),
+    ("Electronic", "electronic"),
+    ("Hip hop", "hip hop"),
+    ("R&B", "rnb"),
+    ("Soul", "soul"),
+    ("Oldies", "oldies"),
+    ("80s", "80s"),
+    ("90s", "90s"),
+    ("Classic rock", "classic rock"),
+    ("Alternative", "alternative"),
+    ("Indie", "indie"),
+    ("Metal", "metal"),
+    ("Country", "country"),
+    ("Folk", "folk"),
+    ("Blues", "blues"),
+    ("Reggae", "reggae"),
+    ("Latin", "latin"),
+    ("World", "world music"),
+    ("Ambient", "ambient"),
+    ("Chillout", "chillout"),
+    ("Lounge", "lounge"),
+    ("Christian", "christian"),
+];
+/// The shelf of the country the device is in, after the genres'.
+const LOCAL: usize = GENRES.len();
+/// How many stations a shelf shows, and a genre's page asks for at a time;
+/// how many of each language its first page has.
+const SHELF_STATIONS: u32 = 12;
+const GENRE_STATIONS: u32 = 60;
+const GENRE_IN_LANGUAGE: u32 = 100;
+/// How the app names itself to the radio directory.
+const USER_AGENT: &str = concat!("fonoteca-client/", env!("CARGO_PKG_VERSION"));
 /// Tiles added to the albums or artists page at a time.
 const TILES_AT_ONCE: usize = 100;
 /// Albums asked for at a time while the library loads, and at most how many,
@@ -47,6 +88,9 @@ const SONGS_AT_MOST: usize = 200_000;
 const TYPING_PAUSE: Duration = Duration::from_millis(200);
 /// How long a notice, such as songs added to a playlist, stays up.
 const NOTICE_TIME: Duration = Duration::from_secs(3);
+/// How long the radio page waits after a language is ticked before it asks
+/// for the shelves again, so ticking several asks once.
+const LANGUAGE_WAIT: Duration = Duration::from_millis(600);
 /// How often the account page asks again while the server scans.
 const SCAN_POLL: Duration = Duration::from_secs(2);
 /// Tile covers fetched at the same time.
@@ -150,6 +194,32 @@ pub struct Browser {
     /// the users on the users page.
     me: Option<User>,
     users: Vec<User>,
+    /// The radio directory once asked, its countries' names by code, its
+    /// languages, each shelf's stations as they came, the shelves shown, the
+    /// shelves asked for, each genre's place on the page, the shelves' tiles
+    /// whose pictures were asked for, and how often the languages changed.
+    directory: Option<Rc<radiobrowser::Client>>,
+    countries: HashMap<String, String>,
+    language_names: Vec<String>,
+    shelves: HashMap<usize, Vec<Station>>,
+    shelf_model: Rc<VecModel<StationShelf>>,
+    shelves_asked: HashSet<usize>,
+    shelf_ranks: Vec<usize>,
+    logos_asked: HashSet<(usize, usize)>,
+    shelf_round: u32,
+    language_wait: Timer,
+    /// The device's country, and the languages whose stations the genres
+    /// show first, in the order picked.
+    local: Option<String>,
+    languages: Vec<String>,
+    /// The genre page's id, its stations so far, how far into the worldwide
+    /// ones it is, whether the directory has more, and whether more are on
+    /// their way.
+    genre: String,
+    genre_stations: Vec<Station>,
+    genre_offset: u32,
+    genre_more: bool,
+    genre_loading: bool,
 }
 
 pub type Shared = Rc<RefCell<Browser>>;
@@ -377,6 +447,17 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
                 client.change_password(&name, &password).await
             });
         }
+    });
+    ui.on_station_shelf_in_view({
+        let browser = browser.clone();
+        move |shelf, first, last| {
+            let rows = first.max(0) as usize..(last + 1).max(0) as usize;
+            shelf_logos(&browser, shelf as usize, rows);
+        }
+    });
+    ui.on_toggle_language({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |index| toggle_language(&weak.unwrap(), &browser, index as usize)
     });
     ui.on_create_station({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -709,6 +790,20 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Radio);
             ui.set_station_rows(ModelRc::default());
             stations(ui, browser);
+            directory_shelves(ui, browser);
+        }
+        "stations" => {
+            ui.set_page(Page::Stations);
+            {
+                let mut b = browser.borrow_mut();
+                ui.set_header_title(page_title(&b, &id).into());
+                b.genre = id;
+                b.genre_stations.clear();
+                b.genre_offset = 0;
+                b.genre_more = true;
+                b.genre_loading = false;
+            }
+            more_stations(ui, browser);
         }
         _ => {
             ui.set_page(Page::Albums);
@@ -1849,6 +1944,7 @@ fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
 fn load_prefs(ui: &AppWindow, browser: &Shared) {
     let prefs = prefs::load();
     let mut b = browser.borrow_mut();
+    b.languages = prefs.radio_languages.clone();
     b.track_table = saved_table(
         COLUMNS,
         &prefs.track_columns,
@@ -1914,6 +2010,7 @@ fn save_prefs(ui: &AppWindow, browser: &Shared) {
         folder_columns: Some(folder_columns),
         folder_sort,
         folder_descending: b.entry_table.descending,
+        radio_languages: b.languages.clone(),
     });
 }
 
@@ -1979,6 +2076,13 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
     if ui.get_page() == Page::Home {
         return home(ui, browser);
+    }
+    if ui.get_page() == Page::Stations {
+        return more_stations(ui, browser);
+    }
+    if ui.get_page() == Page::Radio {
+        stations(ui, browser);
+        return directory_shelves(ui, browser);
     }
     if ui.get_page() == Page::Tracks {
         let (ask, shown) = {
@@ -3025,6 +3129,531 @@ fn station<'a>(name: &'a str, stream: &'a str, homepage: &'a str) -> RadioStatio
     }
 }
 
+/// The radio directory's client, made the first time it is needed.
+fn directory(browser: &Shared) -> Option<Rc<radiobrowser::Client>> {
+    let mut b = browser.borrow_mut();
+    if b.directory.is_none() {
+        let client = radiobrowser::Client::with_root(&directory_root(), USER_AGENT);
+        b.directory = client.ok().map(Rc::new);
+    }
+    b.directory.clone()
+}
+
+#[cfg(not(test))]
+fn directory_root() -> String {
+    radiobrowser::API_ROOT.into()
+}
+
+/// Where the tests' radio directory answers.
+#[cfg(test)]
+pub static DIRECTORY_ROOT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[cfg(test)]
+fn directory_root() -> String {
+    DIRECTORY_ROOT.lock().unwrap().clone()
+}
+
+/// The stations of a shelf's or page's id, most votes first, `limit` from
+/// `offset`: "" for all of them, "@" and a country's code for its country's,
+/// else a genre's tag.
+async fn worldwide(
+    directory: &radiobrowser::Client,
+    id: &str,
+    offset: u32,
+    limit: u32,
+) -> radiobrowser::Result<Vec<Station>> {
+    match id.strip_prefix('@') {
+        _ if id.is_empty() => directory.top_voted(offset, limit).await,
+        Some(code) => directory.by_country(code, offset, limit).await,
+        None => directory.by_tag(id, offset, limit).await,
+    }
+}
+
+/// A genre's stations in each of `languages`, `limit` of each; none for the
+/// other ids.
+async fn in_languages(
+    directory: &radiobrowser::Client,
+    id: &str,
+    languages: &[String],
+    limit: u32,
+) -> radiobrowser::Result<Vec<Vec<Station>>> {
+    let mut lists = Vec::new();
+    if !id.is_empty() && !id.starts_with('@') {
+        for language in languages {
+            lists.push(directory.by_tag_in(id, language, 0, limit).await?);
+        }
+    }
+    Ok(lists)
+}
+
+/// The stations of `lists` taken in turn, then `rest`, each once: a station
+/// counts as `seen` by its id, and by its name in its country, since the
+/// directory has some twice.
+fn merge(lists: &[Vec<Station>], rest: &[Station], seen: &mut HashSet<String>) -> Vec<Station> {
+    let longest = lists.iter().map(Vec::len).max().unwrap_or(0);
+    let turns = (0..longest).flat_map(|i| lists.iter().filter_map(move |list| list.get(i)));
+    let mut merged = Vec::new();
+    for station in turns.chain(rest) {
+        let name = format!(
+            "{}\n{}",
+            station.name.trim().to_lowercase(),
+            station.countrycode
+        );
+        if seen.insert(station.stationuuid.clone()) & seen.insert(name) {
+            merged.push(station.clone());
+        }
+    }
+    merged
+}
+
+/// A shelf's stations: a genre's in `languages` first, then worldwide ones,
+/// a shelf's worth.
+async fn shelf_stations(
+    directory: &radiobrowser::Client,
+    id: &str,
+    languages: &[String],
+) -> radiobrowser::Result<Vec<Station>> {
+    let lists = in_languages(directory, id, languages, SHELF_STATIONS).await?;
+    let mut seen = HashSet::new();
+    let mut stations = merge(&lists, &[], &mut seen);
+    if stations.len() < SHELF_STATIONS as usize {
+        let rest = worldwide(directory, id, 0, SHELF_STATIONS).await?;
+        stations.extend(merge(&[], &rest, &mut seen));
+    }
+    stations.truncate(SHELF_STATIONS as usize);
+    Ok(stations)
+}
+
+/// Learns the countries' names and the languages, once each.
+async fn learn(browser: &Shared, directory: &radiobrowser::Client) {
+    if browser.borrow().countries.is_empty()
+        && let Ok(countries) = directory.countries().await
+    {
+        browser.borrow_mut().countries = countries
+            .into_iter()
+            .map(|country| (country.iso_3166_1, country.name))
+            .collect();
+    }
+    if browser.borrow().language_names.is_empty()
+        && let Ok(languages) = directory.languages().await
+    {
+        let mut names: Vec<String> = languages
+            .into_iter()
+            .filter(|language| language.iso_639.is_some())
+            .map(|language| language.name)
+            .collect();
+        names.sort();
+        names.dedup();
+        browser.borrow_mut().language_names = names;
+    }
+}
+
+/// A country's name as the directory has it, without a leading "The".
+fn country_name<'a>(b: &'a Browser, code: &'a str) -> &'a str {
+    let name = b.countries.get(code).map_or(code, String::as_str);
+    name.strip_prefix("The ").unwrap_or(name)
+}
+
+/// The title of a shelf's or page's id.
+fn page_title(b: &Browser, id: &str) -> String {
+    match (
+        id.strip_prefix('@'),
+        GENRES.iter().find(|(_, tag)| *tag == id),
+    ) {
+        (Some(code), _) => {
+            let the = b
+                .countries
+                .get(code)
+                .is_some_and(|name| name.starts_with("The "));
+            let the = if the { "the " } else { "" };
+            format!("Top in {the}{}", country_name(b, code))
+        }
+        (None, Some((title, _))) => (*title).to_owned(),
+        (None, None) => id.to_owned(),
+    }
+}
+
+/// A shelf's id: a genre's, or the local shelf's country.
+fn shelf_id(b: &Browser, shelf: usize) -> Option<String> {
+    match GENRES.get(shelf) {
+        Some((_, tag)) => Some((*tag).to_owned()),
+        None => Some(format!("@{}", b.local.as_ref()?)),
+    }
+}
+
+/// A shelf's place on the radio page: Top worldwide, the local shelf, then
+/// the genres in the order of `genre_ranks`.
+fn place(b: &Browser, shelf: usize) -> usize {
+    match (shelf, b.shelf_ranks.get(shelf)) {
+        (LOCAL, _) => 1,
+        (_, Some(0)) => 0,
+        (_, Some(rank)) => rank + 1,
+        (shelf, None) => shelf + 1,
+    }
+}
+
+/// The languages the radio page offers, with the ones picked ticked.
+fn show_languages(ui: &AppWindow, b: &Browser) {
+    let capital = |word: &str| {
+        let mut letters = word.chars();
+        letters.next().map_or_else(String::new, |first| {
+            first.to_uppercase().chain(letters).collect()
+        })
+    };
+    let choices: Vec<ColumnChoice> = (b.language_names.iter())
+        .map(|name| ColumnChoice {
+            title: name
+                .split(' ')
+                .map(capital)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .into(),
+            shown: b.languages.contains(name),
+        })
+        .collect();
+    ui.set_language_choices(ModelRc::new(VecModel::from(choices)));
+}
+
+/// A directory station's tile: its name and country, and its picture when
+/// it has been seen this session.
+fn station_tile(b: &Browser, station: &Station) -> AlbumTile {
+    let country = country_name(b, &station.countrycode);
+    AlbumTile {
+        title: station.name.trim().into(),
+        names: names(
+            (!country.is_empty())
+                .then(|| unlinked(country.to_owned()))
+                .into_iter()
+                .collect(),
+        ),
+        cover: b
+            .pictures
+            .get(&(station.favicon.clone(), 0))
+            .cloned()
+            .unwrap_or_default(),
+        ..AlbumTile::default()
+    }
+}
+
+/// The genres' places on the radio page: Top worldwide first, then the
+/// genres with the most albums in the library, the rest as they are. A
+/// library genre counts when its name, or a part of it split by "/", ";" or
+/// ",", is a shelf's title or tag, whatever its case and punctuation.
+fn genre_ranks(library: &[Genre]) -> Vec<usize> {
+    let key = |name: &str| -> String {
+        (name.chars())
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let mut albums: HashMap<String, i64> = HashMap::new();
+    for genre in library {
+        for part in genre.value.split(['/', ';', ',']) {
+            *albums.entry(key(part)).or_default() += genre.album_count;
+        }
+    }
+    let count = |(title, tag): (&str, &str)| match tag {
+        "" => i64::MAX,
+        tag => [title, tag]
+            .map(|name| albums.get(&key(name)).copied().unwrap_or(0))
+            .into_iter()
+            .max()
+            .unwrap_or(0),
+    };
+    let mut order: Vec<usize> = (0..GENRES.len()).collect();
+    order.sort_by_key(|&genre| std::cmp::Reverse(count(GENRES[genre])));
+    let mut ranks = vec![0; GENRES.len()];
+    for (rank, genre) in order.into_iter().enumerate() {
+        ranks[genre] = rank;
+    }
+    ranks
+}
+
+/// The radio page's shelves of the directory, each shown once it comes, in
+/// the order of `place`; asked for on the first visit, and again for those
+/// that didn't come. A shelf without stations isn't shown.
+fn directory_shelves(ui: &AppWindow, browser: &Shared) {
+    {
+        let mut b = browser.borrow_mut();
+        ui.set_station_shelves(ModelRc::from(b.shelf_model.clone()));
+        show_languages(ui, &b);
+        if b.local.is_none() {
+            b.local = zone::country().map(str::to_owned);
+        }
+    }
+    let Some(directory) = directory(browser) else {
+        return;
+    };
+    let (missing, client) = {
+        let mut b = browser.borrow_mut();
+        let local = b.local.is_some();
+        let missing: Vec<usize> = (0..=LOCAL)
+            .filter(|shelf| *shelf < LOCAL || local)
+            .filter(|shelf| b.shelves_asked.insert(*shelf))
+            .collect();
+        (missing, b.client.clone())
+    };
+    if missing.is_empty() {
+        return;
+    }
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        if browser.borrow().shelf_ranks.is_empty() {
+            let library = match client {
+                Some(client) => client.get_genres().await.map(|g| g.genre),
+                None => Ok(Vec::new()),
+            };
+            browser.borrow_mut().shelf_ranks = genre_ranks(&library.unwrap_or_default());
+        }
+        learn(&browser, &directory).await;
+        let Some(ui) = weak.upgrade() else { return };
+        show_languages(&ui, &browser.borrow());
+        for shelf in missing {
+            fill_shelf(&ui, &browser, &directory, shelf);
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Asks the directory for a shelf's stations and shows them, unless the
+/// languages changed meanwhile.
+fn fill_shelf(
+    ui: &AppWindow,
+    browser: &Shared,
+    directory: &Rc<radiobrowser::Client>,
+    shelf: usize,
+) {
+    let (id, languages, round) = {
+        let b = browser.borrow();
+        let Some(id) = shelf_id(&b, shelf) else {
+            return;
+        };
+        (id, b.languages.clone(), b.shelf_round)
+    };
+    let (weak, browser, directory) = (ui.as_weak(), browser.clone(), directory.clone());
+    slint::spawn_local(async move {
+        let found = shelf_stations(&directory, &id, &languages).await;
+        let Some(ui) = weak.upgrade() else { return };
+        if browser.borrow().shelf_round != round {
+            return;
+        }
+        match found {
+            Ok(stations) => show_shelf(&browser, shelf, &id, stations),
+            Err(e) => {
+                browser.borrow_mut().shelves_asked.remove(&shelf);
+                if ui.get_page() == Page::Radio && ui.get_page_problem().is_empty() {
+                    let problem = format!("The radio directory didn't answer: {e}");
+                    ui.set_page_problem(problem.into());
+                }
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Shows a shelf's stations in its place, or in place of what it showed,
+/// with the pictures it showed asked for again; one with no stations goes.
+fn show_shelf(browser: &Shared, shelf: usize, id: &str, stations: Vec<Station>) {
+    let mut b = browser.borrow_mut();
+    let tiles: Vec<AlbumTile> = stations.iter().map(|s| station_tile(&b, s)).collect();
+    let model = b.shelf_model.clone();
+    let shown = model.iter().position(|row| row.shelf as usize == shelf);
+    let at = (model.iter())
+        .filter(|row| place(&b, row.shelf as usize) < place(&b, shelf))
+        .count();
+    let seen = (b.logos_asked.iter())
+        .filter(|(asked, _)| *asked == shelf)
+        .map(|(_, row)| row + 1)
+        .max()
+        .unwrap_or(0);
+    b.logos_asked.retain(|(asked, _)| *asked != shelf);
+    let row = StationShelf {
+        title: page_title(&b, id).into(),
+        link: format!("stations:{id}").into(),
+        shelf: shelf as i32,
+        tiles: ModelRc::new(VecModel::from(tiles)),
+    };
+    let empty = stations.is_empty();
+    b.shelves.insert(shelf, stations);
+    drop(b);
+    match (shown, empty) {
+        (Some(shown), true) => {
+            model.remove(shown);
+        }
+        (Some(shown), false) => model.set_row_data(shown, row),
+        (None, false) => model.insert(at, row),
+        (None, true) => {}
+    }
+    shelf_logos(browser, shelf, 0..seen);
+}
+
+/// Puts a language's stations first on the genre shelves, or no longer, and
+/// asks for the shelves again once the ticking pauses: all of them, since
+/// the change drops those still on their way.
+fn toggle_language(ui: &AppWindow, browser: &Shared, index: usize) {
+    {
+        let mut b = browser.borrow_mut();
+        let Some(name) = b.language_names.get(index).cloned() else {
+            return;
+        };
+        match b.languages.iter().position(|picked| *picked == name) {
+            Some(picked) => {
+                b.languages.remove(picked);
+            }
+            None => b.languages.push(name),
+        }
+        b.shelf_round += 1;
+        show_languages(ui, &b);
+    }
+    save_prefs(ui, browser);
+    let (weak, shared) = (ui.as_weak(), Rc::downgrade(browser));
+    let refill = move || {
+        let (Some(ui), Some(browser)) = (weak.upgrade(), shared.upgrade()) else {
+            return;
+        };
+        let Some(directory) = directory(&browser) else {
+            return;
+        };
+        for shelf in 0..=LOCAL {
+            browser.borrow_mut().shelves_asked.insert(shelf);
+            fill_shelf(&ui, &browser, &directory, shelf);
+        }
+    };
+    let b = browser.borrow();
+    b.language_wait
+        .start(TimerMode::SingleShot, LANGUAGE_WAIT, refill);
+}
+
+/// Fetches the pictures of a shelf's tiles in `rows`, the ones on screen,
+/// that haven't been asked for.
+fn shelf_logos(browser: &Shared, shelf: usize, rows: Range<usize>) {
+    let (wanted, tiles) = {
+        let mut b = browser.borrow_mut();
+        let shown = b.shelf_model.iter().find(|row| row.shelf as usize == shelf);
+        let (Some(row), Some(stations)) = (shown, b.shelves.get(&shelf)) else {
+            return;
+        };
+        let tiles = row.tiles;
+        let wanted: Vec<(usize, String)> = rows
+            .filter_map(|row| Some((row, stations.get(row)?.favicon.clone())))
+            .filter(|(_, favicon)| !favicon.is_empty())
+            .collect();
+        let wanted: Vec<_> = wanted
+            .into_iter()
+            .filter(|(row, _)| b.logos_asked.insert((shelf, *row)))
+            .collect();
+        (wanted, tiles)
+    };
+    if wanted.is_empty() {
+        return;
+    }
+    let browser = browser.clone();
+    slint::spawn_local(async move {
+        for (row, favicon) in wanted {
+            let Some(image) = logo(&browser, favicon).await else {
+                continue;
+            };
+            if let Some(mut tile) = tiles.row_data(row) {
+                tile.cover = image;
+                tiles.set_row_data(row, tile);
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// A station's picture from the address the directory gives for it, kept
+/// for the session.
+// ponytail: decoded at full size; scale down when big pictures cost memory.
+async fn logo(browser: &Shared, address: String) -> Option<Image> {
+    let key = (address, 0);
+    let directory = {
+        let b = browser.borrow();
+        if let Some(image) = b.pictures.get(&key) {
+            return Some(image.clone());
+        }
+        b.directory.clone()?
+    };
+    let bytes = directory.logo(&key.0).await.ok().flatten();
+    let image = bytes.and_then(|bytes| Image::load_from_data(&bytes, None).ok());
+    // One that didn't come is kept as none, so it isn't asked for again.
+    browser
+        .borrow_mut()
+        .pictures
+        .insert(key, image.clone().unwrap_or_default());
+    image
+}
+
+/// The genre page's next stations, unless they are on their way or the
+/// directory has no more: first a genre's stations in the languages picked,
+/// in turn, then worldwide ones, each once.
+fn more_stations(ui: &AppWindow, browser: &Shared) {
+    let (id, languages, first, offset, visit) = {
+        let mut b = browser.borrow_mut();
+        if b.genre_loading || !b.genre_more {
+            return;
+        }
+        b.genre_loading = true;
+        let first = b.genre_stations.is_empty();
+        (
+            b.genre.clone(),
+            b.languages.clone(),
+            first,
+            b.genre_offset,
+            b.visit,
+        )
+    };
+    let Some(directory) = directory(browser) else {
+        return;
+    };
+    ui.set_loading(true);
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        learn(&browser, &directory).await;
+        let found = async {
+            let lists = match first {
+                true => in_languages(&directory, &id, &languages, GENRE_IN_LANGUAGE).await?,
+                false => Vec::new(),
+            };
+            let rest = worldwide(&directory, &id, offset, GENRE_STATIONS).await?;
+            Ok::<_, radiobrowser::Error>((lists, rest))
+        }
+        .await;
+        let Some(ui) = weak.upgrade() else { return };
+        let mut b = browser.borrow_mut();
+        if b.visit != visit {
+            return;
+        }
+        b.genre_loading = false;
+        ui.set_loading(false);
+        match found {
+            Ok((lists, rest)) => {
+                b.genre_more = rest.len() == GENRE_STATIONS as usize;
+                b.genre_offset += GENRE_STATIONS;
+                ui.set_more_tiles(b.genre_more);
+                let mut seen = HashSet::new();
+                merge(&[], &b.genre_stations, &mut seen);
+                let stations = merge(&lists, &rest, &mut seen);
+                let tiles: Vec<_> = stations
+                    .iter()
+                    .map(|s| {
+                        let favicon = Some(s.favicon.clone()).filter(|f| !f.is_empty());
+                        (station_tile(&b, s), favicon)
+                    })
+                    .collect();
+                b.genre_stations.extend(stations);
+                drop(b);
+                add_tiles(&ui, &browser, tiles);
+            }
+            Err(e) => {
+                let problem = format!("The radio directory didn't answer: {e}");
+                ui.set_page_problem(problem.into());
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
 /// An address as people write it: "radio.example.org/live", without
 /// "https://" or a trailing slash.
 fn bare_address(address: &str) -> &str {
@@ -3536,6 +4165,10 @@ async fn cover_art(
     cover: String,
     size: u32,
 ) -> Option<Option<Image>> {
+    if cover.contains("://") {
+        let image = logo(browser, cover).await;
+        return (browser.borrow().visit == visit).then_some(image);
+    }
     let key = (cover, size);
     let client = {
         let b = browser.borrow();
@@ -3988,6 +4621,32 @@ mod tests {
         assert_eq!(sorted(&pieces, all, PIECE_COLUMNS, &table), [2, 0, 3, 1]);
         assert_eq!(language("lat"), "Latin");
         assert_eq!(language("xyz"), "xyz");
+    }
+
+    #[test]
+    fn genres_by_the_librarys_albums() {
+        let genre = |value: &str, album_count| Genre {
+            value: value.into(),
+            song_count: 0,
+            album_count,
+        };
+        let ranks = genre_ranks(&[
+            genre("Rock", 3),
+            genre("Hip-Hop", 4),
+            genre("R&B", 1),
+            genre("rnb", 4),
+            genre("World Music", 2),
+            genre("Polka", 9),
+            genre("Pop/Rock", 2),
+        ]);
+        let mut order: Vec<usize> = (0..GENRES.len()).collect();
+        order.sort_by_key(|&genre| ranks[genre]);
+        let titles: Vec<&str> = order.iter().take(6).map(|&genre| GENRES[genre].0).collect();
+        assert_eq!(
+            titles,
+            ["Top worldwide", "Rock", "Hip hop", "R&B", "Pop", "World"]
+        );
+        assert_eq!(genre_ranks(&[]), Vec::from_iter(0..GENRES.len()));
     }
 
     #[test]

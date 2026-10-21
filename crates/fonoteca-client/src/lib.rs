@@ -3,6 +3,7 @@ slint::include_modules!();
 mod browse;
 mod prefs;
 mod store;
+mod zone;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -243,6 +244,30 @@ fn android_main(app: slint::android::AndroidApp) {
         rustls_platform_verifier::android::init_with_env(env, activity)
     })
     .expect("Android's certificate verifier");
+    // The time zone tells the radio page the country for its local shelf.
+    let zone = vm.attach_current_thread(|env| -> jni::errors::Result<String> {
+        let zone = env
+            .call_static_method(
+                jni::jni_str!("java/util/TimeZone"),
+                jni::jni_str!("getDefault"),
+                jni::jni_sig!("()Ljava/util/TimeZone;"),
+                &[],
+            )?
+            .l()?;
+        let id = env
+            .call_method(
+                &zone,
+                jni::jni_str!("getID"),
+                jni::jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
+            .l()?;
+        let id = env.cast_local::<jni::objects::JString>(id)?;
+        Ok(id.mutf8_chars(env)?.to_string())
+    });
+    if let Ok(zone) = zone {
+        let _ = zone::ANDROID.set(zone);
+    }
     if let Some(folder) = app.internal_data_path() {
         let _ = prefs::FOLDER.set(folder);
     }
@@ -567,6 +592,71 @@ mod tests {
         )
     }
 
+    /// The radio directory: two stations with the most votes, 65 of jazz
+    /// with the server's Jazz first, one of rock, none of other genres, one
+    /// of the Netherlands, one of Dutch jazz, the countries' names, three
+    /// languages, one without a code, and a picture of each station.
+    fn radio_directory(request: &str) -> Vec<u8> {
+        let target = request.split_whitespace().nth(1).unwrap_or_default();
+        let host = request
+            .lines()
+            .find_map(|line| {
+                line.to_lowercase()
+                    .strip_prefix("host: ")
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        let number = |name: &str| {
+            target
+                .split(['?', '&'])
+                .find_map(|param| param.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+                .unwrap_or(0)
+        };
+        let station = |n: usize, name: &str, country: &str| {
+            format!(
+                r#"{{"stationuuid":"s{n}","name":"{name}","url":"https://s{n}.example.org/listen.m3u","url_resolved":"https://s{n}.example.org/listen","homepage":"https://s{n}.example.org/","favicon":"http://{}/logo{n}.png","countrycode":"{country}","votes":{n}}}"#,
+                host.trim()
+            )
+        };
+        let list = |stations: Vec<String>| json(&format!("[{}]", stations.join(",")));
+        if target.starts_with("/json/countries") {
+            json(
+                r#"[{"name":"The Netherlands","iso_3166_1":"NL","stationcount":3},{"name":"Germany","iso_3166_1":"DE","stationcount":1}]"#,
+            )
+        } else if target.starts_with("/json/stations/topvote?") {
+            list(vec![station(1, "Wave", "NL"), station(2, "Talk", "DE")])
+        } else if target.starts_with("/json/stations/bytagexact/jazz?") {
+            let first = number("offset");
+            let jazz = (first..65.min(first + number("limit"))).map(|n| match n {
+                0 => station(100, "Jazz", "").replace(
+                    "https://s100.example.org/listen\"",
+                    "https://stream.example.org/jazz\"",
+                ),
+                n => station(100 + n, &format!("Jazz {n}"), "NL"),
+            });
+            list(jazz.collect())
+        } else if target.starts_with("/json/stations/bytagexact/rock?") {
+            list(vec![station(3, "Rock", "DE")])
+        } else if target.starts_with("/json/stations/bycountrycodeexact/NL?") {
+            list(vec![station(4, "Radio NL", "NL")])
+        } else if target.starts_with("/json/stations/search?")
+            && target.contains("tag=jazz&")
+            && target.contains("language=dutch&")
+        {
+            list(vec![station(200, "Dutch Jazz", "NL")])
+        } else if target.starts_with("/json/languages?") {
+            json(
+                r#"[{"name":"english","iso_639":"en","stationcount":9},{"name":"dutch colombo","iso_639":null,"stationcount":1},{"name":"dutch","iso_639":"nl","stationcount":5}]"#,
+            )
+        } else if target.starts_with("/json/stations/") {
+            list(Vec::new())
+        } else if target.starts_with("/logo") {
+            reply("200 OK", "image/png", PNG)
+        } else {
+            not_found(request)
+        }
+    }
+
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
             reply("503 Service Unavailable", "text/plain", b"down")
@@ -732,6 +822,10 @@ mod tests {
             ok(&format!(r#""users":{{"user":[{},{BEA}]}}"#, joe()))
         } else if request.contains("/rest/getUser") && param("username") == Some("joe") {
             ok(&format!(r#""user":{}"#, joe()))
+        } else if request.contains("/rest/getGenres") {
+            ok(
+                r#""genres":{"genre":[{"value":"Jazz","songCount":3,"albumCount":2},{"value":"hip-hop","songCount":1,"albumCount":1}]}"#,
+            )
         } else if request.contains("/rest/getInternetRadioStations") {
             ok(
                 r#""internetRadioStations":{"internetRadioStation":[{"id":"r1","name":"Jazz","streamUrl":"https://stream.example.org/jazz","homePageUrl":"https://radio.example.org/"},{"id":"r2","name":"News","streamUrl":"http://news.example.org/live.mp3"}]}"#,
@@ -958,6 +1052,8 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _runtime = runtime.enter();
         let server = serve(flaky);
+        *browse::DIRECTORY_ROOT.lock().unwrap() = format!("{}/json/", serve(radio_directory));
+        *zone::TESTS.lock().unwrap() = "Europe/Amsterdam".into();
 
         slint::spawn_local(async move {
             let ui = start().unwrap();
@@ -1413,15 +1509,14 @@ mod tests {
             );
             assert_eq!(station(1), ["r2", "News", "", "news.example.org/live.mp3"]);
             assert!(find(&ui, "Add station").is_some());
-            let menus = || {
+            // The menus of the elements of a type, of those drawn.
+            let menus = |of: &str| -> usize {
                 let more = |b: &ElementHandle| b.accessible_label().is_some_and(|l| l == "More");
-                (ui.root_element().query_descendants())
-                    .match_accessible_role(AccessibleRole::Button)
-                    .match_predicate(more)
-                    .find_all()
-                    .len()
+                let elements = ui.root_element().query_descendants().match_type_name(of).find_all();
+                (elements.iter())
+                    .map(|element| element.query_descendants().match_predicate(more).find_all().len())
+                    .sum()
             };
-            let with_station_menus = menus();
             let radio_writes = || RADIO_WRITES.lock().unwrap().clone();
             ui.invoke_create_station(" Folk ".into(), "https://f.example.org/a".into(), " ".into());
             wait_for("the station added", || ui.get_notice() == "Added Folk.").await;
@@ -1443,12 +1538,68 @@ mod tests {
                 ]
             );
             assert_eq!(ui.get_page_problem(), "");
+            // The directory's genres, each a shelf once it comes: Top
+            // worldwide, the device's country, then the genres by the
+            // library's albums, so Jazz before Rock, and none for a genre
+            // without stations.
+            wait_for("the shelves", || ui.get_station_shelves().row_count() == 4).await;
+            let shelf = |row: usize| ui.get_station_shelves().row_data(row).unwrap();
+            let titles: Vec<String> = (0..4).map(|row| shelf(row).title.into()).collect();
+            assert_eq!(titles, ["Top worldwide", "Top in the Netherlands", "Jazz", "Rock"]);
+            assert_eq!(
+                [shelf(0).link, shelf(1).link, shelf(2).link].map(String::from),
+                ["stations:", "stations:@NL", "stations:jazz"]
+            );
+            assert_eq!(shelf(2).tiles.row_count(), 12);
+            let tile = shelf(0).tiles.row_data(0).unwrap();
+            assert_eq!((tile.title.as_str(), tile.link.as_str()), ("Wave", ""));
+            assert_eq!(tile.names.row_data(0).unwrap().label, "Netherlands");
+            // Pictures come for the tiles in view.
+            ui.invoke_station_shelf_in_view(0, 0, 0);
+            let cover = |tiles: slint::ModelRc<AlbumTile>, row| tiles.row_data(row).unwrap().cover.size();
+            wait_for("a station's picture", || cover(shelf(0).tiles, 0).width > 0).await;
+            assert_eq!(cover(shelf(0).tiles, 1).width, 0);
+            assert_eq!(menus("ListRow"), 2);
+            // The languages picked go first in each genre, the order kept on
+            // the device.
+            let choices = || {
+                let choices = ui.get_language_choices();
+                (choices.iter())
+                    .map(|choice| (choice.title.to_string(), choice.shown))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(choices(), [("Dutch".into(), false), ("English".into(), false)]);
+            ui.invoke_toggle_language(0);
+            assert_eq!(choices(), [("Dutch".into(), true), ("English".into(), false)]);
+            assert_eq!(crate::prefs::load().radio_languages, ["dutch"]);
+            let first_jazz = || shelf(2).tiles.row_data(0).unwrap().title;
+            wait_for("Dutch jazz first", || first_jazz() == "Dutch Jazz").await;
+            assert_eq!(ui.get_station_shelves().row_count(), 4);
+            assert_eq!(shelf(2).tiles.row_count(), 12);
+            // A genre's page has all of it, a page at a time.
+            ui.invoke_open("stations:jazz".into());
+            assert_eq!(ui.get_page(), Page::Stations);
+            assert_eq!(ui.get_header_title(), "Jazz");
+            wait_for("a page of jazz", || ui.get_tiles().row_count() == 61).await;
+            assert_eq!(ui.get_tiles().row_data(0).unwrap().title, "Dutch Jazz");
+            // Drawing the grid asks for the pictures of the tiles in view.
+            ui.root_element().query_descendants().find_all();
+            let cover = || ui.get_tiles().row_data(0).unwrap().cover.size().width;
+            wait_for("a jazz station's picture", || cover() > 0).await;
+            assert!(ui.get_more_tiles());
+            ui.invoke_show_more();
+            wait_for("the rest of the jazz", || ui.get_tiles().row_count() == 66).await;
+            assert!(!ui.get_more_tiles());
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Radio);
+            ui.set_notice("".into());
             // Anyone may see them, but only admins change them.
             ADMIN.store(false, Relaxed);
             ui.invoke_set_password("bea".into(), "again".into());
             wait_for("joe no admin", || !ui.get_may_administer()).await;
             assert!(find(&ui, "Add station").is_none());
-            assert_eq!(menus(), with_station_menus - 2);
+            wait_for("the stations", || ui.get_station_rows().row_count() == 2).await;
+            assert_eq!((menus("ListRow"), menus("CoverTile")), (0, 0));
             // Nor may they have the server scan.
             ui.invoke_back();
             ui.invoke_back();

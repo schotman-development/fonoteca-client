@@ -1,5 +1,6 @@
 //! Preferences kept on this device: how the albums, tracks, compositions and
-//! folders are sorted and which columns the tables show. They aren't secrets, so a plain file
+//! folders are sorted, which columns the tables show, and the radio page's
+//! languages. They aren't secrets, so a plain file
 //! in the system's settings folder keeps them, and the browser preview its
 //! localStorage. Where neither works they last until the app closes.
 
@@ -24,6 +25,9 @@ pub struct Prefs {
     pub folder_columns: Option<Vec<String>>,
     pub folder_sort: Option<String>,
     pub folder_descending: bool,
+    /// The languages whose stations the radio page's genres show first, as
+    /// the radio directory names them, in the order picked.
+    pub radio_languages: Vec<String>,
 }
 
 /// The preferences saved, or the first choices when there are none.
