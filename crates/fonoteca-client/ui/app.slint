@@ -5,12 +5,13 @@ export { AlbumTile, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users, radio }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it; a new user, changes to one, a new
-// password for one or for the account signed in, or whether to delete one.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-user, edit-user, user-password, own-password, delete-user }
+// password for one or for the account signed in, or whether to delete one;
+// a new radio station, changes to one, or whether to delete one.
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-user, edit-user, user-password, own-password, delete-user, new-station, edit-station, delete-station }
 
 // A user on the users page: their name, their email and what they may do,
 // and whether it is the account signed in.
@@ -18,6 +19,16 @@ export struct UserRow {
     name: string,
     details: string,
     me: bool,
+}
+
+// A radio station on the radio page: its id, name, where it streams from
+// and its home page, and a line with both.
+export struct StationRow {
+    id: string,
+    name: string,
+    stream: string,
+    homepage: string,
+    details: string,
 }
 
 // What a track's page says about it under one heading, such as its album.
@@ -387,11 +398,12 @@ export component AppWindow inherits Window {
     in property <string> scan-status;
     in property <bool> scanning;
     // What the account signed in may do, as far as the server said; whether
-    // it may do what only admins may, such as have the server scan, which it
-    // may when the server doesn't say.
+    // it may do what only admins may, such as have the server scan or change
+    // its radio stations, which it may when the server doesn't say.
     in property <string> roles;
     in property <bool> may-administer: true;
     in property <[UserRow]> user-rows;
+    in property <[StationRow]> station-rows;
     // The roles a user can be given, in the order of `asked-roles`.
     in property <[string]> role-names;
     in property <[Track]> tracks;
@@ -473,6 +485,10 @@ export component AppWindow inherits Window {
     callback set-password(name: string, password: string);
     callback delete-user(name: string);
     callback change-own-password(password: string);
+    // Radio stations: one added, changed or deleted.
+    callback create-station(name: string, stream: string, homepage: string);
+    callback update-station(id: string, name: string, stream: string, homepage: string);
+    callback delete-station(id: string, name: string);
 
     property <Asking> asking;
     property <string> asked-name;
@@ -480,10 +496,14 @@ export component AppWindow inherits Window {
     in-out property <[bool]> asked-roles;
     property <string> asked-password;
     property <string> asked-repeat;
-    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-user;
+    property <string> asked-id;
+    property <string> asked-stream;
+    property <string> asked-homepage;
+    property <bool> asks-station: root.asking == Asking.new-station || root.asking == Asking.edit-station;
+    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-user || root.asks-station;
     property <bool> asks-user: root.asking == Asking.new-user || root.asking == Asking.edit-user;
     property <bool> asks-password: root.asking == Asking.new-user || root.asking == Asking.user-password || root.asking == Asking.own-password;
-    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-user;
+    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-user || root.asking == Asking.delete-station;
 
     function ask(what: Asking) {
         root.asked-name = what == Asking.rename-playlist ? root.header-title : "";
@@ -496,6 +516,15 @@ export component AppWindow inherits Window {
         root.asked-name = name;
         root.asked-password = "";
         root.asked-repeat = "";
+        root.asking = what;
+    }
+
+    // Asks about this station, or a new one when `station` is empty.
+    function ask-station(what: Asking, station: StationRow) {
+        root.asked-id = station.id;
+        root.asked-name = station.name;
+        root.asked-stream = station.stream;
+        root.asked-homepage = station.homepage;
         root.asking = what;
     }
 
@@ -516,6 +545,12 @@ export component AppWindow inherits Window {
             root.change-own-password(root.asked-password);
         } else if root.asking == Asking.delete-user {
             root.delete-user(root.asked-name);
+        } else if root.asking == Asking.new-station {
+            root.create-station(root.asked-name, root.asked-stream, root.asked-homepage);
+        } else if root.asking == Asking.edit-station {
+            root.update-station(root.asked-id, root.asked-name, root.asked-stream, root.asked-homepage);
+        } else if root.asking == Asking.delete-station {
+            root.delete-station(root.asked-id, root.asked-name);
         }
         root.asked-password = "";
         root.asked-repeat = "";
@@ -530,21 +565,24 @@ export component AppWindow inherits Window {
         if root.asking == Asking.edit-user { return "Edit “" + root.asked-name + "”"; }
         if root.asking == Asking.user-password { return "New password for “" + root.asked-name + "”"; }
         if root.asking == Asking.own-password { return "Change your password"; }
+        if root.asking == Asking.new-station { return "New radio station"; }
+        if root.asking == Asking.edit-station { return "Edit radio station"; }
         return "Delete “" + root.asked-name + "”?";
     }
 
     function asked-action() -> string {
         if root.deleting { return "Delete"; }
         if root.asking == Asking.rename-playlist { return "Rename"; }
-        if root.asking == Asking.edit-user { return "Save"; }
+        if root.asking == Asking.edit-user || root.asking == Asking.edit-station { return "Save"; }
         if root.asking == Asking.user-password || root.asking == Asking.own-password { return "Change"; }
         return "Create";
     }
 
-    // Whether what is needed is filled in: a name, a new user's email, and
-    // the password twice, the same.
+    // Whether what is needed is filled in: a name, a new user's email, the
+    // password twice, the same, and a station's stream.
     function may-answer() -> bool {
         return (!root.asks-name || root.asked-name != "")
+            && (!root.asks-station || root.asked-stream != "")
             && (root.asking != Asking.new-user || root.asked-email != "")
             && (!root.asks-password || (root.asked-password != "" && root.asked-password == root.asked-repeat));
     }
@@ -1126,6 +1164,34 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.page == Page.radio: VerticalLayout {
+                        max-width: 800px;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            padding-bottom: 8px;
+                            spacing: 8px;
+                            Heading {
+                                horizontal-stretch: 1;
+                                text: "Radio";
+                            }
+                            if root.may-administer: Button {
+                                text: "Add station";
+                                clicked => { root.ask-station(Asking.new-station, { }); }
+                            }
+                        }
+                        for station in root.station-rows: ListRow {
+                            title: station.name;
+                            details: station.details;
+                            entries: root.may-administer ? [
+                                { id: "edit", label: "Edit", icon: Icons.pencil },
+                                { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
+                            ] : [];
+                            activated(id) => {
+                                root.ask-station(id == "edit" ? Asking.edit-station : Asking.delete-station, station);
+                            }
+                        }
+                        if root.station-rows.length == 0 && !root.loading && root.page-problem == "": Note { text: "No radio stations yet."; }
+                    }
                     // Where the page ends, for its content height.
                     end := Rectangle { height: 0; }
                 }
@@ -1417,6 +1483,19 @@ export component AppWindow inherits Window {
                     input-type: InputType.password;
                     text <=> root.asked-repeat;
                     placeholder-text: "Repeat password";
+                    accepted => {
+                        if root.may-answer() {
+                            root.answer();
+                        }
+                    }
+                }
+                if root.asks-station: LineEdit {
+                    text <=> root.asked-stream;
+                    placeholder-text: "Stream address";
+                }
+                if root.asks-station: LineEdit {
+                    text <=> root.asked-homepage;
+                    placeholder-text: "Home page (optional)";
                     accepted => {
                         if root.may-answer() {
                             root.answer();

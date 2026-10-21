@@ -3,8 +3,8 @@
 //! as "home", "albums", "artists", "tracks", "playlists", "album:<id>",
 //! "artist:<id>", "playlist:<id>" or "song:<id>", the files' "folders" and
 //! "folder:<id>", and on servers with Fonoteca's compositions "composers",
-//! "compositions", "composer:<id>" or "composition:<id>", and "account" and,
-//! for admins, "users".
+//! "compositions", "composer:<id>" or "composition:<id>", "radio", and
+//! "account" and, for admins, "users".
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -19,7 +19,7 @@ use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
     GenericMediaType, Indexes, ItemDate, ListOptions, MediaType, Playlist, PlaylistUpdate,
-    PlaylistWithSongs, Roles, ScanStatus, SearchOptions, Span, User, UserUpdate,
+    PlaylistWithSongs, RadioStation, Roles, ScanStatus, SearchOptions, Span, User, UserUpdate,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -27,8 +27,8 @@ use slint::{
 };
 
 use crate::{
-    AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, Track, TrackColumn,
-    TrackLine, UserRow, prefs,
+    AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, StationRow, Track,
+    TrackColumn, TrackLine, UserRow, prefs,
 };
 
 /// The newest albums on the home page.
@@ -378,6 +378,39 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
             });
         }
     });
+    ui.on_create_station({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name, stream, homepage| {
+            let [name, stream, homepage] = [name, stream, homepage].map(|s| s.trim().to_owned());
+            let done = format!("Added {name}.");
+            change_stations(&weak.unwrap(), &browser, done, |client| async move {
+                let station = station(&name, &stream, &homepage);
+                client.create_internet_radio_station(&station).await
+            });
+        }
+    });
+    ui.on_update_station({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |id, name, stream, homepage| {
+            let id = id.to_string();
+            let [name, stream, homepage] = [name, stream, homepage].map(|s| s.trim().to_owned());
+            let done = format!("Saved {name}.");
+            change_stations(&weak.unwrap(), &browser, done, |client| async move {
+                let station = station(&name, &stream, &homepage);
+                client.update_internet_radio_station(&id, &station).await
+            });
+        }
+    });
+    ui.on_delete_station({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |id, name| {
+            let id = id.to_string();
+            let done = format!("Deleted {name}.");
+            change_stations(&weak.unwrap(), &browser, done, |client| async move {
+                client.delete_internet_radio_station(&id).await
+            });
+        }
+    });
     ui.on_delete_user({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |name| {
@@ -672,6 +705,11 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_user_rows(ModelRc::default());
             users(ui, browser);
         }
+        "radio" => {
+            ui.set_page(Page::Radio);
+            ui.set_station_rows(ModelRc::default());
+            stations(ui, browser);
+        }
         _ => {
             ui.set_page(Page::Albums);
             albums(ui, browser);
@@ -691,9 +729,9 @@ fn admin(b: &Browser) -> bool {
     b.me.as_ref().is_some_and(|me| me.admin_role)
 }
 
-/// The sidebar's entries, as links, labels and groups: the home page, the
-/// library's pages, with the composers and compositions where the server has
-/// them, the playlists, the account and for admins the users.
+/// The sidebar's entries, as links, labels and groups: the home page and the
+/// radio, the library's pages, with the composers and compositions where the
+/// server has them, the playlists, the account and for admins the users.
 fn sections(playlists: &[Playlist], compositions: bool, admin: bool) -> Vec<(String, &str, &str)> {
     let library = [
         ("albums", "Albums", true),
@@ -710,14 +748,17 @@ fn sections(playlists: &[Playlist], compositions: bool, admin: bool) -> Vec<(Str
         let link = format!("playlist:{}", playlist.id);
         (link, playlist.name.as_str(), "Playlists")
     });
-    [("home".to_owned(), "Home", "")]
-        .into_iter()
-        .chain(library)
-        .chain([("playlists".to_owned(), "Playlists", "Playlists")])
-        .chain(playlists)
-        .chain([("account".to_owned(), "Account", "")])
-        .chain(admin.then(|| ("users".to_owned(), "Users", "")))
-        .collect()
+    [
+        ("home".to_owned(), "Home", "Browse"),
+        ("radio".to_owned(), "Radio", "Browse"),
+    ]
+    .into_iter()
+    .chain(library)
+    .chain([("playlists".to_owned(), "Playlists", "Playlists")])
+    .chain(playlists)
+    .chain([("account".to_owned(), "Account", "")])
+    .chain(admin.then(|| ("users".to_owned(), "Users", "")))
+    .collect()
 }
 
 /// The sidebar entry of the page on screen, or -1 when it has none.
@@ -769,6 +810,7 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
         "folders" => icons.get_folder(),
         "playlists" | "playlist" => SharedString::new(),
         "users" => icons.get_people(),
+        "radio" => icons.get_radio(),
         _ => icons.get_person(),
     }
 }
@@ -2899,6 +2941,20 @@ fn change_users<F: Future<Output = opensubsonic::Result<()>> + 'static>(
     });
 }
 
+/// The same for the radio stations.
+fn change_stations<F: Future<Output = opensubsonic::Result<()>> + 'static>(
+    ui: &AppWindow,
+    browser: &Shared,
+    done: String,
+    task: impl FnOnce(Rc<Client>) -> F,
+) {
+    change(ui, browser, done, task, |ui, browser| {
+        if ui.get_page() == Page::Radio {
+            stations(ui, browser);
+        }
+    });
+}
+
 /// Has the server make a change with `task`, then puts up `done` as a
 /// notice and runs `then`, or says why it didn't.
 fn change<F: Future<Output = opensubsonic::Result<()>> + 'static>(
@@ -2926,6 +2982,58 @@ fn change<F: Future<Output = opensubsonic::Result<()>> + 'static>(
         }
     })
     .expect("the event loop is running");
+}
+
+/// The radio page: the server's internet radio stations, by name, with
+/// their home pages and where they stream from.
+fn stations(ui: &AppWindow, browser: &Shared) {
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_internet_radio_stations().await },
+        |ui, _, list| {
+            let rows: Vec<StationRow> = list
+                .internet_radio_station
+                .into_iter()
+                .map(|station| {
+                    let homepage = station.home_page_url.unwrap_or_default();
+                    let details: Vec<&str> = [homepage.as_str(), station.stream_url.as_str()]
+                        .into_iter()
+                        .map(bare_address)
+                        .filter(|address| !address.is_empty())
+                        .collect();
+                    StationRow {
+                        details: details.join(" · ").into(),
+                        id: station.id.into(),
+                        name: station.name.into(),
+                        stream: station.stream_url.into(),
+                        homepage: homepage.into(),
+                    }
+                })
+                .collect();
+            ui.set_station_rows(ModelRc::new(VecModel::from(rows)));
+        },
+    );
+}
+
+/// A station as the dialog filled it in; an empty home page is none.
+fn station<'a>(name: &'a str, stream: &'a str, homepage: &'a str) -> RadioStation<'a> {
+    RadioStation {
+        name,
+        stream_url: stream,
+        homepage_url: Some(homepage).filter(|homepage| !homepage.is_empty()),
+    }
+}
+
+/// An address as people write it: "radio.example.org/live", without
+/// "https://" or a trailing slash.
+fn bare_address(address: &str) -> &str {
+    let address = address.trim();
+    let address = address
+        .strip_prefix("https://")
+        .or_else(|| address.strip_prefix("http://"))
+        .unwrap_or(address);
+    address.strip_suffix('/').unwrap_or(address)
 }
 
 /// Why the server didn't do what was asked, in words for the page.
@@ -3944,6 +4052,7 @@ mod tests {
             labels(false),
             [
                 "Home",
+                "Radio",
                 "Albums",
                 "Artists",
                 "Tracks",
@@ -3956,6 +4065,7 @@ mod tests {
             labels(true),
             [
                 "Home",
+                "Radio",
                 "Albums",
                 "Artists",
                 "Tracks",

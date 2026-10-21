@@ -548,6 +548,8 @@ mod tests {
     /// them; whether joe is an admin.
     static USER_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static ADMIN: AtomicBool = AtomicBool::new(true);
+    /// The radio station changes, the same way.
+    static RADIO_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     /// A request's method and its arguments but the credentials.
     fn write_of(request: &str) -> String {
@@ -730,6 +732,16 @@ mod tests {
             ok(&format!(r#""users":{{"user":[{},{BEA}]}}"#, joe()))
         } else if request.contains("/rest/getUser") && param("username") == Some("joe") {
             ok(&format!(r#""user":{}"#, joe()))
+        } else if request.contains("/rest/getInternetRadioStations") {
+            ok(
+                r#""internetRadioStations":{"internetRadioStation":[{"id":"r1","name":"Jazz","streamUrl":"https://stream.example.org/jazz","homePageUrl":"https://radio.example.org/"},{"id":"r2","name":"News","streamUrl":"http://news.example.org/live.mp3"}]}"#,
+            )
+        } else if ["create", "update", "delete"]
+            .iter()
+            .any(|change| request.contains(&format!("/rest/{change}InternetRadioStation")))
+        {
+            RADIO_WRITES.lock().unwrap().push(write_of(request));
+            json(OK)
         } else if ["createUser", "updateUser", "deleteUser", "changePassword"]
             .iter()
             .any(|change| request.contains(&format!("/rest/{change}")))
@@ -1381,8 +1393,72 @@ mod tests {
             ui.invoke_set_password("bea".into(), "again".into());
             wait_for("joe an admin again", || ui.get_may_administer()).await;
             ui.set_notice("".into());
+            // The radio stations, with their home pages and where they
+            // stream from; an admin adds, changes and deletes them.
+            click(&ui, "Radio");
+            assert_eq!(ui.get_page(), Page::Radio);
+            wait_for("the stations", || ui.get_station_rows().row_count() == 2).await;
+            let station = |row: usize| {
+                let station = ui.get_station_rows().row_data(row).unwrap();
+                [station.id, station.name, station.homepage, station.details].map(String::from)
+            };
+            assert_eq!(
+                station(0),
+                [
+                    "r1",
+                    "Jazz",
+                    "https://radio.example.org/",
+                    "radio.example.org · stream.example.org/jazz"
+                ]
+            );
+            assert_eq!(station(1), ["r2", "News", "", "news.example.org/live.mp3"]);
+            assert!(find(&ui, "Add station").is_some());
+            let menus = || {
+                let more = |b: &ElementHandle| b.accessible_label().is_some_and(|l| l == "More");
+                (ui.root_element().query_descendants())
+                    .match_accessible_role(AccessibleRole::Button)
+                    .match_predicate(more)
+                    .find_all()
+                    .len()
+            };
+            let with_station_menus = menus();
+            let radio_writes = || RADIO_WRITES.lock().unwrap().clone();
+            ui.invoke_create_station(" Folk ".into(), "https://f.example.org/a".into(), " ".into());
+            wait_for("the station added", || ui.get_notice() == "Added Folk.").await;
+            ui.invoke_update_station(
+                "r2".into(),
+                "News".into(),
+                "https://news.example.org/live.mp3".into(),
+                "https://news.example.org".into(),
+            );
+            wait_for("the station saved", || ui.get_notice() == "Saved News.").await;
+            ui.invoke_delete_station("r1".into(), "Jazz".into());
+            wait_for("the station deleted", || ui.get_notice() == "Deleted Jazz.").await;
+            assert_eq!(
+                radio_writes(),
+                [
+                    "createInternetRadioStation name=Folk&streamUrl=https%3A%2F%2Ff.example.org%2Fa",
+                    "updateInternetRadioStation id=r2&name=News&streamUrl=https%3A%2F%2Fnews.example.org%2Flive.mp3&homepageUrl=https%3A%2F%2Fnews.example.org",
+                    "deleteInternetRadioStation id=r1"
+                ]
+            );
+            assert_eq!(ui.get_page_problem(), "");
+            // Anyone may see them, but only admins change them.
+            ADMIN.store(false, Relaxed);
+            ui.invoke_set_password("bea".into(), "again".into());
+            wait_for("joe no admin", || !ui.get_may_administer()).await;
+            assert!(find(&ui, "Add station").is_none());
+            assert_eq!(menus(), with_station_menus - 2);
+            // Nor may they have the server scan.
+            ui.invoke_back();
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Account);
+            assert!(find(&ui, "Scan library").is_none());
+            ADMIN.store(true, Relaxed);
+            ui.invoke_set_password("bea".into(), "again".into());
+            wait_for("joe an admin once more", || ui.get_may_administer()).await;
+            assert!(find(&ui, "Scan library").is_some());
+            ui.set_notice("".into());
             ui.invoke_back();
             wait_for("the albums page", || links(&ui).len() == 3).await;
             assert_eq!(picked(&ui), ids(&["b1"]));
@@ -1467,12 +1543,12 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 10);
+            assert_eq!(ui.get_sections().row_count(), 11);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Playlists);
-            assert_eq!(ui.get_section(), 7);
+            assert_eq!(ui.get_section(), 8);
             DOWN.store(false, Relaxed);
             click(&ui, "Try again");
             wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
@@ -1490,6 +1566,7 @@ mod tests {
                 strings(ui.get_sections()),
                 [
                     "Home",
+                    "Radio",
                     "Albums",
                     "Artists",
                     "Tracks",
@@ -1506,7 +1583,8 @@ mod tests {
             assert_eq!(
                 strings(ui.get_section_groups()),
                 [
-                    "",
+                    "Browse",
+                    "Browse",
                     "Library",
                     "Library",
                     "Library",
@@ -1523,8 +1601,9 @@ mod tests {
             // Each with its icon in front, but for the playlists.
             let icons = ui.global::<Icons>();
             let pictures = strings(ui.get_section_icons());
-            assert_eq!(pictures.len(), 12);
+            assert_eq!(pictures.len(), 13);
             assert_eq!(pictures[0], icons.get_home().as_str());
+            assert_eq!(pictures[1], icons.get_radio().as_str());
             let library = [
                 icons.get_album(),
                 icons.get_artist(),
@@ -1533,14 +1612,14 @@ mod tests {
                 icons.get_composition(),
                 icons.get_folder(),
             ];
-            assert_eq!(pictures[1..7], library.map(String::from));
-            assert_eq!(pictures[7..10], ["", "", ""]);
-            assert_eq!(pictures[10], icons.get_person().as_str());
-            assert_eq!(pictures[11], icons.get_people().as_str());
-            ui.invoke_show_section(8);
+            assert_eq!(pictures[2..8], library.map(String::from));
+            assert_eq!(pictures[8..11], ["", "", ""]);
+            assert_eq!(pictures[11], icons.get_person().as_str());
+            assert_eq!(pictures[12], icons.get_people().as_str());
+            ui.invoke_show_section(9);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
-            assert_eq!(ui.get_section(), 8);
+            assert_eq!(ui.get_section(), 9);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
             // Each track with its artists, then its album.
@@ -1660,7 +1739,7 @@ mod tests {
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             click(&ui, "Account");
-            assert_eq!(ui.get_section(), 10);
+            assert_eq!(ui.get_section(), 11);
             // Shown again at once, while they are asked for again.
             click(&ui, "Playlists");
             assert_eq!(ui.get_tiles().row_count(), 2);
@@ -1861,7 +1940,7 @@ mod tests {
             click(&ui, "Composers");
             wait_for("the composers", || ui.get_tiles().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Composers);
-            assert_eq!(ui.get_section(), 4);
+            assert_eq!(ui.get_section(), 5);
             let tile = ui.get_tiles().row_data(0).unwrap();
             assert_eq!(
                 (tile.title.as_str(), tile.link.as_str()),
@@ -2546,7 +2625,7 @@ mod tests {
             wait_for("the folders", || ui.get_track_lines().row_count() == 3).await;
             assert_eq!(ui.get_page(), Page::Folders);
             assert_eq!(ui.get_header_title(), "Folders");
-            assert_eq!(ui.get_section(), 6);
+            assert_eq!(ui.get_section(), 7);
             let entry = |ui: &AppWindow, row: usize| -> (String, String) {
                 let title = titles(ui).iter().position(|t| t == "Title").unwrap();
                 let line = ui.get_track_lines().row_data(row).unwrap();
