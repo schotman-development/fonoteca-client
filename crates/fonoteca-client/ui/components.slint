@@ -656,7 +656,8 @@ export component MoreMenu {
     }
 }
 
-// An album, playlist or genre in a shelf or grid, or an artist, round.
+// An album, playlist or genre in a shelf or grid, or an artist, round; a
+// radio station, with its menu of `entries` beside its name.
 export component CoverTile inherits Pressable {
     in property <image> cover;
     in property <string> title;
@@ -666,7 +667,9 @@ export component CoverTile inherits Pressable {
     // While its page is selecting, every tile shows whether it is selected.
     in property <bool> selecting;
     in property <bool> selected;
+    in property <[MenuEntry]> entries;
     callback open(link: string);
+    callback activated(id: string);
     label: self.title;
     accessible-item-selectable: self.selecting;
     accessible-item-selected: self.selected;
@@ -715,13 +718,22 @@ export component CoverTile inherits Pressable {
             }
         }
         Rectangle { height: 2px; }
-        Text {
-            text: root.title;
-            font-size: Theme.body;
-            font-weight: 600;
-            color: Theme.text;
-            horizontal-alignment: root.round ? center : left;
-            overflow: elide;
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                horizontal-stretch: 1;
+                text: root.title;
+                font-size: Theme.body;
+                font-weight: 600;
+                color: Theme.text;
+                horizontal-alignment: root.round ? center : left;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.entries.length > 0: MoreMenu {
+                entries: root.entries;
+                activated(id) => { root.activated(id); }
+            }
         }
         if root.names.length > 0: LinksLine {
             names: root.names;
@@ -1228,12 +1240,15 @@ export component CoverGrid {
     // While some tiles are selected, a click selects another tile, or lets a
     // selected one go, instead of opening it.
     in property <bool> selecting;
+    // Each tile's menu, the same for all.
+    in property <[MenuEntry]> entries;
     callback open(link: string);
     // A tile right-clicked, or clicked while selecting; with Shift held,
     // every tile from the one last picked to it.
     callback select(index: int, range: bool);
     // The tiles on screen and a screen below it, whenever that changes.
     callback in-view(first: int, last: int);
+    callback activated(index: int, id: string);
 
     property <length> gap: Theme.gap;
     property <length> row-gap: 24px;
@@ -1264,6 +1279,7 @@ export component CoverGrid {
         size: root.size;
         title: "Probe";
         names: [{ label: "Probe", link: "" }];
+        entries: root.entries;
     }
 
     for tile[i] in root.tiles: CoverTile {
@@ -1278,10 +1294,12 @@ export component CoverGrid {
         names: tile.names;
         selecting: root.selecting;
         selected: tile.selected;
+        entries: root.entries;
+        activated(id) => { root.activated(i, id); }
         clicked => {
             if root.selecting {
                 root.select(i, self.shift);
-            } else {
+            } else if tile.link != "" {
                 root.open(tile.link);
             }
         }
@@ -1306,9 +1324,15 @@ export component CoverShelf {
     in property <length> min-size: 200px;
     in property <bool> round;
     in property <bool> selecting;
+    // Each tile's menu, the same for all.
+    in property <[MenuEntry]> entries;
+    // Whether "See all" beside the title opens a page with all of them.
+    in property <bool> more;
     callback open(link: string);
     callback select(index: int, range: bool);
     callback in-view(first: int, last: int);
+    callback activated(index: int, id: string);
+    callback see-all();
 
     property <length> gap: Theme.gap;
     property <int> columns: max(2, floor((self.width + self.gap) / (self.min-size + self.gap)));
@@ -1355,6 +1379,7 @@ export component CoverShelf {
         size: root.size;
         title: "Probe";
         names: [{ label: "Probe", link: "" }];
+        entries: root.entries;
     }
 
     // A sideways scroll settles once it pauses.
@@ -1381,6 +1406,11 @@ export component CoverShelf {
                 color: Theme.text;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+            if root.more: Link {
+                cross-axis-self-alignment: center;
+                text: "See all";
+                clicked => { root.see-all(); }
             }
             if root.last-first > 0: IconButton {
                 icon: Icons.back;
@@ -1456,6 +1486,8 @@ export component CoverShelf {
                             names: tile.names;
                             selecting: root.selecting;
                             selected: tile.selected;
+                            entries: root.entries;
+                            activated(id) => { root.activated(i, id); }
                             // A tile reached with Tab slides into view.
                             changed focused => {
                                 if self.focused && i < root.first {
@@ -1467,7 +1499,7 @@ export component CoverShelf {
                             clicked => {
                                 if root.selecting {
                                     root.select(i, self.shift);
-                                } else {
+                                } else if tile.link != "" {
                                     root.open(tile.link);
                                 }
                             }
