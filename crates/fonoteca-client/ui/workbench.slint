@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, IconButton, Icons, Link, Links, LinksLine, Name, PageHeader, PersonTile, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, PageHeader, PersonTile, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -43,6 +43,7 @@ export component Workbench inherits Window {
         "Icon button",
         "Selection bar",
         "Track table",
+        "List row",
     ];
     property <int> current;
     property <bool> long-text;
@@ -588,6 +589,31 @@ export component Workbench inherits Window {
                                         root.loved-3 = !root.loved-3;
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    if root.current == 13: Example {
+                        caption: "A list's rows, such as users: the name, a line about it cut short when it is long, the dots open the menu; a row without entries has no dots";
+                        VerticalLayout {
+                            ListRow {
+                                title: root.long-text ? root.long-title : "joe";
+                                details: root.long-text ? "joe.with.a.long.address@example.org · Admin · Settings · Stream · Download · Upload · Cover art · Comments · Podcasts · Share" : "Admin · Settings · Stream";
+                                entries: [{ id: "edit", label: "Edit", icon: Icons.pencil }];
+                                activated(id) => { root.event = id + " joe"; }
+                            }
+                            ListRow {
+                                title: "bea";
+                                details: "bea@example.org · Stream";
+                                entries: [
+                                    { id: "edit", label: "Edit", icon: Icons.pencil },
+                                    { id: "password", label: "Change password", icon: Icons.key },
+                                    { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
+                                ];
+                                activated(id) => { root.event = id + " bea"; }
+                            }
+                            ListRow {
+                                title: "guest";
                             }
                         }
                     }

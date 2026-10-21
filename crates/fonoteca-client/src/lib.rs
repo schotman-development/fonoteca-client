@@ -103,6 +103,48 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
     .expect("the event loop is running");
 }
 
+/// Changes the password of the account signed in at `server`, as
+/// `username`, or with an API key when that is empty. When it signs in with
+/// that password, also saves the new one where the account is saved, and
+/// returns a client signed in with it, since the one in use goes on sending
+/// the old one. Returns the word for the account page.
+async fn change_own_password(
+    client: Rc<Client>,
+    server: String,
+    username: String,
+    password: String,
+) -> Result<(Option<Client>, String), String> {
+    let name = match username.is_empty() {
+        true => {
+            let info = client.token_info().await;
+            info.map_err(|e| browse::refusal(&e))?.username
+        }
+        false => username.clone(),
+    };
+    client
+        .change_password(&name, &password)
+        .await
+        .map_err(|e| browse::refusal(&e))?;
+    if username.is_empty() {
+        return Ok((None, "Password changed.".into()));
+    }
+    let login = Login::Password { username, password };
+    let (_, fresh) = sign_in(&server, &login).await?;
+    let note = match store::load().await {
+        Some(mut account) => {
+            account.login = login;
+            match store::save(account).await {
+                Ok(()) => format!("Password changed, and saved in {}.", store::PLACE),
+                Err(e) => {
+                    format!("Password changed, but not saved, so the next start asks for it: {e}")
+                }
+            }
+        }
+        None => "Password changed, but not saved, so the next start asks for it.".into(),
+    };
+    Ok((Some(fresh), note))
+}
+
 async fn connect_listenbrainz(token: String) -> Result<ListenBrainz, String> {
     let client = listenbrainz::Client::new(token.clone()).map_err(|e| e.to_string())?;
     match client.validate_token().await.map_err(|e| e.to_string())? {
@@ -348,6 +390,25 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
         }
     });
 
+    ui.on_change_own_password({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |password| {
+            let ui = weak.unwrap();
+            let Some(client) = browse::client(&browser) else {
+                return;
+            };
+            let browser = browser.clone();
+            let (server, username) = (ui.get_address().into(), ui.get_username().into());
+            let task = change_own_password(client, server, username, password.into());
+            run(&ui, task, move |ui, (fresh, note)| {
+                if let Some(fresh) = fresh {
+                    browse::swap(&browser, fresh);
+                }
+                ui.set_saved_note(note.into());
+            });
+        }
+    });
+
     ui.on_reconnect({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || resume(&weak.unwrap(), &browser)
@@ -445,6 +506,17 @@ mod tests {
     /// The first song of the empty search, with more of its fields filled.
     const HARBOUR_LIGHTS: &str = r#"{"id":"t1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","artists":[{"id":"r1","name":"Mara Lind"}],"year":2021,"duration":252,"starred":"2024-01-01T00:00:00Z","coverArt":"al-a1","genres":[{"name":"Folk"},{"name":"Pop"}],"contributors":[{"role":"performer","subRole":"piano","artist":{"id":"r3","name":"Anna Bach"}}],"replayGain":{"trackGain":-6.2},"size":4404019,"samplingRate":44100}"#;
 
+    /// The user signed in, an admin while `ADMIN` is set.
+    fn joe() -> String {
+        format!(
+            r#"{{"username":"joe","scrobblingEnabled":true,"adminRole":{},"settingsRole":true,"downloadRole":true,"uploadRole":false,"playlistRole":true,"coverArtRole":false,"commentRole":false,"podcastRole":false,"streamRole":true,"jukeboxRole":false,"shareRole":false,"videoConversionRole":false,"folder":[1]}}"#,
+            ADMIN.load(Relaxed)
+        )
+    }
+
+    /// Another user, who may only play.
+    const BEA: &str = r#"{"username":"bea","email":"bea@example.org","scrobblingEnabled":false,"adminRole":false,"settingsRole":false,"downloadRole":false,"uploadRole":false,"playlistRole":false,"coverArtRole":false,"commentRole":false,"podcastRole":false,"streamRole":true,"jukeboxRole":false,"shareRole":false,"videoConversionRole":false}"#;
+
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// The playlist changes the server was asked for, each its method and
@@ -472,6 +544,26 @@ mod tests {
     static SCANS: AtomicUsize = AtomicUsize::new(0);
     static SCANNING: AtomicBool = AtomicBool::new(false);
     static SCAN_ASKS: AtomicUsize = AtomicUsize::new(0);
+    /// The user changes the server was asked for, as `PLAYLIST_WRITES` has
+    /// them; whether joe is an admin.
+    static USER_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static ADMIN: AtomicBool = AtomicBool::new(true);
+
+    /// A request's method and its arguments but the credentials.
+    fn write_of(request: &str) -> String {
+        let target = request.split_whitespace().nth(1).unwrap_or_default();
+        let (method, query) = target.split_once('?').unwrap_or((target, ""));
+        let credentials = ["u=", "t=", "s=", "p=", "v=", "c=", "f="];
+        let asked: Vec<&str> = query
+            .split('&')
+            .filter(|arg| !credentials.iter().any(|c| arg.starts_with(c)))
+            .collect();
+        format!(
+            "{} {}",
+            method.trim_start_matches("/rest/"),
+            asked.join("&")
+        )
+    }
 
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
@@ -634,22 +726,30 @@ mod tests {
             ok(
                 r#""playlist":{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}"#,
             )
+        } else if request.contains("/rest/getUsers") {
+            ok(&format!(r#""users":{{"user":[{},{BEA}]}}"#, joe()))
+        } else if request.contains("/rest/getUser") && param("username") == Some("joe") {
+            ok(&format!(r#""user":{}"#, joe()))
+        } else if ["createUser", "updateUser", "deleteUser", "changePassword"]
+            .iter()
+            .any(|change| request.contains(&format!("/rest/{change}")))
+        {
+            let write = write_of(request);
+            USER_WRITES.lock().unwrap().push(write.clone());
+            if write.contains("username=zed") {
+                reply(
+                    "501 Not Implemented",
+                    "text/plain",
+                    b"This endpoint is not implemented",
+                )
+            } else {
+                json(OK)
+            }
         } else if ["create", "update", "delete"]
             .iter()
             .any(|change| request.contains(&format!("/rest/{change}Playlist")))
         {
-            let target = request.split_whitespace().nth(1).unwrap_or_default();
-            let (method, query) = target.split_once('?').unwrap_or((target, ""));
-            let credentials = ["u=", "t=", "s=", "p=", "v=", "c=", "f="];
-            let asked: Vec<&str> = query
-                .split('&')
-                .filter(|arg| !credentials.iter().any(|c| arg.starts_with(c)))
-                .collect();
-            let write = format!(
-                "{} {}",
-                method.trim_start_matches("/rest/"),
-                asked.join("&")
-            );
+            let write = write_of(request);
             PLAYLIST_WRITES.lock().unwrap().push(write.clone());
             if write.contains("name=Moved") {
                 MOVED.store(true, Relaxed);
@@ -1171,6 +1271,118 @@ mod tests {
             .await;
             assert!(!ui.get_scanning());
             assert!(quiet().await, "the scan is followed once done");
+            // The server was down at sign-in, so this page asked who is
+            // signed in. An admin gets the users page.
+            wait_for("the roles", || ui.get_roles() != "").await;
+            assert_eq!(ui.get_roles(), "Admin · Settings · Stream · Download");
+            assert!(ui.get_may_administer());
+            // Your own password: the server's, then the saved one, which
+            // the library goes on with.
+            let writes = || USER_WRITES.lock().unwrap().clone();
+            USER_WRITES.lock().unwrap().clear();
+            ui.invoke_change_own_password("n3w pw".into());
+            wait_for("the password changed", || {
+                ui.get_saved_note() == "Password changed, and saved in your system's secret store."
+            })
+            .await;
+            assert_eq!(writes(), ["changePassword username=joe&password=n3w+pw"]);
+            let saved = store::load().await.expect("saved");
+            assert!(
+                matches!(saved.login, Login::Password { ref password, .. } if password == "n3w pw")
+            );
+            // Where the account couldn't be saved, it changes all the same.
+            store::forget().await.unwrap();
+            ui.invoke_change_own_password("n3w pw 2".into());
+            wait_for("the unsaved password changed", || {
+                ui.get_saved_note()
+                    == "Password changed, but not saved, so the next start asks for it."
+            })
+            .await;
+            assert_eq!(writes()[1], "changePassword username=joe&password=n3w+pw+2");
+            assert!(store::load().await.is_none());
+            store::save(saved).await.unwrap();
+            USER_WRITES.lock().unwrap().clear();
+            click(&ui, "Users");
+            assert_eq!(ui.get_page(), Page::Users);
+            wait_for("the users", || ui.get_user_rows().row_count() == 2).await;
+            let user = |row: usize| {
+                let user = ui.get_user_rows().row_data(row).unwrap();
+                (String::from(user.name), String::from(user.details), user.me)
+            };
+            assert_eq!(
+                user(0),
+                ("joe".into(), "Admin · Settings · Stream · Download".into(), true)
+            );
+            assert_eq!(user(1), ("bea".into(), "bea@example.org · Stream".into(), false));
+            // The dialog starts from the user's email and roles, or a new
+            // one's defaults.
+            let flags = |ui: &AppWindow| -> Vec<bool> { ui.get_asked_roles().iter().collect() };
+            let only = |on: &[usize]| -> Vec<bool> { (0..11).map(|i| on.contains(&i)).collect() };
+            ui.invoke_prepare_user("bea".into());
+            assert_eq!(ui.get_asked_email(), "bea@example.org");
+            assert_eq!(flags(&ui), only(&[2]));
+            ui.invoke_prepare_user("".into());
+            assert_eq!(ui.get_asked_email(), "");
+            assert_eq!(flags(&ui), only(&[1, 2]));
+            let roles = |on: &[usize]| slint::ModelRc::new(slint::VecModel::from(only(on)));
+            ui.invoke_create_user(
+                " cy ".into(),
+                "cy@example.org".into(),
+                "pw&1".into(),
+                roles(&[0, 2]),
+            );
+            wait_for("the user added", || ui.get_notice() == "Added cy.").await;
+            assert_eq!(
+                writes(),
+                ["createUser username=cy&password=pw%261&email=cy%40example.org&adminRole=true&settingsRole=false&streamRole=true&jukeboxRole=false&downloadRole=false&uploadRole=false&coverArtRole=false&commentRole=false&podcastRole=false&shareRole=false&videoConversionRole=false"]
+            );
+            ui.invoke_update_user("bea".into(), "b@example.org".into(), roles(&[3]));
+            wait_for("the user saved", || ui.get_notice() == "Saved bea.").await;
+            assert!(
+                writes()[1].starts_with("updateUser username=bea&email=b%40example.org&adminRole=false&settingsRole=false&streamRole=false&jukeboxRole=false&downloadRole=true"),
+                "{}",
+                writes()[1]
+            );
+            assert!(!writes()[1].contains("password"), "{}", writes()[1]);
+            // No email leaves theirs as it is.
+            ui.invoke_update_user("bea".into(), " ".into(), roles(&[3]));
+            wait_for("the user saved again", || writes().len() == 3).await;
+            assert!(
+                writes()[2].starts_with("updateUser username=bea&adminRole=false"),
+                "{}",
+                writes()[2]
+            );
+            ui.invoke_set_password("bea".into(), "new".into());
+            wait_for("the password set", || {
+                ui.get_notice() == "Changed the password of bea."
+            })
+            .await;
+            ui.invoke_delete_user("bea".into());
+            wait_for("the user deleted", || ui.get_notice() == "Deleted bea.").await;
+            assert_eq!(
+                writes()[3..],
+                [
+                    "changePassword username=bea&password=new",
+                    "deleteUser username=bea"
+                ]
+            );
+            assert_eq!(ui.get_page_problem(), "");
+            // A server that doesn't let apps manage users says so.
+            ui.invoke_delete_user("zed".into());
+            wait_for("the refusal", || ui.get_page_problem() != "").await;
+            assert_eq!(ui.get_page_problem(), "Your server doesn't let apps do this.");
+            // No longer an admin: no scan, no users page.
+            ADMIN.store(false, Relaxed);
+            ui.invoke_set_password("bea".into(), "again".into());
+            wait_for("joe's new roles", || !ui.get_may_administer()).await;
+            assert_eq!(ui.get_roles(), "Settings · Stream · Download");
+            assert!(!ui.get_sections().iter().any(|section| section == "Users"));
+            ADMIN.store(true, Relaxed);
+            ui.invoke_set_password("bea".into(), "again".into());
+            wait_for("joe an admin again", || ui.get_may_administer()).await;
+            ui.set_notice("".into());
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Account);
             ui.invoke_back();
             wait_for("the albums page", || links(&ui).len() == 3).await;
             assert_eq!(picked(&ui), ids(&["b1"]));
@@ -1255,7 +1467,7 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 9);
+            assert_eq!(ui.get_sections().row_count(), 10);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
@@ -1287,7 +1499,8 @@ mod tests {
                     "Playlists",
                     "Road Trip",
                     "Empty",
-                    "Account"
+                    "Account",
+                    "Users"
                 ]
             );
             assert_eq!(
@@ -1303,13 +1516,14 @@ mod tests {
                     "Playlists",
                     "Playlists",
                     "Playlists",
+                    "",
                     ""
                 ]
             );
             // Each with its icon in front, but for the playlists.
             let icons = ui.global::<Icons>();
             let pictures = strings(ui.get_section_icons());
-            assert_eq!(pictures.len(), 11);
+            assert_eq!(pictures.len(), 12);
             assert_eq!(pictures[0], icons.get_home().as_str());
             let library = [
                 icons.get_album(),
@@ -1322,6 +1536,7 @@ mod tests {
             assert_eq!(pictures[1..7], library.map(String::from));
             assert_eq!(pictures[7..10], ["", "", ""]);
             assert_eq!(pictures[10], icons.get_person().as_str());
+            assert_eq!(pictures[11], icons.get_people().as_str());
             ui.invoke_show_section(8);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);

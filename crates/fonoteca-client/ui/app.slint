@@ -1,15 +1,24 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Input, Link, Links, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
-// new name, or whether to delete it.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist }
+// new name, or whether to delete it; a new user, changes to one, a new
+// password for one or for the account signed in, or whether to delete one.
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-user, edit-user, user-password, own-password, delete-user }
+
+// A user on the users page: their name, their email and what they may do,
+// and whether it is the account signed in.
+export struct UserRow {
+    name: string,
+    details: string,
+    me: bool,
+}
 
 // What a track's page says about it under one heading, such as its album.
 export struct Detail {
@@ -377,6 +386,14 @@ export component AppWindow inherits Window {
     // whether one is going.
     in property <string> scan-status;
     in property <bool> scanning;
+    // What the account signed in may do, as far as the server said; whether
+    // it may do what only admins may, such as have the server scan, which it
+    // may when the server doesn't say.
+    in property <string> roles;
+    in property <bool> may-administer: true;
+    in property <[UserRow]> user-rows;
+    // The roles a user can be given, in the order of `asked-roles`.
+    in property <[string]> role-names;
     in property <[Track]> tracks;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, and every column there is to pick
@@ -446,12 +463,39 @@ export component AppWindow inherits Window {
     callback add-line-to-playlist(row: int, id: string);
     callback add-track-to-playlist(row: int, id: string);
     callback add-selection-to-playlist(id: string);
+    // Users: fills in the dialog's email and roles for the user with this
+    // name, or a new one's for "", before it opens; then a user made,
+    // changed, given a password or deleted; the account signed in given a
+    // new password.
+    callback prepare-user(name: string);
+    callback create-user(name: string, email: string, password: string, roles: [bool]);
+    callback update-user(name: string, email: string, roles: [bool]);
+    callback set-password(name: string, password: string);
+    callback delete-user(name: string);
+    callback change-own-password(password: string);
 
     property <Asking> asking;
     property <string> asked-name;
+    in-out property <string> asked-email;
+    in-out property <[bool]> asked-roles;
+    property <string> asked-password;
+    property <string> asked-repeat;
+    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-user;
+    property <bool> asks-user: root.asking == Asking.new-user || root.asking == Asking.edit-user;
+    property <bool> asks-password: root.asking == Asking.new-user || root.asking == Asking.user-password || root.asking == Asking.own-password;
+    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-user;
 
     function ask(what: Asking) {
         root.asked-name = what == Asking.rename-playlist ? root.header-title : "";
+        root.asking = what;
+    }
+
+    // Asks about the user with this name, or a new one for "".
+    function ask-user(what: Asking, name: string) {
+        root.prepare-user(name);
+        root.asked-name = name;
+        root.asked-password = "";
+        root.asked-repeat = "";
         root.asking = what;
     }
 
@@ -462,8 +506,47 @@ export component AppWindow inherits Window {
             root.rename-playlist(root.asked-name);
         } else if root.asking == Asking.delete-playlist {
             root.delete-playlist();
+        } else if root.asking == Asking.new-user {
+            root.create-user(root.asked-name, root.asked-email, root.asked-password, root.asked-roles);
+        } else if root.asking == Asking.edit-user {
+            root.update-user(root.asked-name, root.asked-email, root.asked-roles);
+        } else if root.asking == Asking.user-password {
+            root.set-password(root.asked-name, root.asked-password);
+        } else if root.asking == Asking.own-password {
+            root.change-own-password(root.asked-password);
+        } else if root.asking == Asking.delete-user {
+            root.delete-user(root.asked-name);
         }
+        root.asked-password = "";
+        root.asked-repeat = "";
         root.asking = Asking.nothing;
+    }
+
+    function asked-title() -> string {
+        if root.asking == Asking.new-playlist { return "New playlist"; }
+        if root.asking == Asking.rename-playlist { return "Rename playlist"; }
+        if root.asking == Asking.delete-playlist { return "Delete “" + root.header-title + "”?"; }
+        if root.asking == Asking.new-user { return "New user"; }
+        if root.asking == Asking.edit-user { return "Edit “" + root.asked-name + "”"; }
+        if root.asking == Asking.user-password { return "New password for “" + root.asked-name + "”"; }
+        if root.asking == Asking.own-password { return "Change your password"; }
+        return "Delete “" + root.asked-name + "”?";
+    }
+
+    function asked-action() -> string {
+        if root.deleting { return "Delete"; }
+        if root.asking == Asking.rename-playlist { return "Rename"; }
+        if root.asking == Asking.edit-user { return "Save"; }
+        if root.asking == Asking.user-password || root.asking == Asking.own-password { return "Change"; }
+        return "Create";
+    }
+
+    // Whether what is needed is filled in: a name, a new user's email, and
+    // the password twice, the same.
+    function may-answer() -> bool {
+        return (!root.asks-name || root.asked-name != "")
+            && (root.asking != Asking.new-user || root.asked-email != "")
+            && (!root.asks-password || (root.asked-password != "" && root.asked-password == root.asked-repeat));
     }
 
     // A page that is a table: the tracks, the compositions or a folder.
@@ -961,6 +1044,10 @@ export component AppWindow inherits Window {
                             text: root.signed-in;
                             wrap: word-wrap;
                         }
+                        if root.roles != "": Text {
+                            text: "Roles: " + root.roles;
+                            wrap: word-wrap;
+                        }
                         Text {
                             text: root.listenbrainz-user == "" ? "ListenBrainz not connected" : "ListenBrainz: " + root.listenbrainz-user;
                             wrap: word-wrap;
@@ -969,31 +1056,73 @@ export component AppWindow inherits Window {
                         if root.problem != "": Problem { text: root.problem; }
                         HorizontalLayout {
                             alignment: start;
+                            spacing: 8px;
                             Button {
                                 text: "Sign out";
                                 enabled: !root.busy;
                                 clicked => { root.sign-out(); }
                             }
-                        }
-                        VerticalLayout {
-                            padding-top: 16px;
-                            Text {
-                                text: "Library";
-                                font-size: Theme.heading;
-                                font-weight: 600;
-                                color: Theme.text;
+                            Button {
+                                text: "Change password";
+                                enabled: !root.busy;
+                                clicked => { root.ask-user(Asking.own-password, ""); }
                             }
                         }
-                        if root.scan-status != "": Text {
-                            text: root.scan-status;
-                            wrap: word-wrap;
+                        if root.may-administer: VerticalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                padding-top: 16px;
+                                Text {
+                                    text: "Library";
+                                    font-size: Theme.heading;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                }
+                            }
+                            if root.scan-status != "": Text {
+                                text: root.scan-status;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                Button {
+                                    text: "Scan library";
+                                    enabled: !root.scanning;
+                                    clicked => { root.start-scan(); }
+                                }
+                            }
                         }
+                    }
+                    if root.page == Page.users: VerticalLayout {
+                        max-width: 800px;
+                        spacing: 4px;
                         HorizontalLayout {
-                            alignment: start;
+                            padding-bottom: 8px;
+                            spacing: 8px;
+                            Heading {
+                                horizontal-stretch: 1;
+                                text: "Users";
+                            }
                             Button {
-                                text: "Scan library";
-                                enabled: !root.scanning;
-                                clicked => { root.start-scan(); }
+                                text: "Add user";
+                                clicked => { root.ask-user(Asking.new-user, ""); }
+                            }
+                        }
+                        for user in root.user-rows: ListRow {
+                            title: user.name;
+                            details: user.details;
+                            // Your own password is changed on the account
+                            // page, which saves it, and you don't delete
+                            // yourself here.
+                            entries: user.me ? [
+                                { id: "edit", label: "Edit", icon: Icons.pencil },
+                            ] : [
+                                { id: "edit", label: "Edit", icon: Icons.pencil },
+                                { id: "password", label: "Change password", icon: Icons.key },
+                                { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
+                            ];
+                            activated(id) => {
+                                root.ask-user(id == "edit" ? Asking.edit-user : id == "password" ? Asking.user-password : Asking.delete-user, user.name);
                             }
                         }
                     }
@@ -1249,20 +1378,59 @@ export component AppWindow inherits Window {
                 padding: 20px;
                 spacing: 16px;
                 Text {
-                    text: root.asking == Asking.new-playlist ? "New playlist" : root.asking == Asking.rename-playlist ? "Rename playlist" : "Delete “" + root.header-title + "”?";
+                    text: root.asked-title();
                     font-size: Theme.heading;
                     font-weight: 600;
                     color: Theme.text;
                     wrap: word-wrap;
                 }
-                if root.asking != Asking.delete-playlist: LineEdit {
+                if root.asks-name: LineEdit {
                     text <=> root.asked-name;
-                    placeholder-text: "Name";
+                    placeholder-text: root.asking == Asking.new-user ? "Username" : "Name";
                     init => { self.focus(); }
                     accepted => {
-                        if root.asked-name != "" {
+                        if root.may-answer() {
                             root.answer();
                         }
+                    }
+                }
+                if root.asks-user: LineEdit {
+                    text <=> root.asked-email;
+                    placeholder-text: "Email";
+                    init => {
+                        if root.asking == Asking.edit-user {
+                            self.focus();
+                        }
+                    }
+                }
+                if root.asks-password: LineEdit {
+                    input-type: InputType.password;
+                    text <=> root.asked-password;
+                    placeholder-text: root.asking == Asking.new-user ? "Password" : "New password";
+                    init => {
+                        if root.asking != Asking.new-user {
+                            self.focus();
+                        }
+                    }
+                }
+                if root.asks-password: LineEdit {
+                    input-type: InputType.password;
+                    text <=> root.asked-repeat;
+                    placeholder-text: "Repeat password";
+                    accepted => {
+                        if root.may-answer() {
+                            root.answer();
+                        }
+                    }
+                }
+                if root.asks-user: GridLayout {
+                    spacing: 4px;
+                    for role[i] in root.role-names: CheckBox {
+                        col: mod(i, 2);
+                        row: floor(i / 2);
+                        text: role;
+                        checked: root.asked-roles[i];
+                        toggled => { root.asked-roles[i] = self.checked; }
                     }
                 }
                 HorizontalLayout {
@@ -1270,12 +1438,16 @@ export component AppWindow inherits Window {
                     spacing: 8px;
                     Button {
                         text: "Cancel";
-                        clicked => { root.asking = Asking.nothing; }
+                        clicked => {
+                            root.asked-password = "";
+                            root.asked-repeat = "";
+                            root.asking = Asking.nothing;
+                        }
                     }
                     Button {
-                        text: root.asking == Asking.new-playlist ? "Create" : root.asking == Asking.rename-playlist ? "Rename" : "Delete";
+                        text: root.asked-action();
                         primary: true;
-                        enabled: root.asking == Asking.delete-playlist || root.asked-name != "";
+                        enabled: root.may-answer();
                         clicked => { root.answer(); }
                     }
                 }

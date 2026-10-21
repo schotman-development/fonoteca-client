@@ -3,7 +3,8 @@
 //! as "home", "albums", "artists", "tracks", "playlists", "album:<id>",
 //! "artist:<id>", "playlist:<id>" or "song:<id>", the files' "folders" and
 //! "folder:<id>", and on servers with Fonoteca's compositions "composers",
-//! "compositions", "composer:<id>" or "composition:<id>".
+//! "compositions", "composer:<id>" or "composition:<id>", and "account" and,
+//! for admins, "users".
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -18,7 +19,7 @@ use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
     GenericMediaType, Indexes, ItemDate, ListOptions, MediaType, Playlist, PlaylistUpdate,
-    PlaylistWithSongs, ScanStatus, SearchOptions, Span,
+    PlaylistWithSongs, Roles, ScanStatus, SearchOptions, Span, User, UserUpdate,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
@@ -27,7 +28,7 @@ use slint::{
 
 use crate::{
     AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, Track, TrackColumn,
-    TrackLine, prefs,
+    TrackLine, UserRow, prefs,
 };
 
 /// The newest albums on the home page.
@@ -145,6 +146,10 @@ pub struct Browser {
     notice: Timer,
     /// Asks how the server's scan is going while the account page is up.
     scan: Timer,
+    /// The account signed in, once the server has said what it may do, and
+    /// the users on the users page.
+    me: Option<User>,
+    users: Vec<User>,
 }
 
 pub type Shared = Rc<RefCell<Browser>>;
@@ -163,9 +168,23 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_composition_filter("".into());
     ui.set_track_filter("".into());
     ui.set_folder_filter("".into());
+    ui.set_roles("".into());
+    ui.set_may_administer(true);
     sidebar(ui, browser);
     load_playlists(ui, browser);
+    load_me(ui, browser);
     open(ui, browser, "home".into());
+}
+
+/// The client signed in with, for calls made outside the pages.
+pub fn client(browser: &Shared) -> Option<Rc<Client>> {
+    browser.borrow().client.clone()
+}
+
+/// Goes on with `client` instead, signed in anew after a password change,
+/// on the page on screen.
+pub fn swap(browser: &Shared, client: Client) {
+    browser.borrow_mut().client = Some(Rc::new(client));
 }
 
 /// Whether the library is open: signed in, and not signed out since.
@@ -192,7 +211,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         move |index| {
             let link = usize::try_from(index).ok().and_then(|index| {
                 let b = browser.borrow();
-                sections(&b.playlists, offers_compositions(&b))
+                sections(&b.playlists, offers_compositions(&b), admin(&b))
                     .into_iter()
                     .nth(index)
                     .map(|(link, ..)| link)
@@ -290,6 +309,86 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_start_scan({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || start_scan(&weak.unwrap(), &browser)
+    });
+    ui.set_role_names(ModelRc::new(VecModel::from(
+        ROLE_NAMES.map(SharedString::from).to_vec(),
+    )));
+    ui.on_prepare_user({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name| {
+            let ui = weak.unwrap();
+            let b = browser.borrow();
+            let user = b.users.iter().find(|user| user.username == name.as_str());
+            let flags = user.map_or(NEW_USER_ROLES, role_flags);
+            let email = user
+                .and_then(|user| user.email.as_deref())
+                .unwrap_or_default();
+            ui.set_asked_email(email.into());
+            ui.set_asked_roles(ModelRc::new(VecModel::from(flags.to_vec())));
+        }
+    });
+    ui.on_create_user({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name, email, password, flags| {
+            let (name, email, password) = (
+                name.trim().to_owned(),
+                email.trim().to_owned(),
+                password.to_string(),
+            );
+            let roles = roles_from(&flags.iter().collect::<Vec<_>>());
+            change_users(
+                &weak.unwrap(),
+                &browser,
+                format!("Added {name}."),
+                |client| async move {
+                    client
+                        .create_user(&name, &password, &email, &roles, &[])
+                        .await
+                },
+            );
+        }
+    });
+    ui.on_update_user({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name, email, flags| {
+            let (name, email) = (name.to_string(), email.trim().to_owned());
+            let roles = roles_from(&flags.iter().collect::<Vec<_>>());
+            change_users(
+                &weak.unwrap(),
+                &browser,
+                format!("Saved {name}."),
+                |client| async move {
+                    let update = UserUpdate {
+                        email: Some(email.as_str()).filter(|email| !email.is_empty()),
+                        roles,
+                        ..UserUpdate::default()
+                    };
+                    client.update_user(&name, &update).await
+                },
+            );
+        }
+    });
+    ui.on_set_password({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name, password| {
+            let (name, password) = (name.to_string(), password.to_string());
+            let done = format!("Changed the password of {name}.");
+            change_users(&weak.unwrap(), &browser, done, |client| async move {
+                client.change_password(&name, &password).await
+            });
+        }
+    });
+    ui.on_delete_user({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name| {
+            let name = name.to_string();
+            change_users(
+                &weak.unwrap(),
+                &browser,
+                format!("Deleted {name}."),
+                |client| async move { client.delete_user(&name).await },
+            );
+        }
     });
     ui.on_delete_playlist({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -561,6 +660,17 @@ fn show(ui: &AppWindow, browser: &Shared) {
         "account" => {
             ui.set_page(Page::Account);
             scan_status(ui, browser);
+            // Asks again when the server didn't say at sign-in.
+            if browser.borrow().me.is_none() {
+                load_me(ui, browser);
+            }
+        }
+        "users" => {
+            ui.set_page(Page::Users);
+            // Cleared here, not on a reload after a change, which keeps them
+            // on screen until the new ones come.
+            ui.set_user_rows(ModelRc::default());
+            users(ui, browser);
         }
         _ => {
             ui.set_page(Page::Albums);
@@ -576,10 +686,15 @@ fn offers_compositions(b: &Browser) -> bool {
         .is_some_and(|client| client.supports(COMPOSITIONS))
 }
 
+/// Whether the account signed in is one of the server's admins.
+fn admin(b: &Browser) -> bool {
+    b.me.as_ref().is_some_and(|me| me.admin_role)
+}
+
 /// The sidebar's entries, as links, labels and groups: the home page, the
 /// library's pages, with the composers and compositions where the server has
-/// them, the playlists and the account.
-fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &str)> {
+/// them, the playlists, the account and for admins the users.
+fn sections(playlists: &[Playlist], compositions: bool, admin: bool) -> Vec<(String, &str, &str)> {
     let library = [
         ("albums", "Albums", true),
         ("artists", "Artists", true),
@@ -601,13 +716,14 @@ fn sections(playlists: &[Playlist], compositions: bool) -> Vec<(String, &str, &s
         .chain([("playlists".to_owned(), "Playlists", "Playlists")])
         .chain(playlists)
         .chain([("account".to_owned(), "Account", "")])
+        .chain(admin.then(|| ("users".to_owned(), "Users", "")))
         .collect()
 }
 
 /// The sidebar entry of the page on screen, or -1 when it has none.
 fn section(b: &Browser) -> i32 {
     let link = b.history.get(b.at);
-    let at = sections(&b.playlists, offers_compositions(b))
+    let at = sections(&b.playlists, offers_compositions(b), admin(b))
         .iter()
         .position(|section| Some(&section.0) == link);
     at.map_or(-1, |at| at as i32)
@@ -619,7 +735,7 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let icons = ui.global::<Icons>();
     let (mut labels, mut groups, mut pictures) = (Vec::new(), Vec::new(), Vec::new());
-    for (link, label, group) in sections(&b.playlists, offers_compositions(&b)) {
+    for (link, label, group) in sections(&b.playlists, offers_compositions(&b), admin(&b)) {
         labels.push(SharedString::from(label));
         groups.push(SharedString::from(group));
         pictures.push(section_icon(&icons, &link));
@@ -652,6 +768,7 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
         "compositions" => icons.get_composition(),
         "folders" => icons.get_folder(),
         "playlists" | "playlist" => SharedString::new(),
+        "users" => icons.get_people(),
         _ => icons.get_person(),
     }
 }
@@ -2631,6 +2748,194 @@ fn show_scan(ui: &AppWindow, browser: &Shared, status: ScanStatus) {
     }
 }
 
+/// The roles a user can be given, in the order of the dialog's checkboxes
+/// and of `role_flags`.
+const ROLE_NAMES: [&str; 11] = [
+    "Admin",
+    "Settings",
+    "Stream",
+    "Download",
+    "Upload",
+    "Cover art",
+    "Comments",
+    "Podcasts",
+    "Share",
+    "Jukebox",
+    "Video",
+];
+
+/// A new user's roles: what the spec has createUser give one by default,
+/// settings and stream.
+const NEW_USER_ROLES: [bool; 11] = [
+    false, true, true, false, false, false, false, false, false, false, false,
+];
+
+fn role_flags(user: &User) -> [bool; 11] {
+    [
+        user.admin_role,
+        user.settings_role,
+        user.stream_role,
+        user.download_role,
+        user.upload_role,
+        user.cover_art_role,
+        user.comment_role,
+        user.podcast_role,
+        user.share_role,
+        user.jukebox_role,
+        user.video_conversion_role,
+    ]
+}
+
+/// Every role, on or off, from the dialog's checkboxes.
+fn roles_from(flags: &[bool]) -> Roles {
+    let flag = |i: usize| flags.get(i).copied();
+    Roles {
+        admin: flag(0),
+        settings: flag(1),
+        stream: flag(2),
+        download: flag(3),
+        upload: flag(4),
+        cover_art: flag(5),
+        comment: flag(6),
+        podcast: flag(7),
+        share: flag(8),
+        jukebox: flag(9),
+        video_conversion: flag(10),
+    }
+}
+
+/// "Admin · Stream · Share": the roles a user has.
+fn role_text(user: &User) -> String {
+    ROLE_NAMES
+        .iter()
+        .zip(role_flags(user))
+        .filter(|&(_, on)| on)
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Asks who is signed in and what they may do, for the account page's
+/// roles and scan, and the sidebar's users for admins. A server that doesn't
+/// say leaves the scan offered.
+fn load_me(ui: &AppWindow, browser: &Shared) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    // Empty when signed in with an API key, whose user the server names.
+    let name = ui.get_username().to_string();
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let user = async {
+            let name = match name.is_empty() {
+                true => client.token_info().await?.username,
+                false => name,
+            };
+            client.get_user(&name).await
+        }
+        .await
+        .ok();
+        let Some(ui) = weak.upgrade() else { return };
+        let signed_in = browser
+            .borrow()
+            .client
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(current, &client));
+        if !signed_in {
+            return;
+        }
+        ui.set_roles(user.as_ref().map(role_text).unwrap_or_default().into());
+        ui.set_may_administer(user.as_ref().is_none_or(|user| user.admin_role));
+        browser.borrow_mut().me = user;
+        sidebar(&ui, &browser);
+    })
+    .expect("the event loop is running");
+}
+
+/// The users page: everyone on the server, with their email and roles.
+fn users(ui: &AppWindow, browser: &Shared) {
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_users().await },
+        |ui, browser, users| {
+            let me = browser.borrow().me.as_ref().map(|me| me.username.clone());
+            let rows: Vec<UserRow> = users
+                .user
+                .iter()
+                .map(|user| {
+                    let email = user.email.as_deref().unwrap_or_default();
+                    let details: Vec<String> = [email.to_owned(), role_text(user)]
+                        .into_iter()
+                        .filter(|part| !part.is_empty())
+                        .collect();
+                    UserRow {
+                        name: user.username.as_str().into(),
+                        details: details.join(" · ").into(),
+                        me: me.as_deref() == Some(user.username.as_str()),
+                    }
+                })
+                .collect();
+            ui.set_user_rows(ModelRc::new(VecModel::from(rows)));
+            browser.borrow_mut().users = users.user;
+        },
+    );
+}
+
+/// Has the server change its users with `task`, then shows them anew with
+/// `done` as a notice, or says why it didn't.
+fn change_users<F: Future<Output = opensubsonic::Result<()>> + 'static>(
+    ui: &AppWindow,
+    browser: &Shared,
+    done: String,
+    task: impl FnOnce(Rc<Client>) -> F,
+) {
+    change(ui, browser, done, task, |ui, browser| {
+        if ui.get_page() == Page::Users {
+            users(ui, browser);
+        }
+        // An admin may just have changed their own roles.
+        load_me(ui, browser);
+    });
+}
+
+/// Has the server make a change with `task`, then puts up `done` as a
+/// notice and runs `then`, or says why it didn't.
+fn change<F: Future<Output = opensubsonic::Result<()>> + 'static>(
+    ui: &AppWindow,
+    browser: &Shared,
+    done: String,
+    task: impl FnOnce(Rc<Client>) -> F,
+    then: fn(&AppWindow, &Shared),
+) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    ui.set_page_problem("".into());
+    let task = task(client);
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let result = task.await;
+        let Some(ui) = weak.upgrade() else { return };
+        match result {
+            Ok(()) => {
+                notify(&ui, &browser, done);
+                then(&ui, &browser);
+            }
+            Err(e) => ui.set_page_problem(refusal(&e).into()),
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Why the server didn't do what was asked, in words for the page.
+pub fn refusal(e: &opensubsonic::Error) -> String {
+    match e {
+        opensubsonic::Error::Status(501) => "Your server doesn't let apps do this.".into(),
+        e => format!("Your server didn't take that: {e}"),
+    }
+}
+
 /// "Scanning, 12 items so far…" or "146 items scanned.", from what the
 /// server counted.
 fn scan_text(status: &ScanStatus) -> String {
@@ -3578,9 +3883,59 @@ mod tests {
     }
 
     #[test]
+    fn each_role_under_its_own_name() {
+        let spec = [
+            "adminRole",
+            "settingsRole",
+            "streamRole",
+            "downloadRole",
+            "uploadRole",
+            "coverArtRole",
+            "commentRole",
+            "podcastRole",
+            "shareRole",
+            "jukeboxRole",
+            "videoConversionRole",
+        ];
+        for (i, role) in spec.iter().enumerate() {
+            let roles: Vec<String> = spec
+                .iter()
+                .map(|other| format!(r#""{other}":{}"#, other == role))
+                .collect();
+            let user = format!(
+                r#"{{"username":"u","scrobblingEnabled":false,"playlistRole":false,{}}}"#,
+                roles.join(",")
+            );
+            let user: User = serde_json::from_str(&user).unwrap();
+            assert_eq!(role_text(&user), ROLE_NAMES[i]);
+            let mut flags = [false; 11];
+            flags[i] = true;
+            let asked = roles_from(&flags);
+            let asked = [
+                asked.admin,
+                asked.settings,
+                asked.stream,
+                asked.download,
+                asked.upload,
+                asked.cover_art,
+                asked.comment,
+                asked.podcast,
+                asked.share,
+                asked.jukebox,
+                asked.video_conversion,
+            ];
+            assert_eq!(
+                asked.iter().position(|&on| on == Some(true)),
+                Some(i),
+                "{role}"
+            );
+        }
+    }
+
+    #[test]
     fn composers_only_where_the_server_has_them() {
         let labels = |compositions| -> Vec<String> {
-            sections(&[], compositions)
+            sections(&[], compositions, false)
                 .into_iter()
                 .map(|(_, label, _)| label.to_owned())
                 .collect()

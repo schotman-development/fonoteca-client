@@ -65,6 +65,8 @@ export global Icons {
     out property <string> down: "M12 5v14 M6 13l6 6 6-6";
     out property <string> note: "M10 17V5l9-2v12 M10 17a3 3 0 1 1-6 0a3 3 0 1 1 6 0 M19 15a3 3 0 1 1-6 0a3 3 0 1 1 6 0";
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
+    out property <string> people: "M9 11a3.5 3.5 0 1 1 0-7a3.5 3.5 0 1 1 0 7z M2 20c0-3.5 3.1-5.5 7-5.5s7 2 7 5.5 M16 4.3a3.5 3.5 0 0 1 0 6.4 M18 14.8c2.4.6 4 2.4 4 5.2";
+    out property <string> key: "M8 19a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M10.8 12.2L20 3 M16 7l3 3 M13.5 9.5l2 2";
     out property <string> check: "M5 12.5l4.5 4.5 9.5-10";
     out property <string> close: "M6 6l12 12 M18 6L6 18";
     out property <string> plus: "M12 5v14 M5 12h14";
@@ -905,6 +907,45 @@ export struct TrackLine {
     selected: bool,
     album: Name,
     artists: [Name],
+}
+
+// One item of a list, such as a user: its name, a line about it, and its
+// menu. A list is not a table: no columns, filter, heart or selection.
+export component ListRow inherits Rectangle {
+    in property <string> title;
+    in property <string> details;
+    in property <[MenuEntry]> entries;
+    callback activated(id: string);
+    accessible-role: list-item;
+    accessible-label: self.title;
+
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 12px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                font-size: Theme.body;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.details != "": Text {
+                text: root.details;
+                font-size: Theme.small;
+                color: Theme.muted;
+                overflow: elide;
+            }
+        }
+        if root.entries.length > 0: MoreMenu {
+            cross-axis-self-alignment: center;
+            entries: root.entries;
+            activated(id) => { root.activated(id); }
+        }
+    }
 }
 
 component TableCell inherits Rectangle {
