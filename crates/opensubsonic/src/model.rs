@@ -1171,6 +1171,61 @@ pub struct TokenInfo {
     pub username: String,
 }
 
+/// A user, with what it may do.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/user/>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct User {
+    /// Username
+    pub username: String,
+    /// In the spec's examples, not its table.
+    pub email: Option<String>,
+    /// Whether scrobling is enabled for the user
+    pub scrobbling_enabled: bool,
+    pub max_bit_rate: Option<i64>,
+    /// Whether the user is an admin
+    pub admin_role: bool,
+    /// Whether the user is can edit settings
+    pub settings_role: bool,
+    /// Whether the user can download
+    pub download_role: bool,
+    /// Whether the user can upload
+    pub upload_role: bool,
+    /// Whether the user can create playlists
+    pub playlist_role: bool,
+    /// Whether the user can get cover art
+    pub cover_art_role: bool,
+    /// Whether the user can create comments
+    pub comment_role: bool,
+    /// Whether the user can create/refresh podcasts
+    pub podcast_role: bool,
+    /// Whether the user can stream
+    pub stream_role: bool,
+    /// Whether the user can control the jukebox
+    pub jukebox_role: bool,
+    /// Whether the user can share
+    pub share_role: bool,
+    /// Whether the user can convert videos
+    pub video_conversion_role: bool,
+    /// Last time the avatar was changed [ISO 8601]
+    pub avatar_last_changed: Option<String>,
+    /// Folder ID(s)
+    #[serde(default)]
+    pub folder: Vec<i64>,
+}
+
+/// Users.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/users/>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Users {
+    /// Array of users
+    #[serde(default)]
+    pub user: Vec<User>,
+}
+
 /// The error element of a failed response.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/error/>

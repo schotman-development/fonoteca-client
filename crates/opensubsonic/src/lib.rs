@@ -1,6 +1,6 @@
 //! Client for the [OpenSubsonic API](https://opensubsonic.netlify.app): the
-//! calls for browsing a music library, searching it, starring and rating, and
-//! managing playlists. Responses are requested as JSON.
+//! calls for browsing a music library, searching it, starring and rating,
+//! managing playlists and users. Responses are requested as JSON.
 //!
 //! Call [`Client::get_open_subsonic_extensions`] before anything else. It
 //! never sends credentials, it shows whether `apiKeyAuthentication` is offered
@@ -191,6 +191,23 @@ impl Client {
         true
     }
 
+    /// Refuses before a call that carries a password when the server is
+    /// neither https nor on this machine, where the password would cross the
+    /// network readable.
+    fn may_send_password(&self) -> Result<()> {
+        let host = self.rest.host_str().unwrap_or_default();
+        let local = host == "localhost"
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback());
+        if self.rest.scheme() == "https" || local {
+            Ok(())
+        } else {
+            Err(Error::PlainHttp)
+        }
+    }
+
     async fn send(&self, endpoint: &str, params: &Params) -> Result<Body> {
         loop {
             let (request, method) = self.request(endpoint, params)?;
@@ -345,6 +362,9 @@ pub enum Error {
     Json(serde_json::Error),
     /// No secure random source for the token salt.
     Random(getrandom::Error),
+    /// A password would have gone to a plain http server elsewhere on the
+    /// network; nothing was sent.
+    PlainHttp,
     Unexpected(String),
 }
 
@@ -368,6 +388,7 @@ impl fmt::Display for Error {
             ),
             Error::Json(e) => write!(f, "unexpected response: {e}"),
             Error::Random(e) => write!(f, "no random source: {e}"),
+            Error::PlainHttp => write!(f, "a password is only sent to an https address"),
             Error::Unexpected(what) => write!(f, "{what}"),
         }
     }
@@ -707,5 +728,152 @@ mod tests {
         assert_eq!(years.to.and_then(|to| to.year), Some(1808));
         let log = log.lock().unwrap();
         assert!(log[1].contains("composerId=ar-1"), "{}", log[1]);
+    }
+
+    #[test]
+    fn passwords_go_only_over_https_or_to_this_machine() {
+        let may = |server: &str| {
+            Client::new(server, Auth::ApiKey("K".into()))
+                .unwrap()
+                .may_send_password()
+                .is_ok()
+        };
+        for server in [
+            "https://music.example.org",
+            "http://localhost:4533",
+            "http://127.0.0.1:4533",
+            "http://[::1]:4533",
+        ] {
+            assert!(may(server), "{server}");
+        }
+        for server in [
+            "http://music.example.org",
+            "http://192.168.1.10:4533",
+            "http://localhost.example.org",
+        ] {
+            assert!(!may(server), "{server}");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_password_call_goes_to_plain_http() {
+        let client = Client::new("http://music.example.org", Auth::ApiKey("K".into())).unwrap();
+        let refused = |result: Result<()>| matches!(result, Err(Error::PlainHttp));
+        assert!(refused(client.change_password("joe", "new").await));
+        assert!(refused(
+            client
+                .create_user("ann", "new", "a@example.org", &Roles::default(), &[])
+                .await
+        ));
+        let update = UserUpdate {
+            password: Some("new"),
+            ..UserUpdate::default()
+        };
+        assert!(refused(client.update_user("ann", &update).await));
+    }
+
+    #[tokio::test]
+    async fn users_in_navidromes_shape() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("getOpenSubsonicExtensions") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[{"name":"formPost","versions":[1]}]}}"#
+            } else if request.contains("getUsers") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","users":{"user":[{"username":"admin","scrobblingEnabled":true,"adminRole":true,"settingsRole":false,"downloadRole":true,"uploadRole":false,"playlistRole":false,"coverArtRole":true,"commentRole":false,"podcastRole":false,"streamRole":true,"jukeboxRole":false,"shareRole":true,"videoConversionRole":false,"folder":[1]}]}}}"#
+            } else if request.contains("getUser") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","user":{"username":"admin","scrobblingEnabled":true,"adminRole":true,"settingsRole":false,"downloadRole":true,"uploadRole":false,"playlistRole":false,"coverArtRole":true,"commentRole":false,"podcastRole":false,"streamRole":true,"jukeboxRole":false,"shareRole":true,"videoConversionRole":false,"folder":[1]}}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#
+            })
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        client.get_open_subsonic_extensions().await.unwrap();
+        let admin = client.get_user("admin").await.unwrap();
+        assert!(admin.admin_role && !admin.settings_role && admin.share_role);
+        assert_eq!((admin.folder, admin.email), (vec![1], None));
+        assert_eq!(client.get_users().await.unwrap().user[0].username, "admin");
+        let roles = Roles {
+            admin: Some(false),
+            download: Some(true),
+            ..Roles::default()
+        };
+        client
+            .create_user("ann", "s3cret&new", "ann@example.org", &roles, &[1, 3])
+            .await
+            .unwrap();
+        let update = UserUpdate {
+            email: Some("a@example.org"),
+            ..UserUpdate::default()
+        };
+        client.update_user("ann", &update).await.unwrap();
+        client.change_password("ann", "other").await.unwrap();
+        client.delete_user("ann").await.unwrap();
+        // Each role under its own name.
+        let names = [
+            "adminRole",
+            "settingsRole",
+            "streamRole",
+            "downloadRole",
+            "uploadRole",
+            "coverArtRole",
+            "commentRole",
+            "podcastRole",
+            "shareRole",
+            "jukeboxRole",
+            "videoConversionRole",
+        ];
+        for i in 0..names.len() {
+            let on = |j: usize| (i == j).then_some(true);
+            let roles = Roles {
+                admin: on(0),
+                settings: on(1),
+                stream: on(2),
+                download: on(3),
+                upload: on(4),
+                cover_art: on(5),
+                comment: on(6),
+                podcast: on(7),
+                share: on(8),
+                jukebox: on(9),
+                video_conversion: on(10),
+            };
+            let update = UserUpdate {
+                roles,
+                ..UserUpdate::default()
+            };
+            client.update_user("ann", &update).await.unwrap();
+        }
+        let log = log.lock().unwrap();
+        for (name, request) in names.iter().zip(&log[7..]) {
+            let body = request.split_once("\r\n\r\n").unwrap().1;
+            assert!(
+                body.contains(&format!("{name}=true")) && body.matches("Role=").count() == 1,
+                "{name} in {body}"
+            );
+        }
+        assert!(log[1].contains("username=admin"), "{}", log[1]);
+        let (head, create) = log[3].split_once("\r\n\r\n").unwrap();
+        assert!(
+            head.starts_with("POST ") && !head.contains("s3cret"),
+            "{head}"
+        );
+        for part in [
+            "username=ann",
+            "password=s3cret%26new",
+            "email=ann%40example.org",
+            "adminRole=false",
+            "downloadRole=true",
+            "musicFolderId=1&musicFolderId=3",
+        ] {
+            assert!(create.contains(part), "{part} in {create}");
+        }
+        assert!(!create.contains("settingsRole"), "{create}");
+        let update = log[4].split_once("\r\n\r\n").unwrap().1;
+        assert!(update.contains("email=a%40example.org"), "{update}");
+        assert!(
+            !update.contains("password") && !update.contains("Role"),
+            "{update}"
+        );
+        assert!(log[5].contains("password=other"), "{}", log[5]);
+        assert!(log[6].contains("deleteUser"), "{}", log[6]);
     }
 }

@@ -115,6 +115,68 @@ pub struct PlaylistUpdate<'a> {
     pub song_indexes_to_remove: &'a [u32],
 }
 
+/// What a user may do, for [`Client::create_user`] and [`Client::update_user`].
+/// `None` leaves a role at the server's default for a new user (admin, jukebox,
+/// download, upload, cover art, comment, podcast, share and video conversion
+/// off; settings and stream on), or as it is. The playlist role is left out:
+/// "Since 1.8.0, changing this role has no effect."
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Roles {
+    /// Whether the user is administrator.
+    pub admin: Option<bool>,
+    /// Whether the user is allowed to change personal settings and password.
+    pub settings: Option<bool>,
+    /// Whether the user is allowed to play files.
+    pub stream: Option<bool>,
+    /// Whether the user is allowed to play files in jukebox mode.
+    pub jukebox: Option<bool>,
+    /// Whether the user is allowed to download files.
+    pub download: Option<bool>,
+    /// Whether the user is allowed to upload files.
+    pub upload: Option<bool>,
+    /// Whether the user is allowed to change cover art and tags.
+    pub cover_art: Option<bool>,
+    /// Whether the user is allowed to create and edit comments and ratings.
+    pub comment: Option<bool>,
+    /// Whether the user is allowed to administrate Podcasts.
+    pub podcast: Option<bool>,
+    /// Whether the user is allowed to share files with anyone.
+    pub share: Option<bool>,
+    /// Whether the user is allowed to start video conversions.
+    pub video_conversion: Option<bool>,
+}
+
+impl Roles {
+    fn params(&self, params: Params) -> Params {
+        params
+            .opt("adminRole", self.admin)
+            .opt("settingsRole", self.settings)
+            .opt("streamRole", self.stream)
+            .opt("jukeboxRole", self.jukebox)
+            .opt("downloadRole", self.download)
+            .opt("uploadRole", self.upload)
+            .opt("coverArtRole", self.cover_art)
+            .opt("commentRole", self.comment)
+            .opt("podcastRole", self.podcast)
+            .opt("shareRole", self.share)
+            .opt("videoConversionRole", self.video_conversion)
+    }
+}
+
+/// Changes to a user for [`Client::update_user`]; `None` and empty leave a
+/// field as it is.
+#[derive(Debug, Clone, Default)]
+pub struct UserUpdate<'a> {
+    pub password: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub roles: Roles,
+    /// IDs of the music folders the user is allowed access to.
+    pub music_folder_ids: &'a [i64],
+    /// The maximum bit rate (in Kbps) for the user: 0 (no limit), 32, 40, 48,
+    /// 56, 64, 80, 96, 112, 128, 160, 192, 224, 256 or 320.
+    pub max_bit_rate: Option<u32>,
+}
+
 impl Client {
     // System
 
@@ -731,6 +793,83 @@ impl Client {
     /// <https://opensubsonic.netlify.app/docs/endpoints/startscan/>
     pub async fn start_scan(&self) -> Result<ScanStatus> {
         self.call("startScan", Params::new(), "scanStatus").await
+    }
+
+    // User management
+
+    /// A user with its roles and folders. Only admins may ask for anyone but
+    /// themselves.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/getuser/>
+    pub async fn get_user(&self, username: &str) -> Result<User> {
+        self.call("getUser", Params::new().req("username", username), "user")
+            .await
+    }
+
+    /// All users. Admins only.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/getusers/>
+    pub async fn get_users(&self) -> Result<Users> {
+        self.call("getUsers", Params::new(), "users").await
+    }
+
+    /// Creates a user. Like every call that carries a password, only to an
+    /// https server or one on this machine.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/createuser/>
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password: &str,
+        email: &str,
+        roles: &Roles,
+        music_folder_ids: &[i64],
+    ) -> Result<()> {
+        self.may_send_password()?;
+        let params = Params::new()
+            .req("username", username)
+            .req("password", password)
+            .req("email", email)
+            .list("musicFolderId", music_folder_ids);
+        self.call_unit("createUser", roles.params(params)).await
+    }
+
+    /// Changes a user. With a password, only to an https server or one on
+    /// this machine.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/updateuser/>
+    pub async fn update_user(&self, username: &str, update: &UserUpdate<'_>) -> Result<()> {
+        if update.password.is_some() {
+            self.may_send_password()?;
+        }
+        let params = Params::new()
+            .req("username", username)
+            .opt("password", update.password)
+            .opt("email", update.email)
+            .list("musicFolderId", update.music_folder_ids)
+            .opt("maxBitRate", update.max_bit_rate);
+        self.call_unit("updateUser", update.roles.params(params))
+            .await
+    }
+
+    /// Deletes a user.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/deleteuser/>
+    pub async fn delete_user(&self, username: &str) -> Result<()> {
+        self.call_unit("deleteUser", Params::new().req("username", username))
+            .await
+    }
+
+    /// Sets a user's password. Only admins may for anyone but themselves.
+    /// Only to an https server or one on this machine.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/changepassword/>
+    pub async fn change_password(&self, username: &str, password: &str) -> Result<()> {
+        self.may_send_password()?;
+        let params = Params::new()
+            .req("username", username)
+            .req("password", password);
+        self.call_unit("changePassword", params).await
     }
 }
 

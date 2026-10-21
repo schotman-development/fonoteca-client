@@ -7,7 +7,10 @@
 //! Left out: the getIndexes and indexes examples, which give numbers and
 //! booleans as strings and a one-item list as an object, against their own
 //! field tables; three partial lyrics snippets on the getLyricsBySongId page;
-//! and the tokenInfo type example, which repeats the endpoint's.
+//! the tokenInfo type example, which repeats the endpoint's; and the getUser,
+//! getUsers, user and users examples, which give booleans (and in the type
+//! examples folder IDs) as strings and leave out the required
+//! videoConversionRole.
 
 use std::fs;
 use std::path::Path;
@@ -67,7 +70,8 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
             check::<Vec<SonicMatch>>(response, name, "sonicMatch")
         }
         "getScanStatus" | "startScan" => check::<ScanStatus>(response, name, "scanStatus"),
-        "updatePlaylist" | "deletePlaylist" | "star" | "unstar" | "setRating" => Ok(()),
+        "updatePlaylist" | "deletePlaylist" | "star" | "unstar" | "setRating" | "createUser"
+        | "updateUser" | "deleteUser" | "changePassword" => Ok(()),
         _ => panic!("no check for endpoint {name}"),
     }
 }
