@@ -95,6 +95,25 @@ export global Input {
     in-out property <bool> touch;
 }
 
+// The playlist being dragged, by its link, while a drag is in flight; and
+// what every drag carries, set once at start, as Slint starts no drag
+// without it.
+export global Drag {
+    in-out property <string> link;
+    in property <data-transfer> data;
+}
+
+// Where a playlist being dragged can be dropped to move it there: onto a
+// folder, or the top level. It takes no other drag.
+component FolderDrop inherits DropArea {
+    callback moved();
+    can-drop(event) => Drag.link != "" ? event.proposed-action : DragAction.none;
+    dropped(event) => {
+        root.moved();
+        return event.proposed-action;
+    }
+}
+
 // A finger held still on a TouchArea for half a second, which a phone takes
 // for a long press; a mouse never makes one. The area hands on its pointer
 // events and moves, and skips the click that ends a long press: `done`.
@@ -137,8 +156,10 @@ export component Pressable {
     in property <string> label;
     out property <bool> hovered: root.enabled && touch.has-hover;
     out property <bool> focused: focus.has-focus;
-    // Whether Shift was held on the press or key that clicked it.
+    // Whether Shift was held on the press or key that clicked it, and
+    // whether a finger made the last press.
     out property <bool> shift;
+    out property <bool> finger;
     callback clicked();
     callback context-clicked();
 
@@ -189,6 +210,7 @@ export component Pressable {
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
                 root.shift = event.modifiers.shift;
+                root.finger = Input.touch || event.touch-finger-id != 0;
             }
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.context-clicked();
@@ -674,8 +696,11 @@ export component CoverTile inherits Pressable {
     in property <bool> selecting;
     in property <bool> selected;
     in property <[MenuEntry]> entries;
+    // A folder a playlist can be dragged onto, lit while one is over it.
+    in property <bool> drop-target;
     callback open(link: string);
-    callback activated(id: string);
+    callback activated(id: string, choice: string);
+    callback dropped();
     label: self.title;
     accessible-item-selectable: self.selecting;
     accessible-item-selected: self.selected;
@@ -700,7 +725,7 @@ export component CoverTile inherits Pressable {
             round: root.round;
             folder: root.folder;
             source: root.cover;
-            highlighted: root.hovered;
+            highlighted: root.hovered || drop.has-drag;
             // Inside the circle when round.
             if root.selecting: Rectangle {
                 x: root.round ? root.size * 0.15 : 10px;
@@ -739,7 +764,7 @@ export component CoverTile inherits Pressable {
             }
             if root.entries.length > 0: MoreMenu {
                 entries: root.entries;
-                activated(id) => { root.activated(id); }
+                activated(id, choice) => { root.activated(id, choice); }
             }
         }
         if root.names.length > 0: LinksLine {
@@ -749,6 +774,10 @@ export component CoverTile inherits Pressable {
             open(link) => { root.open(link); }
             context-clicked => { root.context-clicked(); }
         }
+    }
+    drop := FolderDrop {
+        enabled: root.drop-target;
+        moved => { root.dropped(); }
     }
 }
 
@@ -1277,15 +1306,20 @@ export component CoverGrid {
     // While some tiles are selected, a click selects another tile, or lets a
     // selected one go, instead of opening it.
     in property <bool> selecting;
-    // Each tile's menu, the same for all.
+    // Each tile's menu, the same for all but folders, which have none.
     in property <[MenuEntry]> entries;
+    // Whether tiles that aren't folders can be dragged with a mouse onto
+    // those that are, playlists into folders.
+    in property <bool> movable;
     callback open(link: string);
     // A tile right-clicked, or clicked while selecting; with Shift held,
     // every tile from the one last picked to it.
     callback select(index: int, range: bool);
     // The tiles on screen and a screen below it, whenever that changes.
     callback in-view(first: int, last: int);
-    callback activated(index: int, id: string);
+    callback activated(index: int, id: string, choice: string);
+    // A tile dropped onto the folder tile at `index`.
+    callback dropped(index: int);
 
     property <length> gap: Theme.gap;
     property <length> row-gap: 24px;
@@ -1319,34 +1353,51 @@ export component CoverGrid {
         entries: root.entries;
     }
 
-    for tile[i] in root.tiles: CoverTile {
+    // A finger never drags: it scrolls, and a long press selects.
+    for tile[i] in root.tiles: drag := DragArea {
         x: mod(i, root.columns) * (root.size + root.gap);
         y: floor(i / root.columns) * (root.row-height + root.row-gap);
         width: root.size;
         height: root.row-height;
-        size: root.size;
-        round: root.round;
-        folder: tile.folder;
-        cover: tile.cover;
-        title: tile.title;
-        names: tile.names;
-        selecting: root.selecting;
-        selected: tile.selected;
-        entries: root.entries;
-        activated(id) => { root.activated(i, id); }
-        clicked => {
-            if root.selecting {
-                root.select(i, self.shift);
-            } else if tile.link != "" {
-                root.open(tile.link);
+        enabled: root.movable && !tile.folder && !card.finger;
+        allow-move: true;
+        data: Drag.data;
+        changed dragging => {
+            if self.dragging {
+                Drag.link = tile.link;
             }
         }
-        context-clicked => { root.select(i, self.shift); }
-        open(link) => {
-            if root.selecting {
-                root.select(i, false);
-            } else {
-                root.open(link);
+        drag-finished => { Drag.link = ""; }
+        card := CoverTile {
+            width: parent.width;
+            height: parent.height;
+            opacity: drag.dragging ? 0.4 : 1;
+            size: root.size;
+            round: root.round;
+            folder: tile.folder;
+            cover: tile.cover;
+            title: tile.title;
+            names: tile.names;
+            selecting: root.selecting;
+            selected: tile.selected;
+            entries: tile.folder ? [] : root.entries;
+            drop-target: root.movable && tile.folder;
+            activated(id, choice) => { root.activated(i, id, choice); }
+            dropped => { root.dropped(i); }
+            clicked => {
+                if root.selecting {
+                    root.select(i, self.shift);
+                } else if tile.link != "" {
+                    root.open(tile.link);
+                }
+            }
+            context-clicked => { root.select(i, self.shift); }
+            open(link) => {
+                if root.selecting {
+                    root.select(i, false);
+                } else {
+                    root.open(link);
+                }
             }
         }
     }
@@ -1658,13 +1709,20 @@ component NavButton inherits Pressable {
     in property <string> icon;
     in property <bool> current;
     in property <bool> more;
+    // A folder a playlist can be dragged onto, lit while one is over it.
+    in property <bool> drop-target;
+    callback dropped();
     label: self.text;
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
 
     Rectangle {
         border-radius: Theme.radius;
-        background: root.current ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
+        background: root.current || drop.has-drag ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
+    }
+    drop := FolderDrop {
+        enabled: root.drop-target;
+        moved => { root.dropped(); }
     }
     HorizontalLayout {
         padding: 8px;
@@ -1702,11 +1760,13 @@ component NavButton inherits Pressable {
 }
 
 // A group's own section, drawn as the group's heading, with a menu of what
-// the group offers: the playlists', creating one.
+// the group offers: the playlists', creating one. A playlist dragged onto
+// it goes to the top level.
 component NavHeading inherits Pressable {
     in property <string> text;
     in property <bool> current;
     callback new-playlist();
+    callback dropped();
     label: self.text;
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
@@ -1714,7 +1774,10 @@ component NavHeading inherits Pressable {
 
     Rectangle {
         border-radius: Theme.radius;
-        background: root.current ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
+        background: root.current || drop.has-drag ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
+    }
+    drop := FolderDrop {
+        moved => { root.dropped(); }
     }
     HorizontalLayout {
         padding-left: 12px;
@@ -1740,7 +1803,8 @@ component NavHeading inherits Pressable {
 // group follow each other under its heading, and a section without one is set
 // apart by a gap. A group whose first section carries its name has that
 // section as its heading. `icons[i]` is drawn in front of `items[i]`, and an
-// arrow after it where `nested[i]`: a folder.
+// arrow after it where `nested[i]`: a folder. A playlist dragged onto a
+// folder or a heading goes to `dropped`.
 export component Sidebar inherits Rectangle {
     in property <[string]> items;
     in property <[string]> groups;
@@ -1749,6 +1813,7 @@ export component Sidebar inherits Rectangle {
     in-out property <int> current;
     callback selected(index: int);
     callback new-playlist();
+    callback dropped(index: int);
 
     background: Theme.surface;
 
@@ -1782,6 +1847,7 @@ export component Sidebar inherits Rectangle {
                         text: item;
                         current: i == root.current;
                         new-playlist => { root.new-playlist(); }
+                        dropped => { root.dropped(i); }
                         clicked => {
                             root.current = i;
                             root.selected(i);
@@ -1793,6 +1859,8 @@ export component Sidebar inherits Rectangle {
                     icon: root.icons[i];
                     more: root.nested[i];
                     current: i == root.current;
+                    drop-target: root.nested[i];
+                    dropped => { root.dropped(i); }
                     clicked => {
                         root.current = i;
                         root.selected(i);

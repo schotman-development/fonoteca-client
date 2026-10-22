@@ -1,7 +1,7 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
-export { AlbumTile, Icons, Input, Name, TrackColumn, TrackLine }
+export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -469,6 +469,10 @@ export component AppWindow inherits Window {
     in property <bool> tags-offered;
     in property <string> shown-id;
     in property <[Name]> move-targets;
+    // Where the playlists on the playlists page can be moved, and those
+    // selected: none without folders, or with no playlist selected.
+    in property <[Name]> tile-moves;
+    in property <[Name]> selection-moves;
     // The tags page's rows; the tags dialog's tags, while not waiting for
     // what the songs have.
     in property <[TagRow]> tag-rows;
@@ -534,6 +538,13 @@ export component AppWindow inherits Window {
     callback move-folder(target: string);
     callback delete-folder();
     callback move-playlist(target: string);
+    // The playlist of the `index`th tile moved, the playlists selected, and
+    // the playlist being dragged, dropped onto the `index`th tile or
+    // sidebar entry.
+    callback move-tile(index: int, target: string);
+    callback move-selection(target: string);
+    callback drop-on-tile(index: int);
+    callback drop-on-section(index: int);
     // Tags: a new one under the tag `parent`, or at the top level for "";
     // one renamed, moved as a folder is, or deleted. The tags dialog for the
     // song of a row of the tracks table, of the album or playlist on
@@ -745,6 +756,7 @@ export component AppWindow inherits Window {
             current <=> root.section;
             selected(index) => { root.show-section(index); }
             new-playlist => { root.ask(Asking.new-playlist); }
+            dropped(index) => { root.drop-on-section(index); }
         }
         VerticalLayout {
             TopBar {
@@ -1211,6 +1223,10 @@ export component AppWindow inherits Window {
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
+                        movable: root.page == Page.playlists && root.folders-offered;
+                        entries: root.page == Page.playlists && root.tile-moves.length > 0 ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
+                        activated(index, id, choice) => { root.move-tile(index, choice); }
+                        dropped(index) => { root.drop-on-tile(index); }
                     }
                     // A genre of the radio directory, most votes first.
                     if root.page == Page.stations: Heading { text: root.header-title; }
@@ -1541,7 +1557,7 @@ export component AppWindow inherits Window {
         height: self.preferred-height;
         count: root.selected-tiles;
         clear => { root.clear-selection(); }
-        if root.playlist-targets.length > 0 || root.tags-offered: MoreMenu {
+        if root.playlist-targets.length > 0 || root.tags-offered || root.selection-moves.length > 0: MoreMenu {
             cross-axis-self-alignment: center;
             color: Palette.accent-foreground;
             opening => {
@@ -1552,11 +1568,16 @@ export component AppWindow inherits Window {
                 if root.tags-offered {
                     self.entries.push({ id: "tags", label: "Tags", icon: Icons.tag });
                 }
+                if root.selection-moves.length > 0 {
+                    self.entries.push({ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.selection-moves });
+                }
             }
             activated(id, choice) => {
                 if id == "tags" {
                     root.tag-selection();
                     root.ask(Asking.tag-songs);
+                } else if id == "move" {
+                    root.move-selection(choice);
                 } else {
                     root.add-selection-to-playlist(choice);
                 }
@@ -1608,6 +1629,7 @@ export component AppWindow inherits Window {
                 root.sidebar-open = false;
                 root.ask(Asking.new-playlist);
             }
+            dropped(index) => { root.drop-on-section(index); }
         }
     }
 

@@ -3181,6 +3181,57 @@ mod tests {
             assert_eq!(writes(), ["movePlaylist playlistId=p2&playlistFolderId=f2"]);
             wait_for("the notice", || ui.get_notice() == "Moved to Trips / Old.").await;
 
+            // On the playlists page a playlist's tile moves it, at once, as
+            // a selection's playlists do, and one dropped onto a folder or
+            // onto the playlists' heading, unless it is there already. The
+            // server keeps the places it had.
+            let tile_titles = |ui: &AppWindow| -> Vec<String> {
+                ui.get_tiles().iter().map(|tile| tile.title.into()).collect()
+            };
+            let move_labels = |model: slint::ModelRc<Name>| -> Vec<String> {
+                model.iter().map(|name| name.label.into()).collect()
+            };
+            ui.invoke_show_section(playlists as i32);
+            wait_for("the top level", || tile_titles(&ui) == ["Trips", "Empty"]).await;
+            assert_eq!(move_labels(ui.get_tile_moves()), ["Trips", "Trips / Old"]);
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            ui.invoke_move_tile(1, "f1".into());
+            assert_eq!(tile_titles(&ui), ["Trips"]);
+            wait_for("the tile's move", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["movePlaylist playlistId=p2&playlistFolderId=f1"]);
+
+            wait_for("the places kept", || tile_titles(&ui) == ["Trips", "Empty"]).await;
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            ui.invoke_select_tile(0, false);
+            assert_eq!(ui.get_selection_moves().row_count(), 0, "only a folder");
+            ui.invoke_select_tile(1, false);
+            assert_eq!(
+                move_labels(ui.get_selection_moves()),
+                ["Top level", "Trips", "Trips / Old"]
+            );
+            ui.invoke_move_selection("f2".into());
+            assert_eq!(ui.get_selected_tiles(), 0);
+            assert_eq!(tile_titles(&ui), ["Trips"]);
+            wait_for("the selection's move", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["movePlaylist playlistId=p2&playlistFolderId=f2"]);
+
+            wait_for("the places kept", || tile_titles(&ui) == ["Trips", "Empty"]).await;
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            ui.global::<Drag>().set_link("playlist:p2".into());
+            ui.invoke_drop_on_tile(0);
+            assert_eq!(ui.global::<Drag>().get_link(), "");
+            assert_eq!(tile_titles(&ui), ["Trips"]);
+            wait_for("the drop", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["movePlaylist playlistId=p2&playlistFolderId=f1"]);
+            wait_for("the places kept", || tile_titles(&ui) == ["Trips", "Empty"]).await;
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            for dragged in ["playlist:p2", "playlist:p1"] {
+                ui.global::<Drag>().set_link(dragged.into());
+                ui.invoke_drop_on_section(playlists as i32);
+            }
+            wait_for("the drop on the heading", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["movePlaylist playlistId=p1&playlistFolderId="]);
+
             // The tags page has every tag under the one it is in. Those
             // refused at sign-in and on the page come with Try again.
             ORGANIZE_WRITES.lock().unwrap().clear();

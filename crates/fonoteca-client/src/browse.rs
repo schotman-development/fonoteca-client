@@ -25,13 +25,13 @@ use opensubsonic::{
 };
 use radiobrowser::Station;
 use slint::{
-    ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer, TimerMode,
-    VecModel,
+    ComponentHandle, DataTransfer, Image, Model, ModelRc, SharedPixelBuffer, SharedString, Timer,
+    TimerMode, VecModel,
 };
 
 use crate::{
-    AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, StationRow, StationShelf,
-    TagChoice, TagRow, Track, TrackColumn, TrackLine, UserRow, prefs, zone,
+    AlbumTile, AppWindow, ColumnChoice, Detail, Drag, Icons, Name, Page, Stat, StationRow,
+    StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, UserRow, prefs, zone,
 };
 
 /// The newest albums on the home page.
@@ -297,6 +297,9 @@ pub fn stop(browser: &Shared) {
 }
 
 pub fn wire(ui: &AppWindow, browser: &Shared) {
+    let mut carried = DataTransfer::default();
+    carried.set_plain_text("playlist".into());
+    ui.global::<Drag>().set_data(carried);
     ui.on_open({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |link| open(&weak.unwrap(), &browser, link.into())
@@ -593,6 +596,69 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |target| move_playlist(&weak.unwrap(), &browser, target.into())
     });
+    ui.on_move_tile({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row, target| {
+            let link = browser
+                .borrow()
+                .tiles
+                .row_data(row as usize)
+                .map(|tile| tile.link);
+            if let Some(id) = link
+                .as_deref()
+                .and_then(|link| link.strip_prefix("playlist:"))
+            {
+                move_playlists(&weak.unwrap(), &browser, vec![id.to_owned()], target.into());
+            }
+        }
+    });
+    ui.on_move_selection({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |target| {
+            let ui = weak.unwrap();
+            let ids = browser
+                .borrow()
+                .selected
+                .iter()
+                .filter_map(|link| link.strip_prefix("playlist:").map(str::to_owned))
+                .collect();
+            clear_selection(&ui, &browser);
+            move_playlists(&ui, &browser, ids, target.into());
+        }
+    });
+    ui.on_drop_on_tile({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row| {
+            let ui = weak.unwrap();
+            let link = browser
+                .borrow()
+                .tiles
+                .row_data(row as usize)
+                .map(|tile| tile.link);
+            let folder = link
+                .as_deref()
+                .and_then(|link| link.strip_prefix("playlists:"));
+            if let (Some(id), Some(folder)) = (dropped_playlist(&ui), folder) {
+                move_playlists(&ui, &browser, vec![id], folder.to_owned());
+            }
+        }
+    });
+    ui.on_drop_on_section({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |index| {
+            let ui = weak.unwrap();
+            let link = sections_of(&browser.borrow())
+                .get(index as usize)
+                .map(|section| section.0.clone());
+            let folder = match link.as_deref() {
+                Some("playlists") => Some(""),
+                link => link.and_then(|link| link.strip_prefix("playlists:")),
+            };
+            if let (Some(id), Some(folder)) = (dropped_playlist(&ui), folder) {
+                move_playlists(&ui, &browser, vec![id], folder.to_owned());
+            }
+        }
+    });
     ui.on_create_tag({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |parent, name| {
@@ -674,7 +740,7 @@ fn select_tile(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
             tiles.set_row_data(row, tile);
         }
     }
-    ui.set_selected_tiles(browser.borrow().selected.len() as i32);
+    show_selected(ui, &browser.borrow());
 }
 
 /// Selects the song or composition of a row of the tracks or compositions
@@ -699,7 +765,21 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
             lines.set_row_data(row, line);
         }
     }
+    show_selected(ui, &b);
+}
+
+/// Says how many tiles and rows are selected, and where the playlists among
+/// them can be moved: the top level and every folder.
+fn show_selected(ui: &AppWindow, b: &Browser) {
     ui.set_selected_tiles(b.selected.len() as i32);
+    let playlists = b.selected.iter().any(|link| link.starts_with("playlist:"));
+    let moves = match folders_of(b) {
+        Some(folders) if playlists && !folders.is_empty() => {
+            destinations(&folder_nodes(folders), None, Some(""))
+        }
+        _ => Vec::new(),
+    };
+    ui.set_selection_moves(ModelRc::new(VecModel::from(moves)));
 }
 
 /// Picks the item at `row` of a page's `links`, or lets it go if it is
@@ -766,7 +846,7 @@ fn clear_selection(ui: &AppWindow, browser: &Shared) {
             lines.set_row_data(row, line);
         }
     }
-    ui.set_selected_tiles(0);
+    show_selected(ui, &browser.borrow());
 }
 
 fn open(ui: &AppWindow, browser: &Shared, link: String) {
@@ -820,7 +900,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
     ui.set_loading(false);
     ui.set_more_tiles(false);
-    ui.set_selected_tiles(browser.borrow().selected.len() as i32);
+    show_selected(ui, &browser.borrow());
     ui.set_header_image(Image::default());
     ui.set_header_title("".into());
     ui.set_header_names(ModelRc::default());
@@ -829,6 +909,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_playlist_editable(false);
     ui.set_shown_id("".into());
     ui.set_move_targets(ModelRc::default());
+    ui.set_tile_moves(ModelRc::default());
     ui.set_about("".into());
     ui.set_about_short("".into());
     ui.set_about_open(false);
@@ -1197,6 +1278,7 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     ui.set_section_icons(ModelRc::new(VecModel::from(pictures)));
     ui.set_section_nested(ModelRc::new(VecModel::from(nested)));
     ui.set_section(section(&b));
+    show_selected(ui, &b);
     ui.set_folders_offered(offers(&b, FOLDERS));
     ui.set_tags_offered(offers(&b, TAGS));
     let targets: Vec<Name> = b
@@ -1578,6 +1660,13 @@ fn show_playlists(ui: &AppWindow, browser: &Shared) {
         ui.set_tiles(ModelRc::from(b.tiles.clone()));
         let folders = folders_of(&b);
         let folder = Some(folder.as_str()).filter(|folder| !folder.is_empty());
+        let moves = match folders {
+            Some(folders) if !folders.is_empty() => {
+                destinations(&folder_nodes(folders), None, folder)
+            }
+            _ => Vec::new(),
+        };
+        ui.set_tile_moves(ModelRc::new(VecModel::from(moves)));
         let tiles = placed(&b.playlists, folders, folder).into_iter();
         tiles
             .map(|item| match item {
@@ -3197,6 +3286,14 @@ fn move_playlists(ui: &AppWindow, browser: &Shared, ids: Vec<String>, target: St
         },
         move |ui, browser| notify(ui, browser, format!("Moved to {to}.")),
     );
+}
+
+/// The playlist dropped, by id, which is then no longer in flight.
+fn dropped_playlist(ui: &AppWindow) -> Option<String> {
+    let drag = ui.global::<Drag>();
+    let link = drag.get_link();
+    drag.set_link("".into());
+    link.strip_prefix("playlist:").map(str::to_owned)
 }
 
 /// Renames the playlist on screen, at once on its page.
