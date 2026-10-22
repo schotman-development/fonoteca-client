@@ -90,9 +90,11 @@ export global Icons {
 }
 
 // Whether every press counts as a finger's. Tests turn it on, since Slint's
-// test backend can only send mouse presses.
+// test backend can only send mouse presses. Whether a shelf is being slid
+// sideways, which the page then doesn't scroll.
 export global Input {
     in-out property <bool> touch;
+    in-out property <bool> sliding;
 }
 
 // The playlist being dragged, by its link, while a drag is in flight; and
@@ -1518,7 +1520,14 @@ export component CoverShelf {
             height: probe.preferred-height;
             handle-swipe-left: root.first < root.last-first;
             handle-swipe-right: root.first > 0;
-            swiped => { root.settle(self.current-position.x - self.pressed-position.x); }
+            // While it slides the page lets go of the finger, which would
+            // otherwise take it over on drifting a little up or down.
+            moved => { Input.sliding = self.swiping; }
+            swiped => {
+                Input.sliding = false;
+                root.settle(self.current-position.x - self.pressed-position.x);
+            }
+            cancelled => { Input.sliding = false; }
 
             TouchArea {
                 scroll-event(event) => {

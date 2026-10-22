@@ -3035,10 +3035,13 @@ mod tests {
                         position: at(from + by * pitch * step as f32 / 6.0),
                     });
                 }
+                // The page lets go of a finger while the shelf slides.
+                assert!(again.global::<Input>().get_sliding());
                 window.dispatch_event(WindowEvent::PointerReleased {
                     position: at(from + by * pitch),
                     button: PointerEventButton::Left,
                 });
+                assert!(!again.global::<Input>().get_sliding());
             };
             swipe(-1.2);
             wait_for("two tiles on", rests(5)).await;

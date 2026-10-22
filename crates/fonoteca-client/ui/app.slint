@@ -130,15 +130,66 @@ component Problem inherits Text {
     color: #d33;
 }
 
-// Starts at the top left again whenever `visit` changes, that is on every page
-// shown. Says when the bottom is less than a screen away, so more can load
-// before it's reached.
-component PageScroll inherits ScrollView {
+// A thin bar along one side of the pages' scroll view, where the page is
+// and as much of it as shows; wider while pointed at, and dragged to scroll.
+// `value` is the page's offset, 0 down to -`maximum`.
+component PageBar {
+    in property <bool> horizontal;
+    in property <length> maximum;
+    in property <length> page-size;
+    in-out property <length> value;
+
+    property <length> track: root.horizontal ? root.width : root.height;
+    property <length> length: max(32px, root.track * root.page-size / (root.maximum + root.page-size));
+    property <length> thickness: touch.has-hover || touch.pressed ? 6px : 3px;
+    animate thickness { duration: 150ms; easing: ease-out; }
+    visible: root.maximum > 0;
+
+    Rectangle {
+        x: root.horizontal ? (root.track - root.length) * (-root.value / root.maximum) : root.width - 4px - self.width;
+        y: root.horizontal ? root.height - 4px - self.height : (root.track - root.length) * (-root.value / root.maximum);
+        width: root.horizontal ? root.length : root.thickness;
+        height: root.horizontal ? root.thickness : root.length;
+        border-radius: root.thickness / 2;
+        background: Theme.muted.transparentize(40%);
+    }
+    touch := TouchArea {
+        property <length> start;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                self.start = root.value;
+            }
+        }
+        moved => {
+            if self.pressed {
+                let by = root.horizontal ? self.mouse-x - self.pressed-x : self.mouse-y - self.pressed-y;
+                root.value = -clamp(by * root.maximum / (root.track - root.length) - self.start, 0, root.maximum);
+            }
+        }
+    }
+}
+
+// The pages' scroll view: a Flickable of its own rather than a ScrollView,
+// whose Flickable can't be told to let go of a finger. While a shelf slides
+// sideways the page doesn't scroll, else a finger drifting a little up or
+// down would take the slide over. Starts at the top left again whenever
+// `visit` changes, that is on every page shown. Says when the bottom is less
+// than a screen away, so more can load before it's reached.
+component PageScroll {
     in property <int> visit;
+    out property <length> visible-width: flick.width;
+    out property <length> visible-height: flick.height;
+    in-out property <length> content-width <=> flick.content-width;
+    in-out property <length> content-height <=> flick.content-height;
+    in-out property <length> content-x <=> flick.content-x;
+    in-out property <length> content-y <=> flick.content-y;
     callback near-end();
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
     changed visit => {
         self.content-x = 0;
         self.content-y = 0;
+        Input.sliding = false;
     }
     changed content-y => {
         self.check-end();
@@ -150,6 +201,32 @@ component PageScroll inherits ScrollView {
         if -self.content-y + 2 * self.visible-height >= self.content-height {
             self.near-end();
         }
+    }
+
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        interactive: !Input.sliding;
+        // A mouse drags playlists; it scrolls with the wheel and the bars.
+        mouse-drag-pan-enabled: false;
+        @children
+    }
+    PageBar {
+        x: parent.width - self.width;
+        width: 14px;
+        height: parent.height - (across.visible ? 14px : 0);
+        maximum: flick.content-height - flick.height;
+        page-size: flick.height;
+        value <=> flick.content-y;
+    }
+    across := PageBar {
+        y: parent.height - self.height;
+        width: parent.width - 14px;
+        height: 14px;
+        horizontal: true;
+        maximum: flick.content-width - flick.width;
+        page-size: flick.width;
+        value <=> flick.content-x;
     }
 }
 
