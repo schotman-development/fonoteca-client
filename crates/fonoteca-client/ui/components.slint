@@ -48,13 +48,15 @@ export struct MenuEntry {
     choices: [Name],
 }
 
-// An album or artist on a grid or shelf, and the page it opens.
+// An album or artist on a grid or shelf, and the page it opens; a folder of
+// playlists, drawn as one.
 export struct AlbumTile {
     title: string,
     names: [Name],
     cover: image,
     link: string,
     selected: bool,
+    folder: bool,
 }
 
 export global Icons {
@@ -82,6 +84,7 @@ export global Icons {
     out property <string> pencil: "M4 20h4L19 9l-4-4L4 16z M13.5 6.5l4 4";
     out property <string> trash: "M4 7h16 M9.5 7V4.5h5V7 M6.5 7l1 13h9l1-13 M10 11v6 M14 11v6";
     out property <string> folder: "M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-15a1.5 1.5 0 0 1-1.5-1.5z";
+    out property <string> tag: "M3 3.5h8.5l9 9-8 8-9-9z M8 9.5a1.5 1.5 0 1 1 0-3a1.5 1.5 0 1 1 0 3z";
     // Filled.
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
@@ -274,10 +277,12 @@ export component LinksLine inherits Rectangle {
     }
 }
 
-// Cover art or a photo, with a note or a person drawn where there is none.
+// Cover art or a photo, with a note, a person or a folder drawn where there
+// is none.
 export component Artwork inherits Rectangle {
     in property <image> source;
     in property <bool> round;
+    in property <bool> folder;
     in property <length> size: 160px;
     in property <bool> highlighted;
 
@@ -294,7 +299,7 @@ export component Artwork inherits Rectangle {
         height: root.size * 0.4;
         viewbox-width: 24;
         viewbox-height: 24;
-        commands: root.round ? Icons.person : Icons.note;
+        commands: root.folder ? Icons.folder : root.round ? Icons.person : Icons.note;
         stroke: Theme.muted;
         stroke-width: 1.5px;
     }
@@ -664,6 +669,7 @@ export component CoverTile inherits Pressable {
     in property <[Name]> names;
     in property <length> size: 160px;
     in property <bool> round;
+    in property <bool> folder;
     // While its page is selecting, every tile shows whether it is selected.
     in property <bool> selecting;
     in property <bool> selected;
@@ -692,6 +698,7 @@ export component CoverTile inherits Pressable {
         Artwork {
             size: root.size;
             round: root.round;
+            folder: root.folder;
             source: root.cover;
             highlighted: root.hovered;
             // Inside the circle when round.
@@ -799,13 +806,16 @@ export component TrackRow inherits Pressable {
     in property <bool> strong;
     in property <bool> part;
     // The playlists its menu can add it to, as names linking to their ids,
-    // and whether it can take it off the playlist it is on.
+    // whether it can take it off the playlist it is on, and whether it can
+    // open the tags dialog for it.
     in property <[Name]> playlists;
     in property <bool> removable;
+    in property <bool> taggable;
     callback open(link: string);
     callback toggle-love();
     callback add-to-playlist(id: string);
     callback remove();
+    callback tag();
     label: self.title;
 
     Rectangle {
@@ -873,7 +883,7 @@ export component TrackRow inherits Pressable {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
-        if root.playlists.length > 0 || root.removable: MoreMenu {
+        if root.playlists.length > 0 || root.removable || root.taggable: MoreMenu {
             cross-axis-self-alignment: center;
             opening => {
                 self.entries = [];
@@ -883,10 +893,15 @@ export component TrackRow inherits Pressable {
                 if root.removable {
                     self.entries.push({ id: "remove", label: "Remove from playlist", icon: Icons.unlist });
                 }
+                if root.taggable {
+                    self.entries.push({ id: "tags", label: "Tags", icon: Icons.tag });
+                }
             }
             activated(id, choice) => {
                 if id == "playlist" {
                     root.add-to-playlist(choice);
+                } else if id == "tags" {
+                    root.tag();
                 } else {
                     root.remove();
                 }
@@ -922,29 +937,42 @@ export struct TrackLine {
     artists: [Name],
 }
 
-// One item of a list, such as a user: its name, a line about it, and its
-// menu. A list is not a table: no columns, filter, heart or selection.
+// One item of a list, such as a user: its name, a link to its page when it
+// has one, a line about it, and its menu, which `opening` may fill. Items
+// under another, such as tags, sit `depth` steps in. A list is not a table:
+// no columns, filter, heart or selection.
 export component ListRow inherits Rectangle {
     in property <string> title;
+    in property <string> link;
     in property <string> details;
-    in property <[MenuEntry]> entries;
-    callback activated(id: string);
+    in property <int> depth;
+    in-out property <[MenuEntry]> entries;
+    callback open(link: string);
+    callback opening();
+    callback activated(id: string, choice: string);
     accessible-role: list-item;
     accessible-label: self.title;
 
     HorizontalLayout {
         padding: 8px;
+        padding-left: 8px + root.depth * 20px;
         spacing: 12px;
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
             spacing: 2px;
-            Text {
+            if root.link == "": Text {
                 text: root.title;
                 font-size: Theme.body;
                 font-weight: 600;
                 color: Theme.text;
                 overflow: elide;
+            }
+            if root.link != "": Link {
+                text: root.title;
+                font-weight: 600;
+                color: Theme.text;
+                clicked => { root.open(root.link); }
             }
             if root.details != "": Text {
                 text: root.details;
@@ -956,7 +984,8 @@ export component ListRow inherits Rectangle {
         if root.entries.length > 0: MoreMenu {
             cross-axis-self-alignment: center;
             entries: root.entries;
-            activated(id) => { root.activated(id); }
+            opening => { root.opening(); }
+            activated(id, choice) => { root.activated(id, choice); }
         }
     }
 }
@@ -1035,13 +1064,16 @@ export component TrackLineRow inherits Rectangle {
     in property <bool> joined-above;
     in property <bool> joined-below;
     // The playlists its menu can add its song to, as names linking to their
-    // ids; none for a row that isn't a song.
+    // ids; none for a row that isn't a song. Whether its menu opens the tags
+    // dialog for its song.
     in property <[Name]> playlists;
+    in property <bool> taggable;
     callback open(link: string);
     callback toggle-love();
     // With Shift held, everything from the row last picked to this one.
     callback select(range: bool);
     callback add-to-playlist(id: string);
+    callback tag();
     property <bool> shift;
 
     height: 54px;
@@ -1169,6 +1201,9 @@ export component TrackLineRow inherits Rectangle {
                     if !root.line.folder && root.playlists.length > 0 {
                         self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlists });
                     }
+                    if !root.line.folder && root.taggable {
+                        self.entries.push({ id: "tags", label: "Tags", icon: Icons.tag });
+                    }
                     self.entries.push({ id: "select", label: root.line.selected ? "Deselect" : "Select", icon: Icons.check });
                 }
                 activated(id, choice) => {
@@ -1180,6 +1215,8 @@ export component TrackLineRow inherits Rectangle {
                         root.open(choice != "" ? choice : root.line.artists[0].link);
                     } else if id == "playlist" {
                         root.add-to-playlist(choice);
+                    } else if id == "tags" {
+                        root.tag();
                     } else {
                         root.select(false);
                     }
@@ -1289,6 +1326,7 @@ export component CoverGrid {
         height: root.row-height;
         size: root.size;
         round: root.round;
+        folder: tile.folder;
         cover: tile.cover;
         title: tile.title;
         names: tile.names;
@@ -1613,10 +1651,13 @@ export component PageHeader inherits FlexboxLayout {
     }
 }
 
+// A section of the sidebar; with `more`, an arrow after it says it holds
+// more, as a folder of playlists does.
 component NavButton inherits Pressable {
     in property <string> text;
     in property <string> icon;
     in property <bool> current;
+    in property <bool> more;
     label: self.text;
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
@@ -1646,6 +1687,16 @@ component NavButton inherits Pressable {
             font-weight: root.current ? 600 : 400;
             color: root.current ? Theme.text : Theme.muted;
             overflow: elide;
+        }
+        if root.more: Path {
+            cross-axis-self-alignment: center;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Icons.forward;
+            stroke: Theme.muted;
+            stroke-width: 2px;
         }
     }
 }
@@ -1688,11 +1739,13 @@ component NavHeading inherits Pressable {
 // more than fit. `groups[i]` names the group of `items[i]`: sections of one
 // group follow each other under its heading, and a section without one is set
 // apart by a gap. A group whose first section carries its name has that
-// section as its heading. `icons[i]` is drawn in front of `items[i]`.
+// section as its heading. `icons[i]` is drawn in front of `items[i]`, and an
+// arrow after it where `nested[i]`: a folder.
 export component Sidebar inherits Rectangle {
     in property <[string]> items;
     in property <[string]> groups;
     in property <[string]> icons;
+    in property <[bool]> nested;
     in-out property <int> current;
     callback selected(index: int);
     callback new-playlist();
@@ -1738,6 +1791,7 @@ export component Sidebar inherits Rectangle {
                 if !entry.heading: NavButton {
                     text: item;
                     icon: root.icons[i];
+                    more: root.nested[i];
                     current: i == root.current;
                     clicked => {
                         root.current = i;

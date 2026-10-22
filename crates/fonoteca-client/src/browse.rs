@@ -2,9 +2,10 @@
 //! and the history behind back and forward. A link is a page's address, such
 //! as "home", "albums", "artists", "tracks", "playlists", "album:<id>",
 //! "artist:<id>", "playlist:<id>" or "song:<id>", the files' "folders" and
-//! "folder:<id>", and on servers with Fonoteca's compositions "composers",
-//! "compositions", "composer:<id>" or "composition:<id>", "radio", and
-//! "account" and, for admins, "users".
+//! "folder:<id>", on servers with playlist folders "playlists:<id>", on
+//! servers with Fonoteca's compositions "composers", "compositions",
+//! "composer:<id>" or "composition:<id>", on servers with Fonoteca's tags
+//! "tags" and "tag:<id>", "radio", and "account" and, for admins, "users".
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -19,8 +20,8 @@ use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
     GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate, ListOptions, MediaType,
-    Playlist, PlaylistUpdate, PlaylistWithSongs, RadioStation, Roles, ScanStatus, SearchOptions,
-    Span, User, UserUpdate,
+    Playlist, PlaylistFolder, PlaylistFolderUpdate, PlaylistUpdate, PlaylistWithSongs,
+    RadioStation, Roles, ScanStatus, SearchOptions, Span, Tag, TagUpdate, User, UserUpdate,
 };
 use radiobrowser::Station;
 use slint::{
@@ -30,7 +31,7 @@ use slint::{
 
 use crate::{
     AlbumTile, AppWindow, ColumnChoice, Detail, Icons, Name, Page, Stat, StationRow, StationShelf,
-    Track, TrackColumn, TrackLine, UserRow, prefs, zone,
+    TagChoice, TagRow, Track, TrackColumn, TrackLine, UserRow, prefs, zone,
 };
 
 /// The newest albums on the home page.
@@ -110,6 +111,10 @@ const MOTION: &str = "fonotecaAlbumMotion";
 const COMPOSITIONS: &str = "fonotecaCompositions";
 /// OpenSubsonic's extension for an artist's top songs by id, not name.
 const TOP_SONGS_BY_ID: &str = "topSongsByArtistId";
+/// The proposed OpenSubsonic extension for folders of playlists.
+const FOLDERS: &str = "playlistFolders";
+/// Fonoteca's extension for the user's own tags.
+const TAGS: &str = "fonotecaTags";
 /// How many of an artist's top songs their page shows.
 const TOP_SONGS: u32 = 5;
 /// About how long the start of a biography or notes is, before More.
@@ -151,10 +156,21 @@ pub struct Browser {
     compositions: Vec<Composition>,
     compositions_loaded: bool,
     /// The playlists, for the sidebar and the playlists page, asked for on
-    /// sign-in and on every visit to that page.
+    /// sign-in and on every visit to that page, and their folders on
+    /// servers with them.
     playlists: Vec<Playlist>,
     playlists_loading: bool,
     playlists_loaded: bool,
+    playlist_folders: Vec<PlaylistFolder>,
+    /// The user's tags, on servers with Fonoteca's, asked for on sign-in, on
+    /// every visit to the tags page and after every change to them.
+    tags: Vec<Tag>,
+    tags_loaded: bool,
+    /// The songs the tags dialog is for, each with the tags on it, once
+    /// known; how often it was opened, so songs looked up for an earlier
+    /// one are dropped.
+    tagging: Vec<(String, Vec<String>)>,
+    tagging_round: u32,
     /// Every song on the server in the order they arrived, while they arrive
     /// and once they all have; the tracks table's order of them, as indexes,
     /// and the rows shown.
@@ -250,6 +266,7 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_may_administer(true);
     sidebar(ui, browser);
     load_playlists(ui, browser);
+    load_tags(ui, browser);
     load_me(ui, browser);
     open(ui, browser, "home".into());
 }
@@ -289,7 +306,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         move |index| {
             let link = usize::try_from(index).ok().and_then(|index| {
                 let b = browser.borrow();
-                sections(&b.playlists, offers_compositions(&b), admin(&b))
+                sections_of(&b)
                     .into_iter()
                     .nth(index)
                     .map(|(link, ..)| link)
@@ -556,6 +573,93 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
             add_to_playlist(&ui, &browser, id.into(), links);
         }
     });
+    ui.on_create_folder({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name| create_folder(&weak.unwrap(), &browser, name.trim().to_owned())
+    });
+    ui.on_rename_folder({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name| rename_folder(&weak.unwrap(), &browser, name.trim().to_owned())
+    });
+    ui.on_move_folder({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |target| move_folder(&weak.unwrap(), &browser, target.into())
+    });
+    ui.on_delete_folder({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || delete_folder(&weak.unwrap(), &browser)
+    });
+    ui.on_move_playlist({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |target| move_playlist(&weak.unwrap(), &browser, target.into())
+    });
+    ui.on_create_tag({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |parent, name| {
+            let (parent, name) = (parent.to_string(), name.trim().to_owned());
+            if name.is_empty() {
+                return;
+            }
+            change_tags(
+                &weak.unwrap(),
+                &browser,
+                |client| async move {
+                    let parent = Some(parent.as_str()).filter(|parent| !parent.is_empty());
+                    client.create_tag(&name, parent).await.map(drop)
+                },
+                |_, _, _| {},
+            );
+        }
+    });
+    ui.on_rename_tag({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |id, name| rename_tag(&weak.unwrap(), &browser, id.into(), name.trim().to_owned())
+    });
+    ui.on_move_tag({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |id, target| move_tag(&weak.unwrap(), &browser, id.into(), target.into())
+    });
+    ui.on_delete_tag({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |id| delete_tag(&weak.unwrap(), &browser, id.into())
+    });
+    ui.on_tag_line({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row| {
+            let ui = weak.unwrap();
+            let song = {
+                let b = browser.borrow();
+                let (songs, order) = listed(&b, ui.get_page());
+                order.get(row as usize).map(|&song| song_link(&songs[song]))
+            };
+            start_tagging(&ui, &browser, song.into_iter().collect());
+        }
+    });
+    ui.on_tag_track({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row| {
+            let song = browser.borrow().songs.get(row as usize).cloned();
+            let links = song.map(|song| format!("song:{song}")).into_iter();
+            start_tagging(&weak.unwrap(), &browser, links.collect());
+        }
+    });
+    ui.on_tag_selection({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || {
+            let ui = weak.unwrap();
+            let links = browser.borrow().selected.clone();
+            clear_selection(&ui, &browser);
+            start_tagging(&ui, &browser, links);
+        }
+    });
+    ui.on_toggle_tag({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |index| toggle_tag(&weak.unwrap(), &browser, index as usize)
+    });
+    ui.on_tag_with_new({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |name| tag_with_new(&weak.unwrap(), &browser, name.trim().to_owned())
+    });
 }
 
 /// Selects the tile at `row`, or lets it go if it is selected. With
@@ -723,6 +827,8 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_facts("".into());
     ui.set_details(ModelRc::default());
     ui.set_playlist_editable(false);
+    ui.set_shown_id("".into());
+    ui.set_move_targets(ModelRc::default());
     ui.set_about("".into());
     ui.set_about_short("".into());
     ui.set_about_open(false);
@@ -745,6 +851,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "playlists" => {
             ui.set_page(Page::Playlists);
+            ui.set_shown_id(id.as_str().into());
             playlists(ui, browser);
         }
         "album" => {
@@ -765,6 +872,14 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "folders" | "folder" => {
             ui.set_page(Page::Folders);
+            folders(ui, browser, link.clone());
+        }
+        "tags" => {
+            ui.set_page(Page::Tags);
+            tags(ui, browser);
+        }
+        "tag" => {
+            ui.set_page(Page::Tag);
             folders(ui, browser, link.clone());
         }
         "composers" => {
@@ -831,19 +946,50 @@ fn offers_compositions(b: &Browser) -> bool {
         .is_some_and(|client| client.supports(COMPOSITIONS))
 }
 
+/// Whether the server has this extension.
+fn offers(b: &Browser, extension: &str) -> bool {
+    b.client
+        .as_ref()
+        .is_some_and(|client| client.supports(extension))
+}
+
 /// Whether the account signed in is one of the server's admins.
 fn admin(b: &Browser) -> bool {
     b.me.as_ref().is_some_and(|me| me.admin_role)
 }
 
+/// The playlist folders, on servers with them.
+fn folders_of(b: &Browser) -> Option<&[PlaylistFolder]> {
+    offers(b, FOLDERS).then_some(&b.playlist_folders[..])
+}
+
+/// The sidebar's entries for what the server has.
+fn sections_of(b: &Browser) -> Vec<(String, &str, &str)> {
+    sections(
+        &b.playlists,
+        folders_of(b),
+        offers_compositions(b),
+        offers(b, TAGS),
+        admin(b),
+    )
+}
+
 /// The sidebar's entries, as links, labels and groups: the home page and the
-/// radio, the library's pages, with the composers and compositions where the
-/// server has them, the playlists, the account and for admins the users.
-fn sections(playlists: &[Playlist], compositions: bool, admin: bool) -> Vec<(String, &str, &str)> {
+/// radio, the library's pages, with the tags, composers and compositions
+/// where the server has them, the playlists, or with `folders` the top level
+/// of them, the account and for admins the users.
+fn sections<'a>(
+    playlists: &'a [Playlist],
+    folders: Option<&'a [PlaylistFolder]>,
+    compositions: bool,
+    tags: bool,
+    admin: bool,
+) -> Vec<(String, &'a str, &'a str)> {
     let library = [
         ("albums", "Albums", true),
         ("artists", "Artists", true),
         ("tracks", "Tracks", true),
+        ("tags", "Tags", tags),
         ("composers", "Composers", compositions),
         ("compositions", "Compositions", compositions),
         ("folders", "Folders", true),
@@ -851,10 +997,20 @@ fn sections(playlists: &[Playlist], compositions: bool, admin: bool) -> Vec<(Str
     .into_iter()
     .filter(|&(.., shown)| shown)
     .map(|(link, label, _)| (link.to_owned(), label, "Library"));
-    let playlists = playlists.iter().map(|playlist| {
-        let link = format!("playlist:{}", playlist.id);
-        (link, playlist.name.as_str(), "Playlists")
-    });
+    let playlists = placed(playlists, folders, None)
+        .into_iter()
+        .map(|item| match item {
+            Placed::Folder(folder) => (
+                format!("playlists:{}", folder.id),
+                folder.name.as_str(),
+                "Playlists",
+            ),
+            Placed::Playlist(playlist) => (
+                format!("playlist:{}", playlist.id),
+                playlist.name.as_str(),
+                "Playlists",
+            ),
+        });
     [
         ("home".to_owned(), "Home", "Browse"),
         ("radio".to_owned(), "Radio", "Browse"),
@@ -868,30 +1024,181 @@ fn sections(playlists: &[Playlist], compositions: bool, admin: bool) -> Vec<(Str
     .collect()
 }
 
+/// A playlist folder or a playlist, in the order of those beside it.
+enum Placed<'a> {
+    Folder(&'a PlaylistFolder),
+    Playlist(&'a Playlist),
+}
+
+/// The playlists, in the server's order; or with `folders`, the folders and
+/// playlists at the top level, or in `folder`, in the order the user put
+/// them in, then by name.
+fn placed<'a>(
+    playlists: &'a [Playlist],
+    folders: Option<&'a [PlaylistFolder]>,
+    folder: Option<&str>,
+) -> Vec<Placed<'a>> {
+    let Some(folders) = folders else {
+        return playlists.iter().map(Placed::Playlist).collect();
+    };
+    let nodes = folder_nodes(folders);
+    let known = |id: Option<&'a str>| id.filter(|id| nodes.iter().any(|node| node.0 == *id));
+    let sub = folders
+        .iter()
+        .zip(&nodes)
+        .filter(|(_, node)| node.2 == folder)
+        .map(|(sub, _)| (sub.sort_order, &sub.name, Placed::Folder(sub)));
+    let lists = playlists
+        .iter()
+        .filter(|playlist| known(playlist.playlist_folder_id.as_deref()) == folder)
+        .map(|playlist| {
+            let order = playlist.playlist_folder_sort_order;
+            (order, &playlist.name, Placed::Playlist(playlist))
+        });
+    let mut items: Vec<_> = sub.chain(lists).collect();
+    items.sort_by_cached_key(|(order, name, _)| (order.is_none(), *order, name.to_lowercase()));
+    items.into_iter().map(|(.., item)| item).collect()
+}
+
+/// A playlist folder or tag: its id, its name and the one it is in, `None`
+/// at the top level, as is one in a folder or tag that isn't known.
+type Node<'a> = (&'a str, &'a str, Option<&'a str>);
+
+fn rooted<'a>(nodes: impl Iterator<Item = Node<'a>>) -> Vec<Node<'a>> {
+    let nodes: Vec<Node> = nodes.collect();
+    let ids: HashSet<&str> = nodes.iter().map(|node| node.0).collect();
+    nodes
+        .into_iter()
+        .map(|(id, name, parent)| (id, name, parent.filter(|parent| ids.contains(parent))))
+        .collect()
+}
+
+fn folder_nodes(folders: &[PlaylistFolder]) -> Vec<Node<'_>> {
+    rooted(folders.iter().map(|folder| {
+        let parent = folder.parent_id.as_deref();
+        (folder.id.as_str(), folder.name.as_str(), parent)
+    }))
+}
+
+fn tag_nodes(tags: &[Tag]) -> Vec<Node<'_>> {
+    rooted(
+        tags.iter()
+            .map(|tag| (tag.id.as_str(), tag.name.as_str(), tag.parent_id.as_deref())),
+    )
+}
+
+/// The nodes, each followed by those in it and with how deep it sits, those
+/// beside each other by name.
+fn tree<'a>(nodes: &[Node<'a>]) -> Vec<(Node<'a>, usize)> {
+    fn under<'a>(
+        nodes: &[Node<'a>],
+        parent: Option<&str>,
+        depth: usize,
+        tree: &mut Vec<(Node<'a>, usize)>,
+    ) {
+        if depth > nodes.len() {
+            return;
+        }
+        let mut children: Vec<Node> = nodes
+            .iter()
+            .copied()
+            .filter(|node| node.2 == parent)
+            .collect();
+        children.sort_by_cached_key(|node| node.1.to_lowercase());
+        for child in children {
+            tree.push((child, depth));
+            under(nodes, Some(child.0), depth + 1, tree);
+        }
+    }
+    let mut tree = Vec::new();
+    under(nodes, None, 0, &mut tree);
+    tree
+}
+
+/// Whether `id` sits somewhere in `ancestor`.
+fn within(nodes: &[Node], id: &str, ancestor: &str) -> bool {
+    let mut at = id;
+    for _ in 0..nodes.len() {
+        let Some(parent) = nodes
+            .iter()
+            .find(|node| node.0 == at)
+            .and_then(|node| node.2)
+        else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        at = parent;
+    }
+    false
+}
+
+/// "Mood / Calm": the names of the node and of those it is in.
+fn path(nodes: &[Node], id: &str) -> String {
+    let mut names = Vec::new();
+    let mut at = Some(id);
+    while let Some(id) = at
+        && names.len() <= nodes.len()
+        && let Some(node) = nodes.iter().find(|node| node.0 == id)
+    {
+        names.push(node.1);
+        at = node.2;
+    }
+    names.reverse();
+    names.join(" / ")
+}
+
+/// Where the folder or tag `moving`, or with none a playlist, can go from
+/// the one it is in, as names linking to their ids: the top level, linking
+/// to "", then every other one but those in it.
+fn destinations(nodes: &[Node], moving: Option<&str>, from: Option<&str>) -> Vec<Name> {
+    let top = from.is_some().then(|| Name {
+        label: "Top level".into(),
+        link: "".into(),
+    });
+    let others = tree(nodes)
+        .into_iter()
+        .map(|(node, _)| node.0)
+        .filter(|&id| Some(id) != from)
+        .filter(|&id| moving.is_none_or(|moving| id != moving && !within(nodes, id, moving)))
+        .map(|id| Name {
+            label: path(nodes, id).into(),
+            link: id.into(),
+        });
+    top.into_iter().chain(others).collect()
+}
+
 /// The sidebar entry of the page on screen, or -1 when it has none.
 fn section(b: &Browser) -> i32 {
     let link = b.history.get(b.at);
-    let at = sections(&b.playlists, offers_compositions(b), admin(b))
+    let at = sections_of(b)
         .iter()
         .position(|section| Some(&section.0) == link);
     at.map_or(-1, |at| at as i32)
 }
 
-/// Lists the sidebar's entries, the page on screen's current, and the
-/// playlists songs can be added to: those the server doesn't call read-only.
+/// Lists the sidebar's entries, the page on screen's current, the playlists
+/// songs can be added to: those the server doesn't call read-only, and
+/// whether the server has playlist folders and tags.
 fn sidebar(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let icons = ui.global::<Icons>();
-    let (mut labels, mut groups, mut pictures) = (Vec::new(), Vec::new(), Vec::new());
-    for (link, label, group) in sections(&b.playlists, offers_compositions(&b), admin(&b)) {
+    let (mut labels, mut groups, mut pictures, mut nested) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (link, label, group) in sections_of(&b) {
         labels.push(SharedString::from(label));
         groups.push(SharedString::from(group));
         pictures.push(section_icon(&icons, &link));
+        nested.push(link.starts_with("playlists:"));
     }
     ui.set_sections(ModelRc::new(VecModel::from(labels)));
     ui.set_section_groups(ModelRc::new(VecModel::from(groups)));
     ui.set_section_icons(ModelRc::new(VecModel::from(pictures)));
+    ui.set_section_nested(ModelRc::new(VecModel::from(nested)));
     ui.set_section(section(&b));
+    ui.set_folders_offered(offers(&b, FOLDERS));
+    ui.set_tags_offered(offers(&b, TAGS));
     let targets: Vec<Name> = b
         .playlists
         .iter()
@@ -915,6 +1222,7 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
         "composers" => icons.get_composer(),
         "compositions" => icons.get_composition(),
         "folders" => icons.get_folder(),
+        "tags" => icons.get_tag(),
         "playlists" | "playlist" => SharedString::new(),
         "users" => icons.get_people(),
         "radio" => icons.get_radio(),
@@ -1182,6 +1490,12 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
         let answer = client.get_playlists(None).await;
+        // The folders known stay when asking for them fails.
+        let folders = if client.supports(FOLDERS) {
+            client.get_playlist_folders(None).await.ok()
+        } else {
+            None
+        };
         let Some(ui) = weak.upgrade() else { return };
         let signed_in = browser
             .borrow()
@@ -1199,8 +1513,12 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
             let changed = match answer {
                 Ok(list) => {
                     b.playlists_loaded = true;
-                    let changed = b.playlists != list.playlist;
+                    let mut changed = b.playlists != list.playlist;
                     b.playlists = list.playlist;
+                    if let Some(folders) = folders {
+                        changed |= b.playlist_folders != folders.playlist_folder;
+                        b.playlist_folders = folders.playlist_folder;
+                    }
                     Ok(changed)
                 }
                 Err(e) => Err(e),
@@ -1216,6 +1534,7 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
                 if shown {
                     show_playlists(&ui, &browser);
                 }
+                playlist_moves(&ui, &browser.borrow());
             }
             Ok(false) => {}
             // The playlists shown stay when asking again fails.
@@ -1237,6 +1556,7 @@ fn playlists(ui: &AppWindow, browser: &Shared) {
     if loaded {
         show_playlists(ui, browser);
     } else {
+        folder_heading(ui, &browser.borrow());
         ui.set_loading(true);
     }
     if !loading {
@@ -1244,18 +1564,67 @@ fn playlists(ui: &AppWindow, browser: &Shared) {
     }
 }
 
-/// Puts the playlists on the playlists page, in place of what it showed.
+/// Puts the playlists on the playlists page, in place of what it showed: on
+/// servers with folders those at the top level or in the folder on screen,
+/// with the folders there.
 // ponytail: all tiles at once; page them like the albums if someone has thousands.
 fn show_playlists(ui: &AppWindow, browser: &Shared) {
+    let folder = ui.get_shown_id();
     let tiles = {
         let mut b = browser.borrow_mut();
         b.tiles = Rc::default();
         b.covers.clear();
         b.fetching = 0;
         ui.set_tiles(ModelRc::from(b.tiles.clone()));
-        b.playlists.iter().map(playlist_tile).collect()
+        let folders = folders_of(&b);
+        let folder = Some(folder.as_str()).filter(|folder| !folder.is_empty());
+        let tiles = placed(&b.playlists, folders, folder).into_iter();
+        tiles
+            .map(|item| match item {
+                Placed::Folder(folder) => {
+                    let inside = placed(&b.playlists, folders, Some(&folder.id)).len();
+                    folder_tile(folder, inside)
+                }
+                Placed::Playlist(playlist) => playlist_tile(playlist),
+            })
+            .collect()
     };
+    folder_heading(ui, &browser.borrow());
     add_tiles(ui, browser, tiles);
+}
+
+/// The playlists page's heading: the folder's name in a folder, and where
+/// that can be moved.
+fn folder_heading(ui: &AppWindow, b: &Browser) {
+    let id = ui.get_shown_id();
+    if id.is_empty() {
+        ui.set_header_title("Playlists".into());
+        return;
+    }
+    let nodes = folder_nodes(&b.playlist_folders);
+    let Some(&(_, name, parent)) = nodes.iter().find(|node| node.0 == id.as_str()) else {
+        return;
+    };
+    ui.set_header_title(name.into());
+    let targets = destinations(&nodes, Some(&id), parent);
+    ui.set_move_targets(ModelRc::new(VecModel::from(targets)));
+}
+
+/// On a playlist's page, on servers with playlist folders, where it can be
+/// moved.
+fn playlist_moves(ui: &AppWindow, b: &Browser) {
+    if ui.get_page() != Page::Playlist {
+        return;
+    }
+    let (Some(folders), Some(id)) = (folders_of(b), playlist_on_screen(b)) else {
+        return;
+    };
+    let nodes = folder_nodes(folders);
+    let playlist = b.playlists.iter().find(|playlist| playlist.id == id);
+    let folder = playlist.and_then(|playlist| playlist.playlist_folder_id.as_deref());
+    let folder = folder.filter(|folder| nodes.iter().any(|node| node.0 == *folder));
+    let targets = destinations(&nodes, None, folder);
+    ui.set_move_targets(ModelRc::new(VecModel::from(targets)));
 }
 
 /// A column a table can show: its heading, its width in logical pixels,
@@ -1308,9 +1677,9 @@ impl Table {
 }
 
 /// The songs a table of `COLUMNS` on `page` lists and their order there: the
-/// folder's entries on the folders page, else every song.
+/// folder's or tag's entries on the folders or a tag's page, else every song.
 fn listed(b: &Browser, page: Page) -> (&[Child], &[usize]) {
-    if page == Page::Folders {
+    if matches!(page, Page::Folders | Page::Tag) {
         (&b.entries, &b.view)
     } else {
         (&b.song_list, &b.song_view)
@@ -1800,7 +2169,7 @@ fn load_songs(ui: &AppWindow, browser: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Puts the songs of the tracks or folders page in its table's order, with
+/// Puts the songs of the tracks, folders or a tag's page in its table's order, with
 /// its filter, showing as many rows as before and at least a page.
 fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
     let page = ui.get_page();
@@ -1816,7 +2185,7 @@ fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
         if !kept {
             clear_lines(ui, &mut b);
         }
-        if page == Page::Folders {
+        if matches!(page, Page::Folders | Page::Tag) {
             b.view = view;
         } else {
             b.song_view = view;
@@ -2044,7 +2413,7 @@ fn typed_filter(ui: &AppWindow) -> Option<String> {
         Page::Composers => ui.get_composer_filter(),
         Page::Compositions => ui.get_composition_filter(),
         Page::Tracks => ui.get_track_filter(),
-        Page::Folders => ui.get_folder_filter(),
+        Page::Folders | Page::Tag => ui.get_folder_filter(),
         _ => return None,
     };
     Some(typed.trim().to_owned())
@@ -2097,6 +2466,9 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
         stations(ui, browser);
         return directory_shelves(ui, browser);
     }
+    if ui.get_page() == Page::Tags {
+        return tags(ui, browser);
+    }
     if ui.get_page() == Page::Tracks {
         let (ask, shown) = {
             let b = browser.borrow();
@@ -2116,7 +2488,7 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
         playlists(ui, browser);
         return;
     }
-    if page == Page::Folders {
+    if matches!(page, Page::Folders | Page::Tag) {
         let (link, held, shown) = {
             let b = browser.borrow();
             let link = b.history[b.at].clone();
@@ -2572,6 +2944,7 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
     ui.set_header_facts(facts.join(" · ").into());
     header_image(ui, browser, playlist.cover_art);
+    playlist_moves(ui, &browser.borrow());
 
     let tracks: Vec<Track> = songs.iter().map(song_track).collect();
     let mut b = browser.borrow_mut();
@@ -2640,7 +3013,8 @@ fn refresh_playlist(ui: &AppWindow, browser: &Shared, id: String) {
     );
 }
 
-/// Makes an empty playlist with this name and opens it.
+/// Makes an empty playlist with this name, in the playlist folder on
+/// screen, and opens it.
 fn create_playlist(ui: &AppWindow, browser: &Shared, name: String) {
     if name.is_empty() {
         return;
@@ -2648,9 +3022,18 @@ fn create_playlist(ui: &AppWindow, browser: &Shared, name: String) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
+    let folder = ui.get_shown_id().to_string();
+    let folder = (ui.get_page() == Page::Playlists && !folder.is_empty()).then_some(folder);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
         let created = client.create_playlist(&name, &[]).await;
+        let moved = match (&created, &folder) {
+            (Ok(Some(playlist)), Some(folder)) => {
+                let id = playlist.playlist.id.as_str();
+                client.move_playlists(&[id], Some(folder), &[]).await
+            }
+            _ => Ok(()),
+        };
         let Some(ui) = weak.upgrade() else { return };
         load_playlists(&ui, &browser);
         match created {
@@ -2658,8 +3041,162 @@ fn create_playlist(ui: &AppWindow, browser: &Shared, name: String) {
             Ok(None) => {}
             Err(e) => ui.set_page_problem(format!("Your server didn't take that: {e}").into()),
         }
+        if let Err(e) = moved {
+            notify(&ui, &browser, format!("It isn't in the folder: {e}"));
+        }
     })
     .expect("the event loop is running");
+}
+
+/// Makes a playlist folder with this name in the one on screen.
+fn create_folder(ui: &AppWindow, browser: &Shared, name: String) {
+    if name.is_empty() {
+        return;
+    }
+    let parent = ui.get_shown_id().to_string();
+    change_playlist(
+        ui,
+        browser,
+        None,
+        |client| async move {
+            let parent = Some(parent.as_str()).filter(|parent| !parent.is_empty());
+            client
+                .create_playlist_folder(&name, parent, None)
+                .await
+                .map(drop)
+        },
+        |_, _| {},
+    );
+}
+
+/// Renames the playlist folder on screen, at once on its page.
+fn rename_folder(ui: &AppWindow, browser: &Shared, name: String) {
+    let id = ui.get_shown_id().to_string();
+    if name.is_empty() || id.is_empty() {
+        return;
+    }
+    ui.set_header_title(name.as_str().into());
+    change_playlist(
+        ui,
+        browser,
+        None,
+        |client| async move {
+            let update = PlaylistFolderUpdate {
+                name: Some(&name),
+                ..PlaylistFolderUpdate::default()
+            };
+            client.update_playlist_folder(&id, &update).await
+        },
+        |_, _| {},
+    );
+}
+
+/// Moves the playlist folder on screen into the one with id `target`, or to
+/// the top level for "".
+fn move_folder(ui: &AppWindow, browser: &Shared, target: String) {
+    let id = ui.get_shown_id().to_string();
+    if id.is_empty() {
+        return;
+    }
+    change_playlist(
+        ui,
+        browser,
+        None,
+        |client| async move {
+            let update = PlaylistFolderUpdate {
+                parent_id: Some(&target),
+                ..PlaylistFolderUpdate::default()
+            };
+            client.update_playlist_folder(&id, &update).await
+        },
+        |_, _| {},
+    );
+}
+
+/// Deletes the playlist folder on screen, which the server only does when
+/// it is empty, and shows the one it was in.
+fn delete_folder(ui: &AppWindow, browser: &Shared) {
+    let id = ui.get_shown_id().to_string();
+    if id.is_empty() {
+        return;
+    }
+    let up = {
+        let b = browser.borrow();
+        let nodes = folder_nodes(&b.playlist_folders);
+        let parent = nodes
+            .iter()
+            .find(|node| node.0 == id)
+            .and_then(|node| node.2);
+        parent.map_or_else(
+            || "playlists".to_owned(),
+            |parent| format!("playlists:{parent}"),
+        )
+    };
+    change_playlist(
+        ui,
+        browser,
+        None,
+        |client| async move { client.delete_playlist_folder(&id).await },
+        |ui, browser| open(ui, browser, up),
+    );
+}
+
+/// Moves the playlist on screen into the folder with id `target`, or to the
+/// top level for "".
+fn move_playlist(ui: &AppWindow, browser: &Shared, target: String) {
+    let Some(id) = playlist_on_screen(&browser.borrow()) else {
+        return;
+    };
+    move_playlists(ui, browser, vec![id], target);
+}
+
+/// Moves the playlists with these ids into the folder with id `target`, or
+/// to the top level for "", at once on screen. Those already there stay.
+fn move_playlists(ui: &AppWindow, browser: &Shared, ids: Vec<String>, target: String) {
+    let (ids, to, on_screen) = {
+        let mut b = browser.borrow_mut();
+        let to = match target.as_str() {
+            "" => "the top level".to_owned(),
+            folder => path(&folder_nodes(&b.playlist_folders), folder),
+        };
+        let ids: Vec<String> = ids
+            .into_iter()
+            .filter(
+                |id| match b.playlists.iter_mut().find(|playlist| playlist.id == *id) {
+                    Some(playlist)
+                        if playlist.playlist_folder_id.as_deref().unwrap_or("") == target =>
+                    {
+                        false
+                    }
+                    Some(playlist) => {
+                        playlist.playlist_folder_id = Some(target.clone());
+                        true
+                    }
+                    None => true,
+                },
+            )
+            .collect();
+        let on_screen = playlist_on_screen(&b).filter(|id| ids.contains(id));
+        (ids, to, on_screen)
+    };
+    if ids.is_empty() {
+        return;
+    }
+    sidebar(ui, browser);
+    playlist_moves(ui, &browser.borrow());
+    if ui.get_page() == Page::Playlists {
+        show_playlists(ui, browser);
+    }
+    change_playlist(
+        ui,
+        browser,
+        on_screen,
+        |client| async move {
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            client.move_playlists(&ids, Some(&target), &[]).await
+        },
+        move |ui, browser| notify(ui, browser, format!("Moved to {to}.")),
+    );
 }
 
 /// Renames the playlist on screen, at once on its page.
@@ -2850,6 +3387,377 @@ fn notify(ui: &AppWindow, browser: &Shared, text: String) {
                 ui.set_notice("".into());
             }
         });
+}
+
+/// Asks for the user's tags, on servers with them, and shows them wherever
+/// they are on screen.
+fn load_tags(ui: &AppWindow, browser: &Shared) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    if !client.supports(TAGS) {
+        return;
+    }
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let answer = client.get_tags().await;
+        let Some(ui) = weak.upgrade() else { return };
+        let signed_in = browser
+            .borrow()
+            .client
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(current, &client));
+        if !signed_in {
+            return;
+        }
+        let shown = ui.get_page() == Page::Tags;
+        let known = browser.borrow().tags_loaded;
+        if shown {
+            ui.set_loading(false);
+        }
+        match answer {
+            Ok(tags) => {
+                let mut b = browser.borrow_mut();
+                b.tags = tags.tag;
+                b.tags_loaded = true;
+            }
+            // The tags shown stay when asking again fails.
+            Err(e) if shown && !known => return ui.set_page_problem(e.to_string().into()),
+            Err(_) => return,
+        }
+        show_tags(&ui, &browser);
+    })
+    .expect("the event loop is running");
+}
+
+/// The tags page: the user's tags, each under the one it is in, those known
+/// at once, then asked for again.
+fn tags(ui: &AppWindow, browser: &Shared) {
+    if browser.borrow().tags_loaded {
+        show_tags(ui, browser);
+    } else {
+        ui.set_loading(true);
+    }
+    load_tags(ui, browser);
+}
+
+/// Puts the tags known on the tags page, a tag's page and the tags dialog.
+// ponytail: each row's move targets walk the whole tree, cubic in tags; build a child map if someone has thousands.
+fn show_tags(ui: &AppWindow, browser: &Shared) {
+    let b = browser.borrow();
+    let nodes = tag_nodes(&b.tags);
+    let rows: Vec<TagRow> = tree(&nodes)
+        .into_iter()
+        .map(|((id, name, parent), depth)| {
+            let tag = b.tags.iter().find(|tag| tag.id == id);
+            let tracks = tag.map_or(0, |tag| usize::try_from(tag.song_count).unwrap_or(0));
+            TagRow {
+                id: id.into(),
+                title: name.into(),
+                details: count(tracks, "track", "tracks").into(),
+                depth: depth as i32,
+                targets: names(destinations(&nodes, Some(id), parent)),
+            }
+        })
+        .collect();
+    ui.set_tag_rows(ModelRc::new(VecModel::from(rows)));
+    tag_header(ui, &b);
+    tag_choices(ui, &b);
+}
+
+/// Runs a change to the tags on the server, follows it with `done`, with
+/// nothing when the server refused, which it says, then asks for the tags
+/// again.
+fn change_tags<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
+    ui: &AppWindow,
+    browser: &Shared,
+    task: impl FnOnce(Rc<Client>) -> F,
+    done: impl FnOnce(&AppWindow, &Shared, Option<T>) + 'static,
+) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    let task = task(client.clone());
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let result = task.await;
+        let Some(ui) = weak.upgrade() else { return };
+        let signed_in = browser
+            .borrow()
+            .client
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(current, &client));
+        if !signed_in {
+            return;
+        }
+        if let Err(e) = &result {
+            notify(&ui, &browser, refusal(e));
+        }
+        // A tag's page left may no longer have the songs it holds.
+        {
+            let mut b = browser.borrow_mut();
+            if ui.get_page() != Page::Tag && b.folder.starts_with("tag:") {
+                b.folder.clear();
+            }
+        }
+        done(&ui, &browser, result.ok());
+        load_tags(&ui, &browser);
+    })
+    .expect("the event loop is running");
+}
+
+/// Renames the tag `id`.
+fn rename_tag(ui: &AppWindow, browser: &Shared, id: String, name: String) {
+    if name.is_empty() {
+        return;
+    }
+    change_tags(
+        ui,
+        browser,
+        |client| async move {
+            let update = TagUpdate {
+                name: Some(&name),
+                ..TagUpdate::default()
+            };
+            client.update_tag(&id, &update).await
+        },
+        |_, _, _| {},
+    );
+}
+
+/// Moves the tag `id` into the one with id `target`, or to the top level for
+/// "".
+fn move_tag(ui: &AppWindow, browser: &Shared, id: String, target: String) {
+    change_tags(
+        ui,
+        browser,
+        |client| async move {
+            let update = TagUpdate {
+                parent_id: Some(&target),
+                ..TagUpdate::default()
+            };
+            client.update_tag(&id, &update).await
+        },
+        |_, _, _| {},
+    );
+}
+
+/// Deletes the tag `id` and those in it; the songs stay. From its page, or
+/// one of those in it, goes to the tags page.
+fn delete_tag(ui: &AppWindow, browser: &Shared, id: String) {
+    let gone = ui.get_page() == Page::Tag && {
+        let shown = ui.get_shown_id();
+        let b = browser.borrow();
+        shown == id.as_str() || within(&tag_nodes(&b.tags), &shown, &id)
+    };
+    change_tags(
+        ui,
+        browser,
+        |client| async move { client.delete_tag(&id).await },
+        move |ui, browser, deleted| {
+            if deleted.is_some() && gone {
+                open(ui, browser, "tags".into());
+            }
+        },
+    );
+}
+
+/// Readies the tags dialog for the songs of these links, as add_to_playlist
+/// takes them, with the tags each has: known for the songs on screen, else
+/// asked for.
+fn start_tagging(ui: &AppWindow, browser: &Shared, links: Vec<String>) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    let round = {
+        let mut b = browser.borrow_mut();
+        b.tagging_round += 1;
+        b.tagging.clear();
+        b.tagging_round
+    };
+    let (mut known, wanted) = {
+        let b = browser.borrow();
+        let mut known = Vec::new();
+        let mut wanted = Vec::new();
+        for link in links {
+            let id = link.strip_prefix("song:");
+            let mut songs = b.song_list.iter().chain(&b.entries);
+            match id.and_then(|id| songs.find(|song| song.id == id)) {
+                Some(song) => known.push((song.id.clone(), song.tag_ids.clone())),
+                None => wanted.push(link),
+            }
+        }
+        (known, wanted)
+    };
+    let ready = move |ui: &AppWindow, browser: &Shared, mut songs: Vec<(String, Vec<String>)>| {
+        let mut seen = HashSet::new();
+        songs.retain(|(id, _)| seen.insert(id.clone()));
+        browser.borrow_mut().tagging = songs;
+        tag_choices(ui, &browser.borrow());
+        ui.set_tag_choices_loading(false);
+    };
+    if wanted.is_empty() {
+        return ready(ui, browser, known);
+    }
+    ui.set_tag_choices_loading(true);
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let asked = children_of(&client, &wanted).await;
+        let Some(ui) = weak.upgrade() else { return };
+        if browser.borrow().tagging_round != round {
+            return;
+        }
+        match asked {
+            Ok(songs) => known.extend(songs.into_iter().map(|song| (song.id, song.tag_ids))),
+            Err(e) => notify(&ui, &browser, e.to_string()),
+        }
+        ready(&ui, &browser, known);
+    })
+    .expect("the event loop is running");
+}
+
+/// The songs of these links, as add_to_playlist takes them, with all the
+/// server says of each.
+async fn children_of(client: &Client, links: &[String]) -> opensubsonic::Result<Vec<Child>> {
+    let mut songs = Vec::new();
+    for link in links {
+        let (kind, id) = link.split_once(':').unwrap_or((link, ""));
+        match kind {
+            "song" => songs.push(client.get_song(id).await?),
+            "album" => songs.extend(client.get_album(id).await?.song),
+            "playlist" => songs.extend(client.get_playlist(id).await?.entry),
+            "artist" => {
+                for album in client.get_artist(id).await?.album {
+                    songs.extend(client.get_album(&album.id).await?.song);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(songs)
+}
+
+/// The tags dialog's tags, ticked where every song it is for has them.
+fn tag_choices(ui: &AppWindow, b: &Browser) {
+    let nodes = tag_nodes(&b.tags);
+    let choices: Vec<TagChoice> = tree(&nodes)
+        .into_iter()
+        .map(|((id, name, _), depth)| TagChoice {
+            title: name.into(),
+            depth: depth as i32,
+            ticked: tagged(&b.tagging, id),
+        })
+        .collect();
+    ui.set_tag_choices(ModelRc::new(VecModel::from(choices)));
+}
+
+/// Whether every one of these songs, and there are some, has the tag.
+fn tagged(songs: &[(String, Vec<String>)], tag: &str) -> bool {
+    !songs.is_empty() && songs.iter().all(|(_, tags)| tags.iter().any(|t| t == tag))
+}
+
+/// Puts the `index`th tag of the tags dialog on the songs it is for that
+/// lack it, or when they all have it takes it off them: at once in the
+/// dialog and the songs shown, undone when the server refuses.
+fn toggle_tag(ui: &AppWindow, browser: &Shared, index: usize) {
+    let change = {
+        let b = browser.borrow();
+        let nodes = tag_nodes(&b.tags);
+        tree(&nodes).into_iter().nth(index).map(|((id, ..), _)| {
+            let on = !tagged(&b.tagging, id);
+            let songs = b.tagging.iter();
+            let songs = songs.filter(|(_, tags)| !on || !tags.iter().any(|tag| tag == id));
+            let songs: Vec<String> = songs.map(|(song, _)| song.clone()).collect();
+            (id.to_owned(), songs, on)
+        })
+    };
+    let Some((tag, songs, on)) = change.filter(|(_, songs, _)| !songs.is_empty()) else {
+        // Unticks what was ticked with nothing to tag.
+        return tag_choices(ui, &browser.borrow());
+    };
+    mark_tagged(ui, browser, &tag, &songs, on);
+    let (at, ids) = (tag.clone(), songs.clone());
+    change_tags(
+        ui,
+        browser,
+        |client| async move {
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let update = if on {
+                TagUpdate {
+                    song_ids_to_add: &ids,
+                    ..TagUpdate::default()
+                }
+            } else {
+                TagUpdate {
+                    song_ids_to_remove: &ids,
+                    ..TagUpdate::default()
+                }
+            };
+            client.update_tag(&at, &update).await
+        },
+        move |ui, browser, done| match done {
+            Some(()) => refresh_tag(ui, browser),
+            None => mark_tagged(ui, browser, &tag, &songs, !on),
+        },
+    );
+}
+
+/// Makes a tag with this name at the top level and puts it on the songs of
+/// the tags dialog.
+fn tag_with_new(ui: &AppWindow, browser: &Shared, name: String) {
+    if name.is_empty() {
+        return;
+    }
+    let songs: Vec<String> = browser
+        .borrow()
+        .tagging
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    change_tags(
+        ui,
+        browser,
+        |client| async move {
+            let tag = client.create_tag(&name, None).await?;
+            if !songs.is_empty() {
+                let ids: Vec<&str> = songs.iter().map(String::as_str).collect();
+                let update = TagUpdate {
+                    song_ids_to_add: &ids,
+                    ..TagUpdate::default()
+                };
+                client.update_tag(&tag.id, &update).await?;
+            }
+            Ok((tag, songs))
+        },
+        |ui, browser, made| {
+            let Some((tag, songs)) = made else { return };
+            let id = tag.id.clone();
+            browser.borrow_mut().tags.push(tag);
+            mark_tagged(ui, browser, &id, &songs, true);
+            refresh_tag(ui, browser);
+        },
+    );
+}
+
+/// Records that these songs have the tag, or with `on` false don't, in the
+/// tags dialog and the songs shown.
+fn mark_tagged(ui: &AppWindow, browser: &Shared, tag: &str, songs: &[String], on: bool) {
+    let songs: HashSet<&str> = songs.iter().map(String::as_str).collect();
+    let mut b = browser.borrow_mut();
+    let b = &mut *b;
+    let dialog = b.tagging.iter_mut().map(|(id, tags)| (&*id, tags));
+    let shown = b.song_list.iter_mut().chain(&mut b.entries);
+    let shown = shown.map(|song| (&song.id, &mut song.tag_ids));
+    for (_, tags) in dialog
+        .chain(shown)
+        .filter(|(id, _)| songs.contains(id.as_str()))
+    {
+        tags.retain(|t| t != tag);
+        if on {
+            tags.push(tag.to_owned());
+        }
+    }
+    tag_choices(ui, b);
 }
 
 /// Asks the server how its scan of the libraries stands, for the account
@@ -3839,7 +4747,7 @@ fn song(ui: &AppWindow, browser: &Shared, id: String) {
             ];
             let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
             ui.set_header_facts(facts.join(" · ").into());
-            let details: Vec<Detail> = COLUMNS
+            let mut details: Vec<Detail> = COLUMNS
                 .iter()
                 .filter(|column| column.title != TITLE)
                 .map(|column| (column.title, (column.cell)(&song)))
@@ -3849,6 +4757,24 @@ fn song(ui: &AppWindow, browser: &Shared, id: String) {
                     names: names(cell),
                 })
                 .collect();
+            let tags: Vec<Name> = {
+                let b = browser.borrow();
+                let nodes = tag_nodes(&b.tags);
+                let known = song.tag_ids.iter();
+                let known = known.filter(|id| nodes.iter().any(|node| node.0 == id.as_str()));
+                known
+                    .map(|id| Name {
+                        label: path(&nodes, id).into(),
+                        link: format!("tag:{id}").into(),
+                    })
+                    .collect()
+            };
+            if !tags.is_empty() {
+                details.push(Detail {
+                    label: "Tags".into(),
+                    names: names(tags),
+                });
+            }
             ui.set_details(ModelRc::new(VecModel::from(details)));
             header_image(ui, browser, song.cover_art);
         },
@@ -3857,17 +4783,23 @@ fn song(ui: &AppWindow, browser: &Shared, id: String) {
 
 /// The folders page: at "folders" the music folders' top level, at
 /// "folder:<id>" what is in that folder, as the server's file structure has
-/// it. Each is a table like the tracks page's, whose titles open a folder or
-/// a song's page. A folder shown again, as when filtering, isn't asked for
-/// again.
+/// it; or at "tag:<id>" a tag's page, with the songs that have it or a tag
+/// under it. Each is a table like the tracks page's, whose titles open a
+/// folder or a song's page. A folder shown again, as when filtering, isn't
+/// asked for again.
 fn folders(ui: &AppWindow, browser: &Shared, link: String) {
     show_columns(ui, browser);
+    let tag = link.strip_prefix("tag:").map(str::to_owned);
+    if let Some(tag) = &tag {
+        ui.set_shown_id(tag.as_str().into());
+    }
     let held = {
         let b = browser.borrow();
         (b.folder == link).then(|| b.folder_name.clone())
     };
     if let Some(name) = held {
         ui.set_header_title(name.into());
+        tag_header(ui, &browser.borrow());
         arrange_tracks(ui, browser);
         return;
     }
@@ -3878,11 +4810,18 @@ fn folders(ui: &AppWindow, browser: &Shared, link: String) {
         b.entries.clear();
         b.view.clear();
     }
+    if tag.is_some() {
+        tag_header(ui, &browser.borrow());
+    }
     let id = link.strip_prefix("folder:").map(str::to_owned);
     load(
         ui,
         browser,
         |client| async move {
+            if let Some(tag) = tag {
+                let tag = client.get_tag(&tag).await?;
+                return Ok((tag.tag.name, tag.song));
+            }
             let Some(id) = id else {
                 let indexes = client.get_indexes(None, None).await?;
                 return Ok((
@@ -3901,6 +4840,61 @@ fn folders(ui: &AppWindow, browser: &Shared, link: String) {
                 b.entries = entries;
             }
             ui.set_header_title(name.into());
+            tag_header(ui, &browser.borrow());
+            arrange_tracks(ui, browser);
+        },
+    );
+}
+
+/// On a tag's page, the tags under it, to open, and where it can be moved,
+/// from the tags known; its name too, once they are.
+fn tag_header(ui: &AppWindow, b: &Browser) {
+    if ui.get_page() != Page::Tag {
+        return;
+    }
+    let id = ui.get_shown_id();
+    let nodes = tag_nodes(&b.tags);
+    let Some(&(_, name, parent)) = nodes.iter().find(|node| node.0 == id.as_str()) else {
+        return;
+    };
+    ui.set_header_title(name.into());
+    let under = nodes
+        .iter()
+        .filter(|node| node.2 == Some(id.as_str()))
+        .map(|&(child, name, _)| Name {
+            label: name.into(),
+            link: format!("tag:{child}").into(),
+        });
+    let mut under: Vec<Name> = under.collect();
+    under.sort_by_key(|name| name.label.to_lowercase());
+    ui.set_header_names(ModelRc::new(VecModel::from(under)));
+    let targets = destinations(&nodes, Some(&id), parent);
+    ui.set_move_targets(ModelRc::new(VecModel::from(targets)));
+}
+
+/// Asks for the songs of the tag on screen again, keeping those shown until
+/// they come.
+fn refresh_tag(ui: &AppWindow, browser: &Shared) {
+    let link = browser.borrow().folder.clone();
+    let Some(id) = link.strip_prefix("tag:").map(str::to_owned) else {
+        return;
+    };
+    if ui.get_page() != Page::Tag {
+        return;
+    }
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_tag(&id).await },
+        move |ui, browser, tag| {
+            {
+                let mut b = browser.borrow_mut();
+                if b.folder != link {
+                    return;
+                }
+                b.entries = tag.song;
+                clear_lines(ui, &mut b);
+            }
             arrange_tracks(ui, browser);
         },
     );
@@ -4121,6 +5115,18 @@ fn playlist_tile(playlist: &Playlist) -> (AlbumTile, Option<String>) {
     (tile, playlist.cover_art.clone())
 }
 
+/// A playlist folder's tile, with how much is in it.
+fn folder_tile(folder: &PlaylistFolder, inside: usize) -> (AlbumTile, Option<String>) {
+    let tile = AlbumTile {
+        title: folder.name.as_str().into(),
+        names: names(vec![unlinked(count(inside, "item", "items"))]),
+        link: format!("playlists:{}", folder.id).into(),
+        folder: true,
+        ..AlbumTile::default()
+    };
+    (tile, None)
+}
+
 /// An album's tile, named by `credits`, and its cover's id.
 fn album_tile(album: &AlbumID3, credits: Vec<Name>) -> (AlbumTile, Option<String>) {
     let tile = AlbumTile {
@@ -4174,7 +5180,7 @@ fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<Str
 fn fetch_covers(ui: &AppWindow, browser: &Shared) {
     let size = if matches!(
         ui.get_page(),
-        Page::Tracks | Page::Compositions | Page::Folders
+        Page::Tracks | Page::Compositions | Page::Folders | Page::Tag
     ) {
         pixels(ui, LINE_COVER_SIZE)
     } else {
@@ -4429,7 +5435,7 @@ fn mark_loved(b: &mut Browser, page: Page, id: &str, loved: bool) {
             song.starred = loved.then(String::new);
         }
     }
-    if !matches!(page, Page::Tracks | Page::Folders) {
+    if !matches!(page, Page::Tracks | Page::Folders | Page::Tag) {
         return;
     }
     let (songs, order) = listed(b, page);
@@ -4835,9 +5841,79 @@ mod tests {
     }
 
     #[test]
+    fn playlist_folders_in_the_users_order() {
+        let folders: Vec<PlaylistFolder> = serde_json::from_str(
+            r#"[{"id":"f1","name":"Work","sortOrder":2},
+                {"id":"f2","name":"Road trips","sortOrder":1},
+                {"id":"f3","name":"Sub","parentId":"f1"},
+                {"id":"f4","name":"Orphan","parentId":"gone"}]"#,
+        )
+        .unwrap();
+        let playlists: Vec<Playlist> = serde_json::from_str(
+            r#"[{"id":"p1","name":"Late night","songCount":0,"duration":0,"created":"2026-01-01T00:00:00Z","changed":"2026-01-01T00:00:00Z"},
+                {"id":"p2","name":"Commute","songCount":0,"duration":0,"created":"2026-01-01T00:00:00Z","changed":"2026-01-01T00:00:00Z","playlistFolderId":"f1"},
+                {"id":"p3","name":"Zed","songCount":0,"duration":0,"created":"2026-01-01T00:00:00Z","changed":"2026-01-01T00:00:00Z","playlistFolderId":"","playlistFolderSortOrder":0}]"#,
+        )
+        .unwrap();
+        let shown: Vec<(String, &str)> = sections(&playlists, Some(&folders), false, true, false)
+            .into_iter()
+            .skip_while(|(link, ..)| link != "playlists")
+            .map(|(link, label, _)| (link, label))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("playlists".to_owned(), "Playlists"),
+                ("playlist:p3".to_owned(), "Zed"),
+                ("playlists:f2".to_owned(), "Road trips"),
+                ("playlists:f1".to_owned(), "Work"),
+                ("playlist:p1".to_owned(), "Late night"),
+                ("playlists:f4".to_owned(), "Orphan"),
+                ("account".to_owned(), "Account"),
+            ]
+        );
+        let library = sections(&playlists, Some(&folders), false, true, false);
+        assert!(library.iter().any(|(link, ..)| link == "tags"));
+        let inside: Vec<&str> = placed(&playlists, Some(&folders), Some("f1"))
+            .into_iter()
+            .map(|item| match item {
+                Placed::Folder(folder) => folder.name.as_str(),
+                Placed::Playlist(playlist) => playlist.name.as_str(),
+            })
+            .collect();
+        assert_eq!(inside, ["Commute", "Sub"]);
+        let flat = placed(&playlists, None, None).len();
+        assert_eq!(flat, 3);
+
+        let nodes = folder_nodes(&folders);
+        let depths: Vec<(&str, usize)> = tree(&nodes).iter().map(|&(n, d)| (n.1, d)).collect();
+        assert_eq!(
+            depths,
+            [("Orphan", 0), ("Road trips", 0), ("Work", 0), ("Sub", 1)]
+        );
+        assert_eq!(path(&nodes, "f3"), "Work / Sub");
+        let labels = |targets: Vec<Name>| -> Vec<String> {
+            targets.iter().map(|name| name.label.to_string()).collect()
+        };
+        // A folder can't go into itself or what is in it.
+        assert_eq!(
+            labels(destinations(&nodes, Some("f1"), None)),
+            ["Orphan", "Road trips"]
+        );
+        let from_sub = destinations(&nodes, None, Some("f3"));
+        assert_eq!(
+            labels(from_sub.clone()),
+            ["Top level", "Orphan", "Road trips", "Work"]
+        );
+        assert_eq!(from_sub[0].link, "");
+        assert!(within(&nodes, "f3", "f1"));
+        assert!(!within(&nodes, "f1", "f3"));
+    }
+
+    #[test]
     fn composers_only_where_the_server_has_them() {
         let labels = |compositions| -> Vec<String> {
-            sections(&[], compositions, false)
+            sections(&[], None, compositions, false, false)
                 .into_iter()
                 .map(|(_, label, _)| label.to_owned())
                 .collect()

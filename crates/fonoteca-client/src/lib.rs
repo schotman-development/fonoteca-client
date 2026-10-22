@@ -575,6 +575,12 @@ mod tests {
     static ADMIN: AtomicBool = AtomicBool::new(true);
     /// The radio station changes, the same way.
     static RADIO_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// While set, the server has playlist folders and Fonoteca's tags; the
+    /// changes to those and to where playlists are, the same way.
+    static ORGANIZED: AtomicBool = AtomicBool::new(false);
+    static ORGANIZE_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// While set, the server refuses to give the tags.
+    static TAGS_DOWN: AtomicBool = AtomicBool::new(false);
 
     /// A request's method and its arguments but the credentials.
     fn write_of(request: &str) -> String {
@@ -701,11 +707,55 @@ mod tests {
             } else {
                 r#",{"name":"topSongsByArtistId","versions":[1]}"#
             };
+            let organized = if ORGANIZED.load(Relaxed) {
+                r#",{"name":"playlistFolders","versions":[1]},{"name":"fonotecaTags","versions":[1]}"#
+            } else {
+                ""
+            };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{{"name":"fonotecaAlbumMotion","versions":[1]}},{{"name":"fonotecaCompositions","versions":[1]}}{by_id}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{{"name":"fonotecaAlbumMotion","versions":[1]}},{{"name":"fonotecaCompositions","versions":[1]}}{by_id}{organized}]"#
             ))
         } else if !request.contains("u=joe&") {
             json(WRONG_PASSWORD)
+        } else if request.contains("/rest/getPlaylistFolders?") {
+            ok(
+                r#""playlistFolders":{"playlistFolder":[{"id":"f1","name":"Trips","sortOrder":1},{"id":"f2","name":"Old","parentId":"f1"}]}"#,
+            )
+        } else if [
+            "createPlaylistFolder",
+            "updatePlaylistFolder",
+            "deletePlaylistFolder",
+            "movePlaylist",
+            "createTag",
+            "updateTag",
+            "deleteTag",
+        ]
+        .iter()
+        .any(|change| request.contains(&format!("/rest/{change}?")))
+        {
+            let write = write_of(request);
+            ORGANIZE_WRITES.lock().unwrap().push(write.clone());
+            if write.starts_with("deletePlaylistFolder") {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"The folder isn't empty"}}}"#,
+                )
+            } else if write.starts_with("createPlaylistFolder") {
+                ok(r#""playlistFolder":{"id":"f3","name":"Live","parentId":"f1"}"#)
+            } else if write.starts_with("createTag") {
+                ok(r#""tag":{"id":"t9","name":"Live","songCount":0}"#)
+            } else {
+                json(OK)
+            }
+        } else if request.contains("/rest/getTags?") && TAGS_DOWN.load(Relaxed) {
+            reply("503 Service Unavailable", "text/plain", b"down")
+        } else if request.contains("/rest/getTags?") {
+            ok(
+                r#""tags":{"tag":[{"id":"t1","name":"Mood","songCount":2},{"id":"t2","name":"Calm","parentId":"t1","songCount":1},{"id":"t3","name":"Instrument","songCount":0}]}"#,
+            )
+        } else if request.contains("/rest/getTag?") {
+            ok(
+                r#""tag":{"id":"t1","name":"Mood","songCount":2,"song":[{"id":"s1","isDir":false,"title":"Harbour Lights","duration":252,"tagIds":["t1"]},{"id":"s9","isDir":false,"title":"Fugue","duration":218,"tagIds":["t2"]}]}"#,
+            )
         } else if request.contains("/rest/getAlbumList2") {
             let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
             if LATER_DOWN.load(Relaxed) && number("offset").unwrap_or(0) > 0 {
@@ -820,6 +870,11 @@ mod tests {
                 )
             } else {
                 ROAD_TRIP.to_owned()
+            };
+            let road_trip = if ORGANIZED.load(Relaxed) {
+                road_trip.replacen(r#""name":"#, r#""playlistFolderId":"f1","name":"#, 1)
+            } else {
+                road_trip
             };
             ok(&format!(
                 r#""playlists":{{"playlist":[{{{road_trip}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}}]}}"#
@@ -3050,6 +3105,8 @@ mod tests {
             // A server that takes only an artist's name for their top songs,
             // as Fonoteca does, is asked by name.
             NAMES_ONLY.store(true, Relaxed);
+            ORGANIZED.store(true, Relaxed);
+            TAGS_DOWN.store(true, Relaxed);
             ui.set_address(server.as_str().into());
             click(&ui, "Continue");
             wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
@@ -3064,6 +3121,142 @@ mod tests {
             ui.invoke_open("artist:r1".into());
             wait_for("her top songs by name", || ui.get_tracks().row_count() == 2).await;
             wait_for("the account saved", || !ui.get_busy()).await;
+
+            // On a server with playlist folders, the sidebar has the top
+            // level in the user's order: the folder first, then the
+            // playlist without a place.
+            let texts = |model: slint::ModelRc<slint::SharedString>| -> Vec<String> {
+                model.iter().map(Into::into).collect()
+            };
+            wait_for("the folders", || {
+                texts(ui.get_sections()).contains(&"Trips".to_owned())
+            })
+            .await;
+            let sections = texts(ui.get_sections());
+            let tracks = sections.iter().position(|s| s == "Tracks").unwrap();
+            assert_eq!(sections[tracks + 1], "Tags");
+            let playlists = sections.iter().rposition(|s| s == "Playlists").unwrap();
+            assert_eq!(sections[playlists + 1..playlists + 3], ["Trips", "Empty"]);
+            let nested: Vec<bool> = ui.get_section_nested().iter().collect();
+            assert_eq!(nested[playlists + 1..playlists + 3], [true, false]);
+            assert!(!sections.contains(&"Road Trip".to_owned()), "it is in a folder");
+
+            // A folder's page has the folders and playlists in it, and makes
+            // new ones there.
+            ui.invoke_show_section((playlists + 1) as i32);
+            assert_eq!(ui.get_page(), Page::Playlists);
+            assert_eq!(ui.get_header_title(), "Trips");
+            wait_for("the folder's tiles", || ui.get_tiles().row_count() == 2).await;
+            let tiles: Vec<_> = ui.get_tiles().iter().collect();
+            assert_eq!(
+                tiles
+                    .iter()
+                    .map(|t| (t.title.as_str(), t.link.as_str(), t.folder))
+                    .collect::<Vec<_>>(),
+                [
+                    ("Old", "playlists:f2", true),
+                    ("Road Trip", "playlist:p1", false)
+                ]
+            );
+            assert_eq!(tiles[0].names.row_data(0).unwrap().label, "0 items");
+            let writes = || ORGANIZE_WRITES.lock().unwrap().clone();
+            ui.invoke_create_folder("Live".into());
+            wait_for("the new folder", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["createPlaylistFolder name=Live&parentId=f1"]);
+            // The server keeps a folder with something in it.
+            ui.invoke_delete_folder();
+            wait_for("the refusal", || ui.get_page_problem() != "").await;
+            assert!(ui.get_page_problem().contains("The folder isn't empty"));
+            assert_eq!(ui.get_page(), Page::Playlists);
+
+            // A playlist moves into any folder, by its path.
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            ui.invoke_open("playlist:p2".into());
+            wait_for("the moves", || ui.get_move_targets().row_count() == 2).await;
+            let targets: Vec<String> =
+                ui.get_move_targets().iter().map(|t| t.label.into()).collect();
+            assert_eq!(targets, ["Trips", "Trips / Old"]);
+            ui.invoke_move_playlist("f2".into());
+            wait_for("the move", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["movePlaylist playlistId=p2&playlistFolderId=f2"]);
+            wait_for("the notice", || ui.get_notice() == "Moved to Trips / Old.").await;
+
+            // The tags page has every tag under the one it is in. Those
+            // refused at sign-in and on the page come with Try again.
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            ui.invoke_show_section((tracks + 1) as i32);
+            assert_eq!(ui.get_page(), Page::Tags);
+            wait_for("the failed tags", || ui.get_page_problem() != "").await;
+            TAGS_DOWN.store(false, Relaxed);
+            click(&ui, "Try again");
+            wait_for("the tags", || ui.get_tag_rows().row_count() == 3).await;
+            assert_eq!(ui.get_page_problem(), "");
+            let rows: Vec<_> = ui.get_tag_rows().iter().collect();
+            assert_eq!(
+                rows.iter()
+                    .map(|r| (r.title.as_str(), r.depth, r.details.as_str()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("Instrument", 0, "0 tracks"),
+                    ("Mood", 0, "2 tracks"),
+                    ("Calm", 1, "1 track")
+                ]
+            );
+            let targets: Vec<String> = rows[2].targets.iter().map(|t| t.label.into()).collect();
+            assert_eq!(targets, ["Top level", "Instrument"]);
+
+            // A tag's page lists its tracks and those of the tags in it.
+            ui.invoke_open("tag:t1".into());
+            assert_eq!(ui.get_page(), Page::Tag);
+            wait_for("the tag's tracks", || ui.get_track_lines().row_count() == 2).await;
+            assert_eq!(ui.get_header_title(), "Mood");
+            assert_eq!(ui.get_header_names().row_data(0).unwrap().label, "Calm");
+            let harbour = (0..2)
+                .find(|&row| {
+                    let line = ui.get_track_lines().row_data(row).unwrap();
+                    line.cells.iter().any(|cell| cell.iter().any(|n| n.label == "Harbour Lights"))
+                })
+                .unwrap();
+
+            // The tags dialog ticks the song's own tags; each tick puts one
+            // on or takes it off at once.
+            ui.invoke_tag_line(harbour as i32);
+            assert!(!ui.get_tag_choices_loading());
+            let ticks = || -> Vec<bool> { ui.get_tag_choices().iter().map(|c| c.ticked).collect() };
+            assert_eq!(ticks(), [false, true, false]);
+            ui.invoke_toggle_tag(0);
+            assert_eq!(ticks(), [true, true, false]);
+            wait_for("the tag put on", || !writes().is_empty()).await;
+            ui.invoke_toggle_tag(1);
+            assert_eq!(ticks(), [true, false, false]);
+            wait_for("the tag taken off", || writes().len() == 2).await;
+            ui.invoke_tag_with_new("Live".into());
+            wait_for("the new tag", || writes().len() == 4).await;
+            assert_eq!(
+                writes(),
+                [
+                    "updateTag tagId=t3&songIdToAdd=s1",
+                    "updateTag tagId=t1&songIdToRemove=s1",
+                    "createTag name=Live",
+                    "updateTag tagId=t9&songIdToAdd=s1"
+                ]
+            );
+            // Shown again, a tag's page still knows which tag it is.
+            ui.invoke_open("tags".into());
+            ui.invoke_open("tag:t1".into());
+            assert_eq!(ui.get_shown_id(), "t1");
+            assert_eq!(ui.get_header_names().row_count(), 1);
+            assert_eq!(ui.get_move_targets().row_count(), 1);
+            assert!(ui.get_track_lines().row_count() == 2, "kept, not asked for again");
+            // After a change to the tags elsewhere, it asks again.
+            ui.invoke_open("tags".into());
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            ui.invoke_move_tag("t2".into(), "".into());
+            wait_for("the tag moved", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["updateTag tagId=t2&parentId="]);
+            ui.invoke_open("tag:t1".into());
+            assert_eq!(ui.get_track_lines().row_count(), 0, "asked for again");
+            wait_for("the tag's tracks again", || ui.get_track_lines().row_count() == 2).await;
             click(&ui, "Account");
             click(&ui, "Sign out");
             wait_for("the server step again", || ui.get_step() == Step::Server).await;

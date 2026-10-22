@@ -5,13 +5,33 @@ export { AlbumTile, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users, radio, stations }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users, radio, stations, tags, tag }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
-// new name, or whether to delete it; a new user, changes to one, a new
-// password for one or for the account signed in, or whether to delete one;
-// a new radio station, changes to one, or whether to delete one.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-user, edit-user, user-password, own-password, delete-user, new-station, edit-station, delete-station }
+// new name, or whether to delete it, and the same of a playlist folder; a
+// new user, changes to one, a new password for one or for the account
+// signed in, or whether to delete one; a new radio station, changes to one,
+// or whether to delete one; a new tag, a tag's new name, or whether to
+// delete it; and which tags songs have.
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, new-user, edit-user, user-password, own-password, delete-user, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs }
+
+// A tag on the tags page: its id, name and how many tracks have it, how
+// deep under other tags it sits, and where it can be moved.
+export struct TagRow {
+    id: string,
+    title: string,
+    details: string,
+    depth: int,
+    targets: [Name],
+}
+
+// A tag in the tags dialog, as deep as it sits, ticked when every song the
+// dialog is for has it.
+export struct TagChoice {
+    title: string,
+    depth: int,
+    ticked: bool,
+}
 
 // A user on the users page: their name, their email and what they may do,
 // and whether it is the account signed in.
@@ -389,6 +409,7 @@ export component AppWindow inherits Window {
     in property <[string]> sections;
     in property <[string]> section-groups;
     in property <[string]> section-icons;
+    in property <[bool]> section-nested;
     in-out property <int> section;
     in property <[AlbumTile]> tiles;
     in property <bool> more-tiles;
@@ -441,6 +462,18 @@ export component AppWindow inherits Window {
     in property <[Name]> playlist-targets;
     in property <bool> playlist-editable;
     property <[Name]> no-names;
+    // Whether the server has playlist folders and tags. The playlist folder
+    // or tag on screen, by id, and where it or the playlist on screen can
+    // be moved, as names linking to folder or tag ids, "" the top level.
+    in property <bool> folders-offered;
+    in property <bool> tags-offered;
+    in property <string> shown-id;
+    in property <[Name]> move-targets;
+    // The tags page's rows; the tags dialog's tags, while not waiting for
+    // what the songs have.
+    in property <[TagRow]> tag-rows;
+    in property <[TagChoice]> tag-choices;
+    in property <bool> tag-choices-loading;
     // A short word on what was just done, such as songs added to a playlist.
     in property <string> notice;
     // The albums page's order, as the index into its Sort menu, its
@@ -493,6 +526,28 @@ export component AppWindow inherits Window {
     callback add-line-to-playlist(row: int, id: string);
     callback add-track-to-playlist(row: int, id: string);
     callback add-selection-to-playlist(id: string);
+    // Playlist folders: a new one with this name in the folder on screen;
+    // the one on screen renamed, moved into the folder with this id, or to
+    // the top level for "", or deleted; the playlist on screen moved.
+    callback create-folder(name: string);
+    callback rename-folder(name: string);
+    callback move-folder(target: string);
+    callback delete-folder();
+    callback move-playlist(target: string);
+    // Tags: a new one under the tag `parent`, or at the top level for "";
+    // one renamed, moved as a folder is, or deleted. The tags dialog for the
+    // song of a row of the tracks table, of the album or playlist on
+    // screen, or for every song selected; a tag ticked or unticked there,
+    // or a new one made and ticked.
+    callback create-tag(parent: string, name: string);
+    callback rename-tag(id: string, name: string);
+    callback move-tag(id: string, target: string);
+    callback delete-tag(id: string);
+    callback tag-line(row: int);
+    callback tag-track(row: int);
+    callback tag-selection();
+    callback toggle-tag(index: int);
+    callback tag-with-new(name: string);
     // Users: fills in the dialog's email and roles for the user with this
     // name, or a new one's for "", before it opens; then a user made,
     // changed, given a password or deleted; the account signed in given a
@@ -523,13 +578,22 @@ export component AppWindow inherits Window {
     property <string> asked-stream;
     property <string> asked-homepage;
     property <bool> asks-station: root.asking == Asking.new-station || root.asking == Asking.edit-station;
-    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-user || root.asks-station;
+    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asking == Asking.new-user || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag;
     property <bool> asks-user: root.asking == Asking.new-user || root.asking == Asking.edit-user;
     property <bool> asks-password: root.asking == Asking.new-user || root.asking == Asking.user-password || root.asking == Asking.own-password;
-    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-user || root.asking == Asking.delete-station;
+    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-user || root.asking == Asking.delete-station || root.asking == Asking.delete-tag;
 
+    // About the page's playlist or playlist folder.
     function ask(what: Asking) {
-        root.asked-name = what == Asking.rename-playlist ? root.header-title : "";
+        root.asked-name = what == Asking.rename-playlist || what == Asking.rename-folder || what == Asking.delete-folder ? root.header-title : "";
+        root.asking = what;
+    }
+
+    // About the tag with this id and name; for a new tag, the one to put it
+    // under, "" for the top level.
+    function ask-tag(what: Asking, id: string, name: string) {
+        root.asked-id = id;
+        root.asked-name = name;
         root.asking = what;
     }
 
@@ -558,6 +622,18 @@ export component AppWindow inherits Window {
             root.rename-playlist(root.asked-name);
         } else if root.asking == Asking.delete-playlist {
             root.delete-playlist();
+        } else if root.asking == Asking.new-folder {
+            root.create-folder(root.asked-name);
+        } else if root.asking == Asking.rename-folder {
+            root.rename-folder(root.asked-name);
+        } else if root.asking == Asking.delete-folder {
+            root.delete-folder();
+        } else if root.asking == Asking.new-tag {
+            root.create-tag(root.asked-id, root.asked-name);
+        } else if root.asking == Asking.rename-tag {
+            root.rename-tag(root.asked-id, root.asked-name);
+        } else if root.asking == Asking.delete-tag {
+            root.delete-tag(root.asked-id);
         } else if root.asking == Asking.new-user {
             root.create-user(root.asked-name, root.asked-email, root.asked-password, root.asked-roles);
         } else if root.asking == Asking.edit-user {
@@ -584,6 +660,11 @@ export component AppWindow inherits Window {
         if root.asking == Asking.new-playlist { return "New playlist"; }
         if root.asking == Asking.rename-playlist { return "Rename playlist"; }
         if root.asking == Asking.delete-playlist { return "Delete “" + root.header-title + "”?"; }
+        if root.asking == Asking.new-folder { return "New folder"; }
+        if root.asking == Asking.rename-folder { return "Rename folder"; }
+        if root.asking == Asking.new-tag { return "New tag"; }
+        if root.asking == Asking.rename-tag { return "Rename tag"; }
+        if root.asking == Asking.tag-songs { return "Tags"; }
         if root.asking == Asking.new-user { return "New user"; }
         if root.asking == Asking.edit-user { return "Edit “" + root.asked-name + "”"; }
         if root.asking == Asking.user-password { return "New password for “" + root.asked-name + "”"; }
@@ -595,7 +676,8 @@ export component AppWindow inherits Window {
 
     function asked-action() -> string {
         if root.deleting { return "Delete"; }
-        if root.asking == Asking.rename-playlist { return "Rename"; }
+        if root.asking == Asking.rename-playlist || root.asking == Asking.rename-folder || root.asking == Asking.rename-tag { return "Rename"; }
+        if root.asking == Asking.tag-songs { return "Done"; }
         if root.asking == Asking.edit-user || root.asking == Asking.edit-station { return "Save"; }
         if root.asking == Asking.user-password || root.asking == Asking.own-password { return "Change"; }
         return "Create";
@@ -610,8 +692,9 @@ export component AppWindow inherits Window {
             && (!root.asks-password || (root.asked-password != "" && root.asked-password == root.asked-repeat));
     }
 
-    // A page that is a table: the tracks, the compositions or a folder.
-    property <bool> table: root.page == Page.tracks || root.page == Page.compositions || root.page == Page.folders;
+    // A page that is a table: the tracks, the compositions, a folder or a
+    // tag.
+    property <bool> table: root.page == Page.tracks || root.page == Page.compositions || root.page == Page.folders || root.page == Page.tag;
 
     // One physical pixel, which changes with the scale.
     property <length> physical-pixel: 1phx;
@@ -658,6 +741,7 @@ export component AppWindow inherits Window {
             items: root.sections;
             groups: root.section-groups;
             icons: root.section-icons;
+            nested: root.section-nested;
             current <=> root.section;
             selected(index) => { root.show-section(index); }
             new-playlist => { root.ask(Asking.new-playlist); }
@@ -675,7 +759,8 @@ export component AppWindow inherits Window {
             }
             // A table page's heading, filter and the table's headings stay
             // put while the rows scroll, and follow them sideways. A
-            // folder's heading is its name.
+            // folder's or tag's heading is its name; a tag's menu goes
+            // beside it, and the tags under it below it.
             if root.table: VerticalLayout {
                 vertical-stretch: 0;
                 padding-top: 8px;
@@ -686,8 +771,33 @@ export component AppWindow inherits Window {
                     spacing: 12px;
                     Heading {
                         horizontal-stretch: 1;
-                        text: root.page == Page.compositions ? "Compositions" : root.page == Page.folders ? root.header-title : "Tracks";
+                        text: root.page == Page.compositions ? "Compositions" : root.page == Page.folders || root.page == Page.tag ? root.header-title : "Tracks";
                         vertical-alignment: center;
+                    }
+                    if root.page == Page.tag: MoreMenu {
+                        cross-axis-self-alignment: center;
+                        label: "Tag";
+                        opening => {
+                            self.entries = [
+                                { id: "new", label: "New tag in it", icon: Icons.plus },
+                                { id: "rename", label: "Rename", icon: Icons.pencil },
+                            ];
+                            if root.move-targets.length > 0 {
+                                self.entries.push({ id: "move", label: "Move to", icon: Icons.tag, choices: root.move-targets });
+                            }
+                            self.entries.push({ id: "delete", label: "Delete", icon: Icons.trash, danger: true });
+                        }
+                        activated(id, choice) => {
+                            if id == "new" {
+                                root.ask-tag(Asking.new-tag, root.shown-id, "");
+                            } else if id == "rename" {
+                                root.ask-tag(Asking.rename-tag, root.shown-id, root.header-title);
+                            } else if id == "move" {
+                                root.move-tag(root.shown-id, choice);
+                            } else {
+                                root.ask-tag(Asking.delete-tag, root.shown-id, root.header-title);
+                            }
+                        }
                     }
                     if root.page == Page.tracks && root.width - root.sidebar-width >= 600px: Filter {
                         horizontal-stretch: 0;
@@ -699,7 +809,7 @@ export component AppWindow inherits Window {
                         text <=> root.composition-filter;
                         edited => { root.filter-compositions(); }
                     }
-                    if root.page == Page.folders && root.width - root.sidebar-width >= 600px: Filter {
+                    if (root.page == Page.folders || root.page == Page.tag) && root.width - root.sidebar-width >= 600px: Filter {
                         horizontal-stretch: 0;
                         text <=> root.folder-filter;
                         edited => { root.filter-folders(); }
@@ -708,6 +818,14 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 0;
                         text: "Columns";
                         clicked => { columns.show(); }
+                    }
+                }
+                if root.page == Page.tag && root.header-names.length > 0: HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    Links {
+                        names: root.header-names;
+                        open(link) => { root.open(link); }
                     }
                 }
                 if root.width - root.sidebar-width < 600px: HorizontalLayout {
@@ -721,7 +839,7 @@ export component AppWindow inherits Window {
                         text <=> root.composition-filter;
                         edited => { root.filter-compositions(); }
                     }
-                    if root.page == Page.folders: Filter {
+                    if root.page == Page.folders || root.page == Page.tag: Filter {
                         text <=> root.folder-filter;
                         edited => { root.filter-folders(); }
                     }
@@ -889,7 +1007,46 @@ export component AppWindow inherits Window {
                         filter <=> root.composer-filter;
                         edited => { root.filter-composers(); }
                     }
-                    if root.page == Page.playlists: Heading { text: "Playlists"; }
+                    // The playlists at the top level or in a folder, with a
+                    // menu to make more there and, in a folder, to change it.
+                    if root.page == Page.playlists: HorizontalLayout {
+                        spacing: 8px;
+                        Heading {
+                            horizontal-stretch: 1;
+                            text: root.header-title;
+                            vertical-alignment: center;
+                        }
+                        MoreMenu {
+                            cross-axis-self-alignment: center;
+                            label: root.shown-id == "" ? "Playlists" : "Folder";
+                            opening => {
+                                self.entries = [{ id: "new", label: "New playlist", icon: Icons.plus }];
+                                if root.folders-offered {
+                                    self.entries.push({ id: "folder", label: "New folder", icon: Icons.folder });
+                                }
+                                if root.shown-id != "" {
+                                    self.entries.push({ id: "rename", label: "Rename", icon: Icons.pencil });
+                                    if root.move-targets.length > 0 {
+                                        self.entries.push({ id: "move", label: "Move to", icon: Icons.folder, choices: root.move-targets });
+                                    }
+                                    self.entries.push({ id: "delete", label: "Delete", icon: Icons.trash, danger: true });
+                                }
+                            }
+                            activated(id, choice) => {
+                                if id == "new" {
+                                    root.ask(Asking.new-playlist);
+                                } else if id == "folder" {
+                                    root.ask(Asking.new-folder);
+                                } else if id == "rename" {
+                                    root.ask(Asking.rename-folder);
+                                } else if id == "move" {
+                                    root.move-folder(choice);
+                                } else {
+                                    root.ask(Asking.delete-folder);
+                                }
+                            }
+                        }
+                    }
                     if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;
                         round: root.page == Page.artist || root.page == Page.composer;
@@ -898,13 +1055,28 @@ export component AppWindow inherits Window {
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
-                        if root.page == Page.playlist && root.playlist-editable: MoreMenu {
+                        // Any playlist can go in a folder, read-only too.
+                        if root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0): MoreMenu {
                             label: "Playlist";
-                            entries: [
-                                { id: "rename", label: "Rename", icon: Icons.pencil },
-                                { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
-                            ];
-                            activated(id) => { root.ask(id == "rename" ? Asking.rename-playlist : Asking.delete-playlist); }
+                            opening => {
+                                self.entries = [];
+                                if root.playlist-editable {
+                                    self.entries.push({ id: "rename", label: "Rename", icon: Icons.pencil });
+                                }
+                                if root.move-targets.length > 0 {
+                                    self.entries.push({ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.move-targets });
+                                }
+                                if root.playlist-editable {
+                                    self.entries.push({ id: "delete", label: "Delete", icon: Icons.trash, danger: true });
+                                }
+                            }
+                            activated(id, choice) => {
+                                if id == "move" {
+                                    root.move-playlist(choice);
+                                } else {
+                                    root.ask(id == "rename" ? Asking.rename-playlist : Asking.delete-playlist);
+                                }
+                            }
                         }
                     }
                     // Each value at the width it has, so one that wraps
@@ -997,10 +1169,15 @@ export component AppWindow inherits Window {
                                 part: track.part;
                                 playlists: root.playlist-targets;
                                 removable: root.page == Page.playlist && root.playlist-editable;
+                                taggable: root.tags-offered;
                                 open(link) => { root.open(link); }
                                 add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
                                 remove => { root.remove-from-playlist(row); }
                                 toggle-love => { root.toggle-love(row); }
+                                tag => {
+                                    root.tag-track(row);
+                                    root.ask(Asking.tag-songs);
+                                }
                             }
                         }
                     }
@@ -1067,12 +1244,17 @@ export component AppWindow inherits Window {
                             selecting: root.selected-tiles > 0;
                             joined-above: row > 0 && root.track-lines[row - 1].selected;
                             joined-below: row + 1 < root.track-lines.length && root.track-lines[row + 1].selected;
-                            // A composition is no song to add.
+                            // A composition is no song to add or tag.
                             playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
+                            taggable: root.tags-offered && root.page != Page.compositions;
                             open(link) => { root.open(link); }
                             toggle-love => { root.toggle-line-love(row); }
                             select(range) => { root.select-line(row, range); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
+                            tag => {
+                                root.tag-line(row);
+                                root.ask(Asking.tag-songs);
+                            }
                         }
                     }
                     // A composer's compositions or a composition's
@@ -1100,8 +1282,9 @@ export component AppWindow inherits Window {
                     if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
                     if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" ? "No tracks match." : "No tracks yet."; }
                     if root.page == Page.folders && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "Nothing here matches." : "This folder is empty."; }
+                    if root.page == Page.tag && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "No tracks match." : "No tracks have this tag yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.home || root.page == Page.radio || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.home || root.page == Page.radio || root.page == Page.tags || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";
@@ -1202,6 +1385,55 @@ export component AppWindow inherits Window {
                                 root.ask-user(id == "edit" ? Asking.edit-user : id == "password" ? Asking.user-password : Asking.delete-user, user.name);
                             }
                         }
+                    }
+                    // Your tags, each under the one it sits in, each opening
+                    // its page.
+                    if root.page == Page.tags: VerticalLayout {
+                        max-width: 800px;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            padding-bottom: 8px;
+                            spacing: 8px;
+                            Heading {
+                                horizontal-stretch: 1;
+                                text: "Tags";
+                            }
+                            Button {
+                                text: "New tag";
+                                clicked => { root.ask-tag(Asking.new-tag, "", ""); }
+                            }
+                        }
+                        for tag in root.tag-rows: ListRow {
+                            title: tag.title;
+                            link: "tag:" + tag.id;
+                            details: tag.details;
+                            depth: tag.depth;
+                            // All of them when opened; one so it shows.
+                            entries: [{ id: "delete", label: "Delete", icon: Icons.trash, danger: true }];
+                            open(link) => { root.open(link); }
+                            opening => {
+                                self.entries = [
+                                    { id: "new", label: "New tag in it", icon: Icons.plus },
+                                    { id: "rename", label: "Rename", icon: Icons.pencil },
+                                ];
+                                if tag.targets.length > 0 {
+                                    self.entries.push({ id: "move", label: "Move to", icon: Icons.tag, choices: tag.targets });
+                                }
+                                self.entries.push({ id: "delete", label: "Delete", icon: Icons.trash, danger: true });
+                            }
+                            activated(id, choice) => {
+                                if id == "new" {
+                                    root.ask-tag(Asking.new-tag, tag.id, "");
+                                } else if id == "rename" {
+                                    root.ask-tag(Asking.rename-tag, tag.id, tag.title);
+                                } else if id == "move" {
+                                    root.move-tag(tag.id, choice);
+                                } else {
+                                    root.ask-tag(Asking.delete-tag, tag.id, tag.title);
+                                }
+                            }
+                        }
+                        if root.tag-rows.length == 0 && !root.loading && root.page-problem == "": Note { text: "No tags yet."; }
                     }
                     // The server's stations, then the radio directory's
                     // genres, each a shelf.
@@ -1309,11 +1541,26 @@ export component AppWindow inherits Window {
         height: self.preferred-height;
         count: root.selected-tiles;
         clear => { root.clear-selection(); }
-        if root.playlist-targets.length > 0: MoreMenu {
+        if root.playlist-targets.length > 0 || root.tags-offered: MoreMenu {
             cross-axis-self-alignment: center;
             color: Palette.accent-foreground;
-            entries: [{ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlist-targets }];
-            activated(id, choice) => { root.add-selection-to-playlist(choice); }
+            opening => {
+                self.entries = [];
+                if root.playlist-targets.length > 0 {
+                    self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlist-targets });
+                }
+                if root.tags-offered {
+                    self.entries.push({ id: "tags", label: "Tags", icon: Icons.tag });
+                }
+            }
+            activated(id, choice) => {
+                if id == "tags" {
+                    root.tag-selection();
+                    root.ask(Asking.tag-songs);
+                } else {
+                    root.add-selection-to-playlist(choice);
+                }
+            }
         }
     }
 
@@ -1351,6 +1598,7 @@ export component AppWindow inherits Window {
             items: root.sections;
             groups: root.section-groups;
             icons: root.section-icons;
+            nested: root.section-nested;
             current <=> root.section;
             selected(index) => {
                 root.sidebar-open = false;
@@ -1615,10 +1863,42 @@ export component AppWindow inherits Window {
                         toggled => { root.asked-roles[i] = self.checked; }
                     }
                 }
+                if root.asking == Asking.delete-tag: Note { text: "The tags in it go too. The tracks stay."; }
+                // Each tick puts a tag on the songs or takes it off at once;
+                // a name typed below makes a tag and ticks it.
+                if root.asking == Asking.tag-songs && root.tag-choices-loading: Note { text: "Loading…"; }
+                if root.asking == Asking.tag-songs && !root.tag-choices-loading: VerticalLayout {
+                    spacing: 12px;
+                    tag-picks := ScrollView {
+                        preferred-height: min(ticks.preferred-height, 320px);
+                        content-width: self.visible-width;
+                        content-height: ticks.preferred-height;
+                        ticks := VerticalLayout {
+                            width: tag-picks.visible-width;
+                            spacing: 4px;
+                            for choice[i] in root.tag-choices: HorizontalLayout {
+                                padding-left: choice.depth * 20px;
+                                CheckBox {
+                                    text: choice.title;
+                                    checked: choice.ticked;
+                                    toggled => { root.toggle-tag(i); }
+                                }
+                            }
+                            if root.tag-choices.length == 0: Note { text: "No tags yet."; }
+                        }
+                    }
+                    LineEdit {
+                        placeholder-text: "New tag";
+                        accepted(text) => {
+                            root.tag-with-new(text);
+                            self.text = "";
+                        }
+                    }
+                }
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
-                    Button {
+                    if root.asking != Asking.tag-songs: Button {
                         text: "Cancel";
                         clicked => {
                             root.asked-password = "";
