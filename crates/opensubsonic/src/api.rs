@@ -115,6 +115,17 @@ pub struct PlaylistUpdate<'a> {
     pub song_indexes_to_remove: &'a [u32],
 }
 
+/// Changes for [`Client::update_playlist_folder`]. Whatever is left `None`
+/// stays as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlaylistFolderUpdate<'a> {
+    pub name: Option<&'a str>,
+    /// The new parent folder; `Some("")` moves the folder to the root.
+    pub parent_id: Option<&'a str>,
+    /// New position among siblings.
+    pub sort_order: Option<i64>,
+}
+
 /// What a user may do, for [`Client::create_user`] and [`Client::update_user`].
 /// `None` leaves a role at the server's default for a new user (admin, jukebox,
 /// download, upload, cover art, comment, podcast, share and video conversion
@@ -619,6 +630,73 @@ impl Client {
     pub async fn delete_playlist(&self, id: &str) -> Result<()> {
         self.call_unit("deletePlaylist", Params::new().req("id", id))
             .await
+    }
+
+    /// The user's playlist folders as a flat list; `username` (admins only)
+    /// another user's. Needs `playlistFolders`.
+    ///
+    /// <https://github.com/opensubsonic/open-subsonic-api/pull/255>
+    pub async fn get_playlist_folders(&self, username: Option<&str>) -> Result<PlaylistFolders> {
+        self.call(
+            "getPlaylistFolders",
+            Params::new().opt("username", username),
+            "playlistFolders",
+        )
+        .await
+    }
+
+    /// Creates a playlist folder in `parent_id`, or at the root; without a
+    /// `sort_order`, after its siblings. Needs `playlistFolders`.
+    pub async fn create_playlist_folder(
+        &self,
+        name: &str,
+        parent_id: Option<&str>,
+        sort_order: Option<i64>,
+    ) -> Result<PlaylistFolder> {
+        let params = Params::new()
+            .req("name", name)
+            .opt("parentId", parent_id)
+            .opt("sortOrder", sort_order);
+        self.call("createPlaylistFolder", params, "playlistFolder")
+            .await
+    }
+
+    /// Renames, moves or reorders a playlist folder. Needs `playlistFolders`.
+    pub async fn update_playlist_folder(
+        &self,
+        id: &str,
+        update: &PlaylistFolderUpdate<'_>,
+    ) -> Result<()> {
+        let params = Params::new()
+            .req("playlistFolderId", id)
+            .opt("name", update.name)
+            .opt("parentId", update.parent_id)
+            .opt("sortOrder", update.sort_order);
+        self.call_unit("updatePlaylistFolder", params).await
+    }
+
+    /// Deletes an empty playlist folder; the server refuses one with folders
+    /// or playlists in it. Needs `playlistFolders`.
+    pub async fn delete_playlist_folder(&self, id: &str) -> Result<()> {
+        let params = Params::new().req("playlistFolderId", id);
+        self.call_unit("deletePlaylistFolder", params).await
+    }
+
+    /// Places playlists, in this order, in the folder `folder_id`, at the
+    /// root for `Some("")`, or where they are for `None`. `sort_orders`, none
+    /// or one per playlist, are their positions among their siblings; without
+    /// them they go after what is there. Needs `playlistFolders`.
+    pub async fn move_playlists(
+        &self,
+        playlist_ids: &[&str],
+        folder_id: Option<&str>,
+        sort_orders: &[i64],
+    ) -> Result<()> {
+        let params = Params::new()
+            .list("playlistId", playlist_ids)
+            .opt("playlistFolderId", folder_id)
+            .list("sortOrder", sort_orders);
+        self.call_unit("movePlaylist", params).await
     }
 
     // Media retrieval

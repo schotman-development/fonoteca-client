@@ -33,6 +33,34 @@ pub struct Playlist {
     pub readonly: Option<bool>,
     /// [OS] Date the playlist contents are considered valid until [ISO 8601]. Empty or absent means no caching guarantee.
     pub valid_until: Option<String>,
+    /// [OS] `playlistFolders`: ID of the containing folder in the selected user's playlist organization. Empty for a root-level playlist.
+    pub playlist_folder_id: Option<String>,
+    /// [OS] `playlistFolders`: Position among siblings in the selected user's playlist organization.
+    pub playlist_folder_sort_order: Option<i64>,
+}
+
+/// A folder of the user's playlists, from the proposed `playlistFolders`
+/// extension.
+///
+/// <https://github.com/opensubsonic/open-subsonic-api/pull/255>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistFolder {
+    pub id: String,
+    /// The human-readable name of the playlist folder.
+    pub name: String,
+    /// ID of the parent playlist folder. Omitted for a root-level folder.
+    pub parent_id: Option<String>,
+    /// Position among siblings, as a client-assigned integer.
+    pub sort_order: Option<i64>,
+}
+
+/// All folders of a user's playlists, as a flat list.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistFolders {
+    #[serde(default)]
+    pub playlist_folder: Vec<PlaylistFolder>,
 }
 
 /// The generic type of media [music/podcast/audiobook/video]

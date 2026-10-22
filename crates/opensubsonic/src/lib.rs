@@ -731,6 +731,84 @@ mod tests {
         assert!(log[1].contains("composerId=ar-1"), "{}", log[1]);
     }
 
+    #[tokio::test]
+    async fn playlist_folders_as_proposed() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("getPlaylistFolders") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlistFolders":{"playlistFolder":[{"id":"folder-dj","name":"DJ Sets","sortOrder":1},{"id":"folder-2026","name":"2026","parentId":"folder-dj","sortOrder":1}]}}}"#
+            } else if request.contains("createPlaylistFolder") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlistFolder":{"id":"folder-2026","name":"2026","parentId":"folder-dj","sortOrder":2}}}"#
+            } else if request.contains("getPlaylists") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlists":{"playlist":[{"id":"800000075","name":"testcreate","songCount":1,"duration":304,"created":"2023-03-16T03:18:41+00:00","changed":"2023-03-16T03:18:41+00:00","playlistFolderId":"folder-dj","playlistFolderSortOrder":2}]}}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#
+            })
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let folders = client.get_playlist_folders(None).await.unwrap();
+        let inner = &folders.playlist_folder[1];
+        assert_eq!(
+            (inner.parent_id.as_deref(), inner.sort_order),
+            (Some("folder-dj"), Some(1))
+        );
+        assert_eq!(folders.playlist_folder[0].parent_id, None);
+        let made = client
+            .create_playlist_folder("2026", Some("folder-dj"), None)
+            .await
+            .unwrap();
+        assert_eq!(made.sort_order, Some(2));
+        let playlist = &client.get_playlists(None).await.unwrap().playlist[0];
+        assert_eq!(
+            (
+                playlist.playlist_folder_id.as_deref(),
+                playlist.playlist_folder_sort_order
+            ),
+            (Some("folder-dj"), Some(2))
+        );
+        let to_root = PlaylistFolderUpdate {
+            parent_id: Some(""),
+            ..PlaylistFolderUpdate::default()
+        };
+        client
+            .update_playlist_folder("folder-2026", &to_root)
+            .await
+            .unwrap();
+        client
+            .move_playlists(&["a", "b"], Some("folder-dj"), &[1, 2])
+            .await
+            .unwrap();
+        client.move_playlists(&["a"], Some(""), &[]).await.unwrap();
+        client.delete_playlist_folder("folder-2026").await.unwrap();
+        let log = log.lock().unwrap();
+        assert!(
+            log[1].contains("name=2026&parentId=folder-dj") && !log[1].contains("sortOrder"),
+            "{}",
+            log[1]
+        );
+        assert!(
+            log[3].contains("playlistFolderId=folder-2026&parentId= "),
+            "{}",
+            log[3]
+        );
+        assert!(
+            log[4].contains(
+                "playlistId=a&playlistId=b&playlistFolderId=folder-dj&sortOrder=1&sortOrder=2"
+            ),
+            "{}",
+            log[4]
+        );
+        assert!(
+            log[5].contains("playlistId=a&playlistFolderId= "),
+            "{}",
+            log[5]
+        );
+        assert!(
+            log[6].contains("playlistFolderId=folder-2026"),
+            "{}",
+            log[6]
+        );
+    }
+
     #[test]
     fn passwords_go_only_over_https_or_to_this_machine() {
         let may = |server: &str| {
