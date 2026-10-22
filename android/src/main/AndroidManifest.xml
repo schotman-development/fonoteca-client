@@ -12,7 +12,7 @@
         <!-- Turning the phone or changing its settings would restart the
              activity, and with it the app; Slint redraws for the new size. -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|locale|layoutDirection"
             android:exported="true">
             <meta-data
