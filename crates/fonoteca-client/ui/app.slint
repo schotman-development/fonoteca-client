@@ -115,19 +115,22 @@ export struct Track {
 }
 
 component Heading inherits Text {
-    font-size: 24px;
+    font-size: 24px * Theme.zoom;
     font-weight: 600;
     wrap: word-wrap;
 }
 
+// A screen reader reads both out when they appear or change.
 component Note inherits Text {
     wrap: word-wrap;
     color: Palette.foreground.transparentize(30%);
+    accessible-live-region: polite;
 }
 
 component Problem inherits Text {
     wrap: word-wrap;
-    color: #d33;
+    color: Theme.danger;
+    accessible-live-region: assertive;
 }
 
 // A thin bar along one side of the pages' scroll view, where the page is
@@ -173,10 +176,16 @@ component PageBar {
 // whose Flickable can't be told to let go of a finger. While a shelf slides
 // sideways the page doesn't scroll, else a finger drifting a little up or
 // down would take the slide over. Starts at the top left again whenever
-// `visit` changes, that is on every page shown. Says when the bottom is less
-// than a screen away, so more can load before it's reached.
-component PageScroll {
+// `visit` changes, that is on every page shown. Takes the keys when
+// `arrival` does, on a page opened, so Tab goes on from the page's top and a
+// screen reader names the page; not on a new sort or filter, which goes on
+// taking them.
+// Says when the bottom is less than a screen away, so more can load before
+// it's reached. The arrow keys, Page Up and Down, Home and End scroll it
+// when what has the keys doesn't take them; Escape goes to `escape`.
+component PageScroll inherits FocusScope {
     in property <int> visit;
+    in property <int> arrival;
     out property <length> visible-width: flick.width;
     out property <length> visible-height: flick.height;
     in-out property <length> content-width <=> flick.content-width;
@@ -184,12 +193,42 @@ component PageScroll {
     in-out property <length> content-x <=> flick.content-x;
     in-out property <length> content-y <=> flick.content-y;
     callback near-end();
+    callback escape();
     horizontal-stretch: 1;
     vertical-stretch: 1;
+    focus-on-click: false;
+    accessible-role: main;
     changed visit => {
         self.content-x = 0;
         self.content-y = 0;
         Input.sliding = false;
+    }
+    changed arrival => {
+        if !Input.modal {
+            self.focus();
+        }
+    }
+    property <int> refocus: Input.refocus;
+    changed refocus => { self.focus(); }
+    key-pressed(event) => {
+        let line = 48px;
+        let page = max(line, self.visible-height - line);
+        let by = event.text == Key.DownArrow ? -line
+            : event.text == Key.UpArrow ? line
+            : event.text == Key.PageDown || (event.text == Key.Space && !event.modifiers.shift) ? -page
+            : event.text == Key.PageUp || (event.text == Key.Space && event.modifiers.shift) ? page
+            : event.text == Key.Home ? 100000px
+            : event.text == Key.End ? -100000px
+            : 0;
+        if by != 0 {
+            self.content-y = clamp(self.content-y + by, min(0, self.visible-height - self.content-height), 0);
+            return accept;
+        }
+        if event.text == Key.Escape {
+            self.escape();
+            return accept;
+        }
+        reject
     }
     changed content-y => {
         self.check-end();
@@ -230,11 +269,14 @@ component PageScroll {
     }
 }
 
-// The filter of the albums or artists page.
+// The filter of a page, named for what it filters, such as "Filter albums".
 component Filter inherits LineEdit {
+    in property <string> what;
     min-width: 64px;
     preferred-width: 240px;
     placeholder-text: "Filter";
+    accessible-label: "Filter " + self.what;
+    enabled: !Input.modal;
 }
 
 // The library's counts in cards across the width, in as few rows as fit,
@@ -243,7 +285,7 @@ component StatCards {
     in property <[Stat]> stats;
     callback open(link: string);
     property <length> gap: Theme.gap;
-    property <length> card-height: 88px;
+    property <length> card-height: 88px * Theme.zoom;
     property <int> fit: max(1, floor((self.width + self.gap) / (180px + self.gap)));
     property <int> rows: ceil(self.stats.length / self.fit);
     property <int> columns: max(1, ceil(self.stats.length / max(1, self.rows)));
@@ -280,13 +322,13 @@ component StatCards {
                 spacing: 2px;
                 Text {
                     text: stat.value;
-                    font-size: 26px;
+                    font-size: 26px * Theme.zoom;
                     font-weight: 700;
                     color: Theme.text;
                 }
                 Text {
                     text: stat.label.to-uppercase();
-                    font-size: 11px;
+                    font-size: 11px * Theme.zoom;
                     letter-spacing: 0.5px;
                     color: Theme.muted;
                     overflow: elide;
@@ -313,11 +355,13 @@ component FilterHeading inherits VerticalLayout {
         }
         if !root.narrow: Filter {
             horizontal-stretch: 0;
+            what: root.title.to-lowercase();
             text <=> root.filter;
             edited => { root.edited(); }
         }
     }
     if root.narrow: Filter {
+        what: root.title.to-lowercase();
         text <=> root.filter;
         edited => { root.edited(); }
     }
@@ -390,6 +434,7 @@ component SortControls inherits HorizontalLayout {
     ComboBox {
         min-width: 96px;
         horizontal-stretch: 0;
+        enabled: !Input.modal;
         accessible-label: "Sort by";
         // In the order browse.rs's `arranged` takes them.
         model: ["Name", "Artist", "Recently added", "Year"];
@@ -426,6 +471,7 @@ component AlbumControls inherits VerticalLayout {
     HorizontalLayout {
         spacing: 12px;
         Filter {
+            what: "albums";
             text <=> root.filter;
             edited => { root.filter-edited(); }
         }
@@ -475,6 +521,9 @@ export component AppWindow inherits Window {
 
     in property <Page> page;
     in property <int> visit;
+    // Counts the pages opened, and back and forward; `visit` counts a new
+    // sort or filter too.
+    in property <int> arrival;
     in property <bool> loading;
     in property <string> page-problem;
     // Why the library couldn't be opened with the saved account.
@@ -493,6 +542,8 @@ export component AppWindow inherits Window {
     in property <[Stat]> stats;
     in property <image> header-image;
     in property <string> header-title;
+    // What a screen reader calls the page: its heading, or its section's.
+    property <string> page-name: root.header-title != "" ? root.header-title : root.sections[root.section];
     in property <[Name]> header-names;
     in property <string> header-facts;
     in property <[Detail]> details;
@@ -671,10 +722,26 @@ export component AppWindow inherits Window {
     property <bool> asks-password: root.asking == Asking.new-user || root.asking == Asking.user-password || root.asking == Asking.own-password;
     property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-user || root.asking == Asking.delete-station || root.asking == Asking.delete-tag;
 
+    // Shows the dialog for `what`, the window behind out of the keys' reach.
+    function open-dialog(what: Asking) {
+        Input.modal = true;
+        root.asking = what;
+    }
+
+    // Lets the dialog go; the page takes the keys back, or the menu that
+    // opened it.
+    function close-dialog() {
+        root.asked-password = "";
+        root.asked-repeat = "";
+        root.asking = Asking.nothing;
+        Input.modal = false;
+        Input.refocus += 1;
+    }
+
     // About the page's playlist or playlist folder.
     function ask(what: Asking) {
         root.asked-name = what == Asking.rename-playlist || what == Asking.rename-folder || what == Asking.delete-folder ? root.header-title : "";
-        root.asking = what;
+        root.open-dialog(what);
     }
 
     // About the tag with this id and name; for a new tag, the one to put it
@@ -682,7 +749,7 @@ export component AppWindow inherits Window {
     function ask-tag(what: Asking, id: string, name: string) {
         root.asked-id = id;
         root.asked-name = name;
-        root.asking = what;
+        root.open-dialog(what);
     }
 
     // Asks about the user with this name, or a new one for "".
@@ -691,7 +758,7 @@ export component AppWindow inherits Window {
         root.asked-name = name;
         root.asked-password = "";
         root.asked-repeat = "";
-        root.asking = what;
+        root.open-dialog(what);
     }
 
     // Asks about this station, or a new one when `station` is empty.
@@ -700,7 +767,7 @@ export component AppWindow inherits Window {
         root.asked-name = station.name;
         root.asked-stream = station.stream;
         root.asked-homepage = station.homepage;
-        root.asking = what;
+        root.open-dialog(what);
     }
 
     function answer() {
@@ -739,9 +806,7 @@ export component AppWindow inherits Window {
         } else if root.asking == Asking.delete-station {
             root.delete-station(root.asked-id, root.asked-name);
         }
-        root.asked-password = "";
-        root.asked-repeat = "";
-        root.asking = Asking.nothing;
+        root.close-dialog();
     }
 
     function asked-title() -> string {
@@ -794,7 +859,16 @@ export component AppWindow inherits Window {
     changed physical-pixel => { root.resized(); }
     changed height => { root.share-size(); }
     changed bottom-inset => { root.share-size(); }
-    init => { root.share-size(); }
+    init => {
+        root.share-size();
+        Theme.zoom = root.text-zoom;
+    }
+
+    // How much bigger than its usual 14px the system's text size setting
+    // makes text: Android's font size, Windows' text size; only bigger counts.
+    // Other systems report none, which leaves 12px.
+    property <float> text-zoom: max(1, 1rem / 14px);
+    changed text-zoom => { Theme.zoom = self.text-zoom; }
 
     function share-size() {
         Screen.width = root.width;
@@ -889,16 +963,19 @@ export component AppWindow inherits Window {
                         }
                     }
                     if root.page == Page.tracks && root.width - root.sidebar-width >= 600px: Filter {
+                        what: "tracks";
                         horizontal-stretch: 0;
                         text <=> root.track-filter;
                         edited => { root.filter-tracks(); }
                     }
                     if root.page == Page.compositions && root.width - root.sidebar-width >= 600px: Filter {
+                        what: "compositions";
                         horizontal-stretch: 0;
                         text <=> root.composition-filter;
                         edited => { root.filter-compositions(); }
                     }
                     if (root.page == Page.folders || root.page == Page.tag) && root.width - root.sidebar-width >= 600px: Filter {
+                        what: "tracks";
                         horizontal-stretch: 0;
                         text <=> root.folder-filter;
                         edited => { root.filter-folders(); }
@@ -906,6 +983,9 @@ export component AppWindow inherits Window {
                     Button {
                         horizontal-stretch: 0;
                         text: "Columns";
+                        enabled: !Input.modal;
+                        accessible-expandable: true;
+                        accessible-expanded: columns.is-open;
                         clicked => { columns.show(); }
                     }
                 }
@@ -921,14 +1001,17 @@ export component AppWindow inherits Window {
                     padding-left: 24px;
                     padding-right: 24px;
                     if root.page == Page.tracks: Filter {
+                        what: "tracks";
                         text <=> root.track-filter;
                         edited => { root.filter-tracks(); }
                     }
                     if root.page == Page.compositions: Filter {
+                        what: "compositions";
                         text <=> root.composition-filter;
                         edited => { root.filter-compositions(); }
                     }
                     if root.page == Page.folders || root.page == Page.tag: Filter {
+                        what: "tracks";
                         text <=> root.folder-filter;
                         edited => { root.filter-folders(); }
                     }
@@ -981,6 +1064,13 @@ export component AppWindow inherits Window {
             }
             scroll := PageScroll {
                 visit: root.visit;
+                arrival: root.arrival;
+                accessible-label: root.page-name;
+                escape => {
+                    if root.selected-tiles > 0 {
+                        root.clear-selection();
+                    }
+                }
                 near-end => {
                     if (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.stations || root.table) && root.more-tiles && !root.loading && root.page-problem == "" {
                         root.show-more();
@@ -1001,7 +1091,8 @@ export component AppWindow inherits Window {
                     // which is wider than the page when its columns don't
                     // fit.
                     x: max(0px, (scroll.visible-width - self.width) / 2);
-                    width: root.table ? max(scroll.visible-width, root.track-table-width + 48px) : min(scroll.visible-width, 1600px);
+                    // A phone's menu buttons are wider than browse.rs counts.
+                    width: root.table ? max(scroll.visible-width, root.track-table-width + 48px + (Screen.phone ? 12px : 0)) : min(scroll.visible-width, 1600px);
                     padding: 24px;
                     padding-top: 8px;
                     // Room to scroll the last tiles out from under the bar.
@@ -1016,6 +1107,7 @@ export component AppWindow inherits Window {
                             alignment: start;
                             Button {
                                 text: "Try again";
+                                enabled: !Input.modal;
                                 clicked => { root.reconnect(); }
                             }
                         }
@@ -1080,12 +1172,14 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             if scroll.visible-width >= 600px: Filter {
+                                what: "artists";
                                 horizontal-stretch: 0;
                                 text <=> root.artist-filter;
                                 edited => { root.filter-artists(); }
                             }
                         }
                         if scroll.visible-width < 600px: Filter {
+                            what: "artists";
                             text <=> root.artist-filter;
                             edited => { root.filter-artists(); }
                         }
@@ -1319,8 +1413,8 @@ export component AppWindow inherits Window {
                         // The rows on screen and a screen below, by
                         // TrackLineRow's height, whose covers to fetch.
                         property <length> view-top: -scroll.content-y - self.y;
-                        property <int> first-in-view: max(0, floor(self.view-top / 54px));
-                        property <int> last-in-view: min(root.track-lines.length, floor((self.view-top + 2 * scroll.visible-height) / 54px) + 1) - 1;
+                        property <int> first-in-view: max(0, floor(self.view-top / (54px * Theme.zoom)));
+                        property <int> last-in-view: min(root.track-lines.length, floor((self.view-top + 2 * scroll.visible-height) / (54px * Theme.zoom)) + 1) - 1;
                         init => {
                             root.tiles-in-view(self.first-in-view, self.last-in-view);
                         }
@@ -1381,6 +1475,7 @@ export component AppWindow inherits Window {
                         alignment: start;
                         Button {
                             text: "Try again";
+                            enabled: !Input.modal;
                             clicked => { root.show-more(); }
                         }
                     }
@@ -1412,12 +1507,12 @@ export component AppWindow inherits Window {
                             spacing: 8px;
                             Button {
                                 text: "Sign out";
-                                enabled: !root.busy;
+                                enabled: !root.busy && !Input.modal;
                                 clicked => { root.sign-out(); }
                             }
                             Button {
                                 text: "Change password";
-                                enabled: !root.busy;
+                                enabled: !root.busy && !Input.modal;
                                 clicked => { root.ask-user(Asking.own-password, ""); }
                             }
                         }
@@ -1440,7 +1535,7 @@ export component AppWindow inherits Window {
                                 alignment: start;
                                 Button {
                                     text: "Scan library";
-                                    enabled: !root.scanning;
+                                    enabled: !root.scanning && !Input.modal;
                                     clicked => { root.start-scan(); }
                                 }
                             }
@@ -1458,6 +1553,7 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 text: "Add user";
+                                enabled: !Input.modal;
                                 clicked => { root.ask-user(Asking.new-user, ""); }
                             }
                         }
@@ -1493,6 +1589,7 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 text: "New tag";
+                                enabled: !Input.modal;
                                 clicked => { root.ask-tag(Asking.new-tag, "", ""); }
                             }
                         }
@@ -1540,10 +1637,12 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 text: "Languages";
+                                enabled: !Input.modal;
                                 clicked => { languages.show(); }
                             }
                             if root.may-administer: Button {
                                 text: "Add station";
+                                enabled: !Input.modal;
                                 clicked => { root.ask-station(Asking.new-station, { }); }
                             }
                             languages := PopupWindow {
@@ -1636,7 +1735,9 @@ export component AppWindow inherits Window {
         clear => { root.clear-selection(); }
         if root.playlist-targets.length > 0 || root.tags-offered || root.selection-moves.length > 0: MoreMenu {
             cross-axis-self-alignment: center;
+            label: "More for the selection";
             color: Palette.accent-foreground;
+            ring-color: Palette.accent-foreground;
             opening => {
                 self.entries = [];
                 if root.playlist-targets.length > 0 {
@@ -1678,35 +1779,52 @@ export component AppWindow inherits Window {
                 font-size: Theme.body;
                 color: Palette.background;
                 wrap: word-wrap;
+                accessible-live-region: polite;
             }
         }
     }
 
-    // The sidebar opened over a narrow window; a tap beside it closes it.
+    // The sidebar opened over a narrow window; a tap beside it or Escape
+    // closes it. It takes the keys when it opens, and gives them to the page
+    // when it closes.
     if root.step == Step.done && !root.docked && root.sidebar-open: Rectangle {
         background: #0000004d;
         TouchArea {
-            clicked => { root.sidebar-open = false; }
+            clicked => {
+                root.sidebar-open = false;
+                Input.refocus += 1;
+            }
         }
-        Sidebar {
+        FocusScope {
             x: 0;
             y: root.safe-area-insets.top;
             width: min(280px, root.width - 48px);
             height: parent.height - root.safe-area-insets.top - root.bottom-inset;
-            items: root.sections;
-            groups: root.section-groups;
-            icons: root.section-icons;
-            nested: root.section-nested;
-            current <=> root.section;
-            selected(index) => {
-                root.sidebar-open = false;
-                root.show-section(index);
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.sidebar-open = false;
+                    Input.refocus += 1;
+                    return accept;
+                }
+                reject
             }
-            new-playlist => {
-                root.sidebar-open = false;
-                root.ask(Asking.new-playlist);
+            Sidebar {
+                items: root.sections;
+                groups: root.section-groups;
+                icons: root.section-icons;
+                nested: root.section-nested;
+                current <=> root.section;
+                selected(index) => {
+                    root.sidebar-open = false;
+                    root.show-section(index);
+                }
+                new-playlist => {
+                    root.sidebar-open = false;
+                    root.ask(Asking.new-playlist);
+                }
+                dropped(index) => { root.drop-on-section(index); }
             }
-            dropped(index) => { root.drop-on-section(index); }
         }
     }
 
@@ -1741,7 +1859,7 @@ export component AppWindow inherits Window {
                     if root.step == Step.opening: Note {
                         preferred-width: form.column-width;
                         text: "Reading your saved sign-in…";
-                        font-size: root.phone ? 16px : 0px;
+                        font-size: root.phone ? 16px * Theme.zoom : 0px;
                     }
 
                     if root.step == Step.server: VerticalLayout {
@@ -1750,18 +1868,25 @@ export component AppWindow inherits Window {
                         Heading { text: "Connect to your music server"; }
                         Note {
                             text: "The address of an OpenSubsonic or Subsonic server, such as Navidrome.";
-                            font-size: root.phone ? 16px : 0px;
+                            font-size: root.phone ? 16px * Theme.zoom : 0px;
                         }
                         LineEdit {
                             placeholder-text: "https://music.example.org";
+                            accessible-label: "Server address";
                             text <=> root.address;
                             enabled: !root.busy;
+                            // On a phone the keyboard would cover the form.
+                            init => {
+                                if !root.phone {
+                                    self.focus();
+                                }
+                            }
                             accepted => { root.find-server(); }
                         }
                         if root.problem != "": Problem {
                             preferred-width: form.column-width;
                             text: root.problem;
-                            font-size: root.phone ? 16px : 0px;
+                            font-size: root.phone ? 16px * Theme.zoom : 0px;
                         }
                         StepButtons {
                             phone: root.phone;
@@ -1778,21 +1903,28 @@ export component AppWindow inherits Window {
                         Heading { text: "Sign in"; }
                         Note {
                             text: root.address;
-                            font-size: root.phone ? 16px : 0px;
+                            font-size: root.phone ? 16px * Theme.zoom : 0px;
                         }
                         if root.unencrypted: Problem {
                             preferred-width: form.column-width;
                             text: "This address isn't encrypted (http). Anyone on the network between you and the server can read what you send.";
-                            font-size: root.phone ? 16px : 0px;
+                            font-size: root.phone ? 16px * Theme.zoom : 0px;
                         }
                         if root.api-key-offered: ComboBox {
+                            accessible-label: "Sign in with";
                             model: ["API key", "Username and password"];
                             current-index <=> root.login-method;
                             enabled: !root.busy;
                         }
                         if root.api-key-offered && root.login-method == 0: LineEdit {
                             placeholder-text: "API key";
+                            accessible-label: self.placeholder-text;
                             input-type: InputType.password;
+                            init => {
+                                if !root.phone {
+                                    self.focus();
+                                }
+                            }
                             text <=> root.api-key;
                             enabled: !root.busy;
                             accepted => { root.sign-in(); }
@@ -1801,11 +1933,18 @@ export component AppWindow inherits Window {
                             spacing: 12px;
                             LineEdit {
                                 placeholder-text: "Username";
+                                accessible-label: self.placeholder-text;
                                 text <=> root.username;
                                 enabled: !root.busy;
+                                init => {
+                                    if !root.phone {
+                                        self.focus();
+                                    }
+                                }
                             }
                             LineEdit {
                                 placeholder-text: "Password";
+                                accessible-label: self.placeholder-text;
                                 input-type: InputType.password;
                                 text <=> root.password;
                                 enabled: !root.busy;
@@ -1815,7 +1954,7 @@ export component AppWindow inherits Window {
                         if root.problem != "": Problem {
                             preferred-width: form.column-width;
                             text: root.problem;
-                            font-size: root.phone ? 16px : 0px;
+                            font-size: root.phone ? 16px * Theme.zoom : 0px;
                         }
                         StepButtons {
                             phone: root.phone;
@@ -1837,11 +1976,17 @@ export component AppWindow inherits Window {
                         Heading { text: "ListenBrainz"; }
                         Note {
                             text: "Optional. The app doesn't use ListenBrainz yet. Your user token is on https://listenbrainz.org/settings/";
-                            font-size: root.phone ? 16px : 0px;
+                            font-size: root.phone ? 16px * Theme.zoom : 0px;
                         }
                         LineEdit {
                             placeholder-text: "User token";
+                            accessible-label: "ListenBrainz user token";
                             input-type: InputType.password;
+                            init => {
+                                if !root.phone {
+                                    self.focus();
+                                }
+                            }
                             text <=> root.listenbrainz-token;
                             enabled: !root.busy;
                             accepted => { root.connect-listenbrainz(); }
@@ -1849,7 +1994,7 @@ export component AppWindow inherits Window {
                         if root.problem != "": Problem {
                             preferred-width: form.column-width;
                             text: root.problem;
-                            font-size: root.phone ? 16px : 0px;
+                            font-size: root.phone ? 16px * Theme.zoom : 0px;
                         }
                         StepButtons {
                             phone: root.phone;
@@ -1872,17 +2017,18 @@ export component AppWindow inherits Window {
     }
 
     // Asks for a playlist's name, or whether to delete it, over the page. A
-    // tap beside it lets it go.
+    // tap beside it or Escape lets it go. One taller than the window
+    // scrolls. A delete's takes the keys on Cancel, the tags' on itself.
     if root.step == Step.done && root.asking != Asking.nothing: Rectangle {
         background: #0000004d;
         TouchArea {
-            clicked => { root.asking = Asking.nothing; }
+            clicked => { root.close-dialog(); }
         }
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: max(24px, (parent.height - root.bottom-inset - self.height) / 3);
             width: min(400px, parent.width - 32px);
-            height: dialog.preferred-height;
+            height: min(dialog.preferred-height, parent.height - root.bottom-inset - 48px);
             border-radius: 12px;
             background: Palette.background;
             drop-shadow-blur: 16px;
@@ -1890,126 +2036,159 @@ export component AppWindow inherits Window {
             drop-shadow-color: #0000004d;
             // Keeps clicks on the dialog from letting it go.
             TouchArea { }
-            dialog := VerticalLayout {
-                padding: 20px;
-                spacing: 16px;
-                Text {
-                    text: root.asked-title();
-                    font-size: Theme.heading;
-                    font-weight: 600;
-                    color: Theme.text;
-                    wrap: word-wrap;
+            FocusScope {
+                accessible-role: groupbox;
+                accessible-label: root.asked-title();
+                init => {
+                    if root.asking == Asking.tag-songs {
+                        self.focus();
+                    }
                 }
-                if root.asks-name: LineEdit {
-                    text <=> root.asked-name;
-                    placeholder-text: root.asking == Asking.new-user ? "Username" : "Name";
-                    init => { self.focus(); }
-                    accepted => {
-                        if root.may-answer() {
-                            root.answer();
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.close-dialog();
+                        return accept;
+                    }
+                    reject
+                }
+                Flickable {
+                    interactive: self.content-height > self.height;
+                    content-height: dialog.preferred-height;
+                    dialog := VerticalLayout {
+                        width: parent.width;
+                        padding: 20px;
+                        spacing: 16px;
+                        Text {
+                            text: root.asked-title();
+                            font-size: Theme.heading;
+                            font-weight: 600;
+                            color: Theme.text;
+                            wrap: word-wrap;
                         }
-                    }
-                }
-                if root.asks-user: LineEdit {
-                    text <=> root.asked-email;
-                    placeholder-text: "Email";
-                    init => {
-                        if root.asking == Asking.edit-user {
-                            self.focus();
-                        }
-                    }
-                }
-                if root.asks-password: LineEdit {
-                    input-type: InputType.password;
-                    text <=> root.asked-password;
-                    placeholder-text: root.asking == Asking.new-user ? "Password" : "New password";
-                    init => {
-                        if root.asking != Asking.new-user {
-                            self.focus();
-                        }
-                    }
-                }
-                if root.asks-password: LineEdit {
-                    input-type: InputType.password;
-                    text <=> root.asked-repeat;
-                    placeholder-text: "Repeat password";
-                    accepted => {
-                        if root.may-answer() {
-                            root.answer();
-                        }
-                    }
-                }
-                if root.asks-station: LineEdit {
-                    text <=> root.asked-stream;
-                    placeholder-text: "Stream address";
-                }
-                if root.asks-station: LineEdit {
-                    text <=> root.asked-homepage;
-                    placeholder-text: "Home page (optional)";
-                    accepted => {
-                        if root.may-answer() {
-                            root.answer();
-                        }
-                    }
-                }
-                if root.asks-user: GridLayout {
-                    spacing: 4px;
-                    for role[i] in root.role-names: CheckBox {
-                        col: mod(i, 2);
-                        row: floor(i / 2);
-                        text: role;
-                        checked: root.asked-roles[i];
-                        toggled => { root.asked-roles[i] = self.checked; }
-                    }
-                }
-                if root.asking == Asking.delete-tag: Note { text: "The tags in it go too. The tracks stay."; }
-                // Each tick puts a tag on the songs or takes it off at once;
-                // a name typed below makes a tag and ticks it.
-                if root.asking == Asking.tag-songs && root.tag-choices-loading: Note { text: "Loading…"; }
-                if root.asking == Asking.tag-songs && !root.tag-choices-loading: VerticalLayout {
-                    spacing: 12px;
-                    tag-picks := ScrollView {
-                        preferred-height: min(ticks.preferred-height, 320px);
-                        content-width: self.visible-width;
-                        content-height: ticks.preferred-height;
-                        ticks := VerticalLayout {
-                            width: tag-picks.visible-width;
-                            spacing: 4px;
-                            for choice[i] in root.tag-choices: HorizontalLayout {
-                                padding-left: choice.depth * 20px;
-                                CheckBox {
-                                    text: choice.title;
-                                    checked: choice.ticked;
-                                    toggled => { root.toggle-tag(i); }
+                        if root.asks-name: LineEdit {
+                            text <=> root.asked-name;
+                            placeholder-text: root.asking == Asking.new-user ? "Username" : "Name";
+                            accessible-label: self.placeholder-text;
+                            init => { self.focus(); }
+                            accepted => {
+                                if root.may-answer() {
+                                    root.answer();
                                 }
                             }
-                            if root.tag-choices.length == 0: Note { text: "No tags yet."; }
                         }
-                    }
-                    LineEdit {
-                        placeholder-text: "New tag";
-                        accepted(text) => {
-                            root.tag-with-new(text);
-                            self.text = "";
+                        if root.asks-user: LineEdit {
+                            text <=> root.asked-email;
+                            placeholder-text: "Email";
+                            accessible-label: self.placeholder-text;
+                            init => {
+                                if root.asking == Asking.edit-user {
+                                    self.focus();
+                                }
+                            }
                         }
-                    }
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    if root.asking != Asking.tag-songs: Button {
-                        text: "Cancel";
-                        clicked => {
-                            root.asked-password = "";
-                            root.asked-repeat = "";
-                            root.asking = Asking.nothing;
+                        if root.asks-password: LineEdit {
+                            input-type: InputType.password;
+                            text <=> root.asked-password;
+                            placeholder-text: root.asking == Asking.new-user ? "Password" : "New password";
+                            accessible-label: self.placeholder-text;
+                            init => {
+                                if root.asking != Asking.new-user {
+                                    self.focus();
+                                }
+                            }
                         }
-                    }
-                    Button {
-                        text: root.asked-action();
-                        primary: true;
-                        enabled: root.may-answer();
-                        clicked => { root.answer(); }
+                        if root.asks-password: LineEdit {
+                            input-type: InputType.password;
+                            text <=> root.asked-repeat;
+                            placeholder-text: "Repeat password";
+                            accessible-label: self.placeholder-text;
+                            accepted => {
+                                if root.may-answer() {
+                                    root.answer();
+                                }
+                            }
+                        }
+                        // Once the second password is as long as the first.
+                        if root.asks-password && root.asked-repeat.character-count >= root.asked-password.character-count && root.asked-repeat != root.asked-password: Problem {
+                            text: "The passwords differ.";
+                        }
+                        if root.asks-station: LineEdit {
+                            text <=> root.asked-stream;
+                            placeholder-text: "Stream address";
+                            accessible-label: self.placeholder-text;
+                        }
+                        if root.asks-station: LineEdit {
+                            text <=> root.asked-homepage;
+                            placeholder-text: "Home page (optional)";
+                            accessible-label: self.placeholder-text;
+                            accepted => {
+                                if root.may-answer() {
+                                    root.answer();
+                                }
+                            }
+                        }
+                        if root.asks-user: GridLayout {
+                            spacing: 4px;
+                            for role[i] in root.role-names: CheckBox {
+                                col: mod(i, 2);
+                                row: floor(i / 2);
+                                text: role;
+                                checked: root.asked-roles[i];
+                                toggled => { root.asked-roles[i] = self.checked; }
+                            }
+                        }
+                        if root.asking == Asking.delete-tag: Note { text: "The tags in it go too. The tracks stay."; }
+                        // Each tick puts a tag on the songs or takes it off at once;
+                        // a name typed below makes a tag and ticks it.
+                        if root.asking == Asking.tag-songs && root.tag-choices-loading: Note { text: "Loading…"; }
+                        if root.asking == Asking.tag-songs && !root.tag-choices-loading: VerticalLayout {
+                            spacing: 12px;
+                            tag-picks := ScrollView {
+                                preferred-height: min(ticks.preferred-height, 320px);
+                                content-width: self.visible-width;
+                                content-height: ticks.preferred-height;
+                                ticks := VerticalLayout {
+                                    width: tag-picks.visible-width;
+                                    spacing: 4px;
+                                    for choice[i] in root.tag-choices: HorizontalLayout {
+                                        padding-left: choice.depth * 20px;
+                                        CheckBox {
+                                            text: choice.title;
+                                            checked: choice.ticked;
+                                            toggled => { root.toggle-tag(i); }
+                                        }
+                                    }
+                                    if root.tag-choices.length == 0: Note { text: "No tags yet."; }
+                                }
+                            }
+                            LineEdit {
+                                placeholder-text: "New tag";
+                                accessible-label: self.placeholder-text;
+                                accepted(text) => {
+                                    root.tag-with-new(text);
+                                    self.text = "";
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            if root.asking != Asking.tag-songs: Button {
+                                text: "Cancel";
+                                init => {
+                                    if root.deleting {
+                                        self.focus();
+                                    }
+                                }
+                                clicked => { root.close-dialog(); }
+                            }
+                            Button {
+                                text: root.asked-action();
+                                primary: true;
+                                enabled: root.may-answer();
+                                clicked => { root.answer(); }
+                            }
+                        }
                     }
                 }
             }

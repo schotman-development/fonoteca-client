@@ -5,21 +5,26 @@
 import { LineEdit, Palette, ScrollView } from "std-widgets.slint";
 
 export global Theme {
+    // How much bigger the phone's or the desktop's text size setting makes
+    // text, which the window sets: at least 1.
+    in-out property <float> zoom: 1;
+
     out property <brush> text: Palette.foreground;
-    out property <brush> muted: Palette.foreground.transparentize(40%);
+    // 4.5:1 against the background and the surface in every style.
+    out property <brush> muted: Palette.foreground.transparentize(35%);
     out property <brush> hover: Palette.foreground.transparentize(92%);
     out property <brush> surface: Palette.alternate-background;
     out property <brush> accent: Palette.accent-background;
 
-    out property <length> small: 12px;
-    out property <length> body: 14px;
-    out property <length> heading: 20px;
-    out property <length> title: 32px;
+    out property <length> small: 12px * self.zoom;
+    out property <length> body: 14px * self.zoom;
+    out property <length> heading: 20px * self.zoom;
+    out property <length> title: 32px * self.zoom;
 
     out property <length> gap: 16px;
     out property <length> radius: 6px;
 
-    out property <brush> danger: #d33;
+    out property <brush> danger: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
 }
 
 // The window's size and what a phone draws over the bottom of it, for the
@@ -91,10 +96,14 @@ export global Icons {
 
 // Whether every press counts as a finger's. Tests turn it on, since Slint's
 // test backend can only send mouse presses. Whether a shelf is being slid
-// sideways, which the page then doesn't scroll.
+// sideways, which the page then doesn't scroll. Whether a dialog is open,
+// which leaves the keys nothing to reach behind it.
 export global Input {
     in-out property <bool> touch;
     in-out property <bool> sliding;
+    in-out property <bool> modal;
+    // Counts up when the page is to take the keys back, as from a dialog.
+    in-out property <int> refocus;
 }
 
 // The playlist being dragged, by its link, while a drag is in flight; and
@@ -156,6 +165,7 @@ component Hold {
 export component Pressable {
     in property <bool> enabled: true;
     in property <string> label;
+    in property <brush> ring-color: Theme.accent;
     out property <bool> hovered: root.enabled && touch.has-hover;
     out property <bool> focused: focus.has-focus;
     // Whether Shift was held on the press or key that clicked it, and
@@ -165,6 +175,7 @@ export component Pressable {
     callback clicked();
     callback context-clicked();
 
+    forward-focus: focus;
     accessible-role: button;
     accessible-label: root.label;
     accessible-enabled: root.enabled;
@@ -181,11 +192,11 @@ export component Pressable {
         height: parent.height + 6px;
         border-radius: Theme.radius + 3px;
         border-width: root.focused ? 2px : 0;
-        border-color: Theme.accent;
+        border-color: root.ring-color;
     }
 
     focus := FocusScope {
-        enabled: root.enabled;
+        enabled: root.enabled && !Input.modal;
         focus-on-click: false;
         key-pressed(event) => {
             root.shift = event.modifiers.shift;
@@ -193,7 +204,7 @@ export component Pressable {
                 root.clicked();
                 return accept;
             }
-            if event.text == Key.Menu {
+            if event.text == Key.Menu || (event.modifiers.shift && event.text == Key.F10) {
                 root.context-clicked();
                 return accept;
             }
@@ -242,6 +253,7 @@ export component Link inherits Pressable {
             font-size: root.font-size;
             font-weight: root.font-weight;
             color: root.hovered || root.focused ? Theme.text : root.color;
+            vertical-alignment: center;
             overflow: elide;
         }
     }
@@ -344,8 +356,8 @@ export component IconButton inherits Pressable {
     in property <brush> color: Theme.text;
     in property <length> icon-size: 20px;
 
-    width: 32px;
-    height: 32px;
+    width: Screen.phone ? 44px : 32px;
+    height: self.width;
 
     Rectangle {
         border-radius: self.height / 2;
@@ -364,7 +376,8 @@ export component IconButton inherits Pressable {
 }
 
 // A row of a menu: its icon, its words, red when it destroys, and an arrow
-// when it opens a submenu. Lit while `lit`, or pressed.
+// when it opens a submenu. Lit while `lit`, or pressed; ringed too while
+// `keyed`, when the keys lit it.
 component MenuRow {
     in property <string> icon;
     in property <string> label;
@@ -372,6 +385,7 @@ component MenuRow {
     in property <bool> strong;
     in property <bool> more;
     in property <bool> lit;
+    in property <bool> keyed;
     in property <length> icon-size: 18px;
     in property <length> font-size: Theme.body;
     out property <bool> hovered: touch.has-hover;
@@ -379,11 +393,14 @@ component MenuRow {
 
     accessible-role: button;
     accessible-label: root.label;
+    accessible-expandable: root.more;
     accessible-action-default => { root.clicked(); }
 
     Rectangle {
         border-radius: 4px;
         background: root.lit || touch.pressed ? Theme.hover : transparent;
+        border-width: root.lit && root.keyed ? 2px : 0;
+        border-color: Theme.accent;
     }
     HorizontalLayout {
         padding-left: 10px;
@@ -435,16 +452,37 @@ export component MoreMenu {
     in-out property <[MenuEntry]> entries;
     in property <string> label: "More";
     in property <brush> color: Theme.muted;
+    in property <brush> ring-color: Theme.accent;
     callback opening();
     callback activated(id: string, choice: string);
 
-    // The entry lit, the one whose submenu is open, and the choice lit in it.
+    // The entry lit, the one whose submenu is open, and the choice lit in it,
+    // and whether the keys lit them rather than the mouse.
     property <int> current: -1;
     property <int> open: -1;
     property <int> choice: -1;
+    property <bool> keyed;
     property <[Name]> choices: root.entries[root.open].choices;
+    // An entry chosen opened a dialog; the button takes the keys back when
+    // it closes, after the page has, and not if the dialog took it away.
+    property <bool> awaiting;
+    property <bool> modal: Input.modal;
+    changed modal => {
+        if !self.modal && self.awaiting {
+            self.awaiting = false;
+            refocus.running = true;
+        }
+    }
+    refocus := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            button.focus();
+        }
+    }
 
-    property <length> row-height: 32px;
+    property <length> row-height: 32px * Theme.zoom;
     property <length> pad: 4px;
     property <length> panel: 224px;
     property <length> gap: 4px;
@@ -461,8 +499,8 @@ export component MoreMenu {
     // Lined up with its entry, within the menu's height where it fits.
     property <length> sub-y: clamp(root.main-y + root.open * root.row-height, 0, root.menu-height - root.sub-height);
 
-    width: 32px;
-    height: 32px;
+    width: Screen.phone ? 44px : 32px;
+    height: self.width;
 
     // The item `by`, 1 or -1, from `i` of `n`, round the ends; from none,
     // the first or the last.
@@ -483,24 +521,32 @@ export component MoreMenu {
         if root.open < 0 {
             popup.close();
             root.activated(root.entries[i].id, "");
+            root.awaiting = Input.modal;
         }
     }
 
     function pick(j: int) {
         popup.close();
         root.activated(root.entries[root.open].id, root.choices[j].link);
+        root.awaiting = Input.modal;
     }
 
-    IconButton {
+    button := IconButton {
+        width: parent.width;
+        height: parent.height;
         icon: Icons.more;
         filled: true;
         color: root.color;
+        ring-color: root.ring-color;
         label: root.label;
+        accessible-expandable: true;
+        accessible-expanded: popup.is-open;
         clicked => {
             root.opening();
             root.current = -1;
             root.open = -1;
             root.choice = -1;
+            root.keyed = false;
             popup.show();
         }
     }
@@ -513,8 +559,15 @@ export component MoreMenu {
         close-policy: close-on-click-outside;
         forward-focus: keys;
 
+        // A screen reader is told of the entry the keys light: the rows are
+        // its accessible children in order, the entries' then the choices'
+        // on a desktop, the back row then the choices' on a phone.
         keys := FocusScope {
+            accessible-role: list;
+            accessible-label: root.label;
+            accessible-delegate-focus: root.choice >= 0 ? (Screen.phone ? 1 : root.entries.length) + root.choice : Screen.phone && root.open >= 0 ? -1 : root.current;
             key-pressed(event) => {
+                root.keyed = true;
                 let by = event.text == Key.DownArrow ? 1 : event.text == Key.UpArrow ? -1 : 0;
                 if by != 0 && (root.choice >= 0 || (Screen.phone && root.open >= 0)) {
                     root.choice = root.step(root.choice, by, root.choices.length);
@@ -580,10 +633,12 @@ export component MoreMenu {
                         danger: entry.danger;
                         more: entry.choices.length > 0;
                         lit: root.current == i;
+                        keyed: root.keyed;
                         // The mouse on an entry opens its submenu, or closes
                         // another's.
                         changed hovered => {
                             if self.hovered {
+                                root.keyed = false;
                                 root.light(i);
                             }
                         }
@@ -612,6 +667,7 @@ export component MoreMenu {
                             height: root.row-height;
                             label: choice.label;
                             lit: root.choice == j;
+                            keyed: root.keyed;
                             // Scrolled into view when the keys light it.
                             changed lit => {
                                 if self.lit {
@@ -620,6 +676,7 @@ export component MoreMenu {
                             }
                             changed hovered => {
                                 if self.hovered {
+                                    root.keyed = false;
                                     root.choice = j;
                                 }
                             }
@@ -645,36 +702,38 @@ export component MoreMenu {
                         padding: 8px;
                         if root.open < 0: VerticalLayout {
                             for entry[i] in root.entries: MenuRow {
-                                height: 48px;
+                                height: 48px * Theme.zoom;
                                 icon: entry.icon;
                                 label: entry.label;
                                 danger: entry.danger;
                                 more: entry.choices.length > 0;
                                 icon-size: 22px;
-                                font-size: 16px;
+                                font-size: 16px * Theme.zoom;
                                 lit: root.current == i;
+                                keyed: root.keyed;
                                 clicked => { root.choose(i); }
                             }
                         }
                         if root.open >= 0: VerticalLayout {
                             // Back to the entries.
                             MenuRow {
-                                height: 48px;
+                                height: 48px * Theme.zoom;
                                 icon: Icons.back;
                                 label: root.entries[root.open].label;
                                 strong: true;
                                 icon-size: 22px;
-                                font-size: 16px;
+                                font-size: 16px * Theme.zoom;
                                 clicked => {
                                     root.open = -1;
                                     root.choice = -1;
                                 }
                             }
                             for choice[j] in root.choices: MenuRow {
-                                height: 48px;
+                                height: 48px * Theme.zoom;
                                 label: choice.label;
-                                font-size: 16px;
+                                font-size: 16px * Theme.zoom;
                                 lit: root.choice == j;
+                                keyed: root.keyed;
                                 clicked => { root.pick(j); }
                             }
                         }
@@ -765,6 +824,7 @@ export component CoverTile inherits Pressable {
                 overflow: elide;
             }
             if root.entries.length > 0: MoreMenu {
+                label: "More for " + root.title;
                 entries: root.entries;
                 activated(id, choice) => { root.activated(id, choice); }
             }
@@ -900,7 +960,7 @@ export component TrackRow inherits Pressable {
             icon: Icons.heart;
             filled: root.loved;
             color: root.loved ? Theme.accent : Theme.muted;
-            label: root.loved ? "Loved" : "Love";
+            label: "Love " + root.title;
             accessible-checkable: true;
             accessible-checked: root.loved;
             clicked => { root.toggle-love(); }
@@ -916,6 +976,7 @@ export component TrackRow inherits Pressable {
         }
         if root.playlists.length > 0 || root.removable || root.taggable: MoreMenu {
             cross-axis-self-alignment: center;
+            label: "More for " + root.title;
             opening => {
                 self.entries = [];
                 if root.playlists.length > 0 {
@@ -954,11 +1015,12 @@ export struct TrackColumn {
     descending: bool,
 }
 
-// A row of the tracks table: what it shows in each column, in the columns'
-// order, whether its song is loved, its album's cover, whether it is a
+// A row of the tracks table: its song's title, what it shows in each column,
+// in the columns' order, whether its song is loved, its album's cover, whether it is a
 // folder, whether it is selected, and its album and artists for its menu,
 // where they have a page.
 export struct TrackLine {
+    title: string,
     cells: [[Name]],
     loved: bool,
     cover: image,
@@ -983,6 +1045,7 @@ export component ListRow inherits Rectangle {
     callback activated(id: string, choice: string);
     accessible-role: list-item;
     accessible-label: self.title;
+    accessible-description: self.details;
 
     HorizontalLayout {
         padding: 8px;
@@ -1014,6 +1077,7 @@ export component ListRow inherits Rectangle {
         }
         if root.entries.length > 0: MoreMenu {
             cross-axis-self-alignment: center;
+            label: "More for " + root.title;
             entries: root.entries;
             opening => { root.opening(); }
             activated(id, choice) => { root.activated(id, choice); }
@@ -1037,7 +1101,7 @@ export component TrackHeader inherits HorizontalLayout {
     padding-left: 8px;
     padding-right: 8px;
     spacing: 12px;
-    height: 32px;
+    height: (Screen.phone ? 44px : 32px) * Theme.zoom;
 
     for column[c] in root.columns: TableCell {
         column: column;
@@ -1078,7 +1142,7 @@ export component TrackHeader inherits HorizontalLayout {
     }
     // Over the rows' menu buttons.
     Rectangle {
-        width: 32px;
+        width: Screen.phone ? 44px : 32px;
     }
 }
 
@@ -1107,10 +1171,11 @@ export component TrackLineRow inherits Rectangle {
     callback tag();
     property <bool> shift;
 
-    height: 54px;
+    height: 54px * Theme.zoom;
     border-radius: Theme.radius;
     background: root.line.selected ? transparent : touch.has-hover ? Theme.hover : root.striped ? Theme.hover.transparentize(50%) : transparent;
     accessible-role: list-item;
+    accessible-label: root.line.title;
     accessible-item-selectable: root.selecting;
     accessible-item-selected: root.line.selected;
 
@@ -1161,12 +1226,14 @@ export component TrackLineRow inherits Rectangle {
                 // Most cells are one plain value, which a Text draws for less.
                 property <bool> plain: self.names.length <= 1 && self.names[0].link == "";
                 column: column;
+                // As wide as its column on a phone.
                 if column.heart: IconButton {
                     y: (parent.height - self.height) / 2;
+                    width: Screen.phone ? 40px : 32px;
                     icon: Icons.heart;
                     filled: root.line.loved;
                     color: root.line.loved ? Theme.accent : Theme.muted;
-                    label: root.line.loved ? "Loved" : "Love";
+                    label: "Love " + root.line.title;
                     accessible-checkable: true;
                     accessible-checked: root.line.loved;
                     clicked => { root.toggle-love(); }
@@ -1219,6 +1286,7 @@ export component TrackLineRow inherits Rectangle {
             }
             MoreMenu {
                 cross-axis-self-alignment: center;
+                label: "More for " + root.line.title;
                 opening => {
                     self.entries = [{ id: "love", label: root.line.loved ? "Unlove" : "Love", icon: Icons.heart }];
                     if root.line.album.link != "" {
@@ -1498,20 +1566,21 @@ export component CoverShelf {
                 vertical-alignment: center;
                 overflow: elide;
             }
+            // As tall as the row, a target big enough for a finger.
             if root.more: Link {
-                cross-axis-self-alignment: center;
                 text: "See all";
+                label: "See all " + root.title;
                 clicked => { root.see-all(); }
             }
             if root.last-first > 0: IconButton {
                 icon: Icons.back;
-                label: "Previous";
+                label: "Previous in " + root.title;
                 enabled: root.first > 0;
                 clicked => { root.first = max(0, root.first - root.columns); }
             }
             if root.last-first > 0: IconButton {
                 icon: Icons.forward;
-                label: "Next";
+                label: "Next in " + root.title;
                 enabled: root.first < root.last-first;
                 clicked => { root.first = min(root.last-first, root.first + root.columns); }
             }
@@ -1628,6 +1697,8 @@ export component SelectionBar inherits Rectangle {
     drop-shadow-blur: 16px;
     drop-shadow-offset-y: 4px;
     drop-shadow-color: #0000004d;
+    accessible-role: region;
+    accessible-label: "Selection";
 
     // Keeps clicks on the bar from reaching the tiles under it.
     TouchArea { }
@@ -1641,13 +1712,17 @@ export component SelectionBar inherits Rectangle {
             font-weight: 600;
             color: Palette.accent-foreground;
             vertical-alignment: center;
+            accessible-live-region: polite;
         }
+        // Their focus rings are in the bar's text colour, as the accent
+        // colour would not show on it.
         @children
         IconButton {
             cross-axis-self-alignment: center;
             icon: Icons.close;
             label: "Clear selection";
             color: Palette.accent-foreground;
+            ring-color: Palette.accent-foreground;
             clicked => { root.clear(); }
         }
     }
@@ -1722,8 +1797,10 @@ component NavButton inherits Pressable {
     in property <bool> drop-target;
     callback dropped();
     label: self.text;
+    accessible-description: self.more ? "Folder" : "";
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
+    min-height: Screen.phone ? 44px : 0;
 
     Rectangle {
         border-radius: Theme.radius;
@@ -1779,7 +1856,7 @@ component NavHeading inherits Pressable {
     label: self.text;
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
-    min-height: 32px;
+    min-height: Screen.phone ? 44px : 32px * Theme.zoom;
 
     Rectangle {
         border-radius: Theme.radius;
@@ -1801,6 +1878,7 @@ component NavHeading inherits Pressable {
         }
         MoreMenu {
             cross-axis-self-alignment: center;
+            label: "More for " + root.text;
             entries: [{ id: "new", label: "New playlist", icon: Icons.plus }];
             activated => { root.new-playlist(); }
         }
@@ -1825,6 +1903,8 @@ export component Sidebar inherits Rectangle {
     callback dropped(index: int);
 
     background: Theme.surface;
+    accessible-role: navigation;
+    accessible-label: "Library";
 
     scroll := ScrollView {
         content-width: self.visible-width;
@@ -1937,6 +2017,7 @@ export component TopBar inherits HorizontalLayout {
         horizontal-stretch: 0;
         preferred-width: 280px;
         placeholder-text: "Search";
+        accessible-label: "Search the library";
         text <=> root.query;
         accepted(text) => { root.search(text); }
     }

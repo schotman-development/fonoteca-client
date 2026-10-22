@@ -860,6 +860,7 @@ fn open(ui: &AppWindow, browser: &Shared, link: String) {
         b.history.push(link);
         b.at = b.history.len() - 1;
     }
+    ui.set_arrival(ui.get_arrival() + 1);
     show(ui, browser);
 }
 
@@ -872,6 +873,7 @@ fn step(ui: &AppWindow, browser: &Shared, by: isize) {
             _ => return,
         }
     }
+    ui.set_arrival(ui.get_arrival() + 1);
     show(ui, browser);
 }
 
@@ -2042,6 +2044,7 @@ fn track_line(b: &Browser, song: &Child, columns: &[usize], size: u32) -> TrackL
         .filter(|artist| !artist.link.is_empty())
         .collect();
     TrackLine {
+        title: song.title.as_str().into(),
         cells: ModelRc::new(VecModel::from(cells)),
         loved: song.starred.is_some(),
         cover: cover.unwrap_or_default(),
@@ -2070,6 +2073,7 @@ fn piece_line(b: &Browser, piece: &Composition, columns: &[usize], size: u32) ->
         .filter(|composer| !composer.link.is_empty())
         .collect();
     TrackLine {
+        title: piece.name.as_str().into(),
         cells: ModelRc::new(VecModel::from(cells)),
         loved: piece.starred.is_some(),
         cover: cover.unwrap_or_default(),

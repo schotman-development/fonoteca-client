@@ -1109,6 +1109,31 @@ mod tests {
         button(ui, label).invoke_accessible_default_action();
     }
 
+    /// Presses and lets go of `key`, for what has the keys.
+    fn press(ui: &AppWindow, key: impl Into<slint::SharedString>) {
+        let text = key.into();
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    }
+
+    /// Clicks the first heart that is `loved`, or the first that isn't.
+    fn click_heart(ui: &AppWindow, loved: bool) {
+        ui.root_element()
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Button)
+            .match_predicate(move |heart| {
+                heart
+                    .accessible_label()
+                    .is_some_and(|l| l.starts_with("Love "))
+                    && heart.accessible_checked() == Some(loved)
+            })
+            .find_first()
+            .expect("no heart")
+            .invoke_accessible_default_action();
+    }
+
     /// The only test that may start Slint or touch the store: both are
     /// global to the process.
     #[test]
@@ -1284,6 +1309,25 @@ mod tests {
             wait_for("one match", || links(&ui) == ids(&["b2"])).await;
             filter("artitas");
             wait_for("no matches", || ui.get_tiles().row_count() == 0).await;
+            // The filter keeps the keys while the page shows its matches.
+            filter("");
+            ui.root_element()
+                .query_descendants()
+                .match_predicate(|field| {
+                    field.accessible_label().is_some_and(|l| l == "Filter albums")
+                })
+                .find_first()
+                .expect("no album filter")
+                .single_click(PointerEventButton::Left)
+                .await;
+            let visit = ui.get_visit();
+            press(&ui, "b");
+            wait_for("the matches", || ui.get_visit() != visit).await;
+            idle(Duration::from_millis(50)).await;
+            press(&ui, "a");
+            assert_eq!(ui.get_album_filter(), "ba");
+            filter("artitas");
+            wait_for("no matches", || ui.get_tiles().row_count() == 0).await;
             assert!(!ui.get_loading());
             filter("");
             sort(0, false);
@@ -1312,6 +1356,10 @@ mod tests {
             assert_eq!(ui.get_page(), Page::Albums);
             assert_eq!(selected(&ui), [0, 2]);
             click(&ui, "Clear selection");
+            // So does Escape.
+            ui.invoke_select_tile(1, false);
+            press(&ui, slint::platform::Key::Escape);
+            assert_eq!(ui.get_selected_tiles(), 0);
             assert!(selected(&ui).is_empty());
             button(&ui, "Night Harbour")
                 .single_click(PointerEventButton::Right)
@@ -1574,9 +1622,19 @@ mod tests {
             );
             assert_eq!(station(1), ["r2", "News", "", "news.example.org/live.mp3"]);
             assert!(find(&ui, "Add station").is_some());
+            // A dialog leaves the page behind it out of the keys' reach, and
+            // Escape lets it go.
+            click(&ui, "Add station");
+            assert!(find(&ui, "Cancel").is_some());
+            assert!(ui.global::<Input>().get_modal());
+            assert_eq!(button(&ui, "Add station").accessible_enabled(), Some(false));
+            press(&ui, slint::platform::Key::Escape);
+            assert!(find(&ui, "Cancel").is_none());
+            assert!(!ui.global::<Input>().get_modal());
             // The menus of the elements of a type, of those drawn.
             let menus = |of: &str| -> usize {
-                let more = |b: &ElementHandle| b.accessible_label().is_some_and(|l| l == "More");
+                let more =
+                    |b: &ElementHandle| b.accessible_label().is_some_and(|l| l.starts_with("More"));
                 let elements = ui.root_element().query_descendants().match_type_name(of).find_all();
                 (elements.iter())
                     .map(|element| element.query_descendants().match_predicate(more).find_all().len())
@@ -2007,11 +2065,11 @@ mod tests {
             assert!(!tracks.row_data(1).unwrap().loved);
             assert!(ui.get_can_go_back());
 
-            click(&ui, "Love");
+            click_heart(&ui, false);
             assert!(ui.get_tracks().row_data(1).unwrap().loved);
             wait_for("the star", || *STARRED.lock().unwrap() == ["s2"]).await;
             assert_eq!(ui.get_page_problem(), "");
-            click(&ui, "Loved");
+            click_heart(&ui, true);
             wait_for("the refused unstar", || ui.get_page_problem() != "").await;
             assert!(ui.get_tracks().iter().all(|track| track.loved));
 
@@ -2602,7 +2660,7 @@ mod tests {
             assert!(!loved(&ui, 1));
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
-            click(&ui, "Love");
+            click_heart(&ui, false);
             wait_for("the star", || {
                 STARRED.lock().unwrap().contains(&"s9".to_owned())
             })
@@ -2612,7 +2670,7 @@ mod tests {
             // A cover fetched before is there at once.
             assert!(cover(&ui, 0) > 0);
             // The heart stars the song.
-            click(&ui, "Love");
+            click_heart(&ui, false);
             assert!(loved(&ui, 2));
             wait_for("the star", || {
                 STARRED.lock().unwrap().contains(&"t3".to_owned())
@@ -3015,7 +3073,7 @@ mod tests {
             let (left, pitch) = (x(&tile(0)), x(&tile(1)) - x(&tile(0)));
             // Whether the `row`th tile is at the left edge.
             let rests = |row: usize| move || (x(&tile(row)) - left).abs() < 0.5;
-            click(&again, "Next");
+            click(&again, "Next in Recently added");
             wait_for("the next three", rests(3)).await;
             let y = {
                 let tile = button(&again, "Night Harbour");
@@ -3048,7 +3106,7 @@ mod tests {
             assert_eq!(again.get_page(), Page::Home, "a swipe opens nothing");
             swipe(0.3);
             wait_for("one tile back", rests(4)).await;
-            click(&again, "Previous");
+            click(&again, "Previous in Recently added");
             wait_for("three tiles back", rests(1)).await;
             window.dispatch_event(WindowEvent::PointerScrolled {
                 position: at(left + pitch),
