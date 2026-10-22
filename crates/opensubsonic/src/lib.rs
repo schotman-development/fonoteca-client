@@ -809,6 +809,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tags_in_fonotecas_shape() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("getTags") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","tags":{"tag":[{"id":"tg-1","name":"Mood","songCount":3},{"id":"tg-2","name":"Calm","parentId":"tg-1","songCount":1}]}}}"#
+            } else if request.contains("getTag") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","tag":{"id":"tg-1","name":"Mood","songCount":1,"song":[{"id":"tr-1","isDir":false,"title":"Calm Song","tagIds":["tg-2"]}]}}}"#
+            } else if request.contains("createTag") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","tag":{"id":"tg-3","name":"Piano","songCount":0}}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#
+            })
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let tags = client.get_tags().await.unwrap().tag;
+        assert_eq!(
+            (tags[1].parent_id.as_deref(), tags[1].song_count),
+            (Some("tg-1"), 1)
+        );
+        let mood = client.get_tag("tg-1").await.unwrap();
+        assert_eq!(mood.tag.name, "Mood");
+        assert_eq!(mood.song[0].tag_ids, ["tg-2"]);
+        assert_eq!(client.create_tag("Piano", None).await.unwrap().id, "tg-3");
+        let update = TagUpdate {
+            parent_id: Some(""),
+            song_ids_to_add: &["tr-1", "tr-2"],
+            song_ids_to_remove: &["tr-3"],
+            ..TagUpdate::default()
+        };
+        client.update_tag("tg-3", &update).await.unwrap();
+        client.delete_tag("tg-3").await.unwrap();
+        let log = log.lock().unwrap();
+        assert!(log[1].contains("id=tg-1"), "{}", log[1]);
+        assert!(
+            log[2].contains("name=Piano") && !log[2].contains("parentId"),
+            "{}",
+            log[2]
+        );
+        assert!(
+            log[3].contains(
+                "tagId=tg-3&parentId=&songIdToAdd=tr-1&songIdToAdd=tr-2&songIdToRemove=tr-3"
+            ),
+            "{}",
+            log[3]
+        );
+        assert!(
+            log[4].contains("deleteTag?") && log[4].contains("tagId=tg-3"),
+            "{}",
+            log[4]
+        );
+    }
+
     #[test]
     fn passwords_go_only_over_https_or_to_this_machine() {
         let may = |server: &str| {

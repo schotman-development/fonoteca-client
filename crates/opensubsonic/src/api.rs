@@ -126,6 +126,18 @@ pub struct PlaylistFolderUpdate<'a> {
     pub sort_order: Option<i64>,
 }
 
+/// Changes for [`Client::update_tag`]. Whatever is left `None` or empty stays
+/// as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagUpdate<'a> {
+    pub name: Option<&'a str>,
+    /// The tag to put it under; `Some("")` moves it to the root.
+    pub parent_id: Option<&'a str>,
+    pub song_ids_to_add: &'a [&'a str],
+    /// Takes the tag off these songs, not the tags under it.
+    pub song_ids_to_remove: &'a [&'a str],
+}
+
 /// What a user may do, for [`Client::create_user`] and [`Client::update_user`].
 /// `None` leaves a role at the server's default for a new user (admin, jukebox,
 /// download, upload, cover art, comment, podcast, share and video conversion
@@ -765,6 +777,42 @@ impl Client {
             .into_iter()
             .next()
             .ok_or_else(|| Error::Unexpected(format!("no composition {id}")))
+    }
+
+    /// Every tag of the user, a flat list. Not in the spec: Fonoteca's own
+    /// call, offered where the client [`supports`](Client::supports)
+    /// `fonotecaTags`, as are the tag calls below.
+    pub async fn get_tags(&self) -> Result<Tags> {
+        self.call("getTags", Params::new(), "tags").await
+    }
+
+    /// A tag with its songs and those of the tags under it.
+    pub async fn get_tag(&self, id: &str) -> Result<TagWithSongs> {
+        self.call("getTag", Params::new().req("id", id), "tag")
+            .await
+    }
+
+    /// Makes a tag under `parent_id`, or at the root.
+    pub async fn create_tag(&self, name: &str, parent_id: Option<&str>) -> Result<Tag> {
+        let params = Params::new().req("name", name).opt("parentId", parent_id);
+        self.call("createTag", params, "tag").await
+    }
+
+    /// Renames or moves a tag, or puts it on songs or takes it off.
+    pub async fn update_tag(&self, id: &str, update: &TagUpdate<'_>) -> Result<()> {
+        let params = Params::new()
+            .req("tagId", id)
+            .opt("name", update.name)
+            .opt("parentId", update.parent_id)
+            .list("songIdToAdd", update.song_ids_to_add)
+            .list("songIdToRemove", update.song_ids_to_remove);
+        self.call_unit("updateTag", params).await
+    }
+
+    /// Deletes a tag and every tag under it; the songs stay.
+    pub async fn delete_tag(&self, id: &str) -> Result<()> {
+        self.call_unit("deleteTag", Params::new().req("tagId", id))
+            .await
     }
 
     /// Lyrics found by artist name and song title.

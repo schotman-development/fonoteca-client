@@ -63,6 +63,38 @@ pub struct PlaylistFolders {
     pub playlist_folder: Vec<PlaylistFolder>,
 }
 
+/// Not in the spec: one of the user's own tags, from Fonoteca's
+/// `fonotecaTags` extension. A tag can sit under another, at any depth.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+    /// The tag it sits under; none at the root.
+    pub parent_id: Option<String>,
+    /// The songs with it or with a tag under it, each once.
+    #[serde(default)]
+    pub song_count: i64,
+}
+
+/// Not in the spec: every tag of the user, as a flat list.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tags {
+    #[serde(default)]
+    pub tag: Vec<Tag>,
+}
+
+/// Not in the spec: a tag with its songs and those of the tags under it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagWithSongs {
+    #[serde(flatten)]
+    pub tag: Tag,
+    #[serde(default)]
+    pub song: Vec<Child>,
+}
+
 /// The generic type of media [music/podcast/audiobook/video]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum GenericMediaType {
@@ -331,6 +363,10 @@ pub struct Child {
     /// Not in the spec: when and where the song was recorded, from Fonoteca's
     /// `fonotecaPerformance` extension.
     pub recorded: Option<Recorded>,
+    /// Not in the spec: the user's tags on the song's recording, not those
+    /// under them, from Fonoteca's `fonotecaTags` extension.
+    #[serde(default)]
+    pub tag_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
