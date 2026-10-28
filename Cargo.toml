@@ -7,6 +7,17 @@ members = ["crates/*"]
 # covers and scrolling stutter. Only the first build takes longer.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
+
+# Line tables keep file:line in backtraces. Full debug info was 90% of each
+# debug binary and got rewritten on every link. For a debugger, build with
+# `--profile debugging`.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.debugging]
+inherits = "dev"
+debug = true
 
 [workspace.package]
 version = "0.0.0"
