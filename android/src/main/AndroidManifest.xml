@@ -8,6 +8,7 @@
     <application
         android:allowBackup="false"
         android:label="${label}"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <!-- Turning the phone or changing its settings would restart the
              activity, and with it the app; Slint redraws for the new size. -->

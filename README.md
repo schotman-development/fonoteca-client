@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/icon.svg" width="96" height="96" alt="">
+  <img src="packaging/linux/hicolor/256x256/apps/io.github.schotman_development.fonoteca.png" width="96" height="96" alt="">
 </p>
 
 <h1 align="center">Fonoteca Client</h1>
