@@ -83,7 +83,7 @@
 - **Playlists.** Create, rename, delete and fill them. Pick several albums or
   tracks, with a right-click or a Shift-click for a range, and add them in one go.
 - **Favourites.** A heart on every track, composition and folder stars it on the server.
-- **Library scans.** Start a scan of the server's libraries from the account
+- **Library scans.** Start a scan of the server's libraries from the settings
   page and follow its progress.
 - **Moving covers.** On Fonoteca, albums with an animated cover play it on the
   album page.

@@ -74,7 +74,7 @@ export global Icons {
     out property <string> down: "M12 5v14 M6 13l6 6 6-6";
     out property <string> note: "M10 17V5l9-2v12 M10 17a3 3 0 1 1-6 0a3 3 0 1 1 6 0 M19 15a3 3 0 1 1-6 0a3 3 0 1 1 6 0";
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
-    out property <string> people: "M9 11a3.5 3.5 0 1 1 0-7a3.5 3.5 0 1 1 0 7z M2 20c0-3.5 3.1-5.5 7-5.5s7 2 7 5.5 M16 4.3a3.5 3.5 0 0 1 0 6.4 M18 14.8c2.4.6 4 2.4 4 5.2";
+    out property <string> settings: "M18.79 10.31 L21.41 10.68 L21.41 13.32 L18.79 13.69 L18 15.61 L19.59 17.72 L17.72 19.59 L15.61 18 L13.69 18.79 L13.32 21.41 L10.68 21.41 L10.31 18.79 L8.39 18 L6.28 19.59 L4.41 17.72 L6 15.61 L5.21 13.69 L2.59 13.32 L2.59 10.68 L5.21 10.31 L6 8.39 L4.41 6.28 L6.28 4.41 L8.39 6 L10.31 5.21 L10.68 2.59 L13.32 2.59 L13.69 5.21 L15.61 6 L17.72 4.41 L19.59 6.28 L18 8.39z M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0z";
     out property <string> radio: "M3.5 9.5h17v10h-17z M7 9.5L17 4 M8.5 17a2 2 0 1 1 0-4a2 2 0 1 1 0 4z M13.5 13.5h4 M13.5 16.5h4";
     out property <string> genre: "M12 3l4.5 7.5h-9z M3.5 13.5h7v7h-7z M17 20.5a3.5 3.5 0 1 1 0-7a3.5 3.5 0 1 1 0 7z";
     out property <string> key: "M8 19a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M10.8 12.2L20 3 M16 7l3 3 M13.5 9.5l2 2";
@@ -2033,9 +2033,9 @@ export component Sidebar inherits Rectangle {
     }
 }
 
-// Back and forward through the pages seen, and search across the library.
-// With `menu`, a button first that opens the sidebar. On a `phone` the
-// buttons are a finger's size.
+// Back and forward through the pages seen, search across the library, and at
+// the end the settings and the account. With `menu`, a button first that
+// opens the sidebar. On a `phone` the buttons are a finger's size.
 export component TopBar inherits HorizontalLayout {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
@@ -2047,14 +2047,17 @@ export component TopBar inherits HorizontalLayout {
     callback forward();
     callback search(query: string);
     callback open-menu();
+    callback settings();
+    callback account();
 
     property <length> button-size: root.phone ? 48px : 32px;
     property <length> icon-size: root.phone ? 24px : 20px;
 
     height: Theme.bar-height;
     padding: 8px;
-    // The first icon lines up with the pages' 24px margin.
+    // The first and last icons line up with the pages' 24px margins.
     padding-left: 24px - (root.button-size - root.icon-size) / 2;
+    padding-right: self.padding-left;
     spacing: 4px;
 
     if root.menu: IconButton {
@@ -2094,5 +2097,23 @@ export component TopBar inherits HorizontalLayout {
         accessible-label: "Search the library";
         text <=> root.query;
         accepted(text) => { root.search(text); }
+    }
+    IconButton {
+        cross-axis-self-alignment: center;
+        width: root.button-size;
+        height: root.button-size;
+        icon-size: root.icon-size;
+        icon: Icons.settings;
+        label: "Settings";
+        clicked => { root.settings(); }
+    }
+    IconButton {
+        cross-axis-self-alignment: center;
+        width: root.button-size;
+        height: root.button-size;
+        icon-size: root.icon-size;
+        icon: Icons.person;
+        label: "Account";
+        clicked => { root.account(); }
     }
 }

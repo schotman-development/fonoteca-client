@@ -5,15 +5,14 @@ export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users, radio, stations, tags, tag, genres, genre }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, radio, stations, tags, tag, genres, genre }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
-// new user, changes to one, a new password for one or for the account
-// signed in, or whether to delete one; a new radio station, changes to one,
-// or whether to delete one; a new tag, a tag's new name, or whether to
+// new password for the account signed in; a new radio station, changes to
+// one, or whether to delete one; a new tag, a tag's new name, or whether to
 // delete it; and which tags songs have.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, new-user, edit-user, user-password, own-password, delete-user, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs }
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs }
 
 // A tag on the tags page: its id, name and how many tracks have it, how
 // deep under other tags it sits, and where it can be moved.
@@ -31,14 +30,6 @@ export struct TagChoice {
     title: string,
     depth: int,
     ticked: bool,
-}
-
-// A user on the users page: their name, their email and what they may do,
-// and whether it is the account signed in.
-export struct UserRow {
-    name: string,
-    details: string,
-    me: bool,
 }
 
 // A radio station on the radio page: its id, name, where it streams from
@@ -580,7 +571,7 @@ export component AppWindow inherits Window {
     in property <string> about-short;
     in-out property <bool> about-open;
     in property <[Name]> similar;
-    // The account page's word on the server's scan of its libraries, and
+    // The settings page's word on the server's scan of its libraries, and
     // whether one is going.
     in property <string> scan-status;
     in property <bool> scanning;
@@ -589,7 +580,6 @@ export component AppWindow inherits Window {
     // its radio stations, which it may when the server doesn't say.
     in property <string> roles;
     in property <bool> may-administer: true;
-    in property <[UserRow]> user-rows;
     in property <[StationRow]> station-rows;
     // The radio directory's shelves, each a genre's stations with the most
     // votes, and the stations saved on the server, for the home page.
@@ -602,8 +592,6 @@ export component AppWindow inherits Window {
     // The radio directory's languages, ticked where the genres show their
     // stations first.
     in property <[ColumnChoice]> language-choices;
-    // The roles a user can be given, in the order of `asked-roles`.
-    in property <[string]> role-names;
     in property <[Track]> tracks;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, and every column there is to pick
@@ -718,15 +706,7 @@ export component AppWindow inherits Window {
     callback tag-selection();
     callback toggle-tag(index: int);
     callback tag-with-new(name: string);
-    // Users: fills in the dialog's email and roles for the user with this
-    // name, or a new one's for "", before it opens; then a user made,
-    // changed, given a password or deleted; the account signed in given a
-    // new password.
-    callback prepare-user(name: string);
-    callback create-user(name: string, email: string, password: string, roles: [bool]);
-    callback update-user(name: string, email: string, roles: [bool]);
-    callback set-password(name: string, password: string);
-    callback delete-user(name: string);
+    // The account signed in given a new password.
     callback change-own-password(password: string);
     // Radio stations: one added, changed or deleted.
     callback create-station(name: string, stream: string, homepage: string);
@@ -740,18 +720,15 @@ export component AppWindow inherits Window {
 
     property <Asking> asking;
     property <string> asked-name;
-    in-out property <string> asked-email;
-    in-out property <[bool]> asked-roles;
     property <string> asked-password;
     property <string> asked-repeat;
     property <string> asked-id;
     property <string> asked-stream;
     property <string> asked-homepage;
     property <bool> asks-station: root.asking == Asking.new-station || root.asking == Asking.edit-station;
-    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asking == Asking.new-user || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag;
-    property <bool> asks-user: root.asking == Asking.new-user || root.asking == Asking.edit-user;
-    property <bool> asks-password: root.asking == Asking.new-user || root.asking == Asking.user-password || root.asking == Asking.own-password;
-    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-user || root.asking == Asking.delete-station || root.asking == Asking.delete-tag;
+    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag;
+    property <bool> asks-password: root.asking == Asking.own-password;
+    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-station || root.asking == Asking.delete-tag;
 
     // Shows the dialog for `what`, the window behind out of the keys' reach.
     function open-dialog(what: Asking) {
@@ -783,15 +760,6 @@ export component AppWindow inherits Window {
         root.open-dialog(what);
     }
 
-    // Asks about the user with this name, or a new one for "".
-    function ask-user(what: Asking, name: string) {
-        root.prepare-user(name);
-        root.asked-name = name;
-        root.asked-password = "";
-        root.asked-repeat = "";
-        root.open-dialog(what);
-    }
-
     // Asks about this station, or a new one when `station` is empty.
     function ask-station(what: Asking, station: StationRow) {
         root.asked-id = station.id;
@@ -820,16 +788,8 @@ export component AppWindow inherits Window {
             root.rename-tag(root.asked-id, root.asked-name);
         } else if root.asking == Asking.delete-tag {
             root.delete-tag(root.asked-id);
-        } else if root.asking == Asking.new-user {
-            root.create-user(root.asked-name, root.asked-email, root.asked-password, root.asked-roles);
-        } else if root.asking == Asking.edit-user {
-            root.update-user(root.asked-name, root.asked-email, root.asked-roles);
-        } else if root.asking == Asking.user-password {
-            root.set-password(root.asked-name, root.asked-password);
         } else if root.asking == Asking.own-password {
             root.change-own-password(root.asked-password);
-        } else if root.asking == Asking.delete-user {
-            root.delete-user(root.asked-name);
         } else if root.asking == Asking.new-station {
             root.create-station(root.asked-name, root.asked-stream, root.asked-homepage);
         } else if root.asking == Asking.edit-station {
@@ -849,9 +809,6 @@ export component AppWindow inherits Window {
         if root.asking == Asking.new-tag { return "New tag"; }
         if root.asking == Asking.rename-tag { return "Rename tag"; }
         if root.asking == Asking.tag-songs { return "Tags"; }
-        if root.asking == Asking.new-user { return "New user"; }
-        if root.asking == Asking.edit-user { return "Edit “" + root.asked-name + "”"; }
-        if root.asking == Asking.user-password { return "New password for “" + root.asked-name + "”"; }
         if root.asking == Asking.own-password { return "Change your password"; }
         if root.asking == Asking.new-station { return "New radio station"; }
         if root.asking == Asking.edit-station { return "Edit radio station"; }
@@ -862,17 +819,16 @@ export component AppWindow inherits Window {
         if root.deleting { return "Delete"; }
         if root.asking == Asking.rename-playlist || root.asking == Asking.rename-folder || root.asking == Asking.rename-tag { return "Rename"; }
         if root.asking == Asking.tag-songs { return "Done"; }
-        if root.asking == Asking.edit-user || root.asking == Asking.edit-station { return "Save"; }
-        if root.asking == Asking.user-password || root.asking == Asking.own-password { return "Change"; }
+        if root.asking == Asking.edit-station { return "Save"; }
+        if root.asking == Asking.own-password { return "Change"; }
         return "Create";
     }
 
-    // Whether what is needed is filled in: a name, a new user's email, the
-    // password twice, the same, and a station's stream.
+    // Whether what is needed is filled in: a name, the password twice, the
+    // same, and a station's stream.
     function may-answer() -> bool {
         return (!root.asks-name || root.asked-name != "")
             && (!root.asks-station || root.asked-stream != "")
-            && (root.asking != Asking.new-user || root.asked-email != "")
             && (!root.asks-password || (root.asked-password != "" && root.asked-password == root.asked-repeat));
     }
 
@@ -949,6 +905,8 @@ export component AppWindow inherits Window {
                 back => { root.back(); }
                 forward => { root.forward(); }
                 open-menu => { root.sidebar-open = true; }
+                settings => { root.open("settings"); }
+                account => { root.open("account"); }
             }
             // A table page's heading, filter and the table's headings stay
             // put while the rows scroll, and follow them sideways. A
@@ -1591,65 +1549,33 @@ export component AppWindow inherits Window {
                             Button {
                                 text: "Change password";
                                 enabled: !root.busy && !Input.modal;
-                                clicked => { root.ask-user(Asking.own-password, ""); }
-                            }
-                        }
-                        if root.may-administer: VerticalLayout {
-                            spacing: 12px;
-                            VerticalLayout {
-                                padding-top: 16px;
-                                Text {
-                                    text: "Library";
-                                    font-size: Theme.heading;
-                                    font-weight: 600;
-                                    color: Theme.text;
-                                }
-                            }
-                            if root.scan-status != "": Text {
-                                text: root.scan-status;
-                                wrap: word-wrap;
-                            }
-                            HorizontalLayout {
-                                alignment: start;
-                                Button {
-                                    text: "Scan library";
-                                    enabled: !root.scanning && !Input.modal;
-                                    clicked => { root.start-scan(); }
-                                }
+                                clicked => { root.open-dialog(Asking.own-password); }
                             }
                         }
                     }
-                    if root.page == Page.users: VerticalLayout {
-                        max-width: 800px;
-                        spacing: 4px;
-                        HorizontalLayout {
-                            padding-bottom: 8px;
-                            spacing: 8px;
-                            Heading {
-                                horizontal-stretch: 1;
-                                text: "Users";
-                            }
-                            Button {
-                                text: "Add user";
-                                enabled: !Input.modal;
-                                clicked => { root.ask-user(Asking.new-user, ""); }
-                            }
+                    // The settings: the server's scan of its libraries, which only
+                    // its admins may start.
+                    if root.page == Page.settings: VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        Heading { text: "Settings"; }
+                        Text {
+                            text: "Library";
+                            font-size: Theme.heading;
+                            font-weight: 600;
+                            color: Theme.text;
                         }
-                        for user in root.user-rows: ListRow {
-                            title: user.name;
-                            details: user.details;
-                            // Your own password is changed on the account
-                            // page, which saves it, and you don't delete
-                            // yourself here.
-                            entries: user.me ? [
-                                { id: "edit", label: "Edit", icon: Icons.pencil },
-                            ] : [
-                                { id: "edit", label: "Edit", icon: Icons.pencil },
-                                { id: "password", label: "Change password", icon: Icons.key },
-                                { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
-                            ];
-                            activated(id) => {
-                                root.ask-user(id == "edit" ? Asking.edit-user : id == "password" ? Asking.user-password : Asking.delete-user, user.name);
+                        if !root.may-administer: Note { text: "Only the server's admins may have it scan the library."; }
+                        if root.may-administer && root.scan-status != "": Text {
+                            text: root.scan-status;
+                            wrap: word-wrap;
+                        }
+                        if root.may-administer: HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Scan library";
+                                enabled: !root.scanning && !Input.modal;
+                                clicked => { root.start-scan(); }
                             }
                         }
                     }
@@ -2136,7 +2062,7 @@ export component AppWindow inherits Window {
                         }
                         if root.asks-name: LineEdit {
                             text <=> root.asked-name;
-                            placeholder-text: root.asking == Asking.new-user ? "Username" : "Name";
+                            placeholder-text: "Name";
                             accessible-label: self.placeholder-text;
                             init => { self.focus(); }
                             accepted => {
@@ -2145,26 +2071,12 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        if root.asks-user: LineEdit {
-                            text <=> root.asked-email;
-                            placeholder-text: "Email";
-                            accessible-label: self.placeholder-text;
-                            init => {
-                                if root.asking == Asking.edit-user {
-                                    self.focus();
-                                }
-                            }
-                        }
                         if root.asks-password: LineEdit {
                             input-type: InputType.password;
                             text <=> root.asked-password;
-                            placeholder-text: root.asking == Asking.new-user ? "Password" : "New password";
+                            placeholder-text: "New password";
                             accessible-label: self.placeholder-text;
-                            init => {
-                                if root.asking != Asking.new-user {
-                                    self.focus();
-                                }
-                            }
+                            init => { self.focus(); }
                         }
                         if root.asks-password: LineEdit {
                             input-type: InputType.password;
@@ -2194,16 +2106,6 @@ export component AppWindow inherits Window {
                                 if root.may-answer() {
                                     root.answer();
                                 }
-                            }
-                        }
-                        if root.asks-user: GridLayout {
-                            spacing: 4px;
-                            for role[i] in root.role-names: CheckBox {
-                                col: mod(i, 2);
-                                row: floor(i / 2);
-                                text: role;
-                                checked: root.asked-roles[i];
-                                toggled => { root.asked-roles[i] = self.checked; }
                             }
                         }
                         if root.asking == Asking.delete-tag: Note { text: "The tags in it go too. The tracks stay."; }

@@ -539,9 +539,6 @@ mod tests {
         )
     }
 
-    /// Another user, who may only play.
-    const BEA: &str = r#"{"username":"bea","email":"bea@example.org","scrobblingEnabled":false,"adminRole":false,"settingsRole":false,"downloadRole":false,"uploadRole":false,"playlistRole":false,"coverArtRole":false,"commentRole":false,"podcastRole":false,"streamRole":true,"jukeboxRole":false,"shareRole":false,"videoConversionRole":false}"#;
-
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// The playlist changes the server was asked for, each its method and
@@ -883,8 +880,6 @@ mod tests {
             ok(
                 r#""playlist":{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}"#,
             )
-        } else if request.contains("/rest/getUsers") {
-            ok(&format!(r#""users":{{"user":[{},{BEA}]}}"#, joe()))
         } else if request.contains("/rest/getUser") && param("username") == Some("joe") {
             ok(&format!(r#""user":{}"#, joe()))
         } else if request.contains("/rest/getGenres") {
@@ -901,21 +896,9 @@ mod tests {
         {
             RADIO_WRITES.lock().unwrap().push(write_of(request));
             json(OK)
-        } else if ["createUser", "updateUser", "deleteUser", "changePassword"]
-            .iter()
-            .any(|change| request.contains(&format!("/rest/{change}")))
-        {
-            let write = write_of(request);
-            USER_WRITES.lock().unwrap().push(write.clone());
-            if write.contains("username=zed") {
-                reply(
-                    "501 Not Implemented",
-                    "text/plain",
-                    b"This endpoint is not implemented",
-                )
-            } else {
-                json(OK)
-            }
+        } else if request.contains("/rest/changePassword") {
+            USER_WRITES.lock().unwrap().push(write_of(request));
+            json(OK)
         } else if ["create", "update", "delete"]
             .iter()
             .any(|change| request.contains(&format!("/rest/{change}Playlist")))
@@ -1452,8 +1435,8 @@ mod tests {
             filter("bach");
             wait_for("the Bach albums again", || links(&ui).len() == 3).await;
             assert_eq!(picked(&ui), ids(&["b1"]));
-            click(&ui, "Account");
-            assert_eq!(ui.get_page(), Page::Account);
+            click(&ui, "Settings");
+            assert_eq!(ui.get_page(), Page::Settings);
             assert_eq!(ui.get_selected_tiles(), 1);
             // The server's scan: where it stands, one the server refuses,
             // and one it takes, followed while the page is up until done.
@@ -1487,7 +1470,7 @@ mod tests {
             ui.invoke_back();
             assert!(quiet().await, "the scan is followed off its page");
             ui.invoke_forward();
-            assert_eq!(ui.get_page(), Page::Account);
+            assert_eq!(ui.get_page(), Page::Settings);
             let asked = SCAN_ASKS.load(Relaxed);
             wait_for("a look on its page again", || {
                 SCAN_ASKS.load(Relaxed) > asked + 1
@@ -1500,8 +1483,7 @@ mod tests {
             .await;
             assert!(!ui.get_scanning());
             assert!(quiet().await, "the scan is followed once done");
-            // The server was down at sign-in, so this page asked who is
-            // signed in. An admin gets the users page.
+            // This page asks who is signed in, for what they may do.
             wait_for("the roles", || ui.get_roles() != "").await;
             assert_eq!(ui.get_roles(), "Admin · Settings · Stream · Download");
             assert!(ui.get_may_administer());
@@ -1530,85 +1512,6 @@ mod tests {
             assert_eq!(writes()[1], "changePassword username=joe&password=n3w+pw+2");
             assert!(store::load().await.is_none());
             store::save(saved).await.unwrap();
-            USER_WRITES.lock().unwrap().clear();
-            click(&ui, "Users");
-            assert_eq!(ui.get_page(), Page::Users);
-            wait_for("the users", || ui.get_user_rows().row_count() == 2).await;
-            let user = |row: usize| {
-                let user = ui.get_user_rows().row_data(row).unwrap();
-                (String::from(user.name), String::from(user.details), user.me)
-            };
-            assert_eq!(
-                user(0),
-                ("joe".into(), "Admin · Settings · Stream · Download".into(), true)
-            );
-            assert_eq!(user(1), ("bea".into(), "bea@example.org · Stream".into(), false));
-            // The dialog starts from the user's email and roles, or a new
-            // one's defaults.
-            let flags = |ui: &AppWindow| -> Vec<bool> { ui.get_asked_roles().iter().collect() };
-            let only = |on: &[usize]| -> Vec<bool> { (0..11).map(|i| on.contains(&i)).collect() };
-            ui.invoke_prepare_user("bea".into());
-            assert_eq!(ui.get_asked_email(), "bea@example.org");
-            assert_eq!(flags(&ui), only(&[2]));
-            ui.invoke_prepare_user("".into());
-            assert_eq!(ui.get_asked_email(), "");
-            assert_eq!(flags(&ui), only(&[1, 2]));
-            let roles = |on: &[usize]| slint::ModelRc::new(slint::VecModel::from(only(on)));
-            ui.invoke_create_user(
-                " cy ".into(),
-                "cy@example.org".into(),
-                "pw&1".into(),
-                roles(&[0, 2]),
-            );
-            wait_for("the user added", || ui.get_notice() == "Added cy.").await;
-            assert_eq!(
-                writes(),
-                ["createUser username=cy&password=pw%261&email=cy%40example.org&adminRole=true&settingsRole=false&streamRole=true&jukeboxRole=false&downloadRole=false&uploadRole=false&coverArtRole=false&commentRole=false&podcastRole=false&shareRole=false&videoConversionRole=false"]
-            );
-            ui.invoke_update_user("bea".into(), "b@example.org".into(), roles(&[3]));
-            wait_for("the user saved", || ui.get_notice() == "Saved bea.").await;
-            assert!(
-                writes()[1].starts_with("updateUser username=bea&email=b%40example.org&adminRole=false&settingsRole=false&streamRole=false&jukeboxRole=false&downloadRole=true"),
-                "{}",
-                writes()[1]
-            );
-            assert!(!writes()[1].contains("password"), "{}", writes()[1]);
-            // No email leaves theirs as it is.
-            ui.invoke_update_user("bea".into(), " ".into(), roles(&[3]));
-            wait_for("the user saved again", || writes().len() == 3).await;
-            assert!(
-                writes()[2].starts_with("updateUser username=bea&adminRole=false"),
-                "{}",
-                writes()[2]
-            );
-            ui.invoke_set_password("bea".into(), "new".into());
-            wait_for("the password set", || {
-                ui.get_notice() == "Changed the password of bea."
-            })
-            .await;
-            ui.invoke_delete_user("bea".into());
-            wait_for("the user deleted", || ui.get_notice() == "Deleted bea.").await;
-            assert_eq!(
-                writes()[3..],
-                [
-                    "changePassword username=bea&password=new",
-                    "deleteUser username=bea"
-                ]
-            );
-            assert_eq!(ui.get_page_problem(), "");
-            // A server that doesn't let apps manage users says so.
-            ui.invoke_delete_user("zed".into());
-            wait_for("the refusal", || ui.get_page_problem() != "").await;
-            assert_eq!(ui.get_page_problem(), "Your server doesn't let apps do this.");
-            // No longer an admin: no scan, no users page.
-            ADMIN.store(false, Relaxed);
-            ui.invoke_set_password("bea".into(), "again".into());
-            wait_for("joe's new roles", || !ui.get_may_administer()).await;
-            assert_eq!(ui.get_roles(), "Settings · Stream · Download");
-            assert!(!ui.get_sections().iter().any(|section| section == "Users"));
-            ADMIN.store(true, Relaxed);
-            ui.invoke_set_password("bea".into(), "again".into());
-            wait_for("joe an admin again", || ui.get_may_administer()).await;
             ui.set_notice("".into());
             // The radio stations, with their home pages and where they
             // stream from; an admin adds, changes and deletes them.
@@ -1757,19 +1660,20 @@ mod tests {
             assert_eq!(kept["http://news.example.org/live.mp3"].bytes().unwrap(), PNG);
             ui.set_notice("".into());
             // Anyone may see them, but only admins change them.
+            // The settings page asks the server anew what they may do; nor
+            // may they have the server scan.
             ADMIN.store(false, Relaxed);
-            ui.invoke_set_password("bea".into(), "again".into());
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Settings);
             wait_for("joe no admin", || !ui.get_may_administer()).await;
+            assert_eq!(ui.get_roles(), "Settings · Stream · Download");
+            assert!(find(&ui, "Scan library").is_none());
+            ui.invoke_forward();
             assert!(find(&ui, "Add station").is_none());
             wait_for("the stations", || ui.get_station_rows().row_count() == 2).await;
             assert_eq!((menus("ListRow"), menus("CoverTile")), (0, 0));
-            // Nor may they have the server scan.
-            ui.invoke_back();
-            ui.invoke_back();
-            assert_eq!(ui.get_page(), Page::Account);
-            assert!(find(&ui, "Scan library").is_none());
             ADMIN.store(true, Relaxed);
-            ui.invoke_set_password("bea".into(), "again".into());
+            ui.invoke_back();
             wait_for("joe an admin once more", || ui.get_may_administer()).await;
             assert!(find(&ui, "Scan library").is_some());
             ui.set_notice("".into());
@@ -1922,7 +1826,7 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 12);
+            assert_eq!(ui.get_sections().row_count(), 10);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
@@ -1955,9 +1859,7 @@ mod tests {
                     "Folders",
                     "Playlists",
                     "Road Trip",
-                    "Empty",
-                    "Account",
-                    "Users"
+                    "Empty"
                 ]
             );
             assert_eq!(
@@ -1974,15 +1876,13 @@ mod tests {
                     "Library",
                     "Playlists",
                     "Playlists",
-                    "Playlists",
-                    "",
-                    ""
+                    "Playlists"
                 ]
             );
             // Each with its icon in front, but for the playlists.
             let icons = ui.global::<Icons>();
             let pictures = strings(ui.get_section_icons());
-            assert_eq!(pictures.len(), 14);
+            assert_eq!(pictures.len(), 12);
             assert_eq!(pictures[0], icons.get_home().as_str());
             assert_eq!(pictures[1], icons.get_genre().as_str());
             assert_eq!(pictures[2], icons.get_radio().as_str());
@@ -1996,8 +1896,6 @@ mod tests {
             ];
             assert_eq!(pictures[3..9], library.map(String::from));
             assert_eq!(pictures[9..12], ["", "", ""]);
-            assert_eq!(pictures[12], icons.get_person().as_str());
-            assert_eq!(pictures[13], icons.get_people().as_str());
             ui.invoke_show_section(10);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
@@ -2121,7 +2019,7 @@ mod tests {
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             click(&ui, "Account");
-            assert_eq!(ui.get_section(), 12);
+            assert_eq!(ui.get_section(), -1);
             // Shown again at once, while they are asked for again.
             click(&ui, "Playlists");
             assert_eq!(ui.get_tiles().row_count(), 2);
