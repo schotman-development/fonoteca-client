@@ -713,7 +713,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{{"name":"fonotecaAlbumMotion","versions":[1]}},{{"name":"fonotecaCompositions","versions":[1]}}{by_id}{organized}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{{"name":"fonotecaAlbumMotion","versions":[1]}},{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}]"#
             ))
         } else if !request.contains("u=joe&") {
             json(WRONG_PASSWORD)
@@ -889,7 +889,7 @@ mod tests {
             ok(&format!(r#""user":{}"#, joe()))
         } else if request.contains("/rest/getGenres") {
             ok(
-                r#""genres":{"genre":[{"value":"Jazz","songCount":3,"albumCount":2},{"value":"hip-hop","songCount":1,"albumCount":1}]}"#,
+                r#""genres":{"genre":[{"value":"Folk","songCount":2,"albumCount":1},{"value":"Jazz","songCount":3,"albumCount":2},{"value":"hip-hop","songCount":1,"albumCount":1,"parents":["Jazz"]}]}"#,
             )
         } else if request.contains("/rest/getInternetRadioStations") {
             ok(
@@ -1855,14 +1855,79 @@ mod tests {
             click(&ui, "Albums");
             assert_eq!(ui.get_tiles().row_count(), 100);
 
+            // The genres page has the server's genres, those most albums
+            // carry first, each with a picture of the artist known for it
+            // best in the genres' tint. A genre's page has the library's
+            // albums carrying it and their artists, all of each behind See
+            // all. With Fonoteca's genres, those under none, and on a genre's
+            // page those under it, which link back.
+            click(&ui, "Genres");
+            assert_eq!(ui.get_page(), Page::Genres);
+            wait_for("the genres", || ui.get_genre_tiles().row_count() == 2).await;
+            let genre = |row| ui.get_genre_tiles().row_data(row).unwrap();
+            assert_eq!(
+                (genre(0).title.as_str(), genre(0).link.as_str()),
+                ("Jazz", "genre:Jazz")
+            );
+            assert_eq!(genre(0).names.row_data(0).unwrap().label, "2 albums");
+            assert_eq!(genre(1).title, "Folk");
+            wait_for("Folk's picture", || genre(1).cover.size().width > 0).await;
+            let pixel = genre(1).cover.to_rgba8().unwrap().as_slice()[0];
+            assert!(pixel.b > pixel.r);
+            ui.invoke_open("genre:Jazz".into());
+            wait_for("Jazz's subgenres", || ui.get_genre_tiles().row_count() == 1).await;
+            assert_eq!(genre(0).link, "genre:hip-hop");
+            ui.invoke_open("genre:hip-hop".into());
+            let parents = || -> Vec<String> {
+                ui.get_header_names().iter().map(|name| name.link.into()).collect()
+            };
+            wait_for("its parent", || parents() == ["genre:Jazz"]).await;
+            ui.invoke_back();
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Genres);
+            let tile = |row| ui.get_tiles().row_data(row).unwrap();
+            ui.invoke_open("genre:Folk".into());
+            assert_eq!(ui.get_page(), Page::Genre);
+            assert_eq!(ui.get_header_title(), "Folk");
+            wait_for("Folk's albums", || ui.get_tiles().row_count() == 1).await;
+            assert_eq!(tile(0).link, "album:a1");
+            wait_for("Folk's artists", || ui.get_genre_artists().row_count() == 1).await;
+            let artist = ui.get_genre_artists().row_data(0).unwrap();
+            assert_eq!(
+                (artist.link.as_str(), artist.names.row_data(0).unwrap().label.as_str()),
+                ("artist:r1", "1 album")
+            );
+            wait_for("the whole library", || ui.get_header_facts() == "1 album · 1 artist").await;
+            assert_eq!(ui.get_genre_tiles().row_count(), 0);
+            let section = || -> String {
+                let at = usize::try_from(ui.get_section()).unwrap();
+                ui.get_sections().row_data(at).unwrap().into()
+            };
+            assert_eq!(section(), "Genres");
+            ui.invoke_open("albums:Folk".into());
+            assert_eq!((ui.get_page(), ui.get_header_title().as_str()), (Page::Albums, "Folk"));
+            assert_eq!(section(), "Albums");
+            wait_for("all Folk's albums", || ui.get_tiles().row_count() == 1).await;
+            assert_eq!(tile(0).link, "album:a1");
+            ui.invoke_back();
+            ui.invoke_open("artists:Folk".into());
+            assert_eq!((ui.get_page(), ui.get_header_title().as_str()), (Page::Artists, "Folk"));
+            assert_eq!(section(), "Artists");
+            wait_for("all Folk's artists", || ui.get_tiles().row_count() == 1).await;
+            assert_eq!(tile(0).link, "artist:r1");
+            ui.invoke_back();
+            ui.invoke_back();
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Albums);
+
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 11);
+            assert_eq!(ui.get_sections().row_count(), 12);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Playlists);
-            assert_eq!(ui.get_section(), 8);
+            assert_eq!(ui.get_section(), 9);
             DOWN.store(false, Relaxed);
             click(&ui, "Try again");
             wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
@@ -1880,6 +1945,7 @@ mod tests {
                 strings(ui.get_sections()),
                 [
                     "Home",
+                    "Genres",
                     "Radio",
                     "Albums",
                     "Artists",
@@ -1899,6 +1965,7 @@ mod tests {
                 [
                     "Browse",
                     "Browse",
+                    "Browse",
                     "Library",
                     "Library",
                     "Library",
@@ -1915,9 +1982,10 @@ mod tests {
             // Each with its icon in front, but for the playlists.
             let icons = ui.global::<Icons>();
             let pictures = strings(ui.get_section_icons());
-            assert_eq!(pictures.len(), 13);
+            assert_eq!(pictures.len(), 14);
             assert_eq!(pictures[0], icons.get_home().as_str());
-            assert_eq!(pictures[1], icons.get_radio().as_str());
+            assert_eq!(pictures[1], icons.get_genre().as_str());
+            assert_eq!(pictures[2], icons.get_radio().as_str());
             let library = [
                 icons.get_album(),
                 icons.get_artist(),
@@ -1926,14 +1994,14 @@ mod tests {
                 icons.get_composition(),
                 icons.get_folder(),
             ];
-            assert_eq!(pictures[2..8], library.map(String::from));
-            assert_eq!(pictures[8..11], ["", "", ""]);
-            assert_eq!(pictures[11], icons.get_person().as_str());
-            assert_eq!(pictures[12], icons.get_people().as_str());
-            ui.invoke_show_section(9);
+            assert_eq!(pictures[3..9], library.map(String::from));
+            assert_eq!(pictures[9..12], ["", "", ""]);
+            assert_eq!(pictures[12], icons.get_person().as_str());
+            assert_eq!(pictures[13], icons.get_people().as_str());
+            ui.invoke_show_section(10);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
-            assert_eq!(ui.get_section(), 9);
+            assert_eq!(ui.get_section(), 10);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
             // Each track with its artists, then its album.
@@ -2053,7 +2121,7 @@ mod tests {
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             click(&ui, "Account");
-            assert_eq!(ui.get_section(), 11);
+            assert_eq!(ui.get_section(), 12);
             // Shown again at once, while they are asked for again.
             click(&ui, "Playlists");
             assert_eq!(ui.get_tiles().row_count(), 2);
@@ -2255,7 +2323,7 @@ mod tests {
             click(&ui, "Composers");
             wait_for("the composers", || ui.get_tiles().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Composers);
-            assert_eq!(ui.get_section(), 5);
+            assert_eq!(ui.get_section(), 6);
             let tile = ui.get_tiles().row_data(0).unwrap();
             assert_eq!(
                 (tile.title.as_str(), tile.link.as_str()),
@@ -2943,7 +3011,7 @@ mod tests {
             wait_for("the folders", || ui.get_track_lines().row_count() == 3).await;
             assert_eq!(ui.get_page(), Page::Folders);
             assert_eq!(ui.get_header_title(), "Folders");
-            assert_eq!(ui.get_section(), 7);
+            assert_eq!(ui.get_section(), 8);
             let entry = |ui: &AppWindow, row: usize| -> (String, String) {
                 let title = titles(ui).iter().position(|t| t == "Title").unwrap();
                 let line = ui.get_track_lines().row_data(row).unwrap();
@@ -2972,7 +3040,7 @@ mod tests {
             wait_for("the three again", || ui.get_track_lines().row_count() == 3).await;
             click(&ui, "Mara Lind");
             wait_for("her folder", || ui.get_header_title() == "Mara Lind").await;
-            assert_eq!(ui.get_section(), 7, "a folder is among the folders");
+            assert_eq!(ui.get_section(), 8, "a folder is among the folders");
             assert_eq!(entry(&ui, 0), named("Night Harbour", "folder:d2"));
             assert_eq!(entry(&ui, 1), named("Harbour Lights", "song:t1"));
             // A folder shows its cover, as an album does.

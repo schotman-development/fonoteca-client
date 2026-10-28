@@ -766,6 +766,10 @@ pub struct Genre {
     pub song_count: i64,
     /// Genre album count
     pub album_count: i64,
+    /// Not in the spec: the genres it sits under, none for a top one, from
+    /// Fonoteca's `fonotecaGenres` extension.
+    #[serde(default)]
+    pub parents: Vec<String>,
 }
 
 /// Genres list.

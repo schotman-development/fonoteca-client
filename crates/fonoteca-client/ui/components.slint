@@ -74,6 +74,7 @@ export global Icons {
     out property <string> person: "M12 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M4 20c0-4 3.6-6 8-6s8 2 8 6";
     out property <string> people: "M9 11a3.5 3.5 0 1 1 0-7a3.5 3.5 0 1 1 0 7z M2 20c0-3.5 3.1-5.5 7-5.5s7 2 7 5.5 M16 4.3a3.5 3.5 0 0 1 0 6.4 M18 14.8c2.4.6 4 2.4 4 5.2";
     out property <string> radio: "M3.5 9.5h17v10h-17z M7 9.5L17 4 M8.5 17a2 2 0 1 1 0-4a2 2 0 1 1 0 4z M13.5 13.5h4 M13.5 16.5h4";
+    out property <string> genre: "M12 3l4.5 7.5h-9z M3.5 13.5h7v7h-7z M17 20.5a3.5 3.5 0 1 1 0-7a3.5 3.5 0 1 1 0 7z";
     out property <string> key: "M8 19a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M10.8 12.2L20 3 M16 7l3 3 M13.5 9.5l2 2";
     out property <string> check: "M5 12.5l4.5 4.5 9.5-10";
     out property <string> close: "M6 6l12 12 M18 6L6 18";
@@ -1361,6 +1362,73 @@ export component Shelf {
     }
 }
 
+// A genre: the picture of an artist known for it, in the tint every genre's
+// picture shares, with its name over it.
+export component GenreTile inherits Pressable {
+    in property <image> picture;
+    in property <string> name;
+    in property <string> albums;
+    in property <length> name-size: 28px;
+    label: self.albums == "" ? self.name : self.name + ", " + self.albums;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        clip: true;
+        // The tint's dark end, while the picture is on its way or where there
+        // is none.
+        background: #1c1c2c;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.picture;
+            image-fit: cover;
+        }
+        Rectangle {
+            background: root.hovered ? #00000026 : transparent;
+        }
+        // So the name reads on a bright picture too.
+        Rectangle { background: @linear-gradient(0deg, #00000066 0%, #00000000 60%); }
+        VerticalLayout {
+            alignment: end;
+            padding: 12px;
+            padding-bottom: root.height * 0.2;
+            Text {
+                text: root.name;
+                color: white;
+                font-size: root.name-size;
+                font-weight: 600;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// Genres in rows of square pictures across the width, each at least
+// `min-size` wide and widening to fill its row.
+export component GenreGrid {
+    in property <[AlbumTile]> tiles;
+    in property <length> min-size: 300px;
+    callback open(link: string);
+
+    property <length> gap: Theme.gap;
+    property <int> columns: max(2, floor((self.width + self.gap) / (self.min-size + self.gap)));
+    property <length> size: (self.width - (self.columns - 1) * self.gap) / self.columns;
+    height: self.tiles.length == 0 ? 0 : ceil(self.tiles.length / self.columns) * (self.size + self.gap) - self.gap;
+
+    for tile[i] in root.tiles: GenreTile {
+        x: mod(i, root.columns) * (root.size + root.gap);
+        y: floor(i / root.columns) * (root.size + root.gap);
+        width: root.size;
+        height: root.size;
+        picture: tile.cover;
+        name: tile.title;
+        albums: tile.names.length > 0 ? tile.names[0].label : "";
+        name-size: max(16px, min(32px, root.size / 9));
+        clicked => { root.open(tile.link); }
+    }
+}
+
 // Album tiles in rows across the width. Tiles are at least `min-size` wide
 // and widen to fill their row. The grid places them itself rather than in a
 // layout, so it knows its height for any width and a scroll view around it
@@ -1732,6 +1800,7 @@ export component SelectionBar inherits Rectangle {
 // text moves under the artwork. Children go in a row under the facts.
 export component PageHeader inherits FlexboxLayout {
     in property <image> artwork;
+    in property <bool> text-only;
     in property <bool> round;
     in property <string> kind;
     in property <string> title;
@@ -1743,7 +1812,7 @@ export component PageHeader inherits FlexboxLayout {
     cross-axis-alignment: start;
     spacing: 24px;
 
-    Artwork {
+    if !root.text-only: Artwork {
         size: 220px;
         round: root.round;
         source: root.artwork;

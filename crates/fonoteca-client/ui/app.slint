@@ -1,11 +1,11 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users, radio, stations, tags, tag }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, users, radio, stations, tags, tag, genres, genre }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -338,6 +338,33 @@ component StatCards {
     }
 }
 
+// The genre a page of albums or artists has, which opens its page, and a
+// button that shows them `all`.
+component GenreFilter inherits HorizontalLayout {
+    in property <string> genre;
+    in property <string> all;
+    callback open(link: string);
+    alignment: start;
+    spacing: 4px;
+
+    Text {
+        text: "Genre";
+        font-size: Theme.body;
+        color: Theme.muted;
+        vertical-alignment: center;
+    }
+    Link {
+        text: root.genre;
+        color: Theme.text;
+        clicked => { root.open("genre:" + root.genre); }
+    }
+    IconButton {
+        icon: Icons.close;
+        label: "All " + root.all;
+        clicked => { root.open(root.all); }
+    }
+}
+
 // The heading of the composers page, with its filter beside it, or under
 // it when `narrow`.
 component FilterHeading inherits VerticalLayout {
@@ -568,6 +595,10 @@ export component AppWindow inherits Window {
     // votes, and the stations saved on the server, for the home page.
     in property <[StationShelf]> station-shelves;
     in property <[AlbumTile]> saved-stations;
+    // The genres page's genres, or on a genre's page those under it; and its
+    // artists, those with the most of its albums first.
+    in property <[AlbumTile]> genre-tiles;
+    in property <[AlbumTile]> genre-artists;
     // The radio directory's languages, ticked where the genres show their
     // stations first.
     in property <[ColumnChoice]> language-choices;
@@ -1160,6 +1191,11 @@ export component AppWindow inherits Window {
                             filter-edited => { root.filter-albums(); }
                             sort-selected => { root.sort-albums(); }
                         }
+                        if root.header-title != "": GenreFilter {
+                            genre: root.header-title;
+                            all: "albums";
+                            open(link) => { root.open(link); }
+                        }
                     }
                     // Its filter too goes under the heading when narrow.
                     if root.page == Page.artists: VerticalLayout {
@@ -1182,6 +1218,11 @@ export component AppWindow inherits Window {
                             what: "artists";
                             text <=> root.artist-filter;
                             edited => { root.filter-artists(); }
+                        }
+                        if root.header-title != "": GenreFilter {
+                            genre: root.header-title;
+                            all: "artists";
+                            open(link) => { root.open(link); }
                         }
                     }
                     if root.page == Page.composers: FilterHeading {
@@ -1230,10 +1271,11 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
+                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track || root.page == Page.genre: PageHeader {
                         artwork: root.header-image;
+                        text-only: root.page == Page.genre;
                         round: root.page == Page.artist || root.page == Page.composer;
-                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : "Album";
+                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : root.page == Page.genre ? "Genre" : "Album";
                         title: root.header-title;
                         names: root.header-names;
                         facts: root.header-facts;
@@ -1379,6 +1421,36 @@ export component AppWindow inherits Window {
                             open(link) => { root.open(link); }
                         }
                     }
+                    // A genre's artists and albums sliding by, each with
+                    // all of them behind "See all", then its subgenres.
+                    if root.page == Page.genre && root.genre-artists.length > 0: CoverShelf {
+                        title: "Artists";
+                        tiles: root.genre-artists;
+                        round: true;
+                        more: true;
+                        see-all => { root.open("artists:" + root.header-title); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.genre && root.tiles.length > 0: CoverShelf {
+                        title: "Albums";
+                        tiles: root.tiles;
+                        more: true;
+                        see-all => { root.open("albums:" + root.header-title); }
+                        open(link) => { root.open(link); }
+                        in-view(first, last) => { root.tiles-in-view(first, last); }
+                        selecting: root.selected-tiles > 0;
+                        select(index, range) => { root.select-tile(index, range); }
+                    }
+                    if root.page == Page.genre && root.genre-tiles.length > 0: Text {
+                        text: "Subgenres";
+                        font-size: Theme.heading;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    if root.page == Page.genre && root.genre-tiles.length > 0: GenreGrid {
+                        tiles: root.genre-tiles;
+                        open(link) => { root.open(link); }
+                    }
                     if root.page == Page.artist && (root.tracks.length > 0 || root.similar.length > 0) && root.tiles.length > 0: Text {
                         text: "Albums";
                         font-size: Theme.heading;
@@ -1398,6 +1470,12 @@ export component AppWindow inherits Window {
                         entries: root.page == Page.playlists && root.tile-moves.length > 0 ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
                         activated(index, id, choice) => { root.move-tile(index, choice); }
                         dropped(index) => { root.drop-on-tile(index); }
+                    }
+                    // The library's genres, each opening its page.
+                    if root.page == Page.genres: Heading { text: "Genres"; }
+                    if root.page == Page.genres: GenreGrid {
+                        tiles: root.genre-tiles;
+                        open(link) => { root.open(link); }
                     }
                     // A genre of the radio directory, most votes first.
                     if root.page == Page.stations: Heading { text: root.header-title; }
@@ -1467,11 +1545,12 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.compositions && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.composition-filter != "" ? "No compositions match." : "No compositions yet."; }
                     if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
+                    if root.page == Page.genres && root.genre-tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No genres yet."; }
                     if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" ? "No tracks match." : "No tracks yet."; }
                     if root.page == Page.folders && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "Nothing here matches." : "This folder is empty."; }
                     if root.page == Page.tag && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "No tracks match." : "No tracks have this tag yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.home || root.page == Page.radio || root.page == Page.tags || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.home || root.page == Page.radio || root.page == Page.tags || root.page == Page.genres || root.page == Page.genre || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

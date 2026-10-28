@@ -5,7 +5,9 @@
 //! "folder:<id>", on servers with playlist folders "playlists:<id>", on
 //! servers with Fonoteca's compositions "composers", "compositions",
 //! "composer:<id>" or "composition:<id>", on servers with Fonoteca's tags
-//! "tags" and "tag:<id>", "radio", and "account" and, for admins, "users".
+//! "tags" and "tag:<id>", "genres", "genre:<name>" and a genre's albums or
+//! artists "albums:<genre>" or "artists:<genre>", "radio", and "account" and,
+//! for admins, "users".
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -36,6 +38,8 @@ use crate::{
 
 /// The newest albums on the home page.
 const RECENT: usize = 24;
+/// The artists or albums a genre's shelves show before "See all".
+const SHELF: usize = 24;
 /// The radio directory's shelves on the radio page, by title and genre tag,
 /// music only; the first has the stations with the most votes of all.
 const GENRES: [(&str, &str); 27] = [
@@ -102,6 +106,9 @@ const COVERS_AT_ONCE: usize = 6;
 /// but the narrowest windows, where the grid keeps two columns and a tile is
 /// under half the window wide (see `tile_pixels`); page headers are 220.
 const TILE_SIZE: f32 = 300.0;
+/// The widest a genre's tile gets, by GenreGrid's `min-size`: with two to a
+/// row, under 932 points of page.
+const GENRE_SIZE: f32 = 460.0;
 const HEADER_SIZE: f32 = 220.0;
 /// The size of a cover in a row of the tracks table.
 const LINE_COVER_SIZE: f32 = 42.0;
@@ -115,6 +122,8 @@ const TOP_SONGS_BY_ID: &str = "topSongsByArtistId";
 const FOLDERS: &str = "playlistFolders";
 /// Fonoteca's extension for the user's own tags.
 const TAGS: &str = "fonotecaTags";
+/// Fonoteca's extension for the genres each genre sits under.
+const GENRE_TREE: &str = "fonotecaGenres";
 /// How many of an artist's top songs their page shows.
 const TOP_SONGS: u32 = 5;
 /// About how long the start of a biography or notes is, before More.
@@ -155,6 +164,14 @@ pub struct Browser {
     composers_loaded: bool,
     compositions: Vec<Composition>,
     compositions_loaded: bool,
+    /// Every genre, once they have arrived, and on a genre's page the tiles
+    /// of its subgenres and of its artists.
+    genres: Vec<Genre>,
+    genres_loaded: bool,
+    genre_tiles: Rc<VecModel<AlbumTile>>,
+    genre_artists: Rc<VecModel<AlbumTile>>,
+    /// The pictures in the genres' shared tint, for the session.
+    tinted: HashMap<(String, u32), Image>,
     /// The playlists, for the sidebar and the playlists page, asked for on
     /// sign-in and on every visit to that page, and their folders on
     /// servers with them.
@@ -918,6 +935,8 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_about_short("".into());
     ui.set_about_open(false);
     ui.set_similar(ModelRc::default());
+    ui.set_genre_tiles(ModelRc::default());
+    ui.set_genre_artists(ModelRc::default());
 
     let (page, id) = link.split_once(':').unwrap_or((&link, ""));
     let id = id.to_owned();
@@ -928,6 +947,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "artists" => {
             ui.set_page(Page::Artists);
+            ui.set_header_title(id.as_str().into());
+            if !id.is_empty() {
+                want_library(ui, browser);
+            }
             artists(ui, browser);
         }
         "tracks" => {
@@ -983,6 +1006,14 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Composition);
             composition(ui, browser, id);
         }
+        "genres" => {
+            ui.set_page(Page::Genres);
+            genres(ui, browser);
+        }
+        "genre" => {
+            ui.set_page(Page::Genre);
+            genre(ui, browser, id);
+        }
         "account" => {
             ui.set_page(Page::Account);
             scan_status(ui, browser);
@@ -1018,6 +1049,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         _ => {
             ui.set_page(Page::Albums);
+            ui.set_header_title(shown_genre(&browser.borrow()).into());
             albums(ui, browser);
         }
     }
@@ -1097,6 +1129,7 @@ fn sections<'a>(
         });
     [
         ("home".to_owned(), "Home", "Browse"),
+        ("genres".to_owned(), "Genres", "Browse"),
         ("radio".to_owned(), "Radio", "Browse"),
     ]
     .into_iter()
@@ -1346,6 +1379,7 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
         "playlists" | "playlist" => SharedString::new(),
         "users" => icons.get_people(),
         "radio" => icons.get_radio(),
+        "genres" => icons.get_genre(),
         _ => icons.get_person(),
     }
 }
@@ -1494,7 +1528,11 @@ fn load_library(ui: &AppWindow, browser: &Shared) {
             if !signed_in {
                 return;
             }
-            let shown = matches!(ui.get_page(), Page::Albums | Page::Home);
+            let shown = match ui.get_page() {
+                Page::Albums | Page::Home | Page::Genres | Page::Genre => true,
+                Page::Artists => !shown_genre(&browser.borrow()).is_empty(),
+                _ => false,
+            };
             let list = match list {
                 Ok(list) => list.album,
                 Err(e) => {
@@ -1572,6 +1610,55 @@ fn composers(ui: &AppWindow, browser: &Shared) {
                     .flat_map(|index| index.composer)
                     .collect();
                 b.composers_loaded = true;
+            }
+            arrange(ui, browser);
+        },
+    );
+}
+
+/// Shows the library's genres, or a genre's page, asking for them, the
+/// library and the artists where they haven't arrived yet.
+fn genres(ui: &AppWindow, browser: &Shared) {
+    want_library(ui, browser);
+    if !browser.borrow().artists_loaded {
+        artists(ui, browser);
+    }
+    if browser.borrow().genres_loaded {
+        arrange(ui, browser);
+    } else {
+        load_genres(ui, browser);
+    }
+}
+
+/// A genre's page, from the library: its artists, its albums and the genres
+/// under it.
+fn genre(ui: &AppWindow, browser: &Shared, name: String) {
+    ui.set_header_title(name.into());
+    genres(ui, browser);
+}
+
+/// Asks for the library unless it is in or on its way.
+fn want_library(ui: &AppWindow, browser: &Shared) {
+    let ask = {
+        let b = browser.borrow();
+        !b.library_loaded && !b.library_loading
+    };
+    if ask {
+        load_library(ui, browser);
+    }
+}
+
+/// Asks for every genre, then arranges the page.
+fn load_genres(ui: &AppWindow, browser: &Shared) {
+    load(
+        ui,
+        browser,
+        |client| async move { client.get_genres().await },
+        |ui, browser, genres| {
+            {
+                let mut b = browser.borrow_mut();
+                b.genres = genres.genre;
+                b.genres_loaded = true;
             }
             arrange(ui, browser);
         },
@@ -2553,21 +2640,46 @@ fn typed_filter(ui: &AppWindow) -> Option<String> {
 /// shown stay when they are still the first ones; otherwise as many are shown
 /// again, and at least a page. On the home page, shows what has arrived.
 fn arrange(ui: &AppWindow, browser: &Shared) {
-    if ui.get_page() == Page::Home {
-        return show_home(ui, browser);
+    match ui.get_page() {
+        Page::Home => return show_home(ui, browser),
+        Page::Genres => return show_genres(ui, browser),
+        Page::Genre => show_genre(ui, browser),
+        _ => {}
     }
     let (sort, descending) = (ui.get_album_sort(), ui.get_album_descending());
     let filter = typed_filter(ui).unwrap_or_default();
     let page = ui.get_page();
     let mut b = browser.borrow_mut();
+    let genre = shown_genre(&b);
     let view = match page {
+        Page::Artists if !genre.is_empty() => {
+            let linked: HashSet<String> = (b.library.iter())
+                .filter(|album| carries(album, genre))
+                .flat_map(album_names)
+                .map(|name| name.link.into())
+                .collect();
+            let mut view = filtered(&b.artists, &filter, |artist| artist.name.clone());
+            view.retain(|&i| linked.contains(&format!("artist:{}", b.artists[i].id)));
+            view
+        }
         Page::Artists => filtered(&b.artists, &filter, |artist| artist.name.clone()),
         Page::Composers => filtered(&b.composers, &filter, |composer| composer.name.clone()),
         Page::Compositions => {
             let view = filtered(&b.compositions, &filter, composition_text);
             sorted(&b.compositions, view, PIECE_COLUMNS, &b.piece_table)
         }
-        _ => arranged(&b.library, &filter, sort, descending),
+        Page::Genre => {
+            let mut view = genre_albums(&b, genre);
+            view.truncate(SHELF);
+            view
+        }
+        _ => {
+            let mut view = arranged(&b.library, &filter, sort, descending);
+            if !genre.is_empty() {
+                view.retain(|&i| carries(&b.library[i], genre));
+            }
+            view
+        }
     };
     b.filter = filter;
     let shown = on_page(&b, page);
@@ -2597,6 +2709,9 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
     }
     if ui.get_page() == Page::Tags {
         return tags(ui, browser);
+    }
+    if matches!(ui.get_page(), Page::Genres | Page::Genre) {
+        return genres(ui, browser);
     }
     if ui.get_page() == Page::Tracks {
         let (ask, shown) = {
@@ -2630,24 +2745,30 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
         }
         return;
     }
-    let (have_artists, have_composers, have_compositions) = {
+    let (have_artists, have_composers, have_compositions, genre) = {
         let b = browser.borrow();
-        (b.artists_loaded, b.composers_loaded, b.compositions_loaded)
+        let genre = !shown_genre(&b).is_empty();
+        (
+            b.artists_loaded,
+            b.composers_loaded,
+            b.compositions_loaded,
+            genre,
+        )
     };
+    // A genre's artists are those of its albums.
+    let library = match page {
+        Page::Artists => genre,
+        Page::Composers | Page::Compositions => false,
+        _ => true,
+    };
+    if library {
+        want_library(ui, browser);
+    }
     match page {
         Page::Artists if !have_artists => return artists(ui, browser),
         Page::Composers if !have_composers => return composers(ui, browser),
         Page::Compositions if !have_compositions => return compositions(ui, browser),
-        Page::Artists | Page::Composers | Page::Compositions => {}
-        _ => {
-            let ask = {
-                let b = browser.borrow();
-                !b.library_loaded && !b.library_loading
-            };
-            if ask {
-                load_library(ui, browser);
-            }
-        }
+        _ => {}
     }
     let shown = on_page(&browser.borrow(), page);
     show_tiles(ui, browser, shown + TILES_AT_ONCE);
@@ -2689,8 +2810,10 @@ fn show_tiles(ui: &AppWindow, browser: &Shared, upto: usize) {
         if page == Page::Compositions {
             want_line_covers(&mut b, page, start);
         }
-        // The library arrives a part at a time, the others at once.
-        let library = page == Page::Albums;
+        // The library arrives a part at a time, the others at once; a genre's
+        // artists are those of its albums.
+        let library = matches!(page, Page::Albums | Page::Genre)
+            || (page == Page::Artists && !shown_genre(&b).is_empty());
         let more = end < b.view.len() || (library && !b.library_loaded);
         (
             tiles,
@@ -5372,6 +5495,401 @@ fn artist_tile(artist: &ArtistID3) -> (AlbumTile, Option<String>) {
     (tile, artist.cover_art.clone())
 }
 
+/// The genre whose page is on screen, or whose albums or artists are.
+fn shown_genre(b: &Browser) -> &str {
+    let link = &b.history[b.at];
+    (["genre:", "albums:", "artists:"].iter())
+        .find_map(|page| link.strip_prefix(page))
+        .unwrap_or_default()
+}
+
+/// Whether an album carries `genre`: among its genres, or as its one genre
+/// where the server lists none.
+fn carries(album: &AlbumID3, genre: &str) -> bool {
+    if album.genres.is_empty() {
+        album.genre.as_deref() == Some(genre)
+    } else {
+        album.genres.iter().any(|carried| carried.name == genre)
+    }
+}
+
+/// An album's main genre among `siblings`: the first of them it lists.
+fn main_genre<'a>(album: &'a AlbumID3, siblings: &HashSet<&str>) -> Option<&'a str> {
+    if album.genres.is_empty() {
+        (album.genre.as_deref()).filter(|genre| siblings.contains(genre))
+    } else {
+        (album.genres.iter())
+            .map(|genre| genre.name.as_str())
+            .find(|genre| siblings.contains(genre))
+    }
+}
+
+/// The genres `genre` is told apart from, itself among them: on servers with
+/// Fonoteca's genres those under a genre it is under, or like it under none;
+/// else every genre.
+fn siblings<'a>(b: &'a Browser, genre: &'a str) -> HashSet<&'a str> {
+    let tree = offers(b, GENRE_TREE);
+    let parents = (b.genres.iter())
+        .find(|shown| shown.value == genre)
+        .map(|shown| shown.parents.as_slice())
+        .unwrap_or_default();
+    (b.genres.iter())
+        .filter(|other| {
+            !tree
+                || if parents.is_empty() {
+                    other.parents.is_empty()
+                } else {
+                    other.parents.iter().any(|parent| parents.contains(parent))
+                }
+        })
+        .map(|other| other.value.as_str())
+        .chain([genre])
+        .collect()
+}
+
+/// `genres`, those most albums carry first, then by name.
+fn by_albums<'a>(genres: impl Iterator<Item = &'a Genre>) -> Vec<Genre> {
+    let mut genres: Vec<Genre> = genres.cloned().collect();
+    genres.sort_by_cached_key(|genre| {
+        (
+            std::cmp::Reverse(genre.album_count),
+            genre.value.to_lowercase(),
+        )
+    });
+    genres
+}
+
+/// The genres page: every genre, or on servers with Fonoteca's genres those
+/// under none, those most albums carry first.
+fn show_genres(ui: &AppWindow, browser: &Shared) {
+    let size = genre_pixels(ui);
+    let wanted = {
+        let mut b = browser.borrow_mut();
+        let tree = offers(&b, GENRE_TREE);
+        let shown = by_albums((b.genres.iter()).filter(|genre| !tree || genre.parents.is_empty()));
+        let tiles = genre_tiles(&b, &shown);
+        let (tiles, wanted) = seen_covers(&b, tiles, size, true);
+        b.genre_tiles = tiles;
+        ui.set_genre_tiles(ModelRc::from(b.genre_tiles.clone()));
+        wanted
+    };
+    side_covers(browser, |b| &b.genre_tiles, wanted, size, true);
+}
+
+/// A genre's page beside its albums: the genres it sits under, how many
+/// albums and artists carry it, its artists known for it best first, and on
+/// servers with Fonoteca's genres the genres under it, those most albums
+/// carry first.
+fn show_genre(ui: &AppWindow, browser: &Shared) {
+    let (size, genre_size) = (tile_pixels(ui), genre_pixels(ui));
+    let (wanted_subgenres, wanted_artists) = {
+        let mut b = browser.borrow_mut();
+        let genre = shown_genre(&b).to_owned();
+        let tree = offers(&b, GENRE_TREE);
+        let subgenres =
+            by_albums((b.genres.iter()).filter(|sub| tree && sub.parents.contains(&genre)));
+        let subgenres = genre_tiles(&b, &subgenres);
+        let albums = (b.library.iter())
+            .filter(|album| carries(album, &genre))
+            .count();
+        let known = known_for(&b.library, &b.artists, &genre, &siblings(&b, &genre));
+        let facts = if b.library_loaded {
+            let albums = count(albums, "album", "albums");
+            format!("{albums} · {}", count(known.len(), "artist", "artists"))
+        } else {
+            String::new()
+        };
+        ui.set_header_facts(facts.into());
+        let pictures = artist_pictures(&b);
+        let artists: Vec<_> = (known.into_iter().take(SHELF))
+            .map(|(name, albums)| {
+                let id = name.link.strip_prefix("artist:").unwrap_or_default();
+                let picture = pictures.get(id).map(|picture| (*picture).clone());
+                let tile = AlbumTile {
+                    title: name.label,
+                    names: names(vec![unlinked(count(albums, "album", "albums"))]),
+                    link: name.link,
+                    ..AlbumTile::default()
+                };
+                (tile, picture)
+            })
+            .collect();
+        let parents: Vec<Name> = (b.genres.iter().find(|shown| shown.value == genre))
+            .map(|shown| {
+                (shown.parents.iter())
+                    .map(|parent| Name {
+                        label: parent.as_str().into(),
+                        link: format!("genre:{parent}").into(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ui.set_header_names(names(parents));
+        let (subgenres, wanted_subgenres) = seen_covers(&b, subgenres, genre_size, true);
+        let (artists, wanted_artists) = seen_covers(&b, artists, size, false);
+        b.genre_tiles = subgenres;
+        b.genre_artists = artists;
+        ui.set_genre_tiles(ModelRc::from(b.genre_tiles.clone()));
+        ui.set_genre_artists(ModelRc::from(b.genre_artists.clone()));
+        (wanted_subgenres, wanted_artists)
+    };
+    side_covers(
+        browser,
+        |b| &b.genre_tiles,
+        wanted_subgenres,
+        genre_size,
+        true,
+    );
+    side_covers(browser, |b| &b.genre_artists, wanted_artists, size, false);
+}
+
+/// The artists of the albums carrying `genre` that have a page, with how many
+/// of those albums each has, those known for it best first: by how many of
+/// their albums have it as their main genre among `siblings`, then by how
+/// many carry it at all, each weighed by how much of their own albums that
+/// is; then by name.
+fn known_for(
+    library: &[AlbumID3],
+    artists: &[ArtistID3],
+    genre: &str,
+    siblings: &HashSet<&str>,
+) -> Vec<(Name, usize)> {
+    // Each artist's name, albums carrying the genre and albums it is the
+    // main genre of.
+    let mut counted: Vec<(Name, usize, usize)> = Vec::new();
+    let mut at: HashMap<SharedString, usize> = HashMap::new();
+    for album in library.iter().filter(|album| carries(album, genre)) {
+        let main = usize::from(main_genre(album, siblings) == Some(genre));
+        for name in album_names(album) {
+            if name.link.is_empty() {
+                continue;
+            }
+            match at.get(&name.link) {
+                Some(&i) => {
+                    counted[i].1 += 1;
+                    counted[i].2 += main;
+                }
+                None => {
+                    at.insert(name.link.clone(), counted.len());
+                    counted.push((name, 1, main));
+                }
+            }
+        }
+    }
+    let own: HashMap<&str, &ArtistID3> = (artists.iter())
+        .map(|artist| (artist.id.as_str(), artist))
+        .collect();
+    let mut ranked: Vec<(f64, f64, String, Name, usize)> = counted
+        .into_iter()
+        .map(|(mut name, carrying, main)| {
+            let artist = (name.link.strip_prefix("artist:")).and_then(|id| own.get(id).copied());
+            // Its own name, not the credit of its first album.
+            if let Some(artist) = artist {
+                name.label = artist.name.as_str().into();
+            }
+            let albums = artist
+                .and_then(|artist| artist.album_count)
+                .unwrap_or_default();
+            let all = usize::try_from(albums).unwrap_or_default().max(carrying) as f64;
+            let weighed = |albums: usize| (albums * albums) as f64 / all;
+            let label = name.label.to_lowercase();
+            (weighed(main), weighed(carrying), label, name, carrying)
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        (b.0.total_cmp(&a.0))
+            .then(b.1.total_cmp(&a.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    (ranked.into_iter())
+        .map(|(.., name, carrying)| (name, carrying))
+        .collect()
+}
+
+/// A genre's albums as indexes into the library, by its artists known for it
+/// best, an album of each in turn: those it is the main genre of first, then
+/// by name.
+fn genre_albums(b: &Browser, genre: &str) -> Vec<usize> {
+    let siblings = siblings(b, genre);
+    let known = known_for(&b.library, &b.artists, genre, &siblings);
+    let rank: HashMap<SharedString, usize> = (known.into_iter().enumerate())
+        .map(|(rank, (name, _))| (name.link, rank))
+        .collect();
+    let mut view: Vec<(bool, usize, String, usize)> = (0..b.library.len())
+        .filter(|&i| carries(&b.library[i], genre))
+        .map(|i| {
+            let album = &b.library[i];
+            let best = (album_names(album).iter())
+                .filter_map(|name| rank.get(&name.link).copied())
+                .min()
+                .unwrap_or(usize::MAX);
+            let main = main_genre(album, &siblings) == Some(genre);
+            (!main, best, album.name.to_lowercase(), i)
+        })
+        .collect();
+    view.sort();
+    // Then the first of each artist's, the second, and so on.
+    let mut taken: HashMap<usize, usize> = HashMap::new();
+    let mut turns: Vec<(usize, usize, usize)> = (view.into_iter())
+        .enumerate()
+        .map(|(at, (_, best, _, i))| {
+            let turn = taken.entry(best).or_default();
+            *turn += 1;
+            (*turn, at, i)
+        })
+        .collect();
+    turns.sort_by_key(|&(turn, at, _)| (turn, at));
+    turns.into_iter().map(|(.., i)| i).collect()
+}
+
+/// The pictures of the artists by id, those that have one.
+fn artist_pictures(b: &Browser) -> HashMap<&str, &String> {
+    (b.artists.iter())
+        .filter_map(|artist| {
+            let picture = artist.cover_art.as_ref()?;
+            (!picture.is_empty()).then_some((artist.id.as_str(), picture))
+        })
+        .collect()
+}
+
+/// Each genre's tile, opening its page, with how many albums carry it and,
+/// once the library and its artists are in, the picture of the artist known
+/// for it best among `genres`, one no other of them shows where there is one.
+fn genre_tiles(b: &Browser, genres: &[Genre]) -> Vec<(AlbumTile, Option<String>)> {
+    let siblings: HashSet<&str> = genres.iter().map(|genre| genre.value.as_str()).collect();
+    let pictures = artist_pictures(b);
+    let mut shown: HashSet<&String> = HashSet::new();
+    (genres.iter())
+        .map(|genre| {
+            let known: Vec<&String> = if b.library_loaded && b.artists_loaded {
+                (known_for(&b.library, &b.artists, &genre.value, &siblings).into_iter())
+                    .filter_map(|(name, _)| {
+                        let id = name.link.strip_prefix("artist:")?;
+                        pictures.get(id).copied()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let picture = (known.iter())
+                .find(|picture| !shown.contains(*picture))
+                .or(known.first())
+                .copied();
+            shown.extend(picture);
+            let albums = usize::try_from(genre.album_count).unwrap_or_default();
+            let tile = AlbumTile {
+                title: genre.value.as_str().into(),
+                names: names(vec![unlinked(count(albums, "album", "albums"))]),
+                link: format!("genre:{}", genre.value).into(),
+                ..AlbumTile::default()
+            };
+            (tile, picture.cloned())
+        })
+        .collect()
+}
+
+/// A picture in the genres' shared tint: its light alone, from a dark to a
+/// pale violet grey, so their names read on any picture. Decoded here, as the
+/// browser build leaves decoding to the browser, out of reach of its pixels.
+fn tinted(bytes: &[u8]) -> Option<Image> {
+    let mut pixels = image::load_from_memory(bytes).ok()?.into_rgba8();
+    for pixel in pixels.pixels_mut() {
+        let [r, g, b, _] = &mut pixel.0;
+        let light = (0.299 * f32::from(*r) + 0.587 * f32::from(*g) + 0.114 * f32::from(*b)) / 255.0;
+        let tone = |dark: f32, pale: f32| (dark + (pale - dark) * light) as u8;
+        (*r, *g, *b) = (tone(28.0, 204.0), tone(28.0, 204.0), tone(44.0, 228.0));
+    }
+    let (width, height) = pixels.dimensions();
+    Some(Image::from_rgba8(SharedPixelBuffer::clone_from_slice(
+        pixels.as_raw(),
+        width,
+        height,
+    )))
+}
+
+/// A picture in the genres' shared tint, kept for the session.
+async fn tinted_art(
+    browser: &Shared,
+    visit: i32,
+    cover: String,
+    size: u32,
+) -> Option<Option<Image>> {
+    let key = (cover, size);
+    let client = {
+        let b = browser.borrow();
+        if b.visit != visit {
+            return None;
+        }
+        if let Some(image) = b.tinted.get(&key) {
+            return Some(Some(image.clone()));
+        }
+        b.client.clone()?
+    };
+    let bytes = client.get_cover_art(&key.0, Some(size)).await;
+    let image = bytes.ok().and_then(|bytes| tinted(&bytes));
+    let mut b = browser.borrow_mut();
+    let signed_in = (b.client.as_ref()).is_some_and(|current| Rc::ptr_eq(current, &client));
+    if let (Some(image), true) = (&image, signed_in) {
+        b.tinted.insert(key, image.clone());
+    }
+    (b.visit == visit).then_some(image)
+}
+
+/// A model of `tiles`, each with its cover where it has been seen this
+/// session, in the genres' tint where `tint` says, and the covers still to
+/// fetch by row.
+fn seen_covers(
+    b: &Browser,
+    tiles: Vec<(AlbumTile, Option<String>)>,
+    size: u32,
+    tint: bool,
+) -> (Rc<VecModel<AlbumTile>>, Vec<(usize, String)>) {
+    let seen = if tint { &b.tinted } else { &b.pictures };
+    let model = Rc::new(VecModel::default());
+    let mut wanted = Vec::new();
+    for (row, (mut tile, cover)) in tiles.into_iter().enumerate() {
+        if let Some(cover) = cover {
+            match seen.get(&(cover.clone(), size)) {
+                Some(image) => tile.cover = image.clone(),
+                None => wanted.push((row, cover)),
+            }
+        }
+        model.push(tile);
+    }
+    (model, wanted)
+}
+
+/// Fetches the covers `wanted` of a model beside the page's tiles, in order,
+/// in the genres' tint where `tint` says, while `model` still names it.
+fn side_covers(
+    browser: &Shared,
+    model: fn(&Browser) -> &Rc<VecModel<AlbumTile>>,
+    wanted: Vec<(usize, String)>,
+    size: u32,
+    tint: bool,
+) {
+    let tiles = model(&browser.borrow()).clone();
+    let (browser, visit) = (browser.clone(), browser.borrow().visit);
+    slint::spawn_local(async move {
+        for (row, cover) in wanted {
+            if !Rc::ptr_eq(model(&browser.borrow()), &tiles) {
+                return;
+            }
+            let image = if tint {
+                tinted_art(&browser, visit, cover, size).await
+            } else {
+                cover_art(&browser, Some(visit), cover, size).await
+            };
+            let Some(image) = image else { return };
+            if let (Some(image), Some(mut tile)) = (image, tiles.row_data(row)) {
+                tile.cover = image;
+                tiles.set_row_data(row, tile);
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
 /// Adds the tiles, each with its cover when it has been seen this session,
 /// and fetches the others.
 fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<String>)>) {
@@ -5708,6 +6226,14 @@ fn pixels(ui: &AppWindow, logical: f32) -> u32 {
     (logical * ui.window().scale_factor()).ceil() as u32
 }
 
+/// The size genre pictures are asked for, in physical pixels: a tile's widest,
+/// under half the window wide.
+fn genre_pixels(ui: &AppWindow) -> u32 {
+    let window = ui.window();
+    let width = window.size().to_logical(window.scale_factor()).width;
+    pixels(ui, (width / 2.0).clamp(100.0, GENRE_SIZE))
+}
+
 /// The size grid covers are asked for, in physical pixels.
 fn tile_pixels(ui: &AppWindow) -> u32 {
     let window = ui.window();
@@ -6026,6 +6552,7 @@ mod tests {
             value: value.into(),
             song_count: 0,
             album_count,
+            parents: Vec::new(),
         };
         let ranks = genre_ranks(&[
             genre("Rock", 3),
@@ -6178,6 +6705,7 @@ mod tests {
             labels(false),
             [
                 "Home",
+                "Genres",
                 "Radio",
                 "Albums",
                 "Artists",
@@ -6191,6 +6719,7 @@ mod tests {
             labels(true),
             [
                 "Home",
+                "Genres",
                 "Radio",
                 "Albums",
                 "Artists",
@@ -6350,5 +6879,153 @@ mod tests {
             )
         };
         assert_eq!(track_title(&[part(1), part(2)], 1), "I. Allegro, Pt. 2");
+    }
+
+    #[test]
+    fn genres_from_the_library() {
+        let album = |json: &str| -> AlbumID3 {
+            serde_json::from_str(&format!(
+                r#"{{"id":"a","name":"n","songCount":0,"duration":0,{json}}}"#
+            ))
+            .unwrap()
+        };
+        let library = [
+            album(
+                r#""coverArt":"old","created":"2020-01-01","artistId":"r1","artist":"Zed","genres":[{"name":"Blues"},{"name":"Blues Rock"}]"#,
+            ),
+            album(
+                r#""coverArt":"new","created":"2024-01-01","artistId":"r2","artist":"amy","genres":[{"name":"Blues"},{"name":"Blues Rock"},{"name":"Rock"}]"#,
+            ),
+            album(
+                r#""coverArt":"one","created":"2022-01-01","artistId":"r1","artist":"Zed","genre":"Blues""#,
+            ),
+            album(r#""created":"2023-01-01","artist":"Nobody","genre":"Rock""#),
+            album(
+                r#""created":"2021-01-01","artistId":"r1","artist":"Zed","genres":[{"name":"Rock"}]"#,
+            ),
+            album(r#""created":"2021-01-01","artistId":"r2","artist":"amy","genre":"Blues""#),
+        ];
+
+        // A list of genres, else the one genre.
+        assert!(carries(&library[0], "Blues Rock"));
+        assert!(!carries(&library[0], "Rock"));
+        assert!(carries(&library[2], "Blues"));
+        assert!(!carries(&library[2], "Blues Rock"));
+
+        // A tile opens its genre and has how many albums carry it.
+        let genre = |value: &str| Genre {
+            value: value.into(),
+            song_count: 0,
+            album_count: 2,
+            parents: Vec::new(),
+        };
+        let genres = [
+            genre("Blues"),
+            genre("Blues Rock"),
+            genre("Rock"),
+            genre("Polka"),
+        ];
+        let artist = |id: &str, albums: i64| -> ArtistID3 {
+            serde_json::from_str(&format!(
+                r#"{{"id":"{id}","name":"{id}","coverArt":"ar-{id}","albumCount":{albums}}}"#
+            ))
+            .unwrap()
+        };
+        let mut b = Browser {
+            library: library.to_vec(),
+            artists: vec![artist("r1", 10), artist("r2", 1)],
+            genres: genres.to_vec(),
+            ..Browser::default()
+        };
+        let tiles = genre_tiles(&b, &genres);
+        let (tile, picture) = &tiles[1];
+        assert_eq!(tile.link, "genre:Blues Rock");
+        assert_eq!(tile.names.row_data(0).unwrap().label, "2 albums");
+        assert_eq!(*picture, None, "not before the library and its artists");
+
+        // Those most albums carry first, then by name.
+        let counted = |value: &str, albums: i64| Genre {
+            album_count: albums,
+            ..genre(value)
+        };
+        let sorted: Vec<String> =
+            by_albums([counted("b", 1), counted("A", 1), counted("c", 3)].iter())
+                .into_iter()
+                .map(|genre| genre.value)
+                .collect();
+        assert_eq!(sorted, ["c", "A", "b"]);
+
+        // The artists known for a genre best: the most albums with it as
+        // their main genre among its siblings, the first of them they list,
+        // then the most carrying it; each weighed by how much of their own
+        // albums that is.
+        let known = |genre: &str, siblings: &[&str]| -> Vec<(String, usize)> {
+            let siblings: HashSet<&str> = siblings.iter().copied().collect();
+            known_for(&b.library, &b.artists, genre, &siblings)
+                .into_iter()
+                .map(|(name, albums)| (name.link.into(), albums))
+                .collect()
+        };
+        let tops = ["Blues", "Rock"];
+        assert_eq!(
+            known("Blues", &tops),
+            [("artist:r2".to_owned(), 2), ("artist:r1".to_owned(), 2)]
+        );
+        assert_eq!(
+            known("Rock", &tops),
+            [("artist:r1".to_owned(), 1), ("artist:r2".to_owned(), 1)]
+        );
+        assert!(known("Polka", &tops).is_empty());
+        // Under its own name, not its albums' credit.
+        let siblings: HashSet<&str> = tops.into_iter().collect();
+        let rock = known_for(&b.library, &b.artists, "Rock", &siblings);
+        assert_eq!(
+            (rock[0].0.label.as_str(), b.library[4].artist.as_deref()),
+            ("r1", Some("Zed"))
+        );
+
+        // Its albums by those artists, one of each in turn.
+        assert_eq!(genre_albums(&b, "Blues"), [1, 0, 5, 2]);
+
+        // Each tile the picture of the artist known for it best, one no other
+        // tile shows where there is one.
+        (b.library_loaded, b.artists_loaded) = (true, true);
+        let pictures: Vec<Option<String>> = genre_tiles(&b, &genres)
+            .into_iter()
+            .map(|(_, picture)| picture)
+            .collect();
+        let picture = |id: &str| Some(id.to_owned());
+        assert_eq!(
+            pictures,
+            [picture("ar-r2"), picture("ar-r1"), picture("ar-r1"), None]
+        );
+
+        // A picture seen untinted, as on the artists page, is fetched again
+        // for the tint.
+        let untinted = Image::from_rgba8(SharedPixelBuffer::new(1, 1));
+        b.pictures.insert(("ar-r2".to_owned(), 10), untinted);
+        let tiles = vec![(AlbumTile::default(), Some("ar-r2".to_owned()))];
+        let (model, wanted) = seen_covers(&b, tiles, 10, true);
+        assert_eq!(wanted, [(0, "ar-r2".to_owned())]);
+        assert_eq!(model.row_data(0).unwrap().cover.size().width, 0);
+
+        // Their light alone, in the tint.
+        let tint = |r: u8, g: u8, b: u8| {
+            let mut png = Cursor::new(Vec::new());
+            let pixel = image::Rgba([r, g, b, 255]);
+            image::RgbaImage::from_pixel(1, 1, pixel)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .unwrap();
+            tinted(png.get_ref())
+                .unwrap()
+                .to_rgba8()
+                .unwrap()
+                .as_slice()[0]
+        };
+        let red = tint(255, 0, 0);
+        assert!(red.r == red.g && red.b > red.r);
+        let (dark, pale) = (tint(0, 0, 0), tint(255, 255, 255));
+        assert_eq!((dark.r, dark.g, dark.b), (28, 28, 44));
+        assert_eq!((pale.r, pale.g, pale.b), (204, 204, 228));
     }
 }
