@@ -2779,9 +2779,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             // composers, the performers all its movements share, and when and
             // where they were recorded, with the movements under it; a work's
             // only track is such a row itself.
-            let runs = songs.chunk_by(|one, next| {
-                !one.works.is_empty() && one.works.first() == next.works.first()
-            });
+            let runs = songs.chunk_by(same_work);
             for run in runs {
                 let parts = run.len() > 1;
                 let length: i64 = run.iter().filter_map(|song| song.duration).sum();
@@ -2802,9 +2800,9 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
                     let own = performers[i].clone();
                     let (title, composers, credits) = match (parts, alone) {
                         (true, _) if own.iter().all(|name| shared.contains(name)) => {
-                            (track_title(song), Vec::new(), Vec::new())
+                            (track_title(run, i), Vec::new(), Vec::new())
                         }
-                        (true, _) => (track_title(song), Vec::new(), own),
+                        (true, _) => (track_title(run, i), Vec::new(), own),
                         (false, true) => (song.title.clone(), composer_names(song), own),
                         (false, false) => (song.title.clone(), Vec::new(), own),
                     };
@@ -5647,17 +5645,51 @@ fn composer_names(song: &Child) -> Vec<Name> {
     }
 }
 
-/// A track's title, or within a work its movement: the movement's name where
-/// the server sends one, else the title without the work's name in front.
-fn track_title(song: &Child) -> String {
-    if let Some(movement) = song.movements.first() {
-        return movement.name.clone();
+/// Whether two neighbouring tracks belong to one work, by its name: an album
+/// can link one piece's tracks to two editions of it, as Swan Lake's No. 13
+/// to Drigo's.
+fn same_work(one: &Child, next: &Child) -> bool {
+    let (one, next) = (one.works.first(), next.works.first());
+    one.is_some() && one.map(|work| &work.name) == next.map(|work| &work.name)
+}
+
+/// The title of a run's `i`th track within its work: the movement's name
+/// where the server sends one that no neighbour shares, else the track's own
+/// title without the work's name in front, or from the movement's name on,
+/// so the tracks of one opera scene or one long movement keep their own
+/// names.
+fn track_title(run: &[Child], i: usize) -> String {
+    let movement = |j: usize| {
+        run.get(j)
+            .and_then(|song| song.movements.first())
+            .map(|movement| &movement.name)
+    };
+    let shared = [i.checked_sub(1), Some(i + 1)]
+        .into_iter()
+        .flatten()
+        .any(|j| movement(j) == movement(i));
+    if let Some(name) = movement(i).filter(|_| !shared) {
+        return name.clone();
     }
+    // The longest "X: " in front where the work's name starts with X, as
+    // "Das Rheingold: " is to "Das Rheingold, WWV 86A"; else from the
+    // movement's name on, as "I. Allegro …, Pt. 1" in "Piano Concerto no. 1
+    // …: I. Allegro …, Pt. 1" under "Concerto for Piano and Orchestra no. 1".
+    let song = &run[i];
     song.works
         .first()
-        .and_then(|work| song.title.strip_prefix(work.name.as_str()))
-        .and_then(|rest| rest.strip_prefix(": "))
+        .and_then(|work| {
+            song.title.rmatch_indices(": ").find_map(|(at, _)| {
+                let after = work.name.strip_prefix(&song.title[..at])?;
+                (!after.starts_with(char::is_alphanumeric)).then(|| &song.title[at + 2..])
+            })
+        })
         .filter(|rest| !rest.is_empty())
+        .or_else(|| {
+            let name = movement(i).filter(|name| !name.is_empty())?;
+            let at = song.title.find(&format!(": {name}"))?;
+            Some(&song.title[at + 2..])
+        })
         .unwrap_or(&song.title)
         .to_owned()
 }
@@ -6107,5 +6139,93 @@ mod tests {
         );
         assert_eq!(written(r#","composed":{"to":{"year":1955}}"#), "1955");
         assert_eq!(written(""), "");
+    }
+
+    #[test]
+    fn works_and_their_tracks() {
+        let song = |title: &str, work: &str, extra: &str| -> Child {
+            serde_json::from_str(&format!(
+                r#"{{"id":"s","isDir":false,"title":"{title}","works":[{{"name":"{work}"{extra}}}]}}"#
+            ))
+            .unwrap()
+        };
+        let moved = |title: &str, work: &str, movement: &str| {
+            song(
+                title,
+                work,
+                &format!(r#"}}],"movements":[{{"name":"{movement}""#),
+            )
+        };
+
+        // Two editions of one ballet are one work; no works is none.
+        let swan = "Swan Lake, op. 20";
+        assert!(same_work(
+            &song("a", swan, r#","musicBrainzId":"11f48c5e""#),
+            &song("b", swan, r#","musicBrainzId":"13867eb1""#)
+        ));
+        assert!(!same_work(
+            &song("a", swan, ""),
+            &song("b", "Raymonda, op. 57", "")
+        ));
+        let bare: Child = serde_json::from_str(r#"{"id":"s","isDir":false,"title":"t"}"#).unwrap();
+        assert!(!same_work(&bare, &bare));
+
+        // A movement of its own names the track.
+        let concerto = "Violin Concerto in D minor, op. 47";
+        let run = [
+            moved("x", concerto, "I. Allegro moderato"),
+            moved("y", concerto, "II. Adagio di molto"),
+        ];
+        assert_eq!(track_title(&run, 0), "I. Allegro moderato");
+        assert_eq!(track_title(&run, 1), "II. Adagio di molto");
+
+        // Tracks sharing one scene keep their own titles, without the
+        // opera's name in front.
+        let opera = "Das Rheingold, WWV 86A";
+        let run = [
+            moved(
+                "Das Rheingold: Vorspiel - Prelude",
+                opera,
+                "Scene I. Vorspiel",
+            ),
+            moved(
+                "Das Rheingold: Weia! Waga! Woge, du Welle!",
+                opera,
+                "Scene I",
+            ),
+            moved(
+                "Das Rheingold: Garstig glatter glitschriger Glimmer!",
+                opera,
+                "Scene I",
+            ),
+        ];
+        assert_eq!(track_title(&run, 0), "Scene I. Vorspiel");
+        assert_eq!(track_title(&run, 1), "Weia! Waga! Woge, du Welle!");
+        assert_eq!(
+            track_title(&run, 2),
+            "Garstig glatter glitschriger Glimmer!"
+        );
+
+        // The whole work's name in front, colons and all.
+        let score = "Star Wars, Episode I: The Phantom Menace";
+        let run = [song(&format!("{score}: Duel of the Fates"), score, "")];
+        assert_eq!(track_title(&run, 0), "Duel of the Fates");
+
+        // Another work's name in front stays, as does a title with
+        // nothing after the name.
+        let run = [song("Symphony no. 1: I. Allegro", "Symphony no. 10", "")];
+        assert_eq!(track_title(&run, 0), "Symphony no. 1: I. Allegro");
+        let run = [song("Raymonda: ", "Raymonda, op. 57", "")];
+        assert_eq!(track_title(&run, 0), "Raymonda: ");
+
+        // One movement over several tracks, under another name for the work.
+        let part = |n: u8| {
+            moved(
+                &format!("Piano Concerto no. 1, op. 23: I. Allegro, Pt. {n}"),
+                "Concerto for Piano and Orchestra no. 1, op. 23",
+                "I. Allegro",
+            )
+        };
+        assert_eq!(track_title(&[part(1), part(2)], 1), "I. Allegro, Pt. 2");
     }
 }
