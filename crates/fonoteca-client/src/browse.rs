@@ -666,15 +666,11 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| {
             let ui = weak.unwrap();
-            let link = sections_of(&browser.borrow())
+            let heading = sections_of(&browser.borrow())
                 .get(index as usize)
-                .map(|section| section.0.clone());
-            let folder = match link.as_deref() {
-                Some("playlists") => Some(""),
-                link => link.and_then(|link| link.strip_prefix("playlists:")),
-            };
-            if let (Some(id), Some(folder)) = (dropped_playlist(&ui), folder) {
-                move_playlists(&ui, &browser, vec![id], folder.to_owned());
+                .is_some_and(|section| section.0 == "playlists");
+            if let Some(id) = dropped_playlist(&ui).filter(|_| heading) {
+                move_playlists(&ui, &browser, vec![id], String::new());
             }
         }
     });
@@ -1083,7 +1079,6 @@ fn folders_of(b: &Browser) -> Option<&[PlaylistFolder]> {
 fn sections_of(b: &Browser) -> Vec<(String, &str, &str)> {
     sections(
         &b.playlists,
-        folders_of(b),
         offers_compositions(b),
         offers(b, TAGS),
         admin(b),
@@ -1092,15 +1087,14 @@ fn sections_of(b: &Browser) -> Vec<(String, &str, &str)> {
 
 /// The sidebar's entries, as links, labels and groups: the home page and the
 /// radio, the library's pages, with the tags, composers and compositions
-/// where the server has them, the playlists, or with `folders` the top level
-/// of them, the account and for admins the users.
-fn sections<'a>(
-    playlists: &'a [Playlist],
-    folders: Option<&'a [PlaylistFolder]>,
+/// where the server has them, every playlist, those in folders too, the
+/// account and for admins the users.
+fn sections(
+    playlists: &[Playlist],
     compositions: bool,
     tags: bool,
     admin: bool,
-) -> Vec<(String, &'a str, &'a str)> {
+) -> Vec<(String, &str, &str)> {
     let library = [
         ("albums", "Albums", true),
         ("artists", "Artists", true),
@@ -1113,20 +1107,10 @@ fn sections<'a>(
     .into_iter()
     .filter(|&(.., shown)| shown)
     .map(|(link, label, _)| (link.to_owned(), label, "Library"));
-    let playlists = placed(playlists, folders, None)
-        .into_iter()
-        .map(|item| match item {
-            Placed::Folder(folder) => (
-                format!("playlists:{}", folder.id),
-                folder.name.as_str(),
-                "Playlists",
-            ),
-            Placed::Playlist(playlist) => (
-                format!("playlist:{}", playlist.id),
-                playlist.name.as_str(),
-                "Playlists",
-            ),
-        });
+    let playlists = playlists.iter().map(|playlist| {
+        let link = format!("playlist:{}", playlist.id);
+        (link, playlist.name.as_str(), "Playlists")
+    });
     [
         ("home".to_owned(), "Home", "Browse"),
         ("genres".to_owned(), "Genres", "Browse"),
@@ -1287,31 +1271,15 @@ fn destinations(nodes: &[Node], moving: Option<&str>, from: Option<&str>) -> Vec
 }
 
 /// The sidebar entry of the page on screen, or -1 when it has none: its own;
-/// else for a playlist or a folder of them that of the top folder it is in;
-/// else that of the pages it is among, as an album's is Albums.
+/// else that of the pages it is among, as an album's is Albums and a
+/// playlist folder's Playlists.
 fn section(b: &Browser) -> i32 {
     let Some(link) = b.history.get(b.at) else {
         return -1;
     };
     let sections = sections_of(b);
     let at = |wanted: &str| sections.iter().position(|section| section.0 == wanted);
-    let (page, id) = link.split_once(':').unwrap_or((link.as_str(), ""));
-    let mut folder = match page {
-        "playlist" => (b.playlists.iter())
-            .find(|playlist| playlist.id == id)
-            .and_then(|playlist| playlist.playlist_folder_id.as_deref()),
-        "playlists" => Some(id),
-        _ => None,
-    };
-    // Up to the top, as many steps as there are folders at most.
-    let nodes = folder_nodes(&b.playlist_folders);
-    for _ in 0..nodes.len() {
-        let parent = folder.and_then(|id| nodes.iter().find(|node| node.0 == id)?.2);
-        if parent.is_none() {
-            break;
-        }
-        folder = parent;
-    }
+    let page = link.split_once(':').map_or(link.as_str(), |(page, _)| page);
     let among = match page {
         "album" | "albums" => "albums",
         "artist" | "artists" => "artists",
@@ -1325,8 +1293,7 @@ fn section(b: &Browser) -> i32 {
         "stations" => "radio",
         other => other,
     };
-    let in_folder = || at(&format!("playlists:{}", folder?));
-    let found = at(link).or_else(in_folder).or_else(|| at(among));
+    let found = at(link).or_else(|| at(among));
     found.map_or(-1, |at| at as i32)
 }
 
@@ -1336,18 +1303,15 @@ fn section(b: &Browser) -> i32 {
 fn sidebar(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let icons = ui.global::<Icons>();
-    let (mut labels, mut groups, mut pictures, mut nested) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut labels, mut groups, mut pictures) = (Vec::new(), Vec::new(), Vec::new());
     for (link, label, group) in sections_of(&b) {
         labels.push(SharedString::from(label));
         groups.push(SharedString::from(group));
         pictures.push(section_icon(&icons, &link));
-        nested.push(link.starts_with("playlists:"));
     }
     ui.set_sections(ModelRc::new(VecModel::from(labels)));
     ui.set_section_groups(ModelRc::new(VecModel::from(groups)));
     ui.set_section_icons(ModelRc::new(VecModel::from(pictures)));
-    ui.set_section_nested(ModelRc::new(VecModel::from(nested)));
     ui.set_section(section(&b));
     show_selected(ui, &b);
     ui.set_folders_offered(offers(&b, FOLDERS));
@@ -6638,7 +6602,7 @@ mod tests {
                 {"id":"p3","name":"Zed","songCount":0,"duration":0,"created":"2026-01-01T00:00:00Z","changed":"2026-01-01T00:00:00Z","playlistFolderId":"","playlistFolderSortOrder":0}]"#,
         )
         .unwrap();
-        let shown: Vec<(String, &str)> = sections(&playlists, Some(&folders), false, true, false)
+        let shown: Vec<(String, &str)> = sections(&playlists, false, true, false)
             .into_iter()
             .skip_while(|(link, ..)| link != "playlists")
             .map(|(link, label, _)| (link, label))
@@ -6647,15 +6611,13 @@ mod tests {
             shown,
             [
                 ("playlists".to_owned(), "Playlists"),
-                ("playlist:p3".to_owned(), "Zed"),
-                ("playlists:f2".to_owned(), "Road trips"),
-                ("playlists:f1".to_owned(), "Work"),
                 ("playlist:p1".to_owned(), "Late night"),
-                ("playlists:f4".to_owned(), "Orphan"),
+                ("playlist:p2".to_owned(), "Commute"),
+                ("playlist:p3".to_owned(), "Zed"),
                 ("account".to_owned(), "Account"),
             ]
         );
-        let library = sections(&playlists, Some(&folders), false, true, false);
+        let library = sections(&playlists, false, true, false);
         assert!(library.iter().any(|(link, ..)| link == "tags"));
         let inside: Vec<&str> = placed(&playlists, Some(&folders), Some("f1"))
             .into_iter()
@@ -6696,7 +6658,7 @@ mod tests {
     #[test]
     fn composers_only_where_the_server_has_them() {
         let labels = |compositions| -> Vec<String> {
-            sections(&[], None, compositions, false, false)
+            sections(&[], compositions, false, false)
                 .into_iter()
                 .map(|(_, label, _)| label.to_owned())
                 .collect()

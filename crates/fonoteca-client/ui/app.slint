@@ -562,7 +562,6 @@ export component AppWindow inherits Window {
     in property <[string]> sections;
     in property <[string]> section-groups;
     in property <[string]> section-icons;
-    in property <[bool]> section-nested;
     in-out property <int> section;
     in property <[AlbumTile]> tiles;
     in property <bool> more-tiles;
@@ -934,7 +933,6 @@ export component AppWindow inherits Window {
             items: root.sections;
             groups: root.section-groups;
             icons: root.section-icons;
-            nested: root.section-nested;
             current <=> root.section;
             selected(index) => { root.show-section(index); }
             new-playlist => { root.ask(Asking.new-playlist); }
@@ -1884,7 +1882,6 @@ export component AppWindow inherits Window {
                 items: root.sections;
                 groups: root.section-groups;
                 icons: root.section-icons;
-                nested: root.section-nested;
                 current <=> root.section;
                 selected(index) => {
                     root.sidebar-open = false;

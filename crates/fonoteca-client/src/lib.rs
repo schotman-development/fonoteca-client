@@ -3269,28 +3269,25 @@ mod tests {
             wait_for("her top songs by name", || ui.get_tracks().row_count() == 2).await;
             wait_for("the account saved", || !ui.get_busy()).await;
 
-            // On a server with playlist folders, the sidebar has the top
-            // level in the user's order: the folder first, then the
-            // playlist without a place.
+            // On a server with playlist folders, the sidebar has every
+            // playlist, the one in a folder too, and no folders.
             let texts = |model: slint::ModelRc<slint::SharedString>| -> Vec<String> {
                 model.iter().map(Into::into).collect()
             };
-            wait_for("the folders", || {
-                texts(ui.get_sections()).contains(&"Trips".to_owned())
+            wait_for("the playlists", || {
+                texts(ui.get_sections()).contains(&"Road Trip".to_owned())
             })
             .await;
             let sections = texts(ui.get_sections());
             let tracks = sections.iter().position(|s| s == "Tracks").unwrap();
             assert_eq!(sections[tracks + 1], "Tags");
             let playlists = sections.iter().rposition(|s| s == "Playlists").unwrap();
-            assert_eq!(sections[playlists + 1..playlists + 3], ["Trips", "Empty"]);
-            let nested: Vec<bool> = ui.get_section_nested().iter().collect();
-            assert_eq!(nested[playlists + 1..playlists + 3], [true, false]);
-            assert!(!sections.contains(&"Road Trip".to_owned()), "it is in a folder");
+            assert_eq!(sections[playlists + 1..playlists + 3], ["Road Trip", "Empty"]);
+            assert!(!sections.contains(&"Trips".to_owned()), "it is a folder");
 
             // A folder's page has the folders and playlists in it, and makes
             // new ones there.
-            ui.invoke_show_section((playlists + 1) as i32);
+            ui.invoke_open("playlists:f1".into());
             assert_eq!(ui.get_page(), Page::Playlists);
             assert_eq!(ui.get_header_title(), "Trips");
             wait_for("the folder's tiles", || ui.get_tiles().row_count() == 2).await;
@@ -3305,10 +3302,12 @@ mod tests {
                     ("Road Trip", "playlist:p1", false)
                 ]
             );
-            // What is in it, however deep, is under its entry.
-            for link in ["playlists:f2", "playlist:p1"] {
+            // A folder, however deep, is under the playlists' entry; a
+            // playlist in one has its own.
+            assert_eq!(ui.get_section(), playlists as i32);
+            for (link, entry) in [("playlists:f2", playlists), ("playlist:p1", playlists + 1)] {
                 ui.invoke_open(link.into());
-                assert_eq!(ui.get_section(), (playlists + 1) as i32, "{link}");
+                assert_eq!(ui.get_section(), entry as i32, "{link}");
                 ui.invoke_back();
             }
             assert_eq!(tiles[0].names.row_data(0).unwrap().label, "0 items");

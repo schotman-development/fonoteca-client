@@ -1855,29 +1855,19 @@ export component PageHeader inherits FlexboxLayout {
     }
 }
 
-// A section of the sidebar; with `more`, an arrow after it says it holds
-// more, as a folder of playlists does.
+// A section of the sidebar.
 component NavButton inherits Pressable {
     in property <string> text;
     in property <string> icon;
     in property <bool> current;
-    in property <bool> more;
-    // A folder a playlist can be dragged onto, lit while one is over it.
-    in property <bool> drop-target;
-    callback dropped();
     label: self.text;
-    accessible-description: self.more ? "Folder" : "";
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
     min-height: Screen.phone ? 44px : 0;
 
     Rectangle {
         border-radius: Theme.radius;
-        background: root.current || drop.has-drag ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
-    }
-    drop := FolderDrop {
-        enabled: root.drop-target;
-        moved => { root.dropped(); }
+        background: root.current ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
     }
     HorizontalLayout {
         padding: 8px;
@@ -1900,16 +1890,6 @@ component NavButton inherits Pressable {
             font-weight: root.current ? 600 : 400;
             color: root.current ? Theme.text : Theme.muted;
             overflow: elide;
-        }
-        if root.more: Path {
-            cross-axis-self-alignment: center;
-            width: 14px;
-            height: 14px;
-            viewbox-width: 24;
-            viewbox-height: 24;
-            commands: Icons.forward;
-            stroke: Theme.muted;
-            stroke-width: 2px;
         }
     }
 }
@@ -1958,14 +1938,12 @@ component NavHeading inherits Pressable {
 // more than fit. `groups[i]` names the group of `items[i]`: sections of one
 // group follow each other under its heading, and a section without one is set
 // apart by a gap. A group whose first section carries its name has that
-// section as its heading. `icons[i]` is drawn in front of `items[i]`, and an
-// arrow after it where `nested[i]`: a folder. A playlist dragged onto a
-// folder or a heading goes to `dropped`.
+// section as its heading. `icons[i]` is drawn in front of `items[i]`. A
+// playlist dragged onto a heading goes to `dropped`.
 export component Sidebar inherits Rectangle {
     in property <[string]> items;
     in property <[string]> groups;
     in property <[string]> icons;
-    in property <[bool]> nested;
     in-out property <int> current;
     callback selected(index: int);
     callback new-playlist();
@@ -2015,10 +1993,7 @@ export component Sidebar inherits Rectangle {
                 if !entry.heading: NavButton {
                     text: item;
                     icon: root.icons[i];
-                    more: root.nested[i];
                     current: i == root.current;
-                    drop-target: root.nested[i];
-                    dropped => { root.dropped(i); }
                     clicked => {
                         root.current = i;
                         root.selected(i);
