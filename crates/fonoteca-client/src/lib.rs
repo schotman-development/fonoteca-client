@@ -1109,6 +1109,14 @@ mod tests {
         button(ui, label).invoke_accessible_default_action();
     }
 
+    /// The sidebar entry that is lit, or nothing.
+    fn lit(ui: &AppWindow) -> String {
+        (usize::try_from(ui.get_section()).ok())
+            .and_then(|at| ui.get_sections().row_data(at))
+            .map(Into::into)
+            .unwrap_or_default()
+    }
+
     /// Presses and lets go of `key`, for what has the keys.
     fn press(ui: &AppWindow, key: impl Into<slint::SharedString>) {
         let text = key.into();
@@ -1712,6 +1720,7 @@ mod tests {
             // A genre's page has all of it, a page at a time.
             ui.invoke_open("stations:jazz".into());
             assert_eq!(ui.get_page(), Page::Stations);
+            assert_eq!(lit(&ui), "Radio");
             assert_eq!(ui.get_header_title(), "Jazz");
             wait_for("a page of jazz", || ui.get_tiles().row_count() == 61).await;
             assert_eq!(ui.get_tiles().row_data(0).unwrap().title, "Dutch Jazz");
@@ -2054,7 +2063,8 @@ mod tests {
             wait_for("the notes", || ui.get_about() != "").await;
             assert_eq!(ui.get_about(), "Recorded at sea & on land.\nRead more");
             assert_eq!(ui.get_about_short(), "Recorded at sea & on land.");
-            assert_eq!(ui.get_section(), -1, "an album has no sidebar entry");
+            let at = usize::try_from(ui.get_section()).unwrap();
+            assert_eq!(ui.get_sections().row_data(at).unwrap(), "Albums", "an album is among the albums");
             assert_eq!(ui.get_header_title(), "Night Harbour");
             assert_eq!(ui.get_header_facts(), "2021 · Folk · 2 tracks, 8 minutes");
             let tracks = ui.get_tracks();
@@ -2259,6 +2269,7 @@ mod tests {
             click(&ui, "Ludwig van Beethoven");
             wait_for("his pieces", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Composer);
+            assert_eq!(lit(&ui), "Composers");
             assert_eq!(ui.get_header_title(), "Ludwig van Beethoven");
             assert_eq!(ui.get_header_facts(), "2 compositions");
             let rows = |ui: &AppWindow| -> Vec<(String, String, String, String, Vec<String>)> {
@@ -2491,6 +2502,7 @@ mod tests {
             })
             .await;
             assert_eq!(ui.get_header_title(), "Symphony No. 5");
+            assert_eq!(lit(&ui), "Compositions");
             assert_eq!(
                 ui.get_header_facts(),
                 "1804 – 1808 · 4 movements · 2 performances"
@@ -2568,6 +2580,7 @@ mod tests {
             click(&ui, "Harbour Lights");
             wait_for("the song", || ui.get_details().row_count() > 0).await;
             assert_eq!(ui.get_page(), Page::Track);
+            assert_eq!(lit(&ui), "Tracks");
             assert_eq!(ui.get_header_title(), "Harbour Lights");
             assert_eq!(ui.get_header_facts(), "2021 · 4:12");
             let header: Vec<String> = ui
@@ -2954,7 +2967,7 @@ mod tests {
             wait_for("the three again", || ui.get_track_lines().row_count() == 3).await;
             click(&ui, "Mara Lind");
             wait_for("her folder", || ui.get_header_title() == "Mara Lind").await;
-            assert_eq!(ui.get_section(), -1);
+            assert_eq!(ui.get_section(), 7, "a folder is among the folders");
             assert_eq!(entry(&ui, 0), named("Night Harbour", "folder:d2"));
             assert_eq!(entry(&ui, 1), named("Harbour Lights", "song:t1"));
             // A folder shows its cover, as an album does.
@@ -3219,6 +3232,12 @@ mod tests {
                     ("Road Trip", "playlist:p1", false)
                 ]
             );
+            // What is in it, however deep, is under its entry.
+            for link in ["playlists:f2", "playlist:p1"] {
+                ui.invoke_open(link.into());
+                assert_eq!(ui.get_section(), (playlists + 1) as i32, "{link}");
+                ui.invoke_back();
+            }
             assert_eq!(tiles[0].names.row_data(0).unwrap().label, "0 items");
             let writes = || ORGANIZE_WRITES.lock().unwrap().clone();
             ui.invoke_create_folder("Live".into());
@@ -3320,6 +3339,7 @@ mod tests {
             // A tag's page lists its tracks and those of the tags in it.
             ui.invoke_open("tag:t1".into());
             assert_eq!(ui.get_page(), Page::Tag);
+            assert_eq!(lit(&ui), "Tags");
             wait_for("the tag's tracks", || ui.get_track_lines().row_count() == 2).await;
             assert_eq!(ui.get_header_title(), "Mood");
             assert_eq!(ui.get_header_names().row_data(0).unwrap().label, "Calm");

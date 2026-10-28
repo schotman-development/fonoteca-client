@@ -1252,13 +1252,48 @@ fn destinations(nodes: &[Node], moving: Option<&str>, from: Option<&str>) -> Vec
     top.into_iter().chain(others).collect()
 }
 
-/// The sidebar entry of the page on screen, or -1 when it has none.
+/// The sidebar entry of the page on screen, or -1 when it has none: its own;
+/// else for a playlist or a folder of them that of the top folder it is in;
+/// else that of the pages it is among, as an album's is Albums.
 fn section(b: &Browser) -> i32 {
-    let link = b.history.get(b.at);
-    let at = sections_of(b)
-        .iter()
-        .position(|section| Some(&section.0) == link);
-    at.map_or(-1, |at| at as i32)
+    let Some(link) = b.history.get(b.at) else {
+        return -1;
+    };
+    let sections = sections_of(b);
+    let at = |wanted: &str| sections.iter().position(|section| section.0 == wanted);
+    let (page, id) = link.split_once(':').unwrap_or((link.as_str(), ""));
+    let mut folder = match page {
+        "playlist" => (b.playlists.iter())
+            .find(|playlist| playlist.id == id)
+            .and_then(|playlist| playlist.playlist_folder_id.as_deref()),
+        "playlists" => Some(id),
+        _ => None,
+    };
+    // Up to the top, as many steps as there are folders at most.
+    let nodes = folder_nodes(&b.playlist_folders);
+    for _ in 0..nodes.len() {
+        let parent = folder.and_then(|id| nodes.iter().find(|node| node.0 == id)?.2);
+        if parent.is_none() {
+            break;
+        }
+        folder = parent;
+    }
+    let among = match page {
+        "album" | "albums" => "albums",
+        "artist" | "artists" => "artists",
+        "song" => "tracks",
+        "genre" => "genres",
+        "tag" => "tags",
+        "composer" => "composers",
+        "composition" => "compositions",
+        "folder" => "folders",
+        "playlist" | "playlists" => "playlists",
+        "stations" => "radio",
+        other => other,
+    };
+    let in_folder = || at(&format!("playlists:{}", folder?));
+    let found = at(link).or_else(in_folder).or_else(|| at(among));
+    found.map_or(-1, |at| at as i32)
 }
 
 /// Lists the sidebar's entries, the page on screen's current, the playlists
