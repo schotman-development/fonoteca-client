@@ -1688,25 +1688,17 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        if root.station-rows.length > 0: VerticalLayout {
-                            max-width: 800px;
-                            spacing: 4px;
-                            Text {
-                                text: "Your stations";
-                                font-size: Theme.heading;
-                                font-weight: 600;
-                                color: Theme.text;
-                            }
-                            for station in root.station-rows: ListRow {
-                                title: station.name;
-                                details: station.details;
-                                entries: root.may-administer ? [
-                                    { id: "edit", label: "Edit", icon: Icons.pencil },
-                                    { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
-                                ] : [];
-                                activated(id) => {
-                                    root.ask-station(id == "edit" ? Asking.edit-station : Asking.delete-station, station);
-                                }
+                        // Its tiles and the rows the dialogs fill in from
+                        // come from one answer, so they line up.
+                        if root.saved-stations.length > 0: CoverShelf {
+                            title: "Your stations";
+                            tiles: root.saved-stations;
+                            entries: root.may-administer ? [
+                                { id: "edit", label: "Edit", icon: Icons.pencil },
+                                { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
+                            ] : [];
+                            activated(index, id) => {
+                                root.ask-station(id == "edit" ? Asking.edit-station : Asking.delete-station, root.station-rows[index]);
                             }
                         }
                         for shelf in root.station-shelves: CoverShelf {

@@ -893,7 +893,7 @@ mod tests {
             )
         } else if request.contains("/rest/getInternetRadioStations") {
             ok(
-                r#""internetRadioStations":{"internetRadioStation":[{"id":"r1","name":"Jazz","streamUrl":"https://stream.example.org/jazz","homePageUrl":"https://radio.example.org/"},{"id":"r2","name":"News","streamUrl":"http://news.example.org/live.mp3"}]}"#,
+                r#""internetRadioStations":{"internetRadioStation":[{"id":"r1","name":"Jazz","streamUrl":"https://stream.example.org/jazz","homePageUrl":"https://radio.example.org/","coverArt":"ir-r1"},{"id":"r2","name":"News","streamUrl":"http://news.example.org/live.mp3"}]}"#,
             )
         } else if ["create", "update", "delete"]
             .iter()
@@ -1690,7 +1690,8 @@ mod tests {
             let cover = |tiles: slint::ModelRc<AlbumTile>, row| tiles.row_data(row).unwrap().cover.size();
             wait_for("a station's picture", || cover(shelf(0).tiles, 0).width > 0).await;
             assert_eq!(cover(shelf(0).tiles, 1).width, 0);
-            assert_eq!(menus("ListRow"), 2);
+            assert_eq!(ui.get_saved_stations().row_count(), 2);
+            assert_eq!(menus("ListRow"), 0);
             assert!(menus("CoverTile") > 0);
             // An admin saves a station on the server, unless it has it.
             ui.invoke_save_station(0, 0);
@@ -1736,20 +1737,24 @@ mod tests {
             wait_for("a jazz station saved", || ui.get_notice() == "Saved Jazz 64.").await;
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Radio);
-            // The home page has the saved stations, with the directory's
-            // pictures where it has them.
+            // The home page has the saved stations, with the server's
+            // pictures, else the directory's.
             click(&ui, "Home");
             wait_for("the saved stations", || ui.get_saved_stations().row_count() == 2).await;
             let saved = |row| ui.get_saved_stations().row_data(row).unwrap();
             assert_eq!(saved(0).title, "Jazz");
             assert_eq!(saved(0).names.row_data(0).unwrap().label, "radio.example.org");
-            wait_for("Jazz's picture", || saved(0).cover.size().width > 0).await;
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Radio);
-            // News is found by name and told from another News by its
-            // stream. Waited for off the home page, which would otherwise
-            // have the artists loaded before the artists page below fails.
+            // Waited for off the home page, which would otherwise have the
+            // artists loaded before the artists page below fails. News is
+            // found by name and told from another News by its stream.
+            wait_for("Jazz's picture", || saved(0).cover.size().width > 0).await;
             wait_for("News's picture", || saved(1).cover.size().width > 0).await;
+            // The device keeps the directory's picture, not the server's.
+            let kept = crate::prefs::station_logos();
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept["http://news.example.org/live.mp3"].bytes().unwrap(), PNG);
             ui.set_notice("".into());
             // Anyone may see them, but only admins change them.
             ADMIN.store(false, Relaxed);

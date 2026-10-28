@@ -1,8 +1,12 @@
 //! Preferences kept on this device: how the albums, tracks, compositions and
 //! folders are sorted, which columns the tables show, and the radio page's
-//! languages. They aren't secrets, so a plain file
-//! in the system's settings folder keeps them, and the browser preview its
-//! localStorage. Where neither works they last until the app closes.
+//! languages; and the pictures of saved stations the app found in the radio
+//! directory. They aren't secrets, so plain files in the system's settings
+//! folder keep them, and the browser preview its localStorage. Where neither
+//! works they last until the app closes.
+
+use std::collections::HashMap;
+use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
 
@@ -32,32 +36,111 @@ pub struct Prefs {
 
 /// The preferences saved, or the first choices when there are none.
 pub fn load() -> Prefs {
-    read()
+    read(PREFERENCES)
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default()
 }
 
 pub fn save(prefs: &Prefs) {
     if let Ok(json) = serde_json::to_string_pretty(prefs) {
-        write(&json);
+        write(PREFERENCES, &json);
     }
 }
 
-#[cfg(test)]
-static SAVED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+const PREFERENCES: &str = "preferences";
 
-#[cfg(test)]
-fn read() -> Option<String> {
-    SAVED.lock().unwrap().clone()
+const LOGOS: &str = "station-logos";
+
+/// What the radio directory had for a saved station the server has no
+/// picture of: the picture's address and bytes, or nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Logo {
+    /// When the directory was asked, in seconds since 1970.
+    pub checked: u64,
+    /// Empty when the directory had no picture.
+    pub address: String,
+    /// The picture's bytes as hex.
+    image: String,
+}
+
+/// How long a station the directory had no picture of goes unasked.
+const NOT_FOUND_KEPT: u64 = 7 * 24 * 60 * 60;
+
+impl Logo {
+    pub fn found(address: String, bytes: &[u8]) -> Self {
+        let mut image = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            let _ = write!(image, "{byte:02x}");
+        }
+        Logo {
+            checked: now(),
+            address,
+            image,
+        }
+    }
+
+    pub fn missing() -> Self {
+        Logo {
+            checked: now(),
+            address: String::new(),
+            image: String::new(),
+        }
+    }
+
+    /// The picture's bytes, or none when there is no picture.
+    pub fn bytes(&self) -> Option<Vec<u8>> {
+        let hex = self.image.as_str();
+        let bytes: Option<Vec<u8>> = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
+            .collect();
+        bytes.filter(|bytes| !bytes.is_empty())
+    }
+
+    /// Whether this is a station with no picture asked about lately enough
+    /// not to ask again.
+    pub fn missing_lately(&self) -> bool {
+        self.image.is_empty() && now() < self.checked + NOT_FOUND_KEPT
+    }
+}
+
+/// The saved stations' pictures from the directory, by stream address.
+pub fn station_logos() -> HashMap<String, Logo> {
+    read(LOGOS)
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_station_logos(logos: &HashMap<String, Logo>) {
+    if let Ok(json) = serde_json::to_string(logos) {
+        write(LOGOS, &json);
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn now() -> u64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    since.map_or(0, |since| since.as_secs())
+}
+
+#[cfg(target_family = "wasm")]
+fn now() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
 }
 
 #[cfg(test)]
-fn write(json: &str) {
-    *SAVED.lock().unwrap() = Some(json.to_owned());
+static SAVED: std::sync::Mutex<Option<HashMap<&str, String>>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn read(name: &str) -> Option<String> {
+    SAVED.lock().unwrap().as_ref()?.get(name).cloned()
 }
 
-#[cfg(all(not(test), target_family = "wasm"))]
-const KEY: &str = "fonoteca-client.preferences";
+#[cfg(test)]
+fn write(name: &'static str, json: &str) {
+    let mut saved = SAVED.lock().unwrap();
+    saved.get_or_insert_default().insert(name, json.to_owned());
+}
 
 #[cfg(all(not(test), target_family = "wasm"))]
 fn storage() -> Option<web_sys::Storage> {
@@ -65,14 +148,15 @@ fn storage() -> Option<web_sys::Storage> {
 }
 
 #[cfg(all(not(test), target_family = "wasm"))]
-fn read() -> Option<String> {
-    storage()?.get_item(KEY).ok().flatten()
+fn read(name: &str) -> Option<String> {
+    let key = format!("fonoteca-client.{name}");
+    storage()?.get_item(&key).ok().flatten()
 }
 
 #[cfg(all(not(test), target_family = "wasm"))]
-fn write(json: &str) {
+fn write(name: &str, json: &str) {
     if let Some(storage) = storage() {
-        let _ = storage.set_item(KEY, json);
+        let _ = storage.set_item(&format!("fonoteca-client.{name}"), json);
     }
 }
 
@@ -80,10 +164,10 @@ fn write(json: &str) {
 #[cfg(target_os = "android")]
 pub static FOLDER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// preferences.json in a fonoteca-client folder in the system's settings
+/// `name`.json in a fonoteca-client folder in the system's settings
 /// folder, or the app's own folder on Android.
 #[cfg(all(not(test), not(target_family = "wasm")))]
-fn file() -> Option<std::path::PathBuf> {
+fn file(name: &str) -> Option<std::path::PathBuf> {
     #[cfg(not(target_os = "android"))]
     use std::env::var_os;
     #[cfg(not(target_os = "android"))]
@@ -100,17 +184,17 @@ fn file() -> Option<std::path::PathBuf> {
         .map(PathBuf::from)
         .filter(|folder| folder.is_absolute())
         .or_else(|| var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-    Some(folder?.join("fonoteca-client").join("preferences.json"))
+    Some(folder?.join("fonoteca-client").join(format!("{name}.json")))
 }
 
 #[cfg(all(not(test), not(target_family = "wasm")))]
-fn read() -> Option<String> {
-    std::fs::read_to_string(file()?).ok()
+fn read(name: &str) -> Option<String> {
+    std::fs::read_to_string(file(name)?).ok()
 }
 
 #[cfg(all(not(test), not(target_family = "wasm")))]
-fn write(json: &str) {
-    let Some(file) = file() else { return };
+fn write(name: &str, json: &str) {
+    let Some(file) = file(name) else { return };
     // Written beside it and moved over it, so a crash halfway leaves the old
     // file whole.
     let partial = file.with_extension("json.partial");
@@ -120,5 +204,22 @@ fn write(json: &str) {
         && std::fs::write(&partial, json).is_ok();
     if written {
         let _ = std::fs::rename(&partial, &file);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_logo_keeps_its_bytes_and_none_is_asked_again_after_a_week() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        assert_eq!(Logo::found("a".into(), &bytes).bytes(), Some(bytes));
+        let mut missing = Logo::missing();
+        assert_eq!(missing.bytes(), None);
+        missing.checked -= 6 * 24 * 60 * 60;
+        assert!(missing.missing_lately());
+        missing.checked -= 2 * 24 * 60 * 60;
+        assert!(!missing.missing_lately());
     }
 }
