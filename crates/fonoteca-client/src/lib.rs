@@ -3063,6 +3063,8 @@ mod tests {
                     == Some("updatePlaylist playlistId=p1&songIdToAdd=t1")
             })
             .await;
+            // Its notice comes before the next one, which may come at once.
+            wait_for("its notice", || ui.get_notice() == "Added 1 track to Road Trip.").await;
             PLAYLIST_WRITES.lock().unwrap().clear();
             ui.invoke_select_line(0, false);
             ui.invoke_add_selection_to_playlist("p1".into());
