@@ -23,6 +23,8 @@ export global Theme {
 
     out property <length> gap: 16px;
     out property <length> radius: 6px;
+    // The bar over the pages, as high as the logo over the sidebar beside it.
+    out property <length> bar-height: 64px;
 
     out property <brush> danger: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
 }
@@ -1934,8 +1936,8 @@ component NavHeading inherits Pressable {
     }
 }
 
-// The list of library sections down the left side, scrolling when there are
-// more than fit. `groups[i]` names the group of `items[i]`: sections of one
+// The app's logo over the list of library sections down the left side, the
+// list scrolling when there are more than fit. `groups[i]` names the group of `items[i]`: sections of one
 // group follow each other under its heading, and a section without one is set
 // apart by a gap. A group whose first section carries its name has that
 // section as its heading. `icons[i]` is drawn in front of `items[i]`. A
@@ -1953,7 +1955,34 @@ export component Sidebar inherits Rectangle {
     accessible-role: navigation;
     accessible-label: "Library";
 
+    // The app's glyph and name, lined up with the entries' icons and labels.
+    HorizontalLayout {
+        y: 0;
+        height: Theme.bar-height;
+        padding-left: 24px;
+        padding-right: 24px;
+        spacing: 12px;
+        Image {
+            cross-axis-self-alignment: center;
+            width: 18px;
+            height: 26px;
+            source: @image-url("clef.png");
+            image-fit: contain;
+            colorize: Theme.text;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: "Fonoteca";
+            font-size: Theme.heading;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
     scroll := ScrollView {
+        y: Theme.bar-height;
+        height: root.height - Theme.bar-height;
         content-width: self.visible-width;
         content-height: list.preferred-height;
         list := VerticalLayout {
@@ -2022,6 +2051,7 @@ export component TopBar inherits HorizontalLayout {
     property <length> button-size: root.phone ? 48px : 32px;
     property <length> icon-size: root.phone ? 24px : 20px;
 
+    height: Theme.bar-height;
     padding: 8px;
     // The first icon lines up with the pages' 24px margin.
     padding-left: 24px - (root.button-size - root.icon-size) / 2;
