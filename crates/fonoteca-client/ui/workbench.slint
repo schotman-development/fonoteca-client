@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, PageHeader, PersonTile, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, PageHeader, PathStep, PersonTile, PlayerBar, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -44,6 +44,7 @@ export component Workbench inherits Window {
         "Selection bar",
         "Track table",
         "List row",
+        "Player bar",
     ];
     property <int> current;
     property <bool> long-text;
@@ -51,6 +52,8 @@ export component Workbench inherits Window {
     property <string> event;
 
     property <image> none;
+    property <bool> player-paused;
+    property <float> player-position: 42;
     property <string> long-title: "An unusually long title that keeps going, to show where text wraps and where it is cut short";
     property <[Name]> many: [
         { label: "Mara Lind", link: "artist:1" },
@@ -615,6 +618,43 @@ export component Workbench inherits Window {
                             ListRow {
                                 title: "guest";
                             }
+                        }
+                    }
+
+                    if root.current == 14: Example {
+                        caption: "The track playing: the badge says how well it reaches the speakers and opens the steps; a problem takes the artists' place; on a phone only play and next stay, without the position";
+                        PlayerBar {
+                            cover: root.albums[0].cover;
+                            title: root.long-text ? root.long-title : "Northern Lights";
+                            names: root.long-text ? root.many : root.mara;
+                            paused: root.player-paused;
+                            position: root.player-position;
+                            duration: 271;
+                            quality: "Bit-perfect";
+                            bit-perfect: true;
+                            path: [
+                                { text: "FLAC 96 kHz 24-bit", lossless: true },
+                                { text: "Exclusive: USB DAC (96000 Hz 24-bit, 2 channels)", lossless: true },
+                            ];
+                            open(link) => { root.event = "open " + link; }
+                            toggle-pause => { root.player-paused = !root.player-paused; }
+                            previous => { root.event = "previous"; }
+                            next => { root.event = "next"; }
+                            seek(seconds) => { root.player-position = seconds; }
+                        }
+                        PlayerBar {
+                            cover: root.albums[1].cover;
+                            title: "Song of the Sea";
+                            problem: "The sound device takes no format this can play.";
+                            paused: true;
+                            duration: 0;
+                            quality: "Processed";
+                            path: [
+                                { text: "MP3 44.1 kHz", lossless: false },
+                                { text: "Volume leveling -6.2 dB (track)", lossless: false },
+                                { text: "Resampled 44.1 kHz to 48 kHz", lossless: false },
+                                { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", lossless: false },
+                            ];
                         }
                     }
                 }

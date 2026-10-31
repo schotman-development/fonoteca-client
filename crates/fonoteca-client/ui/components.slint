@@ -94,6 +94,10 @@ export global Icons {
     out property <string> folder: "M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-15a1.5 1.5 0 0 1-1.5-1.5z";
     out property <string> tag: "M3 3.5h8.5l9 9-8 8-9-9z M8 9.5a1.5 1.5 0 1 1 0-3a1.5 1.5 0 1 1 0 3z";
     // Filled.
+    out property <string> play: "M7.5 4.5v15l12-7.5z";
+    out property <string> pause: "M6.5 5h4v14h-4z M13.5 5h4v14h-4z";
+    out property <string> previous: "M5.5 5v14 M19 5v14l-11-7z";
+    out property <string> next: "M18.5 5v14 M5 5v14l11-7z";
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
 
@@ -905,11 +909,14 @@ export component TrackRow inherits Pressable {
     in property <[Name]> playlists;
     in property <bool> removable;
     in property <bool> taggable;
+    // Whether its menu can play from it.
+    in property <bool> playable;
     callback open(link: string);
     callback toggle-love();
     callback add-to-playlist(id: string);
     callback remove();
     callback tag();
+    callback play();
     label: self.title;
 
     Rectangle {
@@ -977,11 +984,14 @@ export component TrackRow inherits Pressable {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
-        if root.playlists.length > 0 || root.removable || root.taggable: MoreMenu {
+        if root.playlists.length > 0 || root.removable || root.taggable || root.playable: MoreMenu {
             cross-axis-self-alignment: center;
             label: "More for " + root.title;
             opening => {
                 self.entries = [];
+                if root.playable {
+                    self.entries.push({ id: "play", label: "Play from here", icon: Icons.play });
+                }
                 if root.playlists.length > 0 {
                     self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlists });
                 }
@@ -993,7 +1003,9 @@ export component TrackRow inherits Pressable {
                 }
             }
             activated(id, choice) => {
-                if id == "playlist" {
+                if id == "play" {
+                    root.play();
+                } else if id == "playlist" {
                     root.add-to-playlist(choice);
                 } else if id == "tags" {
                     root.tag();
@@ -2115,5 +2127,254 @@ export component TopBar inherits HorizontalLayout {
         icon: Icons.person;
         label: "Account";
         clicked => { root.account(); }
+    }
+}
+
+// A step the audio takes from the file to the speakers, and whether it
+// leaves every bit as it was.
+export struct PathStep {
+    text: string,
+    lossless: bool,
+}
+
+// The track's position, to drag or click to a new one, which it hands to
+// `seek` once let go.
+component SeekBar {
+    in property <float> position;
+    in property <float> duration;
+    callback seek(seconds: float);
+
+    property <float> dragged: clamp(touch.mouse-x / root.width, 0, 1) * root.duration;
+    property <float> shown: touch.pressed ? root.dragged : root.position;
+    property <float> fraction: root.duration > 0 ? clamp(root.shown / root.duration, 0, 1) : 0;
+
+    min-width: 80px;
+    height: 20px;
+    accessible-role: slider;
+    accessible-label: "Position";
+    accessible-value: round(root.shown);
+    accessible-value-minimum: 0;
+    accessible-value-maximum: round(root.duration);
+    accessible-value-step: 10;
+    accessible-action-increment => { root.seek(min(root.position + 10, root.duration)); }
+    accessible-action-decrement => { root.seek(max(root.position - 10, 0)); }
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.hover;
+        Rectangle {
+            x: 0;
+            width: parent.width * root.fraction;
+            border-radius: 2px;
+            background: Theme.accent;
+        }
+    }
+    if touch.has-hover || touch.pressed: Rectangle {
+        x: root.width * root.fraction - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: Theme.accent;
+    }
+    touch := TouchArea {
+        enabled: root.duration > 0;
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                root.seek(root.dragged);
+            }
+        }
+    }
+}
+
+// The track playing, under the pages: its cover, title and artists, the
+// buttons and position, and how well it reaches the speakers, whose steps
+// open from it. A problem takes the artists' place.
+export component PlayerBar inherits Rectangle {
+    in property <image> cover;
+    in property <string> title;
+    in property <[Name]> names;
+    in property <bool> paused;
+    in property <float> position;
+    in property <float> duration;
+    in property <string> quality;
+    in property <bool> bit-perfect;
+    in property <[PathStep]> path;
+    in property <string> problem;
+    callback open(link: string);
+    callback toggle-pause();
+    callback previous();
+    callback next();
+    callback seek(seconds: float);
+
+    function clock(seconds: float) -> string {
+        let s = floor(max(seconds, 0));
+        return floor(s / 60) + ":" + (mod(s, 60) < 10 ? "0" : "") + mod(s, 60);
+    }
+
+    height: Screen.phone ? 72px : 80px;
+    background: Theme.surface;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+        alignment: stretch;
+        Artwork {
+            cross-axis-self-alignment: center;
+            size: 48px;
+            source: root.cover;
+        }
+        // Long titles and names are cut short, so they don't size it.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            min-width: 80px;
+            preferred-width: 300px;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                font-size: Theme.body;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.problem != "": Text {
+                text: root.problem;
+                font-size: Theme.small;
+                color: Theme.danger;
+                overflow: elide;
+            }
+            if root.problem == "" && root.names.length > 0: LinksLine {
+                names: root.names;
+                font-size: Theme.small;
+                open(link) => { root.open(link); }
+            }
+        }
+        if !Screen.phone: IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.previous;
+            filled: true;
+            label: "Previous";
+            clicked => { root.previous(); }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            width: 44px;
+            icon-size: 28px;
+            icon: root.paused ? Icons.play : Icons.pause;
+            filled: true;
+            label: root.paused ? "Play" : "Pause";
+            clicked => { root.toggle-pause(); }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.next;
+            filled: true;
+            label: "Next";
+            clicked => { root.next(); }
+        }
+        if !Screen.phone: HorizontalLayout {
+            cross-axis-self-alignment: center;
+            horizontal-stretch: 1;
+            preferred-width: 300px;
+            spacing: 8px;
+            Text {
+                min-width: 40px;
+                text: root.clock(root.position);
+                font-size: Theme.small;
+                color: Theme.muted;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            SeekBar {
+                cross-axis-self-alignment: center;
+                horizontal-stretch: 1;
+                position: root.position;
+                duration: root.duration;
+                seek(seconds) => { root.seek(seconds); }
+            }
+            Text {
+                min-width: 40px;
+                text: root.duration > 0 ? root.clock(root.duration) : "";
+                font-size: Theme.small;
+                color: Theme.muted;
+                vertical-alignment: center;
+            }
+        }
+        if root.quality != "": Pressable {
+            cross-axis-self-alignment: center;
+            label: "Signal path: " + root.quality;
+            accessible-expandable: true;
+            accessible-expanded: steps.is-open;
+            width: badge.preferred-width;
+            height: 28px;
+            clicked => { steps.show(); }
+            Rectangle {
+                border-radius: self.height / 2;
+                border-width: 1px;
+                border-color: root.bit-perfect ? Theme.accent : Theme.muted;
+                background: parent.hovered ? Theme.hover : transparent;
+            }
+            badge := HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 6px;
+                Rectangle {
+                    cross-axis-self-alignment: center;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: root.bit-perfect ? Theme.accent : Theme.muted;
+                }
+                Text {
+                    text: root.quality;
+                    font-size: Theme.small;
+                    color: root.bit-perfect ? Theme.accent : Theme.muted;
+                    vertical-alignment: center;
+                }
+            }
+            steps := PopupWindow {
+                in property <length> list-height: 24px + root.path.length * 28px;
+                x: parent.width - self.width;
+                y: -self.height - 8px;
+                width: min(480px, Screen.width - 32px);
+                height: self.list-height;
+                close-policy: PopupClosePolicy.close-on-click-outside;
+                Rectangle {
+                    background: Palette.background;
+                    border-radius: Theme.radius;
+                    border-width: 1px;
+                    border-color: Theme.hover;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-offset-y: 4px;
+                    drop-shadow-color: #0000004d;
+                    VerticalLayout {
+                        padding: 12px;
+                        for step in root.path: HorizontalLayout {
+                            height: 28px;
+                            spacing: 8px;
+                            Rectangle {
+                                cross-axis-self-alignment: center;
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: step.lossless ? Theme.accent : Theme.muted;
+                            }
+                            Text {
+                                text: step.text;
+                                font-size: Theme.small;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
