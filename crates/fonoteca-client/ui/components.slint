@@ -70,6 +70,7 @@ export global Icons {
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
     out property <string> forward: "M9 5l7 7-7 7";
+    out property <string> refresh: "M20 12a8 8 0 1 1-8-8c2.2 0 4.3.9 5.9 2.4L20 8.5 M20 3.5v5h-5";
     out property <string> up: "M12 19V5 M6 11l6-6 6 6";
     out property <string> down: "M12 5v14 M6 13l6 6 6-6";
     out property <string> note: "M10 17V5l9-2v12 M10 17a3 3 0 1 1-6 0a3 3 0 1 1 6 0 M19 15a3 3 0 1 1-6 0a3 3 0 1 1 6 0";
@@ -104,9 +105,11 @@ export global Icons {
 // Whether every press counts as a finger's. Tests turn it on, since Slint's
 // test backend can only send mouse presses. Whether a shelf is being slid
 // sideways, which the page then doesn't scroll. Whether a dialog is open,
-// which leaves the keys nothing to reach behind it.
+// which leaves the keys nothing to reach behind it. Whether the last press
+// was a finger's, which the page's pull and edge swipes wait for.
 export global Input {
     in-out property <bool> touch;
+    in-out property <bool> finger;
     in-out property <bool> sliding;
     in-out property <bool> modal;
     // Counts up when the page is to take the keys back, as from a dialog.
@@ -231,6 +234,7 @@ export component Pressable {
             if event.kind == PointerEventKind.down {
                 root.shift = event.modifiers.shift;
                 root.finger = Input.touch || event.touch-finger-id != 0;
+                Input.finger = root.finger;
             }
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.context-clicked();

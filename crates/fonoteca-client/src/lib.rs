@@ -282,6 +282,9 @@ fn android_main(app: slint::android::AndroidApp) {
 /// background, so a store waiting on an unlock prompt doesn't hold it back.
 fn start() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
+    // Every press there is a finger's, the first one too.
+    #[cfg(target_os = "android")]
+    ui.global::<Input>().set_finger(true);
     let pending: Rc<RefCell<Option<(Account, Client)>>> = Rc::default();
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
@@ -2094,8 +2097,72 @@ mod tests {
             assert_eq!(ui.get_tiles().row_count(), 100, "the library is kept");
             assert_eq!(LISTS.load(Relaxed), lists);
             assert!(!ui.get_can_go_forward());
+            // A finger pulling the page down asks for the library anew, and
+            // the page stays; one swiping in from an edge goes back or
+            // forward. A mouse does neither.
+            let page = ui
+                .root_element()
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::Main)
+                .find_first()
+                .unwrap();
+            let (at, size) = (page.absolute_position(), page.size());
+            let y = at.y + size.height / 2.0;
+            let left = slint::LogicalPosition::new(at.x + 4.0, y);
+            let right = slint::LogicalPosition::new(at.x + size.width - 4.0, y);
+            // In the page's margin, past the edge but beside the tiles, which
+            // a mouse press would open.
+            let margin = slint::LogicalPosition::new(at.x + 22.0, y);
+            let pull = |from: slint::LogicalPosition, by: f32| {
+                let (window, button) = (ui.window(), PointerEventButton::Left);
+                let to = slint::LogicalPosition::new(from.x, from.y + by);
+                window.dispatch_event(WindowEvent::PointerPressed { position: from, button });
+                window.dispatch_event(WindowEvent::PointerMoved { position: to });
+                window.dispatch_event(WindowEvent::PointerReleased { position: to, button });
+            };
+            let scroll = |by: f32| {
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position: middle(&page),
+                    delta_x: 0.0,
+                    delta_y: by,
+                });
+            };
+            ui.global::<Input>().set_finger(false);
+            pull(left, 100.0);
+            idle(Duration::from_millis(200)).await;
+            assert_eq!(LISTS.load(Relaxed), lists);
+            ui.global::<Input>().set_finger(true);
+            pull(middle(&page), 50.0);
+            idle(Duration::from_millis(200)).await;
+            assert_eq!(LISTS.load(Relaxed), lists, "not far enough");
+            scroll(-200.0);
+            pull(margin, 100.0);
+            idle(Duration::from_millis(200)).await;
+            assert_eq!(LISTS.load(Relaxed), lists, "away from the top");
+            scroll(100000.0);
+            pull(middle(&page), 100.0);
+            wait_for("the library anew", || {
+                LISTS.load(Relaxed) == lists + 2 && ui.get_tiles().row_count() == 100
+            })
+            .await;
+            assert_eq!(ui.get_page(), Page::Albums);
+            assert!(ui.get_can_go_back() && !ui.get_can_go_forward());
+            hold(&ui, left, 50.0, 0).await;
+            assert_eq!(ui.get_page(), Page::Albums, "not far enough");
+            hold(&ui, left, 100.0, 0).await;
+            wait_for("the album by a swipe", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_page(), Page::Album);
+            hold(&ui, right, -50.0, 0).await;
+            assert_eq!(ui.get_page(), Page::Album, "not far enough");
+            hold(&ui, right, -100.0, 0).await;
+            assert_eq!(ui.get_page(), Page::Albums);
+            ui.global::<Input>().set_finger(false);
+            hold(&ui, left, 100.0, 0).await;
+            assert_eq!(ui.get_page(), Page::Albums, "a mouse doesn't swipe");
             click(&ui, "Back");
             wait_for("the album before them", || ui.get_tracks().row_count() == 2).await;
+            hold(&ui, right, -100.0, 0).await;
+            assert_eq!(ui.get_page(), Page::Album, "a mouse doesn't swipe");
 
             ui.invoke_open("album:a2".into());
             wait_for("the classical album", || ui.get_tracks().row_count() == 7).await;

@@ -373,6 +373,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || step(&weak.unwrap(), &browser, 1)
     });
+    ui.on_refresh({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || refresh(&weak.unwrap(), &browser)
+    });
     ui.on_show_more({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || more_tiles(&weak.unwrap(), &browser)
@@ -844,6 +848,31 @@ fn step(ui: &AppWindow, browser: &Shared, by: isize) {
         }
     }
     ui.set_arrival(ui.get_arrival() + 1);
+    show(ui, browser);
+}
+
+/// Shows the page on screen again, with the library's albums, artists,
+/// composers, compositions, genres and songs asked for anew. A list still
+/// arriving is new already and goes on arriving.
+fn refresh(ui: &AppWindow, browser: &Shared) {
+    {
+        let mut b = browser.borrow_mut();
+        // The orders index into the lists; the page shown sorts its own anew.
+        b.view.clear();
+        b.song_view.clear();
+        if !b.library_loading {
+            b.library.clear();
+            b.library_loaded = false;
+        }
+        if !b.song_list_loading {
+            b.song_list.clear();
+            b.song_list_loaded = false;
+        }
+        b.artists_loaded = false;
+        b.composers_loaded = false;
+        b.compositions_loaded = false;
+        b.genres_loaded = false;
+    }
     show(ui, browser);
 }
 

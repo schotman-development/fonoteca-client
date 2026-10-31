@@ -163,6 +163,35 @@ component PageBar {
     }
 }
 
+// What letting go of a pull or a swipe does, as a round button that comes
+// with the finger: faint at first, lit once the finger has come all the way.
+component GestureHint inherits Rectangle {
+    in property <string> icon;
+    // How much of the way the finger has come.
+    in property <float> progress;
+
+    property <bool> ready: root.progress >= 1;
+    width: 40px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: root.ready ? Theme.accent : Theme.surface;
+    drop-shadow-blur: 8px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: #0000004d;
+    opacity: min(root.progress, 1);
+
+    Path {
+        width: 20px;
+        height: 20px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        stroke: root.ready ? Palette.accent-foreground : Theme.text;
+        stroke-width: 1.75px;
+        fill: transparent;
+    }
+}
+
 // The pages' scroll view: a Flickable of its own rather than a ScrollView,
 // whose Flickable can't be told to let go of a finger. While a shelf slides
 // sideways the page doesn't scroll, else a finger drifting a little up or
@@ -174,9 +203,14 @@ component PageBar {
 // Says when the bottom is less than a screen away, so more can load before
 // it's reached. The arrow keys, Page Up and Down, Home and End scroll it
 // when what has the keys doesn't take them; Escape goes to `escape`.
+// A finger pulling the page down from its top asks for `refresh`; one
+// swiping in from the left edge for `back`, from the right edge for
+// `forward`. A mouse does neither, as its drags move playlists.
 component PageScroll inherits FocusScope {
     in property <int> visit;
     in property <int> arrival;
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
     out property <length> visible-width: flick.width;
     out property <length> visible-height: flick.height;
     in-out property <length> content-width <=> flick.content-width;
@@ -185,10 +219,22 @@ component PageScroll inherits FocusScope {
     in-out property <length> content-y <=> flick.content-y;
     callback near-end();
     callback escape();
+    callback back();
+    callback forward();
+    callback refresh();
     horizontal-stretch: 1;
     vertical-stretch: 1;
     focus-on-click: false;
     accessible-role: main;
+
+    // How far a finger pulls or swipes for letting go to count, and how
+    // wide the edges are that a swipe starts from.
+    property <length> reach: 72px;
+    property <length> edge: 20px;
+    // How much of `reach` the finger has come, on each.
+    property <float> pulled: pull.swiping ? (pull.current-position.y - pull.pressed-position.y) / root.reach : 0;
+    property <float> backed: back-edge.pressed ? (back-edge.mouse-x - back-edge.pressed-x) / root.reach : 0;
+    property <float> forwarded: forward-edge.pressed ? (forward-edge.pressed-x - forward-edge.mouse-x) / root.reach : 0;
     changed visit => {
         self.content-x = 0;
         self.content-y = 0;
@@ -233,13 +279,35 @@ component PageScroll inherits FocusScope {
         }
     }
 
-    flick := Flickable {
+    // It holds every press back a moment to see where it goes, so it waits
+    // only while the page is at its top.
+    pull := SwipeGestureHandler {
         width: parent.width;
         height: parent.height;
-        interactive: !Input.sliding;
-        // A mouse drags playlists; it scrolls with the wheel and the bars.
-        mouse-drag-pan-enabled: false;
-        @children
+        enabled: Input.finger && flick.content-y >= 0;
+        handle-swipe-down: !Input.sliding;
+        swiped => {
+            if self.current-position.y - self.pressed-position.y >= root.reach {
+                root.refresh();
+            }
+        }
+
+        // Slint drops the held press, and the page doesn't scroll, when the
+        // finger moves meanwhile over nothing that takes the move; this, under
+        // all of the page, takes it.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            enabled: pull.enabled;
+        }
+        flick := Flickable {
+            width: parent.width;
+            height: parent.height;
+            interactive: !Input.sliding;
+            // A mouse drags playlists; it scrolls with the wheel and the bars.
+            mouse-drag-pan-enabled: false;
+            @children
+        }
     }
     PageBar {
         x: parent.width - self.width;
@@ -257,6 +325,49 @@ component PageScroll inherits FocusScope {
         maximum: flick.content-width - flick.width;
         page-size: flick.width;
         value <=> flick.content-x;
+    }
+    back-edge := TouchArea {
+        x: 0;
+        width: root.edge;
+        enabled: Input.finger && root.can-go-back;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && self.mouse-x - self.pressed-x >= root.reach {
+                root.back();
+            }
+        }
+    }
+    forward-edge := TouchArea {
+        x: parent.width - self.width;
+        width: root.edge;
+        enabled: Input.finger && root.can-go-forward;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && self.pressed-x - self.mouse-x >= root.reach {
+                root.forward();
+            }
+        }
+    }
+    // Cut off at the page's sides, so the hints come in from beyond them.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        clip: true;
+        if root.pulled > 0: GestureHint {
+            y: min(root.pulled, 1) * root.reach - self.height;
+            icon: Icons.refresh;
+            progress: root.pulled;
+        }
+        if root.backed > 0: GestureHint {
+            x: min(root.backed, 1) * root.reach - self.width;
+            y: back-edge.mouse-y - self.height / 2;
+            icon: Icons.back;
+            progress: root.backed;
+        }
+        if root.forwarded > 0: GestureHint {
+            x: parent.width - min(root.forwarded, 1) * root.reach;
+            y: forward-edge.mouse-y - self.height / 2;
+            icon: Icons.forward;
+            progress: root.forwarded;
+        }
     }
 }
 
@@ -660,6 +771,8 @@ export component AppWindow inherits Window {
     callback open(link: string);
     callback back();
     callback forward();
+    // Shows the page on screen again, asked for anew.
+    callback refresh();
     callback show-section(index: int);
     callback show-more();
     callback sort-albums();
@@ -1082,7 +1195,12 @@ export component AppWindow inherits Window {
             scroll := PageScroll {
                 visit: root.visit;
                 arrival: root.arrival;
+                can-go-back: root.can-go-back;
+                can-go-forward: root.can-go-forward;
                 accessible-label: root.page-name;
+                back => { root.back(); }
+                forward => { root.forward(); }
+                refresh => { root.refresh(); }
                 escape => {
                     if root.selected-tiles > 0 {
                         root.clear-selection();
