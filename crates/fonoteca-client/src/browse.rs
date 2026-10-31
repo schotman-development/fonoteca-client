@@ -2043,6 +2043,12 @@ fn show_columns(ui: &AppWindow, browser: &Shared) {
     }
 }
 
+/// How narrow a column `width` wide gets on a window short of room: to three
+/// fifths, but not below what a short value such as a date needs.
+fn narrowest(width: f32) -> f32 {
+    (width * 0.6).max(width.min(96.0))
+}
+
 fn set_columns<T>(ui: &AppWindow, all: &[Column<T>], table: &Table) {
     let columns: Vec<TrackColumn> = table
         .shown()
@@ -2050,6 +2056,7 @@ fn set_columns<T>(ui: &AppWindow, all: &[Column<T>], table: &Table) {
         .map(|c| TrackColumn {
             title: all[c].title.into(),
             width: all[c].width,
+            least: narrowest(all[c].width),
             stretch: [TITLE, COMPOSITION].contains(&all[c].title),
             heart: all[c].title == LOVED,
             cover: all[c].title == COVER,
@@ -2058,11 +2065,10 @@ fn set_columns<T>(ui: &AppWindow, all: &[Column<T>], table: &Table) {
         })
         .collect();
     // The columns, the menu button, the gaps between them, and the row's
-    // padding.
-    let width = columns.iter().map(|column| column.width).sum::<f32>()
-        + 32.0
-        + 12.0 * columns.len() as f32
-        + 16.0;
+    // padding; at the columns' widths, and at their narrowest.
+    let around = 32.0 + 12.0 * columns.len() as f32 + 16.0;
+    let width = columns.iter().map(|column| column.width).sum::<f32>() + around;
+    let least = columns.iter().map(|column| column.least).sum::<f32>() + around;
     let choices: Vec<ColumnChoice> = all
         .iter()
         .zip(&table.shown)
@@ -2073,6 +2079,7 @@ fn set_columns<T>(ui: &AppWindow, all: &[Column<T>], table: &Table) {
         .collect();
     ui.set_track_columns(ModelRc::new(VecModel::from(columns)));
     ui.set_track_table_width(width);
+    ui.set_track_table_least(least);
     ui.set_track_choices(ModelRc::new(VecModel::from(choices)));
 }
 

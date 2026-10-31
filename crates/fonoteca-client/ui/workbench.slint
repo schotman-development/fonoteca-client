@@ -114,13 +114,13 @@ export component Workbench inherits Window {
     property <bool> loved-3;
     property <bool> loved-album;
     property <[TrackColumn]> table-columns: [
-        { title: "Cover", width: 42px, cover: true },
-        { title: "Title", width: 240px, stretch: true },
-        { title: "Artists", width: 180px },
-        { title: "Album", width: 200px },
-        { title: "Year", width: 56px, sorted: true, descending: root.long-text },
-        { title: "Duration", width: 72px },
-        { title: "Loved", width: 40px, heart: true },
+        { title: "Cover", width: 42px, least: 42px, cover: true },
+        { title: "Title", width: 240px, least: 144px, stretch: true },
+        { title: "Artists", width: 180px, least: 108px },
+        { title: "Album", width: 200px, least: 120px },
+        { title: "Year", width: 56px, least: 56px, sorted: true, descending: root.long-text },
+        { title: "Duration", width: 72px, least: 72px },
+        { title: "Loved", width: 40px, least: 40px, heart: true },
     ];
     property <bool> picked-1;
     property <bool> picked-2;

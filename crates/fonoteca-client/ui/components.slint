@@ -1026,12 +1026,14 @@ export component TrackRow inherits Pressable {
     }
 }
 
-// A column of the tracks table: its heading and width, whether it takes the
-// room left over, whether it holds the heart or the album's cover, and
-// whether the table is sorted by it and which way.
+// A column of the tracks table: its heading and width, how narrow it gets on
+// a window short of room, whether it takes the room left over, whether it
+// holds the heart or the album's cover, and whether the table is sorted by it
+// and which way.
 export struct TrackColumn {
     title: string,
     width: length,
+    least: length,
     stretch: bool,
     heart: bool,
     cover: bool,
@@ -1109,9 +1111,11 @@ export component ListRow inherits Rectangle {
     }
 }
 
+// On a phone the columns keep their widths, so the title stays wide, and the
+// table scrolls sideways sooner.
 component TableCell inherits Rectangle {
     in property <TrackColumn> column;
-    min-width: self.column.width;
+    min-width: Screen.phone ? self.column.width : self.column.least;
     preferred-width: self.column.width;
     max-width: self.column.stretch ? 100000px : self.column.width;
     horizontal-stretch: self.column.stretch ? 1 : 0;

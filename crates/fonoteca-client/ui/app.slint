@@ -739,11 +739,12 @@ export component AppWindow inherits Window {
     in-out property <int> output-device;
     in-out property <int> leveling;
     // The tracks or compositions page's table: the columns shown, their
-    // rows, how wide they are together, and every column there is to pick
-    // from.
+    // rows, how wide they are together, how narrow they get together, and
+    // every column there is to pick from.
     in property <[TrackColumn]> track-columns;
     in property <[TrackLine]> track-lines;
     in property <length> track-table-width;
+    in property <length> track-table-least;
     in property <[ColumnChoice]> track-choices;
     // How many albums and tracks are selected, on this page or others. While
     // any are, the selection bar is up and a click on a tile or row selects
@@ -1241,8 +1242,9 @@ export component AppWindow inherits Window {
                     // which is wider than the page when its columns don't
                     // fit.
                     x: max(0px, (scroll.visible-width - self.width) / 2);
-                    // A phone's menu buttons are wider than browse.rs counts.
-                    width: root.table ? max(scroll.visible-width, root.track-table-width + 48px + (Screen.phone ? 12px : 0)) : min(scroll.visible-width, 1600px);
+                    // A phone's menu buttons are wider than browse.rs counts,
+                    // and its columns don't narrow.
+                    width: root.table ? max(scroll.visible-width, (Screen.phone ? root.track-table-width + 12px : root.track-table-least) + 48px) : min(scroll.visible-width, 1600px);
                     padding: 24px;
                     padding-top: 8px;
                     // Room to scroll the last tiles out from under the bar.
