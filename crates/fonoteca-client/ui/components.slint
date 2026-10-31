@@ -595,9 +595,14 @@ export component MoreMenu {
                     root.choice = 0;
                     return accept;
                 }
-                if (event.text == Key.LeftArrow || event.text == Key.Escape) && root.open >= 0 {
+                if (event.text == Key.LeftArrow || event.text == Key.Escape || event.text == Key.Back) && root.open >= 0 {
                     root.open = -1;
                     root.choice = -1;
+                    return accept;
+                }
+                // Slint lets an Escape close the menu, but not Android's back.
+                if event.text == Key.Back {
+                    popup.close();
                     return accept;
                 }
                 if event.text == Key.Return || event.text == Key.Space {

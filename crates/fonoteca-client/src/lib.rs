@@ -2159,10 +2159,36 @@ mod tests {
             ui.global::<Input>().set_finger(false);
             hold(&ui, left, 100.0, 0).await;
             assert_eq!(ui.get_page(), Page::Albums, "a mouse doesn't swipe");
+            // Android's back in a filter hands the keys back to the page,
+            // and the next one goes back a page.
+            let filter = ui
+                .root_element()
+                .query_descendants()
+                .match_predicate(|e| e.accessible_label().is_some_and(|l| l == "Filter albums"))
+                .find_first()
+                .unwrap();
+            {
+                let (window, button) = (ui.window(), PointerEventButton::Left);
+                let position = middle(&filter);
+                window.dispatch_event(WindowEvent::PointerPressed { position, button });
+                window.dispatch_event(WindowEvent::PointerReleased { position, button });
+            }
+            press(&ui, slint::platform::Key::Back);
+            assert_eq!(ui.get_page(), Page::Albums);
+            press(&ui, slint::platform::Key::Back);
+            assert_eq!(ui.get_page(), Page::Album);
+            click(&ui, "Forward");
+            assert_eq!(ui.get_page(), Page::Albums);
             click(&ui, "Back");
             wait_for("the album before them", || ui.get_tracks().row_count() == 2).await;
             hold(&ui, right, -100.0, 0).await;
             assert_eq!(ui.get_page(), Page::Album, "a mouse doesn't swipe");
+            // Android's back button goes back a page.
+            press(&ui, slint::platform::Key::Back);
+            assert_eq!(ui.get_page(), Page::Albums);
+            click(&ui, "Forward");
+            assert_eq!(ui.get_page(), Page::Album);
+            wait_for("the album once again", || ui.get_tracks().row_count() == 2).await;
 
             ui.invoke_open("album:a2".into());
             wait_for("the classical album", || ui.get_tracks().row_count() == 7).await;
@@ -3212,6 +3238,20 @@ mod tests {
             let menu = button(&ui, "Menu");
             assert_eq!(menu.size(), slint::LogicalSize::new(48.0, 48.0));
             assert_eq!(menu.absolute_position().x, 12.0);
+            // Android's back closes the drawer and stays on the page.
+            let drawers = || {
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Navigation)
+                    .find_all()
+                    .len()
+            };
+            let page = ui.get_page();
+            click(&ui, "Menu");
+            assert_eq!(drawers(), 1);
+            press(&ui, slint::platform::Key::Back);
+            assert_eq!(drawers(), 0);
+            assert_eq!(ui.get_page(), page);
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
 
             click(&ui, "Account");

@@ -202,7 +202,9 @@ component GestureHint inherits Rectangle {
 // taking them.
 // Says when the bottom is less than a screen away, so more can load before
 // it's reached. The arrow keys, Page Up and Down, Home and End scroll it
-// when what has the keys doesn't take them; Escape goes to `escape`.
+// when what has the keys doesn't take them; Escape goes to `escape`, and
+// Android's back button and gesture to `back` while there is a page to go
+// back to; with none they close the app.
 // A finger pulling the page down from its top asks for `refresh`; one
 // swiping in from the left edge for `back`, from the right edge for
 // `forward`. A mouse does neither, as its drags move playlists.
@@ -263,6 +265,10 @@ component PageScroll inherits FocusScope {
         }
         if event.text == Key.Escape {
             self.escape();
+            return accept;
+        }
+        if event.text == Key.Back && root.can-go-back {
+            root.back();
             return accept;
         }
         reject
@@ -372,6 +378,8 @@ component PageScroll inherits FocusScope {
 }
 
 // The filter of a page, named for what it filters, such as "Filter albums".
+// Android's back in it hands the keys back to the page, whose next back
+// goes back a page; a filter over a table isn't in the page to pass it on.
 component Filter inherits LineEdit {
     in property <string> what;
     min-width: 64px;
@@ -379,6 +387,13 @@ component Filter inherits LineEdit {
     placeholder-text: "Filter";
     accessible-label: "Filter " + self.what;
     enabled: !Input.modal;
+    key-pressed(event) => {
+        if event.text == Key.Back {
+            Input.refocus += 1;
+            return accept;
+        }
+        reject
+    }
 }
 
 // The library's counts in cards across the width, in as few rows as fit,
@@ -1982,9 +1997,9 @@ export component AppWindow inherits Window {
         }
     }
 
-    // The sidebar opened over a narrow window; a tap beside it or Escape
-    // closes it. It takes the keys when it opens, and gives them to the page
-    // when it closes.
+    // The sidebar opened over a narrow window; a tap beside it, Escape or
+    // Android's back closes it. It takes the keys when it opens, and gives
+    // them to the page when it closes.
     if root.step == Step.done && !root.docked && root.sidebar-open: Rectangle {
         background: #0000004d;
         TouchArea {
@@ -2000,7 +2015,7 @@ export component AppWindow inherits Window {
             height: parent.height - root.safe-area-insets.top - root.bottom-inset;
             init => { self.focus(); }
             key-pressed(event) => {
-                if event.text == Key.Escape {
+                if event.text == Key.Escape || event.text == Key.Back {
                     root.sidebar-open = false;
                     Input.refocus += 1;
                     return accept;
@@ -2242,7 +2257,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 key-pressed(event) => {
-                    if event.text == Key.Escape {
+                    if event.text == Key.Escape || event.text == Key.Back {
                         root.close-dialog();
                         return accept;
                     }
