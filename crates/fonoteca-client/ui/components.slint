@@ -1667,13 +1667,15 @@ export component CoverShelf {
                 label: "See all " + root.title;
                 clicked => { root.see-all(); }
             }
-            if root.last-first > 0: IconButton {
+            // A finger slides the shelf on a phone, where the title takes
+            // the arrows' room.
+            if root.last-first > 0 && !Screen.phone: IconButton {
                 icon: Icons.back;
                 label: "Previous in " + root.title;
                 enabled: root.first > 0;
                 clicked => { root.first = max(0, root.first - root.columns); }
             }
-            if root.last-first > 0: IconButton {
+            if root.last-first > 0 && !Screen.phone: IconButton {
                 icon: Icons.forward;
                 label: "Next in " + root.title;
                 enabled: root.first < root.last-first;
@@ -1855,9 +1857,10 @@ export component PageHeader inherits FlexboxLayout {
             font-weight: 600;
             color: Theme.muted;
         }
+        // Smaller on a phone, where long titles would take several lines.
         Text {
             text: root.title;
-            font-size: Theme.title;
+            font-size: Screen.phone ? 26px * Theme.zoom : Theme.title;
             font-weight: 700;
             color: Theme.text;
             wrap: word-wrap;

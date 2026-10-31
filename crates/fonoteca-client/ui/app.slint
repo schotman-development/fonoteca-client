@@ -397,13 +397,15 @@ component Filter inherits LineEdit {
 }
 
 // The library's counts in cards across the width, in as few rows as fit,
-// shared out evenly.
+// shared out evenly. Where they don't all fit in one row, as on a phone,
+// they go without their icons and smaller, which does.
 component StatCards {
     in property <[Stat]> stats;
     callback open(link: string);
-    property <length> gap: Theme.gap;
-    property <length> card-height: 88px * Theme.zoom;
-    property <int> fit: max(1, floor((self.width + self.gap) / (180px + self.gap)));
+    property <bool> compact: (self.width + Theme.gap) / (180px + Theme.gap) < self.stats.length;
+    property <length> gap: self.compact ? 8px : Theme.gap;
+    property <length> card-height: (self.compact ? 64px : 88px) * Theme.zoom;
+    property <int> fit: max(1, floor((self.width + self.gap) / ((self.compact ? 64px : 180px) + self.gap)));
     property <int> rows: ceil(self.stats.length / self.fit);
     property <int> columns: max(1, ceil(self.stats.length / max(1, self.rows)));
     property <length> card-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
@@ -421,10 +423,10 @@ component StatCards {
             background: card.hovered ? Theme.hover : Theme.surface;
         }
         HorizontalLayout {
-            padding-left: 24px;
-            padding-right: 16px;
+            padding-left: root.compact ? 10px : 24px;
+            padding-right: root.compact ? 6px : 16px;
             spacing: 16px;
-            Path {
+            if !root.compact: Path {
                 cross-axis-self-alignment: center;
                 width: 36px;
                 height: 36px;
@@ -439,7 +441,7 @@ component StatCards {
                 spacing: 2px;
                 Text {
                     text: stat.value;
-                    font-size: 26px * Theme.zoom;
+                    font-size: (root.compact ? 22px : 26px) * Theme.zoom;
                     font-weight: 700;
                     color: Theme.text;
                 }
@@ -1834,9 +1836,14 @@ export component AppWindow inherits Window {
                     // genres, each a shelf.
                     if root.page == Page.radio: VerticalLayout {
                         spacing: 24px;
+                        // On a narrow page the buttons go under the heading.
+                        if scroll.visible-width < 600px: Heading {
+                            text: "Radio";
+                        }
                         HorizontalLayout {
                             spacing: 8px;
-                            Heading {
+                            alignment: scroll.visible-width < 600px ? start : stretch;
+                            if scroll.visible-width >= 600px: Heading {
                                 horizontal-stretch: 1;
                                 text: "Radio";
                             }
