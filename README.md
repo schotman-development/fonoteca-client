@@ -124,6 +124,9 @@ There are no packages yet. Build from source with Rust (see
 cargo run --release
 ```
 
+With Nix, `nix run github:schotman-development/fonoteca-client` builds and
+starts it on Linux.
+
 On Linux, saving the sign-in needs a Secret Service, such as GNOME Keyring,
 KWallet or KeePassXC. Without one, you sign in again on every start.
 
@@ -191,8 +194,8 @@ and packaged by Gradle in [`android/`](android).
 - **Scrobbling** to ListenBrainz.
 - **The whole OpenSubsonic API** and every extension the server announces, not
   only the Subsonic subset most players stop at.
-- **Packages:** an AppImage and a Nix package for Linux, an unsigned app for
-  macOS, and stable Android releases.
+- **Packages:** an AppImage for Linux, an unsigned app for macOS, and stable
+  Android releases.
 
 ## Contributing
 

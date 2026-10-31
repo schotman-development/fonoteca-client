@@ -4,3 +4,4 @@ dist-workbench/
 /android/.gradle/
 /android/build/
 /android/src/main/jniLibs/
+/result
