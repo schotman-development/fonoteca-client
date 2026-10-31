@@ -5,6 +5,8 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use serde_json::Value;
 
+#[cfg(not(target_family = "wasm"))]
+use crate::Stream;
 use crate::model::*;
 use crate::{Client, Error, Params, Result, ServerInfo};
 
@@ -712,6 +714,17 @@ impl Client {
     }
 
     // Media retrieval
+
+    /// A song's file as the server keeps it, never transcoded, to read as it
+    /// arrives. Not in the browser build, whose fetch can't hand a body over
+    /// in pieces here.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/stream/>
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn stream(&self, id: &str) -> Result<Stream> {
+        let params = Params::new().req("id", id).req("format", "raw");
+        self.data("stream", params).await.map(Stream)
+    }
 
     /// A cover art image, scaled to `size` pixels when given. `id` is the
     /// `coverArt` field of a song, album, artist or playlist.

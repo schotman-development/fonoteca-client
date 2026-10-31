@@ -220,8 +220,8 @@ impl Client {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default()
                 .to_owned();
-            let body = response.bytes().await?;
             if content_type.contains("json") {
+                let body = response.bytes().await?;
                 match envelope(&body) {
                     Err(Error::Api(e)) if matches!(e.code, 41 | 42) && self.fall_back(method) => {
                         continue;
@@ -240,7 +240,7 @@ impl Client {
                     "{endpoint} answered with XML instead of JSON"
                 )));
             }
-            return Ok(Body::Binary(body.to_vec()));
+            return Ok(Body::Binary(response));
         }
     }
 
@@ -270,8 +270,13 @@ impl Client {
 
     /// Calls an endpoint that answers with binary data.
     async fn bytes(&self, endpoint: &str, params: Params) -> Result<Vec<u8>> {
+        Ok(self.data(endpoint, params).await?.bytes().await?.to_vec())
+    }
+
+    /// Calls an endpoint that answers with binary data, and leaves it unread.
+    async fn data(&self, endpoint: &str, params: Params) -> Result<reqwest::Response> {
         match self.send(endpoint, &params).await? {
-            Body::Binary(data) => Ok(data),
+            Body::Binary(response) => Ok(response),
             Body::Json(_) => Err(Error::Unexpected(format!(
                 "{endpoint} answered with JSON instead of data"
             ))),
@@ -281,7 +286,25 @@ impl Client {
 
 enum Body {
     Json(Map<String, Value>),
-    Binary(Vec<u8>),
+    /// Data, still to be read.
+    Binary(reqwest::Response),
+}
+
+/// A song's file as it arrives, from [`Client::stream`].
+#[cfg(not(target_family = "wasm"))]
+pub struct Stream(reqwest::Response);
+
+#[cfg(not(target_family = "wasm"))]
+impl Stream {
+    /// The file's size in bytes, when the server says.
+    pub fn size(&self) -> Option<u64> {
+        self.0.content_length()
+    }
+
+    /// The next bytes, or none once all have come.
+    pub async fn chunk(&mut self) -> Result<Option<Vec<u8>>> {
+        Ok(self.0.chunk().await?.map(|bytes| bytes.to_vec()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -640,6 +663,41 @@ mod tests {
 
     fn json(body: &str) -> String {
         reply("200 OK", "Content-Type: application/json\r\n", body)
+    }
+
+    #[tokio::test]
+    async fn a_song_streams_in_pieces_as_the_server_keeps_it() {
+        let (server, log) = serve(|request| {
+            if request.contains("id=gone") {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Song not found"}}}"#,
+                )
+            } else {
+                reply(
+                    "200 OK",
+                    "Content-Type: audio/flac\r\n",
+                    "fLaC and the rest",
+                )
+            }
+        });
+        let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
+        let mut stream = client.stream("tr-1").await.unwrap();
+        assert_eq!(stream.size(), Some(17));
+        let mut all = Vec::new();
+        while let Some(chunk) = stream.chunk().await.unwrap() {
+            all.extend(chunk);
+        }
+        assert_eq!(all, b"fLaC and the rest");
+        assert!(matches!(
+            client.stream("gone").await,
+            Err(Error::Api(ApiError { code: 70, .. }))
+        ));
+        let log = log.lock().unwrap();
+        assert!(
+            log[0].contains("id=tr-1") && log[0].contains("format=raw"),
+            "{}",
+            log[0]
+        );
     }
 
     #[tokio::test]
