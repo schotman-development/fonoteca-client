@@ -3252,7 +3252,11 @@ mod tests {
             press(&ui, slint::platform::Key::Back);
             assert_eq!(drawers(), 0);
             assert_eq!(ui.get_page(), page);
+            // So does an upright tablet's; a laptop's window docks the sidebar.
+            ui.window().set_size(slint::LogicalSize::new(800.0, 640.0));
+            button(&ui, "Menu");
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            assert!(find(&ui, "Menu").is_none());
 
             click(&ui, "Account");
             click(&ui, "Sign out");

@@ -1022,9 +1022,9 @@ export component AppWindow inherits Window {
     }
 
     // The sidebar sits beside the pages on a wide window, wider the wider it
-    // is; on a narrow one, such as a phone's, it stays closed until the top
-    // bar's menu button opens it over the page.
-    property <bool> docked: root.width >= 720px;
+    // is; on a narrow one, such as a phone's or an upright tablet's, it stays
+    // closed until the top bar's menu button opens it over the page.
+    property <bool> docked: root.width >= 900px;
     property <length> sidebar-width: root.docked ? clamp(root.width * 0.14, 240px, 320px) : 0px;
     property <bool> sidebar-open;
 
