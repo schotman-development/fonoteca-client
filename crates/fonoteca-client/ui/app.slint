@@ -111,6 +111,19 @@ component Heading inherits Text {
     wrap: word-wrap;
 }
 
+// A heading over a part of a page, set off from what is above it.
+component SectionHeading inherits VerticalLayout {
+    in property <string> text;
+    padding-top: 12px;
+    Text {
+        text: root.text;
+        font-size: Theme.heading;
+        font-weight: 600;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+}
+
 // A screen reader reads both out when they appear or change.
 component Note inherits Text {
     wrap: word-wrap;
@@ -1697,21 +1710,31 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.server-name == "" ? root.address : root.server-name + " at " + root.address;
                             wrap: word-wrap;
+                            font-size: Theme.body;
                         }
                         Text {
                             text: root.signed-in;
                             wrap: word-wrap;
+                            font-size: Theme.body;
                         }
                         if root.roles != "": Text {
                             text: "Roles: " + root.roles;
                             wrap: word-wrap;
+                            font-size: Theme.body;
                         }
                         Text {
                             text: root.listenbrainz-user == "" ? "ListenBrainz not connected" : "ListenBrainz: " + root.listenbrainz-user;
                             wrap: word-wrap;
+                            font-size: Theme.body;
                         }
-                        if root.saved-note != "": Note { text: root.saved-note; }
-                        if root.problem != "": Problem { text: root.problem; }
+                        if root.saved-note != "": Note {
+                            text: root.saved-note;
+                            font-size: Theme.body;
+                        }
+                        if root.problem != "": Problem {
+                            text: root.problem;
+                            font-size: Theme.body;
+                        }
                         HorizontalLayout {
                             alignment: start;
                             spacing: 8px;
@@ -1733,16 +1756,15 @@ export component AppWindow inherits Window {
                         max-width: 480px;
                         spacing: 12px;
                         Heading { text: "Settings"; }
-                        Text {
-                            text: "Library";
-                            font-size: Theme.heading;
-                            font-weight: 600;
-                            color: Theme.text;
+                        SectionHeading { text: "Library"; }
+                        if !root.may-administer: Note {
+                            text: "Only the server's admins may have it scan the library.";
+                            font-size: Theme.body;
                         }
-                        if !root.may-administer: Note { text: "Only the server's admins may have it scan the library."; }
                         if root.may-administer && root.scan-status != "": Text {
                             text: root.scan-status;
                             wrap: word-wrap;
+                            font-size: Theme.body;
                         }
                         if root.may-administer: HorizontalLayout {
                             alignment: start;
@@ -1752,14 +1774,10 @@ export component AppWindow inherits Window {
                                 clicked => { root.start-scan(); }
                             }
                         }
-                        if root.can-play: Text {
-                            text: "Playback";
-                            font-size: Theme.heading;
-                            font-weight: 600;
-                            color: Theme.text;
-                        }
+                        if root.can-play: SectionHeading { text: "Playback"; }
                         if root.can-play: Text {
                             text: "Sound device";
+                            font-size: Theme.body;
                             color: Theme.muted;
                         }
                         if root.can-play: ComboBox {
@@ -1771,6 +1789,7 @@ export component AppWindow inherits Window {
                         }
                         if root.can-play: Text {
                             text: "Volume leveling";
+                            font-size: Theme.body;
                             color: Theme.muted;
                         }
                         if root.can-play: ComboBox {
