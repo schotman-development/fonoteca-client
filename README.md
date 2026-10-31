@@ -143,7 +143,9 @@ covers.
 
 Install Rust with [rustup](https://rustup.rs); `rust-toolchain.toml` picks the
 toolchain. On Linux, Slint also needs `pkg-config` and fontconfig's development
-files (`libfontconfig-dev` on Debian and Ubuntu).
+files (`libfontconfig-dev` on Debian and Ubuntu), and playback needs FFmpeg (built
+and tested with 7.1), ALSA and clang (`libavcodec-dev libavformat-dev libavfilter-dev
+libavutil-dev libswresample-dev libasound2-dev libclang-dev`).
 
 ```sh
 cargo run
@@ -171,13 +173,14 @@ long text, missing artwork and light or dark mode. It also runs natively:
 cargo run --bin workbench
 ```
 
-The repository holds three crates:
+The repository holds these crates:
 
 | Crate | What it is |
 | --- | --- |
 | [`fonoteca-client`](crates/fonoteca-client) | The app: Slint UI in `ui/`, Rust in `src/` |
 | [`opensubsonic`](crates/opensubsonic) | An async client for the OpenSubsonic API, checked against the spec's own examples |
 | [`listenbrainz`](crates/listenbrainz) | A client for ListenBrainz; the app only checks a user token with it so far |
+| [`playback`](crates/playback) | The audio player: FFmpeg decodes, the sound device plays each track in its own format where it can |
 
 The Android app is built by [`.github/workflows/rolling-release.yml`](.github/workflows/rolling-release.yml)
 and packaged by Gradle in [`android/`](android).

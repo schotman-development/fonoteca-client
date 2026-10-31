@@ -1,0 +1,11 @@
+[package]
+name = "playback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+cpal = "0.18"
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "filter", "format"] }
