@@ -1,12 +1,15 @@
 slint::include_modules!();
 
 mod browse;
+#[cfg(target_os = "linux")]
+mod play;
 mod prefs;
 mod store;
 mod zone;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use opensubsonic::{Auth, Client};
 use serde::{Deserialize, Serialize};
@@ -110,7 +113,7 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
 /// returns a client signed in with it, since the one in use goes on sending
 /// the old one. Returns the word for the account page.
 async fn change_own_password(
-    client: Rc<Client>,
+    client: Arc<Client>,
     server: String,
     username: String,
     password: String,
@@ -282,6 +285,8 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let pending: Rc<RefCell<Option<(Account, Client)>>> = Rc::default();
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
+    #[cfg(target_os = "linux")]
+    play::wire(&ui, &browser);
 
     // On a phone-sized screen everything is drawn a quarter larger than the
     // browser's pixel ratio. This runs whenever the width or the scale

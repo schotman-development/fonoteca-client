@@ -33,8 +33,8 @@
 ---
 
 > [!NOTE]
-> Early development. The app browses and organizes your library, but it does
-> not play music yet.
+> Early development. The app browses and organizes your library. It plays
+> music on Linux so far; Android and macOS follow.
 
 <p align="center">
   <picture>

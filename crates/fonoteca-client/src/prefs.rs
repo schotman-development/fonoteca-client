@@ -1,6 +1,6 @@
 //! Preferences kept on this device: how the albums, tracks, compositions and
-//! folders are sorted, which columns the tables show, and the radio page's
-//! languages; and the pictures of saved stations the app found in the radio
+//! folders are sorted, which columns the tables show, the radio page's
+//! languages, and the sound device and volume leveling; and the pictures of saved stations the app found in the radio
 //! directory. They aren't secrets, so plain files in the system's settings
 //! folder keep them, and the browser preview its localStorage. Where neither
 //! works they last until the app closes.
@@ -32,6 +32,11 @@ pub struct Prefs {
     /// The languages whose stations the radio page's genres show first, as
     /// the radio directory names them, in the order picked.
     pub radio_languages: Vec<String>,
+    /// The sound device to play on, by cpal id; none for the system's
+    /// default.
+    pub output_device: Option<String>,
+    /// Volume leveling's entry in the settings: off, by track or by album.
+    pub leveling: i32,
 }
 
 /// The preferences saved, or the first choices when there are none.

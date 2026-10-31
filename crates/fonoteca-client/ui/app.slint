@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, PathStep, PlayerBar, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
@@ -593,6 +593,25 @@ export component AppWindow inherits Window {
     // stations first.
     in property <[ColumnChoice]> language-choices;
     in property <[Track]> tracks;
+    // Whether this build plays music, and the track it plays, if any: as
+    // PlayerBar shows it.
+    in property <bool> can-play;
+    in property <bool> playing;
+    in property <image> playing-cover;
+    in property <string> playing-title;
+    in property <[Name]> playing-names;
+    in property <bool> playing-paused;
+    in property <float> playing-position;
+    in property <float> playing-duration;
+    in property <string> playing-quality;
+    in property <bool> playing-bit-perfect;
+    in property <[PathStep]> playing-path;
+    in property <string> playing-problem;
+    // The sound devices to play on, the system's default first, and the one
+    // chosen; volume leveling: off, by track or by album.
+    in property <[string]> output-devices;
+    in-out property <int> output-device;
+    in-out property <int> leveling;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, and every column there is to pick
     // from.
@@ -676,6 +695,16 @@ export component AppWindow inherits Window {
     callback remove-from-playlist(row: int);
     callback add-line-to-playlist(row: int, id: string);
     callback add-track-to-playlist(row: int, id: string);
+    // Plays the album's, playlist's or artist's tracks from the `row`th.
+    callback play-tracks(row: int);
+    callback toggle-pause();
+    callback previous-track();
+    callback next-track();
+    callback seek(seconds: float);
+    // A sound device or volume leveling chosen in the settings, by its
+    // index in the list.
+    callback choose-output(index: int);
+    callback choose-leveling(index: int);
     callback add-selection-to-playlist(id: string);
     // Playlist folders: a new one with this name in the folder on screen;
     // the one on screen renamed, moved into the folder with this id, or to
@@ -1237,6 +1266,12 @@ export component AppWindow inherits Window {
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
+                        if root.can-play && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0: Button {
+                            text: "Play";
+                            primary: true;
+                            enabled: !Input.modal;
+                            clicked => { root.play-tracks(0); }
+                        }
                         // Any playlist can go in a folder, read-only too.
                         if root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0): MoreMenu {
                             label: "Playlist";
@@ -1352,7 +1387,9 @@ export component AppWindow inherits Window {
                                 playlists: root.playlist-targets;
                                 removable: root.page == Page.playlist && root.playlist-editable;
                                 taggable: root.tags-offered;
+                                playable: root.can-play;
                                 open(link) => { root.open(link); }
+                                play => { root.play-tracks(row); }
                                 add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
                                 remove => { root.remove-from-playlist(row); }
                                 toggle-love => { root.toggle-love(row); }
@@ -1578,6 +1615,35 @@ export component AppWindow inherits Window {
                                 clicked => { root.start-scan(); }
                             }
                         }
+                        if root.can-play: Text {
+                            text: "Playback";
+                            font-size: Theme.heading;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        if root.can-play: Text {
+                            text: "Sound device";
+                            color: Theme.muted;
+                        }
+                        if root.can-play: ComboBox {
+                            accessible-label: "Sound device";
+                            model: root.output-devices;
+                            current-index <=> root.output-device;
+                            enabled: !Input.modal;
+                            selected => { root.choose-output(self.current-index); }
+                        }
+                        if root.can-play: Text {
+                            text: "Volume leveling";
+                            color: Theme.muted;
+                        }
+                        if root.can-play: ComboBox {
+                            accessible-label: "Volume leveling";
+                            // In the order play.rs's `LEVELING` takes them.
+                            model: ["Off", "By track", "By album"];
+                            current-index <=> root.leveling;
+                            enabled: !Input.modal;
+                            selected => { root.choose-leveling(self.current-index); }
+                        }
                     }
                     // Your tags, each under the one it sits in, each opening
                     // its page.
@@ -1719,12 +1785,30 @@ export component AppWindow inherits Window {
                     end := Rectangle { height: 0; }
                 }
             }
+            if root.can-play && root.playing: PlayerBar {
+                cover: root.playing-cover;
+                title: root.playing-title;
+                names: root.playing-names;
+                paused: root.playing-paused;
+                position: root.playing-position;
+                duration: root.playing-duration;
+                quality: root.playing-quality;
+                bit-perfect: root.playing-bit-perfect;
+                path: root.playing-path;
+                problem: root.playing-problem;
+                open(link) => { root.open(link); }
+                toggle-pause => { root.toggle-pause(); }
+                previous => { root.previous-track(); }
+                next => { root.next-track(); }
+                seek(seconds) => { root.seek(seconds); }
+            }
         }
     }
 
     if root.step == Step.done && root.selected-tiles > 0: SelectionBar {
         x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
-        y: root.height - self.height - 24px - root.bottom-inset;
+        // Over the player's bar, when it is up.
+        y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0);
         width: self.preferred-width;
         height: self.preferred-height;
         count: root.selected-tiles;

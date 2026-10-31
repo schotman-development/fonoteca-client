@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Cursor;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use image::codecs::webp::WebPDecoder;
@@ -131,15 +132,15 @@ const ABOUT_SHORT: usize = 320;
 
 #[derive(Default)]
 pub struct Browser {
-    client: Option<Rc<Client>>,
+    client: Option<Arc<Client>>,
     history: Vec<String>,
     at: usize,
     /// Counts the pages shown, so an answer for a page left behind is dropped.
     visit: i32,
     tiles: Rc<VecModel<AlbumTile>>,
     tracks: Rc<VecModel<Track>>,
-    /// Song id of each track row.
-    songs: Vec<String>,
+    /// The song of each track row.
+    songs: Vec<Child>,
     /// Tile or tracks table rows whose covers are still to fetch, the rows on
     /// screen or just below it, and how many fetches run.
     covers: BTreeMap<usize, String>,
@@ -269,7 +270,7 @@ pub type Shared = Rc<RefCell<Browser>>;
 pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     {
         let mut b = browser.borrow_mut();
-        b.client = Some(Rc::new(client));
+        b.client = Some(Arc::new(client));
         b.history.clear();
     }
     load_prefs(ui, browser);
@@ -289,14 +290,42 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
 }
 
 /// The client signed in with, for calls made outside the pages.
-pub fn client(browser: &Shared) -> Option<Rc<Client>> {
+pub fn client(browser: &Shared) -> Option<Arc<Client>> {
     browser.borrow().client.clone()
+}
+
+/// The songs of the album, playlist or artist's top songs on screen, in
+/// their rows' order.
+#[cfg(target_os = "linux")]
+pub fn songs(browser: &Shared) -> Vec<Child> {
+    browser.borrow().songs.clone()
+}
+
+/// Fetches a cover `logical` pixels wide and hands it to `done`.
+#[cfg(target_os = "linux")]
+pub fn cover(
+    ui: &AppWindow,
+    browser: &Shared,
+    cover: String,
+    logical: f32,
+    done: impl FnOnce(&AppWindow, Image) + 'static,
+) {
+    let size = pixels(ui, logical);
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        if let Some(Some(image)) = cover_art(&browser, None, cover, size).await
+            && let Some(ui) = weak.upgrade()
+        {
+            done(&ui, image);
+        }
+    })
+    .expect("the event loop is running");
 }
 
 /// Goes on with `client` instead, signed in anew after a password change,
 /// on the page on screen.
 pub fn swap(browser: &Shared, client: Client) {
-    browser.borrow_mut().client = Some(Rc::new(client));
+    browser.borrow_mut().client = Some(Arc::new(client));
 }
 
 /// Whether the library is open: signed in, and not signed out since.
@@ -496,7 +525,11 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_add_track_to_playlist({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |row, id| {
-            let song = browser.borrow().songs.get(row as usize).cloned();
+            let song = browser
+                .borrow()
+                .songs
+                .get(row as usize)
+                .map(|song| song.id.clone());
             let links = song
                 .map(|song| format!("song:{song}"))
                 .into_iter()
@@ -637,7 +670,11 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_tag_track({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |row| {
-            let song = browser.borrow().songs.get(row as usize).cloned();
+            let song = browser
+                .borrow()
+                .songs
+                .get(row as usize)
+                .map(|song| song.id.clone());
             let links = song.map(|song| format!("song:{song}")).into_iter();
             start_tagging(&weak.unwrap(), &browser, links.collect());
         }
@@ -1250,7 +1287,7 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
 fn load<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
-    task: impl FnOnce(Rc<Client>) -> F,
+    task: impl FnOnce(Arc<Client>) -> F,
     done: impl FnOnce(&AppWindow, &Shared, T) + 'static,
 ) {
     let Some(client) = browser.borrow().client.clone() else {
@@ -1385,7 +1422,7 @@ fn load_library(ui: &AppWindow, browser: &Shared) {
                 .borrow()
                 .client
                 .as_ref()
-                .is_some_and(|current| Rc::ptr_eq(current, &client));
+                .is_some_and(|current| Arc::ptr_eq(current, &client));
             if !signed_in {
                 return;
             }
@@ -1569,7 +1606,7 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
             .borrow()
             .client
             .as_ref()
-            .is_some_and(|current| Rc::ptr_eq(current, &client));
+            .is_some_and(|current| Arc::ptr_eq(current, &client));
         if !signed_in {
             return;
         }
@@ -2209,7 +2246,7 @@ fn load_songs(ui: &AppWindow, browser: &Shared) {
                 .borrow()
                 .client
                 .as_ref()
-                .is_some_and(|current| Rc::ptr_eq(current, &client));
+                .is_some_and(|current| Arc::ptr_eq(current, &client));
             if !signed_in {
                 return;
             }
@@ -2470,6 +2507,7 @@ fn save_prefs(ui: &AppWindow, browser: &Shared) {
         folder_sort,
         folder_descending: b.entry_table.descending,
         radio_languages: b.languages.clone(),
+        ..prefs::load()
     });
 }
 
@@ -2866,7 +2904,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
                     });
                 }
             }
-            b.songs = songs.into_iter().map(|song| song.id).collect();
+            b.songs = songs;
         },
     );
 }
@@ -2943,7 +2981,7 @@ fn top_songs(ui: &AppWindow, browser: &Shared, artist: String, by_id: bool) {
             let mut b = browser.borrow_mut();
             b.tracks
                 .set_vec(top.song.iter().map(song_track).collect::<Vec<_>>());
-            b.songs = top.song.into_iter().map(|song| song.id).collect();
+            b.songs = top.song;
         },
     );
 }
@@ -2953,7 +2991,7 @@ fn top_songs(ui: &AppWindow, browser: &Shared, artist: String, by_id: bool) {
 fn aside<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
-    task: impl FnOnce(Rc<Client>) -> F,
+    task: impl FnOnce(Arc<Client>) -> F,
     done: impl FnOnce(&AppWindow, &Shared, T) + 'static,
 ) {
     let Some(client) = browser.borrow().client.clone() else {
@@ -3060,7 +3098,7 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     let tracks: Vec<Track> = songs.iter().map(song_track).collect();
     let mut b = browser.borrow_mut();
     b.tracks.set_vec(tracks);
-    b.songs = songs.into_iter().map(|song| song.id).collect();
+    b.songs = songs;
 }
 
 /// The id of the playlist on screen, if one is.
@@ -3077,7 +3115,7 @@ fn change_playlist<F: Future<Output = opensubsonic::Result<()>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
     id: Option<String>,
-    task: impl FnOnce(Rc<Client>) -> F,
+    task: impl FnOnce(Arc<Client>) -> F,
     done: impl FnOnce(&AppWindow, &Shared) + 'static,
 ) {
     let Some(client) = browser.borrow().client.clone() else {
@@ -3093,7 +3131,7 @@ fn change_playlist<F: Future<Output = opensubsonic::Result<()>> + 'static>(
             .borrow()
             .client
             .as_ref()
-            .is_some_and(|current| Rc::ptr_eq(current, &client));
+            .is_some_and(|current| Arc::ptr_eq(current, &client));
         if !signed_in {
             return;
         }
@@ -3525,7 +3563,7 @@ fn load_tags(ui: &AppWindow, browser: &Shared) {
             .borrow()
             .client
             .as_ref()
-            .is_some_and(|current| Rc::ptr_eq(current, &client));
+            .is_some_and(|current| Arc::ptr_eq(current, &client));
         if !signed_in {
             return;
         }
@@ -3590,7 +3628,7 @@ fn show_tags(ui: &AppWindow, browser: &Shared) {
 fn change_tags<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
-    task: impl FnOnce(Rc<Client>) -> F,
+    task: impl FnOnce(Arc<Client>) -> F,
     done: impl FnOnce(&AppWindow, &Shared, Option<T>) + 'static,
 ) {
     let Some(client) = browser.borrow().client.clone() else {
@@ -3605,7 +3643,7 @@ fn change_tags<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static
             .borrow()
             .client
             .as_ref()
-            .is_some_and(|current| Rc::ptr_eq(current, &client));
+            .is_some_and(|current| Arc::ptr_eq(current, &client));
         if !signed_in {
             return;
         }
@@ -4001,7 +4039,7 @@ fn load_me(ui: &AppWindow, browser: &Shared) {
             .borrow()
             .client
             .as_ref()
-            .is_some_and(|current| Rc::ptr_eq(current, &client));
+            .is_some_and(|current| Arc::ptr_eq(current, &client));
         if !signed_in {
             return;
         }
@@ -4018,7 +4056,7 @@ fn change_stations<F: Future<Output = opensubsonic::Result<()>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
     done: String,
-    task: impl FnOnce(Rc<Client>) -> F,
+    task: impl FnOnce(Arc<Client>) -> F,
 ) {
     change(ui, browser, done, task, |ui, browser| {
         if ui.get_page() == Page::Radio {
@@ -4035,7 +4073,7 @@ fn change<F: Future<Output = opensubsonic::Result<()>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
     done: String,
-    task: impl FnOnce(Rc<Client>) -> F,
+    task: impl FnOnce(Arc<Client>) -> F,
     then: fn(&AppWindow, &Shared),
 ) {
     let Some(client) = browser.borrow().client.clone() else {
@@ -5617,7 +5655,7 @@ async fn tinted_art(
     let bytes = client.get_cover_art(&key.0, Some(size)).await;
     let image = bytes.ok().and_then(|bytes| tinted(&bytes));
     let mut b = browser.borrow_mut();
-    let signed_in = (b.client.as_ref()).is_some_and(|current| Rc::ptr_eq(current, &client));
+    let signed_in = (b.client.as_ref()).is_some_and(|current| Arc::ptr_eq(current, &client));
     if let (Some(image), true) = (&image, signed_in) {
         b.tinted.insert(key, image.clone());
     }
@@ -5858,7 +5896,7 @@ async fn cover_art(
     let signed_in = b
         .client
         .as_ref()
-        .is_some_and(|current| Rc::ptr_eq(current, &client));
+        .is_some_and(|current| Arc::ptr_eq(current, &client));
     if let (Some(image), true) = (&image, signed_in) {
         b.pictures.insert(key, image.clone());
     }
@@ -5868,7 +5906,10 @@ async fn cover_art(
 /// Loves or unloves an album's or playlist's track.
 fn toggle_love(ui: &AppWindow, browser: &Shared, row: usize) {
     let mut b = browser.borrow_mut();
-    let (Some(id), Some(mut track)) = (b.songs.get(row).cloned(), b.tracks.row_data(row)) else {
+    let (Some(id), Some(mut track)) = (
+        b.songs.get(row).map(|song| song.id.clone()),
+        b.tracks.row_data(row),
+    ) else {
         return;
     };
     let loved = !track.loved;
@@ -6060,7 +6101,7 @@ fn album_names(album: &AlbumID3) -> Vec<Name> {
     named(&album.artists, &album.artist, &album.artist_id)
 }
 
-fn song_names(song: &Child) -> Vec<Name> {
+pub fn song_names(song: &Child) -> Vec<Name> {
     named(&song.artists, &song.artist, &song.artist_id)
 }
 
