@@ -1217,12 +1217,11 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.can-play && root.page != Page.compositions && root.songs-listed: Button {
+                    if root.can-play && root.page != Page.compositions && root.songs-listed: PlayButton {
                         horizontal-stretch: 0;
-                        text: "Play";
-                        primary: true;
                         enabled: !Input.modal;
-                        clicked => { root.play-tracks(0); }
+                        play => { root.play-tracks(0); }
+                        queue(how) => { root.queue-page(how); }
                     }
                     if root.page == Page.tracks && root.width - root.sidebar-width >= 600px: Filter {
                         what: "tracks";
@@ -1244,6 +1243,7 @@ export component AppWindow inherits Window {
                     }
                     Button {
                         horizontal-stretch: 0;
+                        cross-axis-self-alignment: center;
                         text: "Columns";
                         enabled: !Input.modal;
                         accessible-expandable: true;
