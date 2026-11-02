@@ -2677,8 +2677,99 @@ export component PlayerControls inherits VerticalLayout {
     }
 }
 
-// The title, artists and album of what plays, and its signal path step by
-// step under the light of the whole.
+// The light of a signal path, by its quality's name or without it, which
+// opens the steps of the path in a popup.
+component SignalPathLight inherits Pressable {
+    in property <string> quality;
+    in property <int> level;
+    in property <[PathStep]> path;
+    in property <bool> dot-only;
+    // Whether the steps open above the light and end where it does, or below
+    // it and start where it does.
+    in property <bool> opens-upward: true;
+    property <brush> light: Theme.quality-colors[root.level];
+
+    label: "Signal path: " + root.quality;
+    accessible-expandable: true;
+    accessible-expanded: steps.is-open;
+    // A finger's target is taller and wider than the chip drawn in it.
+    width: max(badge.preferred-width, Screen.phone ? 44px : 0px);
+    height: Screen.phone ? 44px : 28px;
+    clicked => { steps.show(); }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: badge.preferred-width;
+        height: 28px;
+        border-radius: self.height / 2;
+        border-width: 1px;
+        border-color: root.light;
+        background: root.hovered ? Theme.hover : transparent;
+    }
+    badge := HorizontalLayout {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: self.preferred-width;
+        height: 28px;
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        Rectangle {
+            cross-axis-self-alignment: center;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.light;
+        }
+        if !root.dot-only: Text {
+            text: root.quality;
+            font-size: Theme.small;
+            color: root.light;
+            vertical-alignment: center;
+        }
+    }
+    steps := PopupWindow {
+        in property <length> list-height: 24px + root.path.length * 28px;
+        x: root.opens-upward ? parent.width - self.width : 0px;
+        y: root.opens-upward ? -self.height - 8px : parent.height + 8px;
+        width: min(480px, Screen.width - 32px);
+        height: self.list-height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Palette.background;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.hover;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #0000004d;
+            VerticalLayout {
+                padding: 12px;
+                for step in root.path: HorizontalLayout {
+                    height: 28px;
+                    spacing: 8px;
+                    Rectangle {
+                        cross-axis-self-alignment: center;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.quality-colors[step.quality];
+                    }
+                    Text {
+                        text: step.text;
+                        font-size: Theme.small;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The title, artists and album of what plays, under the light of its signal
+// path, whose steps open from it.
 component NowPlayingDetails inherits VerticalLayout {
     in property <string> title;
     in property <[Name]> names;
@@ -2706,43 +2797,14 @@ component NowPlayingDetails inherits VerticalLayout {
         text: root.album.label;
         clicked => { root.open(root.album.link); }
     }
-    if root.level >= 0: VerticalLayout {
+    if root.level >= 0: HorizontalLayout {
         padding-top: 16px;
-        spacing: 6px;
-        HorizontalLayout {
-            spacing: 8px;
-            Rectangle {
-                cross-axis-self-alignment: center;
-                width: 10px;
-                height: 10px;
-                border-radius: 5px;
-                background: Theme.quality-colors[root.level];
-            }
-            Text {
-                text: root.quality;
-                font-size: Theme.body;
-                font-weight: 600;
-                color: Theme.quality-colors[root.level];
-                vertical-alignment: center;
-            }
-        }
-        for step in root.path: HorizontalLayout {
-            padding-left: 1px;
-            spacing: 9px;
-            Rectangle {
-                cross-axis-self-alignment: center;
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
-                background: Theme.quality-colors[step.quality];
-            }
-            Text {
-                text: step.text;
-                font-size: Theme.small;
-                color: Theme.muted;
-                vertical-alignment: center;
-                wrap: word-wrap;
-            }
+        alignment: start;
+        SignalPathLight {
+            quality: root.quality;
+            level: root.level;
+            path: root.path;
+            opens-upward: false;
         }
     }
 }
@@ -2829,7 +2891,6 @@ export component PlayerBar inherits Rectangle {
     callback seek(seconds: float);
     callback toggle-shuffle();
     callback cycle-repeat();
-    property <brush> light: root.level >= 0 ? Theme.quality-colors[root.level] : Theme.muted;
     // A window this narrow, whose bar is under 760px once the sidebar is
     // docked, draws everything closer and smaller, play and pause the least.
     // The bar's own width can't say so: it follows from what it holds.
@@ -2929,77 +2990,13 @@ export component PlayerBar inherits Rectangle {
             duration: root.duration;
             seek(seconds) => { root.seek(seconds); }
         }
-        if root.quality != "": Pressable {
+        if root.quality != "": SignalPathLight {
             cross-axis-self-alignment: center;
-            label: "Signal path: " + root.quality;
-            accessible-expandable: true;
-            accessible-expanded: steps.is-open;
-            width: badge.preferred-width;
-            height: 28px;
-            clicked => { steps.show(); }
-            Rectangle {
-                border-radius: self.height / 2;
-                border-width: 1px;
-                border-color: root.light;
-                background: parent.hovered ? Theme.hover : transparent;
-            }
-            // A phone has room for the light only.
-            badge := HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 6px;
-                Rectangle {
-                    cross-axis-self-alignment: center;
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: root.light;
-                }
-                if !Screen.phone: Text {
-                    text: root.quality;
-                    font-size: Theme.small;
-                    color: root.light;
-                    vertical-alignment: center;
-                }
-            }
-            steps := PopupWindow {
-                in property <length> list-height: 24px + root.path.length * 28px;
-                x: parent.width - self.width;
-                y: -self.height - 8px;
-                width: min(480px, Screen.width - 32px);
-                height: self.list-height;
-                close-policy: PopupClosePolicy.close-on-click-outside;
-                Rectangle {
-                    background: Palette.background;
-                    border-radius: Theme.radius;
-                    border-width: 1px;
-                    border-color: Theme.hover;
-                    drop-shadow-blur: 16px;
-                    drop-shadow-offset-y: 4px;
-                    drop-shadow-color: #0000004d;
-                    VerticalLayout {
-                        padding: 12px;
-                        for step in root.path: HorizontalLayout {
-                            height: 28px;
-                            spacing: 8px;
-                            Rectangle {
-                                cross-axis-self-alignment: center;
-                                width: 8px;
-                                height: 8px;
-                                border-radius: 4px;
-                                background: Theme.quality-colors[step.quality];
-                            }
-                            Text {
-                                text: step.text;
-                                font-size: Theme.small;
-                                color: Theme.text;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                        }
-                    }
-                }
-            }
+            quality: root.quality;
+            level: root.level;
+            path: root.path;
+            // A phone, or a bar this narrow, has room for the light only.
+            dot-only: Screen.phone || root.compact;
         }
     }
 }
