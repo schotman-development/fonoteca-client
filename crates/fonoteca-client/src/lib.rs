@@ -2334,9 +2334,102 @@ mod tests {
                 assert_eq!(ui.get_page(), Page::Albums);
                 assert_eq!(ui.get_arrival(), before.1, "a link to this page is no step");
                 idle(Duration::from_millis(400)).await;
+                // A menu closing hands the keys back while the sheet is gone,
+                // and the page, not the hidden sheet, takes them.
+                input.set_refocus(input.get_refocus() + 1);
+                assert!(page_has_the_keys(), "the page takes the keys back");
+
+                // Escape closes it from wherever the keys sit: the sheet's close
+                // button and the bar's controls, which Shift+Tab reaches from
+                // the sheet's scroll in turn, before it comes to the covered
+                // page and the sidebar.
+                for presses in 0..=9 {
+                    click(&ui, "Now playing");
+                    idle(Duration::from_millis(300)).await;
+                    for _ in 0..presses {
+                        press(&ui, slint::platform::Key::Backtab);
+                    }
+                    press(&ui, slint::platform::Key::Escape);
+                    assert!(
+                        !ui.get_now_playing_open(),
+                        "Escape closes it after {presses} presses of Shift+Tab"
+                    );
+                }
+                idle(Duration::from_millis(400)).await;
+
+                // The bar opens it wherever it is clicked but on its controls,
+                // and a second click closes it. The artist line is text.
+                let bar = button(&ui, "Now playing");
+                let (bar_at, bar_size) = (bar.absolute_position(), bar.size());
+                assert_eq!(bar_size.height, 80.0);
+                assert_eq!(bar_at.y + bar_size.height, 760.0, "the bar ends the window");
+                assert_eq!(bar_at.x + bar_size.width, 1100.0, "the bar spans the window");
+                assert!(bar_size.width > 600.0);
+                ui.set_playing_names(slint::ModelRc::new(slint::VecModel::from(vec![Name {
+                    label: "Ada Lovelace".into(),
+                    link: "artists".into(),
+                }])));
+                // A press on a bar says whether a finger made it.
+                let finger = input.get_finger();
+                let tap = |position: slint::LogicalPosition| hold(&ui, position, 0.0, 0);
+                let at_bar = |x: f32, y: f32| slint::LogicalPosition::new(bar_at.x + x, bar_at.y + y);
+                // Empty space below the title, beyond the 48px a smaller area
+                // would cover, and the artist line.
+                let artist = button(&ui, "Ada Lovelace");
+                assert_eq!(artist.accessible_enabled(), Some(false), "the artist line is no link");
+                for position in [at_bar(bar_size.width / 2.0, 72.0), middle(&artist)] {
+                    tap(position).await;
+                    assert!(ui.get_now_playing_open(), "a click on the bar opens it");
+                    idle(Duration::from_millis(400)).await;
+                    tap(at_bar(bar_size.width / 2.0, 72.0)).await;
+                    assert!(!ui.get_now_playing_open(), "a second click closes it");
+                    idle(Duration::from_millis(400)).await;
+                }
+                input.set_finger(finger);
+
+                click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+
+                // What plays fills the first screen: the queue starts below it.
+                let queue_heading = || {
+                    ui.root_element()
+                        .query_descendants()
+                        .match_predicate(|e| e.accessible_label().is_some_and(|l| l == "Queue"))
+                        .find_first()
+                };
+                let queue_lines = ui.get_queue_lines();
+                ui.set_queue_lines(slint::ModelRc::new(slint::VecModel::from(vec![
+                    QueueLine::default(),
+                    QueueLine::default(),
+                ])));
+                press(&ui, slint::platform::Key::Home);
+                assert!(queue_heading().is_none(), "the queue starts below the first screen");
+                press(&ui, slint::platform::Key::PageDown);
+                assert!(queue_heading().is_some(), "the queue follows when scrolled to");
+                ui.set_queue_lines(queue_lines);
+
+                // The sheet closes when the page changes under it, and when
+                // playback ends.
+                let visit = ui.get_visit();
+                ui.invoke_back();
+                wait_for("the page before to close it", || !ui.get_now_playing_open()).await;
+                let back = ui.get_visit();
+                assert_ne!(back, visit);
+                ui.invoke_forward();
+                wait_for("the page again", || ui.get_visit() != back).await;
+                assert_eq!(ui.get_page(), Page::Albums);
+                idle(Duration::from_millis(400)).await;
+                click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+                assert!(ui.get_now_playing_open());
+                ui.set_playing(false);
+                wait_for("the end of playback to close it", || !ui.get_now_playing_open()).await;
+                ui.set_playing(true);
+                ui.set_playing_names(slint::ModelRc::default());
                 scroll(100000.0);
                 ui.set_playing(playing);
                 ui.set_can_play(can_play);
+                idle(Duration::from_millis(100)).await;
             }
             // Android's back in a filter hands the keys back to the page,
             // and the next one goes back a page.
