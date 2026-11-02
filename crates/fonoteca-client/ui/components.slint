@@ -2637,6 +2637,46 @@ component EqFieldLabel inherits Text {
     color: Theme.muted;
 }
 
+// A format and quality to take audio in, for the settings: Original, which
+// has no bitrate, or a lossy format and the most kbit/s it may use. `name`
+// says what it is for ("Streaming on wifi"). The two entries are the ones
+// quality.rs takes, by their order.
+export component QualityPicker inherits VerticalLayout {
+    in property <string> name;
+    in-out property <int> format;
+    in-out property <int> bitrate;
+    in property <bool> enabled: true;
+    callback chosen(format: int, bitrate: int);
+    spacing: 8px;
+
+    Text {
+        text: root.name;
+        font-size: Theme.body;
+        color: Theme.muted;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        ComboBox {
+            horizontal-stretch: 1;
+            accessible-label: root.name + " format";
+            model: ["Original", "MP3", "Opus", "AAC"];
+            current-index <=> root.format;
+            enabled: root.enabled;
+            selected => { root.chosen(root.format, root.bitrate); }
+        }
+        ComboBox {
+            horizontal-stretch: 1;
+            accessible-label: root.name + " bitrate";
+            // Original has none, so its box is empty rather than showing one
+            // that isn't used.
+            model: root.format > 0 ? ["320 kbit/s", "256 kbit/s", "192 kbit/s", "160 kbit/s", "128 kbit/s", "96 kbit/s", "64 kbit/s"] : [];
+            current-index <=> root.bitrate;
+            enabled: root.enabled && root.format > 0;
+            selected => { root.chosen(root.format, root.bitrate); }
+        }
+    }
+}
+
 // The `number`th band of the EQ in the settings: its filter on one line, the
 // numbers under it, so it fits a phone. A pass has no gain.
 export component EqBandRow inherits VerticalLayout {

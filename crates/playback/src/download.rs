@@ -18,6 +18,8 @@ struct State {
     failed: Option<String>,
     /// How many readers there are; once none, the rest isn't wanted.
     readers: usize,
+    /// A [`Probing`] is held.
+    probing: bool,
 }
 
 #[derive(Default)]
@@ -31,6 +33,20 @@ pub struct Download {
     file: File,
     position: u64,
     inner: Arc<Inner>,
+}
+
+/// Held while FFmpeg opens a download and reads enough of it to know the
+/// track's streams. A transcoded track has no announced length, and FFmpeg
+/// asks for the end of a file while opening it (its size, an ID3 tag), which
+/// would otherwise hold the track back until every byte has arrived. While
+/// this is held, such an answer is refused for a download of unknown length
+/// that is still arriving, and FFmpeg goes on without.
+pub struct Probing(Arc<Inner>);
+
+impl Drop for Probing {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().probing = false;
+    }
 }
 
 /// The writing side, for whatever fetches the track.
@@ -117,6 +133,20 @@ impl Download {
         self.inner.state.lock().unwrap().done
     }
 
+    /// Has the end of this download not been announced, and not come, while
+    /// FFmpeg is only opening it?
+    fn length_unknown_while_probing(&self) -> bool {
+        let state = self.inner.state.lock().unwrap();
+        state.probing && state.total.is_none() && !state.done
+    }
+
+    /// Makes the end of a download of unknown length unanswerable, until the
+    /// guard is dropped.
+    pub fn probing(&self) -> Probing {
+        self.inner.state.lock().unwrap().probing = true;
+        Probing(self.inner.clone())
+    }
+
     /// Another reader of the same download, from its start, so the track
     /// can be opened again without fetching it again.
     pub fn reader(&self) -> io::Result<Download> {
@@ -174,6 +204,9 @@ impl Seek for Download {
             SeekFrom::Start(at) => at,
             SeekFrom::Current(by) => self.position.saturating_add_signed(by),
             SeekFrom::End(by) => {
+                if self.length_unknown_while_probing() {
+                    return Err(io::ErrorKind::Unsupported.into());
+                }
                 let (written, total) = self.wait(|state| state.total.is_some())?;
                 total.unwrap_or(written).saturating_add_signed(by)
             }

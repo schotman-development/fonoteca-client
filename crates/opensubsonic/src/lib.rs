@@ -694,7 +694,7 @@ mod tests {
             }
         });
         let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
-        let mut stream = client.stream("tr-1").await.unwrap();
+        let mut stream = client.stream("tr-1", "raw", 0).await.unwrap();
         assert_eq!(stream.size(), Some(17));
         let mut all = Vec::new();
         while let Some(chunk) = stream.chunk().await.unwrap() {
@@ -702,14 +702,24 @@ mod tests {
         }
         assert_eq!(all, b"fLaC and the rest");
         assert!(matches!(
-            client.stream("gone").await,
+            client.stream("gone", "raw", 0).await,
             Err(Error::Api(ApiError { code: 70, .. }))
         ));
+        {
+            let log = log.lock().unwrap();
+            assert!(
+                log[0].contains("id=tr-1") && log[0].contains("format=raw"),
+                "{}",
+                log[0]
+            );
+            assert!(!log[0].contains("maxBitRate"), "{}", log[0]);
+        }
+        client.stream("tr-1", "mp3", 192).await.unwrap();
         let log = log.lock().unwrap();
         assert!(
-            log[0].contains("id=tr-1") && log[0].contains("format=raw"),
+            log[2].contains("format=mp3") && log[2].contains("maxBitRate=192"),
             "{}",
-            log[0]
+            log[2]
         );
     }
 

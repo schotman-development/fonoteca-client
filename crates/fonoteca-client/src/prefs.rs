@@ -37,6 +37,9 @@ pub struct Prefs {
     pub output_device: Option<String>,
     /// Volume leveling's entry in the settings: off, by track or by album.
     pub leveling: i32,
+    /// The format and bitrate to stream in, on wifi and on mobile data.
+    pub wifi_quality: StreamQuality,
+    pub mobile_quality: StreamQuality,
     /// The sound processing's entries in the settings: headroom, crossfeed
     /// and upsampling; the EQ, whether it is on, and the EQs saved by name.
     pub headroom: i32,
@@ -47,6 +50,15 @@ pub struct Prefs {
     pub eq_presets: Vec<EqPreset>,
     /// Whether the queue repeats: not, all of it, or the track playing.
     pub repeat: i32,
+}
+
+/// A streaming format's entry in the settings, and its bitrate's; the first
+/// format is the song as the server keeps it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamQuality {
+    pub format: i32,
+    pub bitrate: i32,
 }
 
 /// A parametric EQ: its preamp in dB and its bands.

@@ -61,8 +61,10 @@ impl Decoding {
         bit_perfect_formats: &[Format],
         abort: impl FnMut() -> bool + Send + 'static,
     ) -> Result<Self, Stop> {
+        let probing = download.probing();
         let io = StreamIo::from_read_seek(download)?;
         let input = format::input_from_stream_with_interrupt(io, None, None, abort)?;
+        drop(probing);
         let stream = input
             .streams()
             .best(media::Type::Audio)

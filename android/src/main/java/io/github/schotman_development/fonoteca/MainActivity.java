@@ -2,6 +2,8 @@ package io.github.schotman_development.fonoteca;
 
 import android.app.NativeActivity;
 import android.content.res.Configuration;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
@@ -24,6 +26,13 @@ public class MainActivity extends NativeActivity {
 
     public void hidePlaying() {
         PlaybackService.hide();
+    }
+
+    /** Whether the active network is the mobile one, for Rust's choice of streaming quality (src/network.rs). */
+    public boolean isOnMobileData() {
+        ConnectivityManager manager = getSystemService(ConnectivityManager.class);
+        NetworkCapabilities network = manager.getNetworkCapabilities(manager.getActiveNetwork());
+        return network != null && network.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR);
     }
 
     private BitPerfectOutput bitPerfect;

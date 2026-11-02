@@ -19,7 +19,7 @@ use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
-use crate::{AppWindow, Name, Page, PathStep, QueueLine, browse, prefs, sound, waveform};
+use crate::{AppWindow, Name, Page, PathStep, QueueLine, browse, prefs, quality, sound, waveform};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -74,6 +74,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     let saved = prefs::load();
     ui.set_leveling(saved.leveling.clamp(0, 2));
     ui.set_repeat(saved.repeat.clamp(0, 2));
+    show_stream_quality(ui, &saved);
     ui.set_can_play(true);
     list_devices(ui, &playing);
 
@@ -199,6 +200,16 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             }
         }
     });
+    ui.on_choose_stream_quality(|mobile, format, bitrate| {
+        let mut saved = prefs::load();
+        let chosen = prefs::StreamQuality { format, bitrate };
+        if mobile {
+            saved.mobile_quality = chosen;
+        } else {
+            saved.wifi_quality = chosen;
+        }
+        prefs::save(&saved);
+    });
     sound::wire(ui, {
         let playing = playing.clone();
         move |dsp| {
@@ -207,6 +218,16 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             }
         }
     });
+}
+
+fn show_stream_quality(ui: &AppWindow, saved: &prefs::Prefs) {
+    ui.set_has_mobile_data(quality::HAS_MOBILE_DATA);
+    let wifi = quality::within_lists(saved.wifi_quality);
+    ui.set_wifi_format(wifi.format);
+    ui.set_wifi_bitrate(wifi.bitrate);
+    let mobile = quality::within_lists(saved.mobile_quality);
+    ui.set_mobile_format(mobile.format);
+    ui.set_mobile_bitrate(mobile.bitrate);
 }
 
 /// Puts songs in the queue from the pages' menus, and has the now playing
@@ -1038,14 +1059,18 @@ fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
     Player::new(device, fetch)
 }
 
-/// Fetches tracks from `client` as the server keeps them, into files in the
-/// cache folder that are gone once played. Runs on the player's thread.
+/// Fetches tracks from `client` in the format the settings pick for the
+/// connection in use when each is fetched, into files in the cache folder
+/// that are gone once played. A track fetched ahead keeps the quality it was
+/// fetched in if the connection changes before its turn. Runs on the
+/// player's thread.
 fn fetch(client: Arc<Client>) -> playback::Fetch {
     let runtime = tokio::runtime::Handle::current();
     let folder = cache();
     Box::new(move |track: &Track| {
+        let (format, max_bit_rate) = quality::request(&prefs::load(), quality::connection());
         let mut stream = runtime
-            .block_on(client.stream(&track.id))
+            .block_on(client.stream(&track.id, format, max_bit_rate))
             .map_err(|e| format!("The track couldn't be fetched: {e}"))?;
         let (download, mut fill) = playback::download(&folder, stream.size())
             .map_err(|e| format!("The track couldn't be saved to disk: {e}"))?;
@@ -1137,6 +1162,26 @@ pub(crate) mod testing {
     pub(crate) fn restore(ui: &AppWindow) {
         let (browser, playing) = handles();
         super::restore(ui, &browser, &playing);
+    }
+
+    /// Fetches the song `id` as the player does, once the server has answered.
+    pub(crate) fn fetch_song(id: &str) {
+        let (browser, _) = handles();
+        let client = browse::client(&browser).expect("signed in");
+        let mut fetch = super::fetch(client);
+        let track = Track {
+            id: id.into(),
+            gain: Gain::default(),
+        };
+        std::thread::spawn(move || fetch(&track).map(drop))
+            .join()
+            .unwrap()
+            .expect("fetched");
+    }
+
+    /// Shows the streaming quality saved, as at the start.
+    pub(crate) fn show_saved_stream_quality(ui: &AppWindow) {
+        super::show_stream_quality(ui, &prefs::load());
     }
 
     /// The album whose motion cover is kept.

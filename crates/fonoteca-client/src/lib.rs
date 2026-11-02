@@ -5,9 +5,13 @@ mod bit_perfect;
 mod browse;
 #[cfg(target_os = "android")]
 mod media;
+#[cfg(target_os = "android")]
+mod network;
 #[cfg(not(target_family = "wasm"))]
 mod play;
 mod prefs;
+#[cfg(not(target_family = "wasm"))]
+mod quality;
 #[cfg(not(target_family = "wasm"))]
 mod queue;
 #[cfg(not(target_family = "wasm"))]
@@ -606,6 +610,8 @@ mod tests {
     /// The user changes the server was asked for, as `PLAYLIST_WRITES` has
     /// them; whether joe is an admin.
     static USER_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// The request lines of the songs streamed.
+    static STREAMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static ADMIN: AtomicBool = AtomicBool::new(true);
     /// The radio station changes, the same way.
     static RADIO_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -959,6 +965,12 @@ mod tests {
         {
             RADIO_WRITES.lock().unwrap().push(write_of(request));
             json(OK)
+        } else if request.contains("/rest/stream?") {
+            STREAMS
+                .lock()
+                .unwrap()
+                .push(request.lines().next().unwrap_or_default().to_owned());
+            reply("200 OK", "audio/mpeg", b"abc")
         } else if request.contains("/rest/changePassword") {
             USER_WRITES.lock().unwrap().push(write_of(request));
             json(OK)
@@ -1581,7 +1593,16 @@ mod tests {
             assert_eq!(ui.get_page(), Page::Settings);
             assert_eq!(ui.get_selected_tiles(), 1);
             for (section, choices) in [
-                ("Playback", ["Sound device", "Volume leveling"].as_slice()),
+                (
+                    "Playback",
+                    [
+                        "Sound device",
+                        "Volume leveling",
+                        "Streaming format",
+                        "Streaming bitrate",
+                    ]
+                    .as_slice(),
+                ),
                 ("Sound processing", &["Headroom", "Crossfeed", "Upsampling"]),
             ] {
                 click(&ui, section);
@@ -1592,6 +1613,39 @@ mod tests {
                 ui.invoke_back();
                 assert_eq!(ui.get_page(), Page::Settings);
             }
+            // The streaming quality picked is what the next song is fetched in;
+            // a device without mobile data has only the one choice.
+            click(&ui, "Playback");
+            assert!(!find_combo(&ui, "Streaming on mobile data format"));
+            let streamed_with = |format: i32, bitrate: i32| {
+                ui.invoke_choose_stream_quality(false, format, bitrate);
+                play::testing::fetch_song("tr-1");
+                STREAMS.lock().unwrap().last().cloned().unwrap_or_default()
+            };
+            let request = streamed_with(2, 5);
+            assert!(
+                request.contains("format=opus") && request.contains("maxBitRate=96"),
+                "{request}"
+            );
+            let request = streamed_with(0, 5);
+            assert!(request.contains("format=raw"), "{request}");
+            assert!(!request.contains("maxBitRate"), "{request}");
+            // What is saved shows in the settings at the start, held to the
+            // entries there are.
+            let mut saved = prefs::load();
+            saved.wifi_quality = prefs::StreamQuality {
+                format: 9,
+                bitrate: 40,
+            };
+            saved.mobile_quality = prefs::StreamQuality {
+                format: 1,
+                bitrate: 2,
+            };
+            prefs::save(&saved);
+            play::testing::show_saved_stream_quality(&ui);
+            assert_eq!((ui.get_wifi_format(), ui.get_wifi_bitrate()), (3, 6));
+            assert_eq!((ui.get_mobile_format(), ui.get_mobile_bitrate()), (1, 2));
+            ui.invoke_back();
             click(&ui, "Library");
             assert_eq!(ui.get_page(), Page::Setting);
             // The server's scan: where it stands, one the server refuses,

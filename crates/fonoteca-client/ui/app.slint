@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
@@ -898,6 +898,13 @@ export component AppWindow inherits Window {
     in property <[string]> output-devices;
     in-out property <int> output-device;
     in-out property <int> leveling;
+    // The streaming format and bitrate entries for wifi and for mobile data;
+    // a device without mobile data has just the first.
+    in property <bool> has-mobile-data;
+    in-out property <int> wifi-format;
+    in-out property <int> wifi-bitrate;
+    in-out property <int> mobile-format;
+    in-out property <int> mobile-bitrate;
     // The sound processing: the headroom's, crossfeed's and upsampling's
     // entries; whether the EQ is on, its preamp and bands as typed, its
     // presets after a first "Custom" entry, and which of them it is.
@@ -1045,6 +1052,7 @@ export component AppWindow inherits Window {
     callback delete-eq-preset();
     callback import-eq(text: string) -> string;
     callback choose-leveling(index: int);
+    callback choose-stream-quality(mobile: bool, format: int, bitrate: int);
     callback add-selection-to-playlist(id: string);
     // Playlist folders: a new one with this name in the folder on screen;
     // the one on screen renamed, moved into the folder with this id, or to
@@ -2014,7 +2022,7 @@ export component AppWindow inherits Window {
                         if root.can-play: SettingsRow {
                             icon: Icons.play;
                             title: "Playback";
-                            summary: "Sound device and volume leveling";
+                            summary: "Device, leveling and streaming quality";
                             clicked => { root.open("setting:playback"); }
                         }
                         if root.can-play: SettingsRow {
@@ -2075,6 +2083,20 @@ export component AppWindow inherits Window {
                             current-index <=> root.leveling;
                             enabled: !Input.modal;
                             selected => { root.choose-leveling(self.current-index); }
+                        }
+                        if root.can-play: QualityPicker {
+                            name: root.has-mobile-data ? "Streaming on wifi" : "Streaming";
+                            format <=> root.wifi-format;
+                            bitrate <=> root.wifi-bitrate;
+                            enabled: !Input.modal;
+                            chosen(format, bitrate) => { root.choose-stream-quality(false, format, bitrate); }
+                        }
+                        if root.can-play && root.has-mobile-data: QualityPicker {
+                            name: "Streaming on mobile data";
+                            format <=> root.mobile-format;
+                            bitrate <=> root.mobile-bitrate;
+                            enabled: !Input.modal;
+                            chosen(format, bitrate) => { root.choose-stream-quality(true, format, bitrate); }
                         }
                     }
                     // Each entry's order is the one sound.rs takes them in.

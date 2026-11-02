@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -47,6 +47,7 @@ export component Workbench inherits Window {
         "Player bar",
         "EQ band",
         "Now playing",
+        "Quality picker",
     ];
     property <int> current;
     property <bool> long-text;
@@ -60,6 +61,8 @@ export component Workbench inherits Window {
     property <bool> player-shuffled;
     property <int> player-repeat;
     property <bool> queue-work-open;
+    property <int> quality-format: 1;
+    property <int> quality-bitrate: 2;
     property <string> long-title: "An unusually long title that keeps going, to show where text wraps and where it is cut short";
     property <[Name]> many: [
         { label: "Mara Lind", link: "artist:1" },
@@ -803,6 +806,25 @@ export component Workbench inherits Window {
                             line: { filter: 4, frequency: root.long-text ? "12345.67" : "30", gain: "0", q: "0.71" };
                             edited(line) => { root.event = "band 2: " + line.filter + " " + line.frequency + " Hz " + line.gain + " dB Q " + line.q; }
                             remove => { root.event = "remove band 2"; }
+                        }
+                    }
+                    if root.current == 17: Example {
+                        caption: "A streaming format and quality, for wifi, mobile data and later downloads; Original has no bitrate";
+                        max-width: 480px;
+                        QualityPicker {
+                            name: "Streaming on wifi";
+                            format: 0;
+                            chosen(format, bitrate) => { root.event = "wifi " + format + " " + bitrate; }
+                        }
+                        QualityPicker {
+                            name: "Streaming on mobile data";
+                            format <=> root.quality-format;
+                            bitrate <=> root.quality-bitrate;
+                            chosen(format, bitrate) => { root.event = "mobile " + format + " " + bitrate; }
+                        }
+                        QualityPicker {
+                            name: "Not available";
+                            enabled: false;
                         }
                     }
                 }

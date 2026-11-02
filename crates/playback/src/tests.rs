@@ -372,6 +372,64 @@ fn a_download_still_arriving_is_waited_for() {
     assert_eq!(ints(&out, 2), samples);
 }
 
+/// Silent MPEG-1 layer 3 frames, 128 kbit/s at 44.1 kHz: a header and zeros.
+fn silent_mp3(frames: usize) -> Vec<u8> {
+    const FRAME_BYTES: usize = 417;
+    let mut frame = vec![0; FRAME_BYTES];
+    frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+    frame.repeat(frames)
+}
+
+#[test]
+fn a_download_of_unknown_length_opens_before_the_rest_has_arrived() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    let whole = silent_mp3(400);
+    let (download, mut fill) =
+        download::new(&std::env::temp_dir().join("playback-tests"), None).unwrap();
+    let opened = Arc::new(AtomicBool::new(false));
+    let waited_in_vain = Arc::new(AtomicBool::new(false));
+    let writer = std::thread::spawn({
+        let (opened, waited_in_vain) = (opened.clone(), waited_in_vain.clone());
+        move || {
+            let (first, rest) = whole.split_at(whole.len() * 3 / 4);
+            fill.append(first);
+            let patience = std::time::Instant::now();
+            while !opened.load(SeqCst) {
+                if patience.elapsed() > std::time::Duration::from_secs(10) {
+                    waited_in_vain.store(true, SeqCst);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            fill.append(rest);
+            fill.finish();
+        }
+    });
+    let _ = ffmpeg_next::init();
+    let mut decoding = Decoding::open(
+        download,
+        &track(Gain::default()),
+        Leveling::Off,
+        &Dsp::default(),
+        &device(&[44_100], &[I16]),
+        &[],
+        || false,
+    )
+    .unwrap_or_else(|_| panic!("opens"));
+    opened.store(true, SeqCst);
+    let mut out = Vec::new();
+    while decoding
+        .step(&mut out)
+        .unwrap_or_else(|_| panic!("decodes"))
+    {}
+    writer.join().unwrap();
+    assert!(
+        !waited_in_vain.load(SeqCst),
+        "open waited for the whole download"
+    );
+    assert!(!out.is_empty());
+}
+
 /// A sine of `frequency` at a quarter of full scale, `seconds` long, as
 /// 24-bit stereo samples: in both channels, or the left only.
 fn sine(rate: u32, frequency: f64, seconds: f64, left_only: bool) -> Vec<i32> {
