@@ -37,6 +37,12 @@ use serde_json::{Map, Value};
 /// The Subsonic API version this client implements.
 pub const PROTOCOL_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "fonoteca-client";
+/// How long a server may take to accept a connection, and to send the next
+/// bytes of an answer, before the call fails.
+#[cfg(not(target_family = "wasm"))]
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(not(target_family = "wasm"))]
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -115,6 +121,13 @@ impl Client {
         // or a re-sent form body. reqwest has no such setting in the browser.
         #[cfg(not(target_family = "wasm"))]
         let http = http.redirect(reqwest::redirect::Policy::none());
+        // A server that stops answering, or a song that stops arriving
+        // midway, fails the call instead of leaving the app waiting for good.
+        // reqwest has no such settings in the browser either.
+        #[cfg(not(target_family = "wasm"))]
+        let http = http
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT);
         Ok(Self {
             http: http.build()?,
             rest,
