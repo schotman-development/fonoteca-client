@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use opensubsonic::{Child, Client};
 use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::queue::{Moved, Plan, Queue, plan, run_from};
+use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::{AppWindow, Name, Page, PathStep, QueueLine, browse, prefs, sound, waveform};
 
 /// The settings' volume leveling entries, in their order.
@@ -49,9 +50,9 @@ struct Playing {
     /// How many of the queue's changes the player was handed. Until it has
     /// made them all, the track it says plays counts in the queue before.
     requeued: u64,
-    /// Where the now playing sheet's list of the queue starts, and the
+    /// The rows of the now playing sheet's list of the queue, and the
     /// covers it has shown, by their ids.
-    listed_from: usize,
+    listed: Vec<Row>,
     covers: HashMap<String, Image>,
     /// Where the queue saved on the server left off, until it plays.
     resume: Option<(usize, f64)>,
@@ -217,7 +218,7 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             let ui = weak.unwrap();
             let (songs, start) = browse::songs(&browser, ui.get_page(), row as usize);
             let songs = run_from(songs, start, count as usize);
-            enqueue(&ui, &browser, &playing, songs, next);
+            enqueue(&ui, &browser, &playing, songs, next, None);
         }
     });
     ui.on_queue_page({
@@ -243,7 +244,7 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
                 let Some(ui) = weak.upgrade() else { return };
                 match songs {
                     Ok(songs) if how == "play" => play(&ui, &browser, &playing, songs, 0),
-                    Ok(songs) => enqueue(&ui, &browser, &playing, songs, how == "next"),
+                    Ok(songs) => enqueue(&ui, &browser, &playing, songs, how == "next", None),
                     Err(e) => {
                         browse::notify(&ui, &browser, format!("The songs couldn't be fetched: {e}"))
                     }
@@ -256,7 +257,9 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |row| {
             let mut p = playing.borrow_mut();
-            let index = p.listed_from + row as usize;
+            let Some(index) = listed_songs(&p, row).map(|songs| songs.start) else {
+                return;
+            };
             if let Some(player) = &p.player {
                 return player.jump(index);
             }
@@ -270,8 +273,10 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         move |row| {
             let mut p = playing.borrow_mut();
             let Some(current) = p.shown else { return };
-            let from = p.listed_from + row as usize;
-            let moved = p.queue.move_to(from, current + 1);
+            let Some(songs) = listed_songs(&p, row) else {
+                return;
+            };
+            let moved = p.queue.move_to(songs, current + 1);
             drop(p);
             requeued(&weak.unwrap(), &browser, &playing, moved);
         }
@@ -280,8 +285,10 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |from, to| {
             let mut p = playing.borrow_mut();
-            let at = p.listed_from;
-            let moved = p.queue.move_to(at + from as usize, at + to as usize);
+            let (Some(from), Some(onto)) = (listed_songs(&p, from), listed_songs(&p, to)) else {
+                return;
+            };
+            let moved = p.queue.move_onto(from, onto);
             drop(p);
             requeued(&weak.unwrap(), &browser, &playing, moved);
         }
@@ -290,8 +297,10 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |row| {
             let mut p = playing.borrow_mut();
-            let index = p.listed_from + row as usize;
-            let moved = p.queue.remove(index);
+            let Some(songs) = listed_songs(&p, row) else {
+                return;
+            };
+            let moved = p.queue.remove(songs);
             let emptied = p.queue.is_empty();
             drop(p);
             if emptied {
@@ -299,6 +308,18 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             } else {
                 requeued(&weak.unwrap(), &browser, &playing, moved);
             }
+        }
+    });
+    ui.on_toggle_queued_work({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |row| {
+            let mut p = playing.borrow_mut();
+            let Some(Shape::Work { key, .. }) = p.listed.get(row as usize).map(|row| row.shape)
+            else {
+                return;
+            };
+            p.queue.toggle_work(key);
+            list_queue(&weak.unwrap(), &browser, &mut p, &playing);
         }
     });
     ui.on_clear_queue({
@@ -352,13 +373,20 @@ fn play(
     songs: Vec<Child>,
     start: usize,
 ) {
-    let mut queue = Queue::new(songs);
-    let mut start = start;
-    if playing.borrow().queue.shuffled() && start < queue.len() {
-        queue.shuffle(Some(start), seed());
-        start = 0;
-    }
+    let shuffled = playing.borrow().queue.shuffled();
+    let (queue, start) = page_queue(songs, start, shuffled);
     begin(ui, browser, playing, queue, (start, 0.0), false);
+}
+
+/// The queue of a page's `songs` and the song to play from in it: the
+/// `start`th, or first when the page is `shuffled`.
+fn page_queue(songs: Vec<Child>, start: usize, shuffled: bool) -> (Queue, usize) {
+    let mut queue = Queue::from_page(songs, start);
+    if shuffled && start < queue.len() {
+        queue.shuffle(Some(start), seed());
+        return (queue, 0);
+    }
+    (queue, start)
 }
 
 /// Plays or queues `songs` as `how` says: "play", "next", "queue", or
@@ -374,7 +402,11 @@ fn queue_songs(
     match plan(how, songs, queue_is_empty, seed()) {
         Plan::Play(songs) => play(ui, browser, playing, songs, 0),
         Plan::PlayShuffled(songs) => play_shuffled(ui, browser, playing, songs),
-        Plan::Enqueue(songs, next) => enqueue(ui, browser, playing, songs, next),
+        Plan::Enqueue {
+            songs,
+            next,
+            shuffle_seed,
+        } => enqueue(ui, browser, playing, songs, next, shuffle_seed),
     }
 }
 
@@ -413,7 +445,7 @@ fn queue_artist(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, how:
 /// Plays `songs` in a random order in place of what played, with the
 /// queue's shuffle on so that turning it off puts them back in order.
 fn play_shuffled(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, songs: Vec<Child>) {
-    let mut queue = Queue::new(songs);
+    let mut queue = Queue::from_page(songs, 0);
     queue.shuffle(None, seed());
     begin(ui, browser, playing, queue, (0, 0.0), false);
 }
@@ -481,6 +513,7 @@ fn enqueue(
     playing: &Shared,
     songs: Vec<Child>,
     next: bool,
+    shuffle_seed: Option<u64>,
 ) {
     let what = match &songs[..] {
         [] => return,
@@ -496,7 +529,7 @@ fn enqueue(
         Some(current) if next => current + 1,
         _ => p.queue.len(),
     };
-    let moved = p.queue.insert(at, songs);
+    let moved = p.queue.insert(at, songs, shuffle_seed);
     let ended = p
         .player
         .as_ref()
@@ -702,37 +735,31 @@ fn show_song(
     }
 }
 
-/// Lists the queue on the now playing sheet from the song playing on, with
-/// the covers it has shown before and the others once they come.
+/// The songs the `row` of the sheet's list stands for.
+fn listed_songs(p: &Playing, row: i32) -> Option<Range<usize>> {
+    p.listed.get(row as usize).map(|row| row.songs.clone())
+}
+
+/// Lists the queue on the now playing sheet from the work or song playing
+/// on, with the covers it has shown before and the others once they come.
 fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing: &Shared) {
-    let from = p.shown.unwrap_or(0).min(p.queue.len());
-    p.listed_from = from;
-    let songs: Vec<&Child> = p.queue.songs().skip(from).take(QUEUE_SHOWN).collect();
-    let lines: Vec<QueueLine> = songs
-        .iter()
-        .enumerate()
-        .map(|(row, song)| QueueLine {
-            title: song.title.as_str().into(),
-            details: queue_details(song).into(),
-            cover: song
-                .cover_art
-                .as_ref()
-                .and_then(|cover| p.covers.get(cover))
-                .cloned()
-                .unwrap_or_default(),
-            album: song
-                .album_id
-                .as_ref()
-                .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
-            current: row == 0 && p.shown.is_some(),
-        })
-        .collect();
-    ui.set_queue_more((p.queue.len() - from - lines.len()) as i32);
+    p.listed = p.queue.rows(p.shown, QUEUE_SHOWN);
+    let lines: Vec<QueueLine> = p.listed.iter().map(|row| queue_line(p, row)).collect();
+    let listed_to = p.listed.last().map_or(0, |row| row.songs.end);
+    ui.set_queue_more((p.queue.len() - listed_to) as i32);
     ui.set_shuffled(p.queue.shuffled());
     let model = Rc::new(VecModel::from(lines));
     ui.set_queue_lines(ModelRc::from(model.clone()));
-    let wanted: Rc<Vec<Option<String>>> =
-        Rc::new(songs.iter().map(|song| song.cover_art.clone()).collect());
+    let wanted: Rc<Vec<Option<String>>> = Rc::new(
+        p.listed
+            .iter()
+            .map(|row| {
+                p.queue
+                    .get(row.songs.start)
+                    .and_then(|song| song.cover_art.clone())
+            })
+            .collect(),
+    );
     let missing: HashSet<String> = wanted
         .iter()
         .flatten()
@@ -768,13 +795,88 @@ fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing
     }
 }
 
+/// The line of the sheet's list for a `row`.
+fn queue_line(p: &Playing, row: &Row) -> QueueLine {
+    let songs: Vec<&Child> = row.songs.clone().filter_map(|at| p.queue.get(at)).collect();
+    let song = songs[0];
+    let playing_at = p.shown.filter(|shown| row.songs.contains(shown));
+    let (title, details) = match row.shape {
+        Shape::Work { .. } => (
+            work_name(song),
+            work_details(&songs, playing_at.map(|at| at - row.songs.start)),
+        ),
+        Shape::Movement => (movement_name(song), queue_details(song)),
+        Shape::Song => (song.title.clone(), queue_details(song)),
+    };
+    QueueLine {
+        title: title.into(),
+        details: details.into(),
+        cover: song
+            .cover_art
+            .as_ref()
+            .and_then(|cover| p.covers.get(cover))
+            .cloned()
+            .unwrap_or_default(),
+        album: song
+            .album_id
+            .as_ref()
+            .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
+        current: playing_at.is_some(),
+        work: matches!(row.shape, Shape::Work { .. }),
+        expanded: matches!(row.shape, Shape::Work { expanded: true, .. }),
+        part: row.shape == Shape::Movement,
+    }
+}
+
+fn work_name(song: &Child) -> String {
+    song.works
+        .first()
+        .map_or_else(|| song.title.clone(), |work| work.name.clone())
+}
+
+fn movement_name(song: &Child) -> String {
+    song.movements
+        .first()
+        .map_or_else(|| song.title.clone(), |movement| movement.name.clone())
+}
+
+/// A work's movements, its artists and length; while one of them plays
+/// (`playing`, its place among them), which, so a closed row still says
+/// where the sheet is.
+fn work_details(movements: &[&Child], playing: Option<usize>) -> String {
+    let count = movements.len();
+    let first = match playing {
+        Some(at) => format!(
+            "Playing {} ({} of {count})",
+            movement_name(movements[at]),
+            at + 1
+        ),
+        None => format!("{count} movements"),
+    };
+    let length = movements
+        .iter()
+        .map(|movement| movement.duration)
+        .sum::<Option<i64>>();
+    [first, artists_and_length(movements[0], length)]
+        .iter()
+        .filter(|part| !part.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// A queued song's artists and length.
 fn queue_details(song: &Child) -> String {
+    artists_and_length(song, song.duration)
+}
+
+/// `song`'s artists, and `seconds` if there are any.
+fn artists_and_length(song: &Child, seconds: Option<i64>) -> String {
     let artists: Vec<String> = browse::song_names(song)
         .into_iter()
         .map(|name| name.label.into())
         .collect();
-    match song.duration {
+    match seconds {
         Some(seconds) => format!("{} · {}", artists.join(", "), browse::duration(seconds)),
         None => artists.join(", "),
     }
@@ -1012,6 +1114,17 @@ pub(crate) mod testing {
             p.shown = Some(index);
         }
         super::show_song(ui, &browser, &playing.borrow(), &playing, index);
+    }
+
+    /// Queues a page's `songs` as a play from the `start`th does and lists
+    /// them on the sheet.
+    pub(crate) fn play_page(ui: &AppWindow, songs: Vec<Child>, start: usize) {
+        let (browser, playing) = handles();
+        let (queue, start) = page_queue(songs, start, false);
+        let mut p = playing.borrow_mut();
+        p.queue = queue;
+        p.shown = Some(start);
+        list_queue(ui, &browser, &mut p, &playing);
     }
 
     /// Takes the queue away, as when its last song is removed.

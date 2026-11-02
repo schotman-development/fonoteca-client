@@ -3839,6 +3839,81 @@ mod tests {
             wait_for("its frames", || ["red", "blue"].contains(&art_looks(&ui))).await;
             assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
 
+            // A work played whole is one row of the queue that opens to its
+            // movements; played from the middle, its movements are songs.
+            let movement = |id: &str, work: &str| -> opensubsonic::Child {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"{id}","isDir":false,"title":"{work}: {id}","albumId":"a2","works":[{{"name":"{work}"}}],"movements":[{{"name":"{id}"}}]}}"#
+                ))
+                .unwrap()
+            };
+            let pieces = || {
+                vec![
+                    movement("I", "Sonata"),
+                    movement("II", "Sonata"),
+                    movement("III", "Sonata"),
+                    song("solo", "a2"),
+                    movement("one", "Suite"),
+                    movement("two", "Suite"),
+                ]
+            };
+            let rows = || -> Vec<(String, bool, bool)> {
+                ui.get_queue_lines()
+                    .iter()
+                    .map(|line| (line.title.to_string(), line.work, line.part))
+                    .collect()
+            };
+            let row = |title: &str, work: bool, part: bool| (title.to_owned(), work, part);
+            play::testing::play_page(&ui, pieces(), 0);
+            assert_eq!(
+                rows(),
+                [
+                    row("Sonata", true, false),
+                    row("solo", false, false),
+                    row("Suite", true, false)
+                ]
+            );
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(550.0, 400.0),
+                delta_x: 0.0,
+                delta_y: -100000.0,
+            });
+            idle(Duration::from_millis(100)).await;
+            click(&ui, "Show the movements of Sonata");
+            assert_eq!(
+                rows(),
+                [
+                    row("Sonata", true, false),
+                    row("I", false, true),
+                    row("II", false, true),
+                    row("III", false, true),
+                    row("solo", false, false),
+                    row("Suite", true, false)
+                ]
+            );
+            let sonata = ui.get_queue_lines().row_data(0).unwrap();
+            assert!(sonata.current && sonata.expanded, "the work holds the song playing");
+            assert_eq!(sonata.details.as_str(), "Playing I (1 of 3)");
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(550.0, 400.0),
+                delta_x: 0.0,
+                delta_y: -100000.0,
+            });
+            idle(Duration::from_millis(100)).await;
+            click(&ui, "Hide the movements of Sonata");
+            assert_eq!(rows().len(), 3);
+            // From its second movement, the Sonata is songs; the Suite stays whole.
+            play::testing::play_page(&ui, pieces(), 1);
+            assert_eq!(
+                rows(),
+                [
+                    row("Sonata: II", false, false),
+                    row("Sonata: III", false, false),
+                    row("solo", false, false),
+                    row("Suite", true, false)
+                ]
+            );
+
             // So does the queue loaded anew, as on a sign in.
             let asked = MOTIONS_ASKED.load(Relaxed);
             play::testing::restore(&ui);

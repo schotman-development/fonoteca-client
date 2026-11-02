@@ -6338,7 +6338,7 @@ fn composer_names(song: &Child) -> Vec<Name> {
 /// Whether two neighbouring tracks belong to one work, by its name: an album
 /// can link one piece's tracks to two editions of it, as Swan Lake's No. 13
 /// to Drigo's.
-fn same_work(one: &Child, next: &Child) -> bool {
+pub(crate) fn same_work(one: &Child, next: &Child) -> bool {
     let (one, next) = (one.works.first(), next.works.first());
     one.is_some() && one.map(|work| &work.name) == next.map(|work| &work.name)
 }

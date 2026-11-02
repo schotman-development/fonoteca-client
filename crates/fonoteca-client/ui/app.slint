@@ -1020,6 +1020,7 @@ export component AppWindow inherits Window {
     // The queue on the now playing sheet, by its rows there: the first is
     // the track playing.
     callback jump-to(row: int);
+    callback toggle-queued-work(row: int);
     callback play-queued-next(row: int);
     callback remove-queued(row: int);
     callback move-queued(from: int, to: int);
@@ -2561,7 +2562,7 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 for line[row] in root.queue-lines: drag := DragArea {
                                     height: queued.preferred-height;
-                                    enabled: row > 0 && !Input.touch;
+                                    enabled: row > 0 && !line.part && !Input.touch;
                                     allow-move: true;
                                     data: Drag.data;
                                     changed dragging => {
@@ -2576,17 +2577,21 @@ export component AppWindow inherits Window {
                                         link: row > 0 ? "jump" : "";
                                         details: line.details;
                                         cover: line.cover;
-                                        covered: true;
+                                        covered: !line.part;
+                                        depth: line.part ? 1 : 0;
                                         current: line.current;
+                                        expandable: line.work;
+                                        expanded: line.expanded;
                                         // All of them when opened; one so it shows.
                                         entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
                                         open => { root.jump-to(row); }
+                                        toggled => { root.toggle-queued-work(row); }
                                         opening => {
                                             self.entries = [];
-                                            if row > 0 {
+                                            if row > 0 && !line.current {
                                                 self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
                                             }
-                                            if row > 1 {
+                                            if row > 1 && !line.part {
                                                 self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
                                             }
                                             if line.album != "" {
@@ -2609,7 +2614,7 @@ export component AppWindow inherits Window {
                                     DropArea {
                                         width: parent.width;
                                         height: parent.height;
-                                        can-drop(event) => Drag.queued > 0 && row > 0 && Drag.queued != row ? event.proposed-action : DragAction.none;
+                                        can-drop(event) => Drag.queued > 0 && row > 0 && !line.part && Drag.queued != row ? event.proposed-action : DragAction.none;
                                         dropped(event) => {
                                             root.move-queued(Drag.queued, row);
                                             return event.proposed-action;

@@ -75,6 +75,7 @@ export global Icons {
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
     out property <string> chevron-down: "M6 9l6 6 6-6";
+    out property <string> chevron-up: "M6 15l6-6 6 6";
     out property <string> forward: "M9 5l7 7-7 7";
     out property <string> sound: "M6 4v16 M12 4v16 M18 4v16 M3.5 14h5 M9.5 8h5 M15.5 16h5";
     out property <string> refresh: "M20 12a8 8 0 1 1-8-8c2.2 0 4.3.9 5.9 2.4L20 8.5 M20 3.5v5h-5";
@@ -1200,11 +1201,17 @@ export component ListRow inherits Rectangle {
     in property <image> cover;
     in property <bool> covered;
     in property <bool> current;
+    // A row that opens to the rows under it, with a button to do so.
+    in property <bool> expandable;
+    in property <bool> expanded;
     in-out property <[MenuEntry]> entries;
     callback open(link: string);
+    callback toggled();
     callback opening();
     callback activated(id: string, choice: string);
     accessible-role: list-item;
+    accessible-expandable: root.expandable;
+    accessible-expanded: root.expanded;
     accessible-label: self.title;
     accessible-description: self.details;
 
@@ -1240,6 +1247,12 @@ export component ListRow inherits Rectangle {
                 color: Theme.muted;
                 overflow: elide;
             }
+        }
+        if root.expandable: IconButton {
+            cross-axis-self-alignment: center;
+            label: (root.expanded ? "Hide the movements of " : "Show the movements of ") + root.title;
+            icon: root.expanded ? Icons.chevron-up : Icons.chevron-down;
+            clicked => { root.toggled(); }
         }
         if root.entries.length > 0: MoreMenu {
             cross-axis-self-alignment: center;
@@ -2511,13 +2524,18 @@ export struct PathStep {
 }
 
 // A song in the queue on the now playing sheet: its title, its artists and
-// length, its cover, its album's link, and whether it is the one playing.
+// length, its cover, its album's link, and whether it is the one playing. A
+// work queued whole is one `work` line that opens (`expanded`) to a `part`
+// line for each of its movements.
 export struct QueueLine {
     title: string,
     details: string,
     cover: image,
     album: string,
     current: bool,
+    work: bool,
+    expanded: bool,
+    part: bool,
 }
 
 // The track's position, to drag or click to a new one, which it hands to
