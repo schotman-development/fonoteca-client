@@ -107,7 +107,7 @@ export global Icons {
     out property <string> repeat-one: "M4 11V9.5A2.5 2.5 0 0 1 6.5 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-2.5 2.5H5 M8 20l-3-3 3-3 M11 11l1.5-1v4.5";
     // Filled.
     out property <string> play: "M7.5 4.5v15l12-7.5z";
-    out property <string> pause: "M6.5 5h4v14h-4z M13.5 5h4v14h-4z";
+    out property <string> pause: "M6 6h4v12h-4z M14 6h4v12h-4z";
     out property <string> previous: "M5.5 5v14 M19 5v14l-11-7z";
     out property <string> next: "M18.5 5v14 M5 5v14l11-7z";
     out property <string> chevron: "M6 9l6 6 6-6";
@@ -386,10 +386,17 @@ export component IconButton inherits Pressable {
     in property <brush> color: Theme.text;
     in property <length> icon-size: 20px;
     in property <brush> hover-color: Theme.hover;
+    // A round plate behind the icon, for the one button that leads.
+    in property <brush> plate: transparent;
+    in property <length> stroke: 1.75px;
 
     width: Screen.phone ? 44px : 32px;
     height: self.width;
 
+    Rectangle {
+        border-radius: self.height / 2;
+        background: root.plate;
+    }
     Rectangle {
         border-radius: self.height / 2;
         background: root.hovered ? root.hover-color : transparent;
@@ -401,7 +408,7 @@ export component IconButton inherits Pressable {
         viewbox-height: 24;
         commands: root.icon;
         stroke: root.enabled ? root.color : Theme.muted.transparentize(60%);
-        stroke-width: 1.75px;
+        stroke-width: root.stroke;
         fill: root.filled ? root.color : transparent;
     }
 }
@@ -2550,6 +2557,21 @@ component RepeatButton inherits IconButton {
     label: root.repeat == 0 ? "Repeat all" : root.repeat == 1 ? "Repeat one" : "Repeat off";
 }
 
+// Plays or pauses, as a filled round button so it stands out from the
+// others.
+component PlayPauseButton inherits IconButton {
+    in property <bool> paused;
+    icon: root.paused ? Icons.play : Icons.pause;
+    filled: true;
+    color: Palette.background;
+    // Filled only, since a stroke on a glyph this size leaves a seam and a
+    // notch; the plate lightens under the pointer, where its tint would not
+    // show.
+    stroke: 0px;
+    plate: root.hovered ? Theme.text.transparentize(25%) : Theme.text;
+    label: root.paused ? "Play" : "Pause";
+}
+
 // Where the track is and how long it is, either side of the bar that moves
 // it.
 component SeekRow inherits HorizontalLayout {
@@ -2602,6 +2624,8 @@ export component PlayerControls inherits VerticalLayout {
     callback seek(seconds: float);
     callback toggle-shuffle();
     callback cycle-repeat();
+    // Narrow phones give the smaller buttons their 44px targets and no more.
+    property <length> side: Screen.width < 360px ? 44px : 56px;
     spacing: 8px;
 
     SeekRow {
@@ -2613,27 +2637,31 @@ export component PlayerControls inherits VerticalLayout {
         alignment: space-between;
         ShuffleButton {
             cross-axis-self-alignment: center;
+            width: root.side;
+            icon-size: 28px;
             shuffled: root.shuffled;
             clicked => { root.toggle-shuffle(); }
         }
         IconButton {
             cross-axis-self-alignment: center;
+            width: root.side;
+            icon-size: 32px;
             icon: Icons.previous;
             filled: true;
             label: "Previous";
             clicked => { root.previous(); }
         }
-        IconButton {
+        PlayPauseButton {
             cross-axis-self-alignment: center;
-            width: 56px;
-            icon-size: 32px;
-            icon: root.paused ? Icons.play : Icons.pause;
-            filled: true;
-            label: root.paused ? "Play" : "Pause";
+            width: 80px;
+            icon-size: 48px;
+            paused: root.paused;
             clicked => { root.toggle-pause(); }
         }
         IconButton {
             cross-axis-self-alignment: center;
+            width: root.side;
+            icon-size: 32px;
             icon: Icons.next;
             filled: true;
             label: "Next";
@@ -2641,6 +2669,8 @@ export component PlayerControls inherits VerticalLayout {
         }
         RepeatButton {
             cross-axis-self-alignment: center;
+            width: root.side;
+            icon-size: 28px;
             repeat: root.repeat;
             clicked => { root.cycle-repeat(); }
         }
@@ -2800,6 +2830,11 @@ export component PlayerBar inherits Rectangle {
     callback toggle-shuffle();
     callback cycle-repeat();
     property <brush> light: root.level >= 0 ? Theme.quality-colors[root.level] : Theme.muted;
+    // A window this narrow, whose bar is under 760px once the sidebar is
+    // docked, draws everything closer and smaller, play and pause the least.
+    // The bar's own width can't say so: it follows from what it holds.
+    property <bool> compact: !Screen.phone && Screen.width < 1000px;
+    property <length> side: root.compact ? 36px : 40px;
 
     height: Screen.phone ? 72px : 80px;
     background: Theme.surface;
@@ -2812,9 +2847,9 @@ export component PlayerBar inherits Rectangle {
         clicked => { root.open-playing(); }
     }
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 12px;
+        padding-left: root.compact ? 12px : 16px;
+        padding-right: root.compact ? 12px : 16px;
+        spacing: root.compact ? 6px : 12px;
         alignment: stretch;
         Artwork {
             cross-axis-self-alignment: center;
@@ -2849,27 +2884,31 @@ export component PlayerBar inherits Rectangle {
         }
         if !Screen.phone: ShuffleButton {
             cross-axis-self-alignment: center;
+            width: root.side;
+            icon-size: 24px;
             shuffled: root.shuffled;
             clicked => { root.toggle-shuffle(); }
         }
         if !Screen.phone: IconButton {
             cross-axis-self-alignment: center;
+            width: root.side;
+            icon-size: 24px;
             icon: Icons.previous;
             filled: true;
             label: "Previous";
             clicked => { root.previous(); }
         }
-        IconButton {
+        PlayPauseButton {
             cross-axis-self-alignment: center;
-            width: 44px;
-            icon-size: 28px;
-            icon: root.paused ? Icons.play : Icons.pause;
-            filled: true;
-            label: root.paused ? "Play" : "Pause";
+            width: Screen.phone ? 48px : 56px;
+            icon-size: Screen.phone ? 24px : 36px;
+            paused: root.paused;
             clicked => { root.toggle-pause(); }
         }
         IconButton {
             cross-axis-self-alignment: center;
+            width: Screen.phone ? 44px : root.side;
+            icon-size: 24px;
             icon: Icons.next;
             filled: true;
             label: "Next";
@@ -2877,6 +2916,8 @@ export component PlayerBar inherits Rectangle {
         }
         if !Screen.phone: RepeatButton {
             cross-axis-self-alignment: center;
+            width: root.side;
+            icon-size: 24px;
             repeat: root.repeat;
             clicked => { root.cycle-repeat(); }
         }
