@@ -1596,7 +1596,6 @@ mod tests {
                 (
                     "Playback",
                     [
-                        "Sound device",
                         "Volume leveling",
                         "Streaming format",
                         "Streaming bitrate",
@@ -1610,6 +1609,10 @@ mod tests {
                 for choice in choices {
                     assert!(find_combo(&ui, choice), "no {choice} choice in {section}");
                 }
+                assert!(
+                    !find_combo(&ui, "Sound device") && find(&ui, "Sound device").is_none(),
+                    "the sound device is chosen on now playing, not in {section}"
+                );
                 ui.invoke_back();
                 assert_eq!(ui.get_page(), Page::Settings);
             }
@@ -2486,6 +2489,46 @@ mod tests {
                 idle(Duration::from_millis(400)).await;
                 assert!(page_has_the_keys(), "the sidebar hands the page the keys");
                 click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+                // The sound device is chosen from the sheet, wide, narrow and
+                // on a phone: the one in use is marked, the choice is kept as
+                // the settings once kept it, and opening the menu lists the
+                // devices again.
+                let dac = "alsa:hw:CARD=DAC,DEV=0";
+                let fake_devices = || {
+                    play::testing::show_devices(&ui, vec![(dac.into(), "USB DAC".into())]);
+                };
+                let icons = ui.global::<Icons>();
+                let marked = || -> Vec<bool> {
+                    ui.get_output_devices()
+                        .iter()
+                        .map(|entry| entry.icon == icons.get_check())
+                        .collect()
+                };
+                let listed = || -> Vec<String> {
+                    ui.get_output_devices().iter().map(|entry| entry.label.into()).collect()
+                };
+                for (width, height) in [(1100.0, 760.0), (700.0, 760.0), (400.0, 760.0)] {
+                    ui.window().set_size(slint::LogicalSize::new(width, height));
+                    idle(Duration::from_millis(400)).await;
+                    fake_devices();
+                    assert_eq!(marked(), [true, false]);
+                    click(&ui, "Sound device");
+                    wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
+                    fake_devices();
+                    click(&ui, "USB DAC, hw:CARD=DAC,DEV=0");
+                    assert_eq!(crate::prefs::load().output_device.as_deref(), Some(dac), "{width}px");
+                    assert_eq!(marked(), [false, true], "{width}px");
+                    // Listed again at start-up or on opening, the one saved is the one marked.
+                    fake_devices();
+                    assert_eq!(marked(), [false, true], "{width}px");
+                    click(&ui, "Sound device");
+                    click(&ui, "System default");
+                    assert_eq!(crate::prefs::load().output_device, None, "{width}px");
+                    assert_eq!(marked().first(), Some(&true), "{width}px");
+                    wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
+                }
+                ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
                 idle(Duration::from_millis(400)).await;
                 click(&ui, "Aurora");
                 assert!(!ui.get_now_playing_open(), "a link out closes it");

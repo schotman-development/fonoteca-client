@@ -19,7 +19,10 @@ use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
-use crate::{AppWindow, Name, Page, PathStep, QueueLine, browse, prefs, quality, sound, waveform};
+use crate::{
+    AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, prefs, quality, sound,
+    waveform,
+};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -60,7 +63,7 @@ struct Playing {
     /// queue was last saved; and whether the server turned the saving down.
     saved: Option<(Option<usize>, bool, f64)>,
     queue_refused: bool,
-    /// The settings' sound devices by cpal id, none for the default.
+    /// The sound devices by cpal id, none for the default.
     devices: Vec<Option<String>>,
     tick: Timer,
 }
@@ -177,10 +180,11 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         move || list_devices(&weak.unwrap(), &playing)
     });
     ui.on_choose_output({
-        let playing = playing.clone();
+        let (weak, playing) = (ui.as_weak(), playing.clone());
         move |index| {
             let p = playing.borrow();
             let device = p.devices.get(index as usize).cloned().flatten();
+            mark_device(&weak.unwrap(), index as usize);
             let mut saved = prefs::load();
             saved.output_device = device.clone();
             prefs::save(&saved);
@@ -359,30 +363,67 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     });
 }
 
-/// Puts the sound devices there are now in the settings, with the one chosen
-/// selected. Looking for them can take a moment, so it happens off the event
-/// loop.
+/// Puts the sound devices there are now in the now playing sheet's menu, with
+/// the one chosen marked. Looking for them can take a moment, so it happens
+/// off the event loop.
 fn list_devices(ui: &AppWindow, playing: &Shared) {
     let found = tokio::task::spawn_blocking(playback::devices);
     let (weak, playing) = (ui.as_weak(), playing.clone());
     slint::spawn_local(async move {
         let Ok(found) = found.await else { return };
         let Some(ui) = weak.upgrade() else { return };
-        let mut names = vec![SharedString::from("System default")];
-        let mut devices = vec![None];
-        for (id, name) in found {
-            let pcm = id.strip_prefix("alsa:").unwrap_or(&id);
-            names.push(format!("{name} ({pcm})").into());
-            devices.push(Some(id));
-        }
-        let chosen = devices
-            .iter()
-            .position(|id| *id == prefs::load().output_device);
-        ui.set_output_devices(ModelRc::new(VecModel::from(names)));
-        ui.set_output_device(chosen.unwrap_or(0) as i32);
-        playing.borrow_mut().devices = devices;
+        show_devices(&ui, &playing, found);
     })
     .expect("the event loop is running");
+}
+
+/// The `found` devices by cpal id and name, after the system's default.
+fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<(String, String)>) {
+    let mut names = vec![(SharedString::from("System default"), SharedString::new())];
+    let mut devices = vec![None];
+    for (id, name) in found {
+        let pcm = id.strip_prefix("alsa:").unwrap_or(&id);
+        names.push((SharedString::from(name), SharedString::from(pcm)));
+        devices.push(Some(id));
+    }
+    let chosen = devices
+        .iter()
+        .position(|id| *id == prefs::load().output_device)
+        .unwrap_or(0);
+    let icons = ui.global::<Icons>();
+    let entries: Vec<MenuEntry> = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, detail))| MenuEntry {
+            id: index.to_string().into(),
+            label,
+            detail,
+            icon: device_icon(&icons, index == chosen),
+            ..Default::default()
+        })
+        .collect();
+    ui.set_output_devices(ModelRc::new(VecModel::from(entries)));
+    playing.borrow_mut().devices = devices;
+}
+
+/// Moves the menu's mark to the device `chosen`.
+fn mark_device(ui: &AppWindow, chosen: usize) {
+    let icons = ui.global::<Icons>();
+    let entries = ui.get_output_devices();
+    for (index, mut entry) in entries.iter().enumerate() {
+        entry.icon = device_icon(&icons, index == chosen);
+        entries.set_row_data(index, entry);
+    }
+}
+
+/// A check for the device in use; the others get a blank of its width, so
+/// their names line up with it.
+fn device_icon(icons: &Icons, in_use: bool) -> SharedString {
+    if in_use {
+        icons.get_check()
+    } else {
+        icons.get_blank()
+    }
 }
 
 /// Plays `songs` from the `start`th, in place of what played: shuffled, the
@@ -1128,6 +1169,12 @@ pub(crate) mod testing {
 
     fn handles() -> (browse::Shared, Shared) {
         HANDLES.with(|handles| handles.borrow().clone().expect("the player is wired"))
+    }
+
+    /// Lists `found` as the sound devices there are.
+    pub(crate) fn show_devices(ui: &AppWindow, found: Vec<(String, String)>) {
+        let (_, playing) = handles();
+        super::show_devices(ui, &playing, found);
     }
 
     /// Queues `songs` and shows the `index`th, as when the player moves on.

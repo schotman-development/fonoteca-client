@@ -1,7 +1,7 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
 import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
 
-export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
+export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -895,8 +895,7 @@ export component AppWindow inherits Window {
     ] : root.tiles-queued ? root.queue-entries : root.tiles-moved ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
     // The sound devices to play on, the system's default first, and the one
     // chosen; volume leveling: off, by track or by album.
-    in property <[string]> output-devices;
-    in-out property <int> output-device;
+    in property <[MenuEntry]> output-devices;
     in-out property <int> leveling;
     // The streaming format and bitrate entries for wifi and for mobile data;
     // a device without mobile data has just the first.
@@ -2022,7 +2021,7 @@ export component AppWindow inherits Window {
                         if root.can-play: SettingsRow {
                             icon: Icons.play;
                             title: "Playback";
-                            summary: "Device, leveling and streaming quality";
+                            summary: "Leveling and streaming quality";
                             clicked => { root.open("setting:playback"); }
                         }
                         if root.can-play: SettingsRow {
@@ -2057,20 +2056,7 @@ export component AppWindow inherits Window {
                     if root.page == Page.setting && root.shown-id == "playback": VerticalLayout {
                         max-width: 480px;
                         spacing: 12px;
-                        init => { root.list-devices(); }
                         Heading { text: "Playback"; }
-                        if root.can-play: Text {
-                            text: "Sound device";
-                            font-size: Theme.body;
-                            color: Theme.muted;
-                        }
-                        if root.can-play: ComboBox {
-                            accessible-label: "Sound device";
-                            model: root.output-devices;
-                            current-index <=> root.output-device;
-                            enabled: !Input.modal;
-                            selected => { root.choose-output(self.current-index); }
-                        }
                         if root.can-play: Text {
                             text: "Volume leveling";
                             font-size: Theme.body;
@@ -2549,6 +2535,9 @@ export component AppWindow inherits Window {
                                     quality: root.playing-quality;
                                     level: root.playing-level;
                                     path: root.playing-path;
+                                    output-devices: root.output-devices;
+                                    list-devices => { root.list-devices(); }
+                                    choose-output(index) => { root.choose-output(index); }
                                     open(link) => { root.open-from-now-playing(link); }
                                 }
                                 if Screen.phone: PlayerControls {

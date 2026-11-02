@@ -58,6 +58,9 @@ export struct MenuEntry {
     icon: string,
     danger: bool,
     choices: [Name],
+    // A second, smaller line under the label, for entries the label alone
+    // doesn't tell apart; the menu says so with `two-line`.
+    detail: string,
 }
 
 // An album or artist on a grid or shelf, and the page it opens; a folder of
@@ -77,6 +80,10 @@ export global Icons {
     out property <string> chevron-down: "M6 9l6 6 6-6";
     out property <string> chevron-up: "M6 15l6-6 6 6";
     out property <string> forward: "M9 5l7 7-7 7";
+    // Draws nothing, but takes the width of an icon, to line up the words of
+    // a menu's entries that have none beside those that have.
+    out property <string> blank: "M0 0";
+    out property <string> speaker: "M4 9.5v5h4l5 4v-13l-5 4z M16.5 9.5a3.5 3.5 0 0 1 0 5 M19 7a7 7 0 0 1 0 10";
     out property <string> sound: "M6 4v16 M12 4v16 M18 4v16 M3.5 14h5 M9.5 8h5 M15.5 16h5";
     out property <string> refresh: "M20 12a8 8 0 1 1-8-8c2.2 0 4.3.9 5.9 2.4L20 8.5 M20 3.5v5h-5";
     out property <string> up: "M12 19V5 M6 11l6-6 6 6";
@@ -507,6 +514,7 @@ component MenuRow {
     in property <string> icon;
     in property <string> label;
     in property <bool> danger;
+    in property <string> detail;
     in property <bool> strong;
     in property <bool> more;
     in property <bool> lit;
@@ -517,7 +525,7 @@ component MenuRow {
     callback clicked();
 
     accessible-role: button;
-    accessible-label: root.label;
+    accessible-label: root.detail == "" ? root.label : root.label + ", " + root.detail;
     accessible-expandable: root.more;
     accessible-action-default => { root.clicked(); }
 
@@ -541,14 +549,24 @@ component MenuRow {
             stroke: root.danger ? Theme.danger : Theme.muted;
             stroke-width: 1.75px;
         }
-        Text {
+        VerticalLayout {
             horizontal-stretch: 1;
-            text: root.label;
-            font-size: root.font-size;
-            font-weight: root.strong ? 600 : 400;
-            color: root.danger ? Theme.danger : Theme.text;
-            vertical-alignment: center;
-            overflow: elide;
+            alignment: center;
+            Text {
+                text: root.label;
+                font-size: root.font-size;
+                font-weight: root.strong ? 600 : 400;
+                color: root.danger ? Theme.danger : Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.detail != "": Text {
+                text: root.detail;
+                font-size: Theme.small;
+                color: Theme.muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
         if root.more: Path {
             cross-axis-self-alignment: center;
@@ -581,6 +599,10 @@ export component MoreMenu {
     in property <brush> color: Theme.muted;
     in property <brush> hover-color: Theme.hover;
     in property <brush> ring-color: Theme.accent;
+    // Whether the entries carry a `detail` line under their label, and how
+    // wide the desktop's panel is for them.
+    in property <bool> two-line;
+    in property <length> panel: 224px;
     out property <bool> hovered: button.hovered;
     out property <bool> pressed: button.pressed;
     callback opening();
@@ -613,21 +635,23 @@ export component MoreMenu {
     }
 
     property <length> row-height: 32px * Theme.zoom;
+    property <length> entry-height: (root.two-line ? 44px : 32px) * Theme.zoom;
+    property <length> sheet-entry-height: (root.two-line ? 64px : 48px) * Theme.zoom;
     property <length> pad: 4px;
-    property <length> panel: 224px;
     property <length> gap: 4px;
     property <length> above: root.absolute-position.y - 8px;
     property <length> below: Screen.height - Screen.bottom - root.absolute-position.y - root.height - 8px;
     property <bool> up: root.below < 240px && root.above > root.below;
     property <length> menu-x: root.absolute-position.x + root.panel > Screen.width - 8px ? root.width - root.panel : 0;
     property <bool> sub-left: root.absolute-position.x + root.menu-x + 2 * root.panel + root.gap > Screen.width - 8px;
-    property <length> main-height: 2 * root.pad + root.entries.length * root.row-height;
+    // A long list of entries scrolls.
+    property <length> main-height: min(2 * root.pad + root.entries.length * root.entry-height, (root.up ? root.above : root.below) - root.gap);
     // A long submenu scrolls.
     property <length> sub-height: min(min(2 * root.pad + root.choices.length * root.row-height, 320px), (root.up ? root.above : root.below) - root.gap);
     property <length> menu-height: root.open >= 0 ? max(root.main-height, root.sub-height) : root.main-height;
     property <length> main-y: root.up ? root.menu-height - root.main-height : 0;
     // Lined up with its entry, within the menu's height where it fits.
-    property <length> sub-y: clamp(root.main-y + root.open * root.row-height, 0, root.menu-height - root.sub-height);
+    property <length> sub-y: clamp(root.main-y + root.open * root.entry-height, 0, root.menu-height - root.sub-height);
 
     width: Screen.phone ? 44px : 32px;
     height: self.width;
@@ -760,25 +784,37 @@ export component MoreMenu {
                 drop-shadow-blur: 16px;
                 drop-shadow-offset-y: 4px;
                 drop-shadow-color: #0000004d;
-                VerticalLayout {
-                    padding: root.pad;
-                    for entry[i] in root.entries: MenuRow {
-                        height: root.row-height;
-                        icon: entry.icon;
-                        label: entry.label;
-                        danger: entry.danger;
-                        more: entry.choices.length > 0;
-                        lit: root.current == i;
-                        keyed: root.keyed;
-                        // The mouse on an entry opens its submenu, or closes
-                        // another's.
-                        changed hovered => {
-                            if self.hovered {
-                                root.keyed = false;
-                                root.light(i);
+                main-scroll := Flickable {
+                    content-height: 2 * root.pad + root.entries.length * root.entry-height;
+                    VerticalLayout {
+                        padding: root.pad;
+                        for entry[i] in root.entries: MenuRow {
+                            height: root.entry-height;
+                            icon: entry.icon;
+                            label: entry.label;
+                            detail: entry.detail;
+                            danger: entry.danger;
+                            more: entry.choices.length > 0;
+                            lit: root.current == i;
+                            keyed: root.keyed;
+                            // Scrolled into view when the keys light it; the mouse
+                            // lights what is already under it, and the wheel would
+                            // be undone.
+                            changed lit => {
+                                if self.lit && root.keyed {
+                                    main-scroll.content-y = clamp(main-scroll.content-y, main-scroll.height - self.y - self.height, -self.y);
+                                }
                             }
+                            // The mouse on an entry opens its submenu, or closes
+                            // another's.
+                            changed hovered => {
+                                if self.hovered {
+                                    root.keyed = false;
+                                    root.light(i);
+                                }
+                            }
+                            clicked => { root.choose(i); }
                         }
-                        clicked => { root.choose(i); }
                     }
                 }
             }
@@ -838,9 +874,10 @@ export component MoreMenu {
                         padding: 8px;
                         if root.open < 0: VerticalLayout {
                             for entry[i] in root.entries: MenuRow {
-                                height: 48px * Theme.zoom;
+                                height: root.sheet-entry-height;
                                 icon: entry.icon;
                                 label: entry.label;
+                                detail: entry.detail;
                                 danger: entry.danger;
                                 more: entry.choices.length > 0;
                                 icon-size: 22px;
@@ -2990,6 +3027,9 @@ component NowPlayingDetails inherits VerticalLayout {
     in property <string> quality;
     in property <int> level;
     in property <[PathStep]> path;
+    in property <[MenuEntry]> output-devices;
+    callback list-devices();
+    callback choose-output(index: int);
     callback open(link: string);
     spacing: 8px;
     alignment: start;
@@ -3010,14 +3050,26 @@ component NowPlayingDetails inherits VerticalLayout {
         text: root.album.label;
         clicked => { root.open(root.album.link); }
     }
-    if root.level >= 0: HorizontalLayout {
+    HorizontalLayout {
         padding-top: 16px;
         alignment: start;
-        SignalPathLight {
+        spacing: 8px;
+        if root.level >= 0: SignalPathLight {
+            cross-axis-self-alignment: center;
             quality: root.quality;
             level: root.level;
             path: root.path;
             opens-upward: false;
+        }
+        MoreMenu {
+            cross-axis-self-alignment: center;
+            label: "Sound device";
+            icon: Icons.speaker;
+            two-line: true;
+            panel: 320px;
+            entries: root.output-devices;
+            opening => { root.list-devices(); }
+            activated(id) => { root.choose-output(Math.floor(id.to-float())); }
         }
     }
 }
@@ -3035,6 +3087,9 @@ export component NowPlaying inherits VerticalLayout {
     in property <string> quality;
     in property <int> level: -1;
     in property <[PathStep]> path;
+    in property <[MenuEntry]> output-devices;
+    callback list-devices();
+    callback choose-output(index: int);
     callback open(link: string);
     property <bool> narrow: root.available < 720px;
 
@@ -3054,6 +3109,9 @@ export component NowPlaying inherits VerticalLayout {
             quality: root.quality;
             level: root.level;
             path: root.path;
+            output-devices: root.output-devices;
+            list-devices => { root.list-devices(); }
+            choose-output(index) => { root.choose-output(index); }
             open(link) => { root.open(link); }
         }
     }
@@ -3073,6 +3131,9 @@ export component NowPlaying inherits VerticalLayout {
             quality: root.quality;
             level: root.level;
             path: root.path;
+            output-devices: root.output-devices;
+            list-devices => { root.list-devices(); }
+            choose-output(index) => { root.choose-output(index); }
             open(link) => { root.open(link); }
         }
     }

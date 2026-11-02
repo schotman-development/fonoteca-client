@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -63,6 +63,40 @@ export component Workbench inherits Window {
     property <bool> queue-work-open;
     property <int> quality-format: 1;
     property <int> quality-bitrate: 2;
+    property <int> output-device;
+    property <[MenuEntry]> output-devices: [
+        { id: "0", label: "System default", icon: root.output-device == 0 ? Icons.check : Icons.blank },
+        { id: "1", label: "USB DAC", detail: "hw:CARD=DAC,DEV=0", icon: root.output-device == 1 ? Icons.check : Icons.blank },
+        { id: "2", label: "Built-in Audio Analog Stereo", detail: "hw:CARD=PCH,DEV=0", icon: root.output-device == 2 ? Icons.check : Icons.blank },
+    ];
+    // What a laptop's ALSA lists: every card again as hw, plughw, dmix and so on.
+    property <[MenuEntry]> many-devices: [
+        { id: "0", label: "System default", icon: Icons.check },
+        { id: "1", label: "HDA Intel PCH, ALC3246 Analog", detail: "hw:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "2", label: "HDA Intel PCH, ALC3246 Analog", detail: "plughw:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "3", label: "HDA Intel PCH, ALC3246 Analog", detail: "sysdefault:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "4", label: "HDA Intel PCH, ALC3246 Analog", detail: "front:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "5", label: "HDA Intel PCH, ALC3246 Analog", detail: "surround40:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "6", label: "HDA Intel PCH, ALC3246 Analog", detail: "iec958:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "7", label: "HDA Intel PCH, ALC3246 Analog", detail: "dmix:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "8", label: "HDA Intel PCH, ALC3246 Analog", detail: "dsnoop:CARD=PCH,DEV=0", icon: Icons.blank },
+        { id: "9", label: "USB Audio DAC, USB Audio", detail: "hw:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "10", label: "USB Audio DAC, USB Audio", detail: "plughw:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "11", label: "USB Audio DAC, USB Audio", detail: "sysdefault:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "12", label: "USB Audio DAC, USB Audio", detail: "front:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "13", label: "USB Audio DAC, USB Audio", detail: "surround40:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "14", label: "USB Audio DAC, USB Audio", detail: "iec958:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "15", label: "USB Audio DAC, USB Audio", detail: "dmix:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "16", label: "USB Audio DAC, USB Audio", detail: "dsnoop:CARD=DAC,DEV=0", icon: Icons.blank },
+        { id: "17", label: "HDA NVidia, HDMI 0", detail: "hw:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "18", label: "HDA NVidia, HDMI 0", detail: "plughw:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "19", label: "HDA NVidia, HDMI 0", detail: "sysdefault:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "20", label: "HDA NVidia, HDMI 0", detail: "front:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "21", label: "HDA NVidia, HDMI 0", detail: "surround40:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "22", label: "HDA NVidia, HDMI 0", detail: "iec958:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "23", label: "HDA NVidia, HDMI 0", detail: "dmix:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "24", label: "HDA NVidia, HDMI 0", detail: "dsnoop:CARD=HDMI,DEV=0", icon: Icons.blank },
+    ];
     property <string> long-title: "An unusually long title that keeps going, to show where text wraps and where it is cut short";
     property <[Name]> many: [
         { label: "Mara Lind", link: "artist:1" },
@@ -703,7 +737,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 16: Example {
-                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. A phone's controls follow, then the queue's rows, the one playing coloured; a work queued whole is one row that opens to its movements";
+                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. The sound device menu opens beside the light, with the long list of an ALSA host under the Long text switch. A phone's controls follow, then the queue's rows, the one playing coloured; a work queued whole is one row that opens to its movements";
                         NowPlaying {
                             available: root.long-text ? 400px : 900px;
                             cover: root.albums[0].cover;
@@ -717,6 +751,9 @@ export component Workbench inherits Window {
                                 { text: "Resampled 96 kHz to 48 kHz", quality: 1 },
                                 { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
                             ];
+                            output-devices: root.long-text ? root.many-devices : root.output-devices;
+                            list-devices => { root.event = "list devices"; }
+                            choose-output(index) => { root.output-device = index; }
                             open(link) => { root.event = "open " + link; }
                         }
                         PlayerControls {
