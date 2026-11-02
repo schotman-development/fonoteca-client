@@ -924,6 +924,32 @@ impl Client {
         self.call("findSonicPath", params, "sonicMatch").await
     }
 
+    // Bookmarks
+
+    /// The play queue saved for this user, if any.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/getplayqueue/>
+    pub async fn get_play_queue(&self) -> Result<Option<PlayQueue>> {
+        self.call("getPlayQueue", Params::new(), "playQueue").await
+    }
+
+    /// Saves this user's play queue: its songs, the one playing and how many
+    /// milliseconds into it. With no songs, clears it.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/saveplayqueue/>
+    pub async fn save_play_queue(
+        &self,
+        ids: &[&str],
+        current: Option<&str>,
+        position: Option<i64>,
+    ) -> Result<()> {
+        let params = Params::new()
+            .list("id", ids)
+            .opt("current", current)
+            .opt("position", position);
+        self.call_unit("savePlayQueue", params).await
+    }
+
     // Media library scanning
 
     /// Whether the server is scanning its libraries, and how many items it

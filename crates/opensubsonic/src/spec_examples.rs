@@ -1,7 +1,7 @@
 //! Parses every JSON example on the spec pages of the calls and types this
 //! crate covers. `spec-examples/` holds them, copied from
-//! <https://github.com/opensubsonic/open-subsonic-api> at be131fb44a48 under
-//! its Apache-2.0 license. Eleven examples had JSON typos (trailing or missing
+//! <https://github.com/opensubsonic/open-subsonic-api> at be131fb44a48 (the
+//! play queue's at c1fd43f) under its Apache-2.0 license. Eleven examples had JSON typos (trailing or missing
 //! commas, an extra brace); their copies fix only those.
 //!
 //! Left out: the getIndexes and indexes examples, which give numbers and
@@ -70,6 +70,7 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
             check::<Vec<SonicMatch>>(response, name, "sonicMatch")
         }
         "getScanStatus" | "startScan" => check::<ScanStatus>(response, name, "scanStatus"),
+        "getPlayQueue" => check::<Option<PlayQueue>>(response, name, "playQueue"),
         "getInternetRadioStations" => {
             check::<InternetRadioStations>(response, name, "internetRadioStations")
         }
@@ -84,7 +85,8 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
         | "createUser"
         | "updateUser"
         | "deleteUser"
-        | "changePassword" => Ok(()),
+        | "changePassword"
+        | "savePlayQueue" => Ok(()),
         _ => panic!("no check for endpoint {name}"),
     }
 }
@@ -138,6 +140,7 @@ fn response(name: &str, json: &[u8]) -> Result<()> {
         "NowPlayingEntry" => parse::<NowPlayingEntry>(json),
         "OpenSubsonicExtension" => parse::<OpenSubsonicExtension>(json),
         "Playlist" => parse::<Playlist>(json),
+        "PlayQueue" => parse::<PlayQueue>(json),
         "PlaylistWithSongs" => parse::<PlaylistWithSongs>(json),
         "Playlists" => parse::<Playlists>(json),
         "RecordLabel" => parse::<RecordLabel>(json),

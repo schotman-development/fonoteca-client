@@ -1257,6 +1257,28 @@ pub struct InternetRadioStation {
     pub cover_art: Option<String>,
 }
 
+/// The songs a user had queued, and where in them they were, for any app to
+/// carry on with.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/playqueue/>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayQueue {
+    /// ID of currently playing track
+    pub current: Option<String>,
+    /// Position in milliseconds of currently playing track
+    pub position: Option<i64>,
+    /// The user this queue belongs to
+    pub username: String,
+    /// Date modified [ISO 8601]
+    pub changed: String,
+    /// Name of client app
+    pub changed_by: String,
+    /// The list of songs in the queue
+    #[serde(default)]
+    pub entry: Vec<Child>,
+}
+
 /// Internet radio stations.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/internetradiostations/>
