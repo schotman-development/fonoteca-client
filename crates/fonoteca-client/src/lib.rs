@@ -7,6 +7,8 @@ mod media;
 mod play;
 mod prefs;
 #[cfg(not(target_family = "wasm"))]
+mod queue;
+#[cfg(not(target_family = "wasm"))]
 mod sound;
 mod store;
 mod zone;

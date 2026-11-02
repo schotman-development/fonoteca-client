@@ -45,6 +45,8 @@ pub struct Prefs {
     pub eq_on: bool,
     pub eq: Equalizer,
     pub eq_presets: Vec<EqPreset>,
+    /// Whether the queue repeats: not, all of it, or the track playing.
+    pub repeat: i32,
 }
 
 /// A parametric EQ: its preamp in dB and its bands.

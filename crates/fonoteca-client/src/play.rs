@@ -1,39 +1,58 @@
 //! Playing music on this device: a queue from the page on screen, the bar
-//! under the pages, and the sound device, volume leveling and sound
-//! processing in the settings.
+//! under the pages, the now playing page with the queue, and the sound
+//! device, volume leveling and sound processing in the settings.
 //! The queue and where it is are saved on the server, for this app or any
 //! other to carry on with.
 
 use std::cell::RefCell;
+use std::collections::hash_map::RandomState;
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use opensubsonic::{Child, Client};
-use playback::{Gain, Leveling, Player, Quality, Step, Track};
-use slint::{ComponentHandle, Image, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
+use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::{AppWindow, PathStep, browse, prefs, sound};
+use crate::queue::{Moved, Queue};
+use crate::{AppWindow, Name, PathStep, QueueLine, browse, prefs, sound};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
+/// The repeat button's states, in the order a press goes through them.
+const REPEAT: [Repeat; 3] = [Repeat::Off, Repeat::All, Repeat::One];
 /// How often the bar catches up with the player.
 const TICK: Duration = Duration::from_millis(250);
 /// How many seconds play between saves of where the queue is, so the next
 /// start picks up close to where this one stopped.
 const SAVE_EVERY: f64 = 15.0;
-/// The bar's cover, in logical pixels.
-const COVER_SIZE: f32 = 48.0;
+/// The now playing page's cover, which the bar shows too, and the covers
+/// of the queue under it, in logical pixels.
+const ART_SIZE: f32 = 400.0;
+const LINE_COVER_SIZE: f32 = 40.0;
+/// How many songs of the queue the now playing page lists, from the one
+/// playing on.
+// ponytail: a fixed window; page through it once queues that long need reordering.
+const QUEUE_SHOWN: usize = 100;
 
 #[derive(Default)]
 struct Playing {
     player: Option<Player>,
-    /// The songs queued, as the page had them; the one the bar shows and
-    /// the steps it shows for it.
-    queue: Vec<Child>,
+    /// The songs queued; the one the bar shows and the steps it shows for
+    /// it.
+    queue: Queue,
     shown: Option<usize>,
     path: Vec<Step>,
+    /// How many of the queue's changes the player was handed. Until it has
+    /// made them all, the track it says plays counts in the queue before.
+    requeued: u64,
+    /// Where the now playing page's list of the queue starts, and the
+    /// covers it has shown, by their ids.
+    listed_from: usize,
+    covers: HashMap<String, Image>,
     /// Where the queue saved on the server left off, until it plays.
     resume: Option<(usize, f64)>,
     /// The track, whether it was paused and the seconds into it when the
@@ -49,7 +68,9 @@ type Shared = Rc<RefCell<Playing>>;
 
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     let playing = Shared::default();
-    ui.set_leveling(prefs::load().leveling.clamp(0, 2));
+    let saved = prefs::load();
+    ui.set_leveling(saved.leveling.clamp(0, 2));
+    ui.set_repeat(saved.repeat.clamp(0, 2));
     ui.set_can_play(true);
     list_devices(ui, &playing);
 
@@ -59,7 +80,11 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     });
     ui.on_play_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
-        move |row| play(&weak.unwrap(), &browser, &playing, row as usize)
+        move |row| {
+            let ui = weak.unwrap();
+            let (songs, start) = browse::songs(&browser, ui.get_page(), row as usize);
+            play(&ui, &browser, &playing, songs, start);
+        }
     });
     ui.on_toggle_pause({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
@@ -71,7 +96,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             let Some(player) = &p.player else { return };
             let status = player.status();
             if status.ended {
-                player.play(p.queue.iter().map(track).collect(), 0, 0.0);
+                player.play(tracks(&p.queue), 0, 0.0);
             } else {
                 player.set_paused(!status.paused);
             }
@@ -110,6 +135,35 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             announce(&p, status.index, status.paused || status.ended, seconds);
         }
     });
+    ui.on_toggle_shuffle({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let mut p = playing.borrow_mut();
+            let current = p.shown;
+            let moved = if p.queue.shuffled() {
+                p.queue.unshuffle()
+            } else {
+                p.queue.shuffle(current, seed())
+            };
+            drop(p);
+            requeued(&weak.unwrap(), &browser, &playing, moved);
+        }
+    });
+    ui.on_cycle_repeat({
+        let (weak, playing) = (ui.as_weak(), playing.clone());
+        move || {
+            let ui = weak.unwrap();
+            let repeat = (ui.get_repeat() + 1) % REPEAT.len() as i32;
+            ui.set_repeat(repeat);
+            let mut saved = prefs::load();
+            saved.repeat = repeat;
+            prefs::save(&saved);
+            if let Some(player) = &playing.borrow().player {
+                player.set_repeat(REPEAT[repeat as usize]);
+            }
+        }
+    });
+    wire_queue(ui, browser, &playing);
     ui.on_list_devices({
         let (weak, playing) = (ui.as_weak(), playing.clone());
         move || list_devices(&weak.unwrap(), &playing)
@@ -148,6 +202,114 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     });
 }
 
+/// Puts songs in the queue from the pages' menus, and has the now playing
+/// page's list of it jump, reorder, take out and clear.
+fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
+    ui.on_queue_tracks({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |row, next| {
+            let ui = weak.unwrap();
+            let (songs, start) = browse::songs(&browser, ui.get_page(), row as usize);
+            let Some(song) = songs.into_iter().nth(start) else {
+                return;
+            };
+            enqueue(&ui, &browser, &playing, vec![song], next);
+        }
+    });
+    ui.on_queue_page({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |next| {
+            let ui = weak.unwrap();
+            let (songs, _) = browse::songs(&browser, ui.get_page(), 0);
+            enqueue(&ui, &browser, &playing, songs, next);
+        }
+    });
+    ui.on_queue_link({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |link, how| {
+            let Some(client) = browse::client(&browser) else {
+                return;
+            };
+            let (weak, browser, playing) = (weak.clone(), browser.clone(), playing.clone());
+            slint::spawn_local(async move {
+                let songs = songs_of(&client, &link).await;
+                let Some(ui) = weak.upgrade() else { return };
+                match songs {
+                    Ok(songs) if how == "play" => play(&ui, &browser, &playing, songs, 0),
+                    Ok(songs) => enqueue(&ui, &browser, &playing, songs, how == "next"),
+                    Err(e) => {
+                        browse::notify(&ui, &browser, format!("The songs couldn't be fetched: {e}"))
+                    }
+                }
+            })
+            .expect("the event loop is running");
+        }
+    });
+    ui.on_jump_to({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |row| {
+            let mut p = playing.borrow_mut();
+            let index = p.listed_from + row as usize;
+            if let Some(player) = &p.player {
+                return player.jump(index);
+            }
+            p.resume = Some((index, 0.0));
+            drop(p);
+            resume(&weak.unwrap(), &browser, &playing, false);
+        }
+    });
+    ui.on_play_queued_next({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |row| {
+            let mut p = playing.borrow_mut();
+            let Some(current) = p.shown else { return };
+            let from = p.listed_from + row as usize;
+            let moved = p.queue.move_to(from, current + 1);
+            drop(p);
+            requeued(&weak.unwrap(), &browser, &playing, moved);
+        }
+    });
+    ui.on_move_queued({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |from, to| {
+            let mut p = playing.borrow_mut();
+            let at = p.listed_from;
+            let moved = p.queue.move_to(at + from as usize, at + to as usize);
+            drop(p);
+            requeued(&weak.unwrap(), &browser, &playing, moved);
+        }
+    });
+    ui.on_remove_queued({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |row| {
+            let mut p = playing.borrow_mut();
+            let index = p.listed_from + row as usize;
+            let moved = p.queue.remove(index);
+            let emptied = p.queue.is_empty();
+            drop(p);
+            if emptied {
+                clear(&weak.unwrap(), &browser, &playing);
+            } else {
+                requeued(&weak.unwrap(), &browser, &playing, moved);
+            }
+        }
+    });
+    ui.on_clear_queue({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let mut p = playing.borrow_mut();
+            // What plays plays on; with nothing playing, all of it goes.
+            let Some(current) = p.shown.filter(|&current| current < p.queue.len()) else {
+                drop(p);
+                return clear(&weak.unwrap(), &browser, &playing);
+            };
+            let moved = p.queue.keep_only(current);
+            drop(p);
+            requeued(&weak.unwrap(), &browser, &playing, moved);
+        }
+    });
+}
+
 /// Puts the sound devices there are now in the settings, with the one chosen
 /// selected. Looking for them can take a moment, so it happens off the event
 /// loop.
@@ -174,34 +336,46 @@ fn list_devices(ui: &AppWindow, playing: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Plays the page's songs from its `row`th row, in place of what played.
-fn play(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, row: usize) {
-    let (songs, start) = browse::songs(browser, ui.get_page(), row);
-    begin(ui, browser, playing, songs, (start, 0.0), false);
+/// Plays `songs` from the `start`th, in place of what played: shuffled, the
+/// `start`th first, when what played was.
+fn play(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    songs: Vec<Child>,
+    start: usize,
+) {
+    let mut queue = Queue::new(songs);
+    let mut start = start;
+    if playing.borrow().queue.shuffled() && start < queue.len() {
+        queue.shuffle(Some(start), seed());
+        start = 0;
+    }
+    begin(ui, browser, playing, queue, (start, 0.0), false);
 }
 
 /// Plays the queue saved on the server from where it left off, `paused` or
 /// not; false when there is none waiting.
 fn resume(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, paused: bool) -> bool {
-    let p = playing.borrow();
+    let mut p = playing.borrow_mut();
     let Some(at) = p.resume else { return false };
-    let songs = p.queue.clone();
+    let queue = std::mem::take(&mut p.queue);
     drop(p);
-    begin(ui, browser, playing, songs, at, paused);
+    begin(ui, browser, playing, queue, at, paused);
     true
 }
 
-/// Plays `songs` from `at`, a track and seconds into it, in place of what
+/// Plays `queue` from `at`, a track and seconds into it, in place of what
 /// played, `paused` or not.
 fn begin(
     ui: &AppWindow,
     browser: &browse::Shared,
     playing: &Shared,
-    songs: Vec<Child>,
+    queue: Queue,
     (start, seconds): (usize, f64),
     paused: bool,
 ) {
-    let Some(client) = browse::client(browser).filter(|_| start < songs.len()) else {
+    let Some(client) = browse::client(browser).filter(|_| start < queue.len()) else {
         return;
     };
     let mut p = playing.borrow_mut();
@@ -212,12 +386,14 @@ fn begin(
     p.player = None;
     let player = Player::new(device, fetch(client));
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
+    player.set_repeat(REPEAT[ui.get_repeat().clamp(0, 2) as usize]);
     player.set_dsp(sound::dsp());
-    player.play(songs.iter().map(track).collect(), start, seconds);
+    player.play(tracks(&queue), start, seconds);
     // Before any of it is heard: a track starts once some of it is in.
     player.set_paused(paused);
     p.player = Some(player);
-    p.queue = songs;
+    p.queue = queue;
+    p.requeued = 0;
     p.resume = None;
     p.saved = None;
     p.shown = None;
@@ -230,6 +406,106 @@ fn begin(
     });
     drop(p);
     show(ui, browser, playing);
+}
+
+/// Puts `songs` in the queue after the song playing, or at its end, and says
+/// so; with nothing queued, plays them, and with all of it played, plays
+/// on from them.
+fn enqueue(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    songs: Vec<Child>,
+    next: bool,
+) {
+    let what = match &songs[..] {
+        [] => return,
+        [song] => song.title.clone(),
+        songs => format!("{} tracks", songs.len()),
+    };
+    let mut p = playing.borrow_mut();
+    if p.queue.is_empty() {
+        drop(p);
+        return play(ui, browser, playing, songs, 0);
+    }
+    let at = match p.shown {
+        Some(current) if next => current + 1,
+        _ => p.queue.len(),
+    };
+    let moved = p.queue.insert(at, songs);
+    let ended = p
+        .player
+        .as_ref()
+        .is_some_and(|player| player.status().ended);
+    drop(p);
+    requeued(ui, browser, playing, moved);
+    if ended {
+        playing
+            .borrow()
+            .player
+            .iter()
+            .for_each(|player| player.jump(at));
+    }
+    let text = if next {
+        format!("Playing {what} next.")
+    } else {
+        format!("Added {what} to the queue.")
+    };
+    browse::notify(ui, browser, text);
+}
+
+/// Has the player, the bar and the queue's list follow a change to the
+/// queue, where `moved` gives each song's place after it.
+fn requeued(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, moved: Moved) {
+    let mut guard = playing.borrow_mut();
+    let p = &mut *guard;
+    let place = |index: usize| moved.get(index).copied().flatten();
+    // A song taken out gives its place to the first after it that stayed,
+    // as in the player.
+    let stayed = |index: usize| moved.get(index..).into_iter().flatten().find_map(|&at| at);
+    let taken_out = p.shown.is_some_and(|shown| place(shown).is_none());
+    p.shown = p.shown.and_then(stayed);
+    // The song playing went with none after it, and the player stops: the
+    // queue waits from its start, as one restored does.
+    if taken_out && p.shown.is_none() && p.player.is_some() {
+        let queue = std::mem::take(&mut p.queue);
+        drop(guard);
+        return begin(ui, browser, playing, queue, (0, 0.0), true);
+    }
+    if let Some((index, seconds)) = p.resume {
+        p.resume = Some(match place(index) {
+            Some(index) => (index, seconds),
+            None => (stayed(index).unwrap_or(0), 0.0),
+        });
+        p.shown = p.resume.map(|(index, _)| index);
+    }
+    if let Some(player) = &p.player {
+        player.requeue(tracks(&p.queue), moved);
+        p.requeued += 1;
+    }
+    if let Some(index) = p.shown.filter(|_| taken_out) {
+        show_song(ui, browser, p, playing, index);
+    }
+    // Saves the queue as it is now on the next tick.
+    p.saved = None;
+    list_queue(ui, browser, p, playing);
+}
+
+/// Takes the queue away, and the bar with it, and clears the one saved on
+/// the server.
+fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
+    #[cfg(target_os = "android")]
+    crate::media::hide();
+    let mut p = playing.borrow_mut();
+    p.player = None;
+    p.tick.stop();
+    p.queue = Queue::default();
+    p.resume = None;
+    p.shown = None;
+    p.saved = None;
+    save(browser, &p, playing, None, 0.0);
+    list_queue(ui, browser, &mut p, playing);
+    ui.set_playing(false);
 }
 
 /// Puts what the player says on the bar, or takes the bar down after a
@@ -246,6 +522,9 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     }
     let Some(player) = &p.player else { return };
     let status = player.status();
+    if status.requeues != p.requeued {
+        return;
+    }
     let state = (status.index, status.paused || status.ended);
     let last = p.saved;
     #[cfg(target_os = "android")]
@@ -292,6 +571,7 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     if let Some(index) = status.index {
         show_song(ui, browser, &p, playing, index);
     }
+    list_queue(ui, browser, &mut p, playing);
 }
 
 /// The signal path's light by name, as Roon names it.
@@ -304,8 +584,8 @@ fn quality_name(quality: Quality) -> &'static str {
     }
 }
 
-/// Puts the `index`th song of the queue on the bar, with its cover once it
-/// comes.
+/// Puts the `index`th song of the queue on the bar and the now playing
+/// page, with its cover once it comes.
 fn show_song(
     ui: &AppWindow,
     browser: &browse::Shared,
@@ -319,15 +599,102 @@ fn show_song(
     ui.set_playing_title(song.title.as_str().into());
     let names = browse::song_names(song);
     ui.set_playing_names(ModelRc::new(VecModel::from(names)));
+    ui.set_playing_album(Name {
+        label: song.album.as_deref().unwrap_or_default().into(),
+        link: song
+            .album_id
+            .as_ref()
+            .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
+    });
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());
+    ui.set_playing_art(Image::default());
     if let Some(cover) = song.cover_art.clone() {
         let playing = playing.clone();
-        browse::cover(ui, browser, cover, COVER_SIZE, move |ui, image| {
+        browse::cover(ui, browser, cover, ART_SIZE, move |ui, image| {
             if playing.borrow().shown == Some(index) {
-                ui.set_playing_cover(image);
+                ui.set_playing_cover(image.clone());
+                ui.set_playing_art(image);
             }
         });
+    }
+}
+
+/// Lists the queue on the now playing page from the song playing on, with
+/// the covers it has shown before and the others once they come.
+fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing: &Shared) {
+    let from = p.shown.unwrap_or(0).min(p.queue.len());
+    p.listed_from = from;
+    let songs: Vec<&Child> = p.queue.songs().skip(from).take(QUEUE_SHOWN).collect();
+    let lines: Vec<QueueLine> = songs
+        .iter()
+        .enumerate()
+        .map(|(row, song)| QueueLine {
+            title: song.title.as_str().into(),
+            details: queue_details(song).into(),
+            cover: song
+                .cover_art
+                .as_ref()
+                .and_then(|cover| p.covers.get(cover))
+                .cloned()
+                .unwrap_or_default(),
+            album: song
+                .album_id
+                .as_ref()
+                .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
+            current: row == 0 && p.shown.is_some(),
+        })
+        .collect();
+    ui.set_queue_more((p.queue.len() - from - lines.len()) as i32);
+    ui.set_shuffled(p.queue.shuffled());
+    let model = Rc::new(VecModel::from(lines));
+    ui.set_queue_lines(ModelRc::from(model.clone()));
+    let wanted: Rc<Vec<Option<String>>> =
+        Rc::new(songs.iter().map(|song| song.cover_art.clone()).collect());
+    let missing: HashSet<String> = wanted
+        .iter()
+        .flatten()
+        .filter(|cover| !p.covers.contains_key(*cover))
+        .cloned()
+        .collect();
+    for cover in missing {
+        let (cover, wanted, model, playing) = (
+            cover.clone(),
+            wanted.clone(),
+            model.clone(),
+            playing.clone(),
+        );
+        browse::cover(
+            ui,
+            browser,
+            cover.clone(),
+            LINE_COVER_SIZE,
+            move |_, image| {
+                for (row, _) in wanted
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, id)| id.as_ref() == Some(&cover))
+                {
+                    if let Some(mut line) = model.row_data(row) {
+                        line.cover = image.clone();
+                        model.set_row_data(row, line);
+                    }
+                }
+                playing.borrow_mut().covers.insert(cover, image);
+            },
+        );
+    }
+}
+
+/// A queued song's artists and length.
+fn queue_details(song: &Child) -> String {
+    let artists: Vec<String> = browse::song_names(song)
+        .into_iter()
+        .map(|name| name.label.into())
+        .collect();
+    match song.duration {
+        Some(seconds) => format!("{} · {}", artists.join(", "), browse::duration(seconds)),
+        None => artists.join(", "),
     }
 }
 
@@ -351,11 +718,13 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         let mut p = playing.borrow_mut();
         p.player = None;
         p.tick.stop();
-        p.queue.clear();
+        p.queue = Queue::default();
         p.resume = None;
         p.shown = None;
         p.saved = None;
         p.queue_refused = false;
+        p.covers.clear();
+        list_queue(ui, browser, &mut p, playing);
     }
     ui.set_playing(false);
     let Some(client) = browse::client(browser) else {
@@ -384,7 +753,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             .and_then(|id| queue.entry.iter().position(|song| song.id == id))
             .unwrap_or(0);
         let seconds = queue.position.unwrap_or(0) as f64 / 1000.0;
-        p.queue = queue.entry;
+        p.queue = Queue::new(queue.entry);
         p.resume = Some((index, seconds));
         p.shown = Some(index);
         ui.set_playing(true);
@@ -395,12 +764,14 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         ui.set_playing_level(-1);
         ui.set_playing_path(ModelRc::default());
         show_song(&ui, &browser, &p, &playing, index);
+        list_queue(&ui, &browser, &mut p, &playing);
     })
     .expect("the event loop is running");
 }
 
 /// Saves the queue and where it is on the server, for any app to carry on
-/// with; a server that turned it down isn't asked again.
+/// with, or clears the one saved there when the queue is empty; a server
+/// that turned it down isn't asked again.
 fn save(
     browser: &browse::Shared,
     p: &Playing,
@@ -411,25 +782,49 @@ fn save(
     let Some(client) = browse::client(browser).filter(|_| !p.queue_refused) else {
         return;
     };
-    // Nothing playing, as without a device, would lose where it was.
-    let Some(current) = index.and_then(|index| p.queue.get(index)) else {
-        return;
+    let current = match index.and_then(|index| p.queue.get(index)) {
+        Some(song) => Some(song.id.clone()),
+        None if p.queue.is_empty() => None,
+        // Nothing playing, as without a device, would lose where it was.
+        None => return,
     };
-    let current = current.id.clone();
-    let ids: Vec<String> = p.queue.iter().map(|song| song.id.clone()).collect();
-    let position = (seconds * 1000.0) as i64;
+    let ids: Vec<String> = p.queue.songs().map(|song| song.id.clone()).collect();
+    let position = current.is_some().then_some((seconds * 1000.0) as i64);
+    let clearing = current.is_none();
     let playing = playing.clone();
     slint::spawn_local(async move {
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         let saved = client
-            .save_play_queue(&ids, Some(&current), Some(position))
+            .save_play_queue(&ids, current.as_deref(), position)
             .await;
-        // One lost on the way is made again with the next change.
-        if let Err(opensubsonic::Error::Status(_) | opensubsonic::Error::Api(_)) = saved {
+        // One lost on the way is made again with the next change. Only
+        // OpenSubsonic's servers clear a queue, so turning that down says
+        // nothing of saving one.
+        if let Err(opensubsonic::Error::Status(_) | opensubsonic::Error::Api(_)) = saved
+            && !clearing
+        {
             playing.borrow_mut().queue_refused = true;
         }
     })
     .expect("the event loop is running");
+}
+
+/// The songs of an album's or a playlist's link, in their order.
+async fn songs_of(client: &Client, link: &str) -> opensubsonic::Result<Vec<Child>> {
+    Ok(match link.split_once(':') {
+        Some(("album", id)) => client.get_album(id).await?.song,
+        Some(("playlist", id)) => client.get_playlist(id).await?.entry,
+        _ => Vec::new(),
+    })
+}
+
+/// A seed no shuffle had before.
+fn seed() -> u64 {
+    RandomState::new().hash_one(())
+}
+
+fn tracks(queue: &Queue) -> Vec<Track> {
+    queue.songs().map(track).collect()
 }
 
 fn track(song: &Child) -> Track {

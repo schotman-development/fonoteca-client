@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, PageHeader, PathStep, PersonTile, PlayerBar, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayerBar, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -46,6 +46,7 @@ export component Workbench inherits Window {
         "List row",
         "Player bar",
         "EQ band",
+        "Now playing",
     ];
     property <int> current;
     property <bool> long-text;
@@ -55,6 +56,8 @@ export component Workbench inherits Window {
     property <image> none;
     property <bool> player-paused;
     property <float> player-position: 42;
+    property <bool> player-shuffled;
+    property <int> player-repeat;
     property <string> long-title: "An unusually long title that keeps going, to show where text wraps and where it is cut short";
     property <[Name]> many: [
         { label: "Mara Lind", link: "artist:1" },
@@ -623,7 +626,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 14: Example {
-                        caption: "The track playing: the light says how well it reaches the speakers, as Roon colours it, and opens the steps; a problem takes the artists' place; on a phone only play and next stay, without the position";
+                        caption: "The track playing: the light says how well it reaches the speakers, as Roon colours it, and opens the steps; the cover and title open the now playing page; a problem takes the artists' place; on a phone only play and next stay, without the position, shuffle and repeat";
                         PlayerBar {
                             cover: root.albums[0].cover;
                             title: root.long-text ? root.long-title : "Northern Lights";
@@ -637,7 +640,12 @@ export component Workbench inherits Window {
                                 { text: "FLAC 96 kHz 24-bit", quality: 3 },
                                 { text: "Exclusive: USB DAC (96000 Hz 24-bit, 2 channels)", quality: 3 },
                             ];
+                            shuffled: root.player-shuffled;
+                            repeat: root.player-repeat;
                             open(link) => { root.event = "open " + link; }
+                            open-playing => { root.event = "open playing"; }
+                            toggle-shuffle => { root.player-shuffled = !root.player-shuffled; }
+                            cycle-repeat => { root.player-repeat = mod(root.player-repeat + 1, 3); }
                             toggle-pause => { root.player-paused = !root.player-paused; }
                             previous => { root.event = "previous"; }
                             next => { root.event = "next"; }
@@ -665,11 +673,69 @@ export component Workbench inherits Window {
                             duration: 200;
                             quality: "Enhanced";
                             level: 2;
+                            repeat: 2;
+                            shuffled: true;
                             path: [
                                 { text: "FLAC 44.1 kHz 16-bit", quality: 3 },
                                 { text: "Parametric EQ, 5 bands", quality: 2 },
                                 { text: "Exclusive: USB DAC (44100 Hz 24-bit, 2 channels)", quality: 3 },
                             ];
+                        }
+                    }
+
+                    if root.current == 16: Example {
+                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path under its light; on a narrow page the words go under the cover. A phone's controls follow, then the queue's rows, the one playing coloured";
+                        NowPlaying {
+                            available: root.long-text ? 400px : 900px;
+                            cover: root.albums[0].cover;
+                            title: root.long-text ? root.long-title : "Northern Lights";
+                            names: root.long-text ? root.many : root.mara;
+                            album: { label: "Aurora", link: "album:1" };
+                            quality: "High quality";
+                            level: 1;
+                            path: [
+                                { text: "FLAC 96 kHz 24-bit", quality: 3 },
+                                { text: "Resampled 96 kHz to 48 kHz", quality: 1 },
+                                { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
+                            ];
+                            open(link) => { root.event = "open " + link; }
+                        }
+                        PlayerControls {
+                            paused: root.player-paused;
+                            position: root.player-position;
+                            duration: 271;
+                            shuffled: root.player-shuffled;
+                            repeat: root.player-repeat;
+                            toggle-pause => { root.player-paused = !root.player-paused; }
+                            previous => { root.event = "previous"; }
+                            next => { root.event = "next"; }
+                            seek(seconds) => { root.player-position = seconds; }
+                            toggle-shuffle => { root.player-shuffled = !root.player-shuffled; }
+                            cycle-repeat => { root.player-repeat = mod(root.player-repeat + 1, 3); }
+                        }
+                        VerticalLayout {
+                            ListRow {
+                                title: "Northern Lights";
+                                details: "Mara · 4:31";
+                                cover: root.albums[0].cover;
+                                covered: true;
+                                current: true;
+                                entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
+                                activated(id) => { root.event = id + " row 0"; }
+                            }
+                            ListRow {
+                                title: root.long-text ? root.long-title : "Song of the Sea";
+                                link: "jump";
+                                details: "Mara · 3:12";
+                                cover: root.albums[1].cover;
+                                covered: true;
+                                entries: [
+                                    { id: "play", label: "Play now", icon: Icons.play },
+                                    { id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true },
+                                ];
+                                open => { root.event = "jump to row 1"; }
+                                activated(id) => { root.event = id + " row 1"; }
+                            }
                         }
                     }
 

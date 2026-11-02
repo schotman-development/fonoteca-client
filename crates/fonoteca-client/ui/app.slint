@@ -1,11 +1,11 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, PathStep, PlayerBar, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, radio, stations, tags, tag, genres, genre }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, radio, stations, tags, tag, genres, genre, playing }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -748,6 +748,32 @@ export component AppWindow inherits Window {
     in property <int> playing-level: -1;
     in property <[PathStep]> playing-path;
     in property <string> playing-problem;
+    // For the now playing page: the cover large, the album, and the queue
+    // from the track playing on, with how many more there are than it shows.
+    in property <image> playing-art;
+    in property <Name> playing-album;
+    in property <[QueueLine]> queue-lines;
+    in property <int> queue-more;
+    // Whether the queue is shuffled, and whether it repeats: 0 not, 1 all
+    // of it, 2 the track.
+    in property <bool> shuffled;
+    in-out property <int> repeat;
+    // The queue's entries in an album's or a playlist's tile menu; and the
+    // tiles' menu on the page on screen: those on albums and playlists, and
+    // moving to a folder on the playlists page.
+    property <[MenuEntry]> queue-entries: [
+        { id: "play", label: "Play now", icon: Icons.play },
+        { id: "next", label: "Play next", icon: Icons.next },
+        { id: "queue", label: "Add to queue", icon: Icons.queue },
+    ];
+    property <bool> tiles-queued: root.can-play && (root.page == Page.albums || root.page == Page.artist || root.page == Page.playlists);
+    property <bool> tiles-moved: root.page == Page.playlists && root.tile-moves.length > 0;
+    property <[MenuEntry]> tile-entries: root.tiles-queued && root.tiles-moved ? [
+        { id: "play", label: "Play now", icon: Icons.play },
+        { id: "next", label: "Play next", icon: Icons.next },
+        { id: "queue", label: "Add to queue", icon: Icons.queue },
+        { id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves },
+    ] : root.tiles-queued ? root.queue-entries : root.tiles-moved ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
     // The sound devices to play on, the system's default first, and the one
     // chosen; volume leveling: off, by track or by album.
     in property <[string]> output-devices;
@@ -862,6 +888,21 @@ export component AppWindow inherits Window {
     callback previous-track();
     callback next-track();
     callback seek(seconds: float);
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    // Puts the `row`th track of the page in the queue, to play next or at
+    // its end; the songs of an album's or a playlist's link, to play now,
+    // next or at the end; or the songs of the album or playlist on screen.
+    callback queue-tracks(row: int, next: bool);
+    callback queue-link(link: string, how: string);
+    callback queue-page(next: bool);
+    // The queue on the now playing page, by its rows there: the first is
+    // the track playing.
+    callback jump-to(row: int);
+    callback play-queued-next(row: int);
+    callback remove-queued(row: int);
+    callback move-queued(from: int, to: int);
+    callback clear-queue();
     // A sound device or volume leveling chosen in the settings, by its
     // index in the list.
     callback choose-output(index: int);
@@ -1344,6 +1385,8 @@ export component AppWindow inherits Window {
                     if root.page == Page.home && root.tiles.length > 0: CoverShelf {
                         title: "Recently added";
                         tiles: root.tiles;
+                        entries: root.can-play ? root.queue-entries : [];
+                        activated(index, id) => { root.queue-link(root.tiles[index].link, id); }
                         open(link) => { root.open(link); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                         selecting: root.selected-tiles > 0;
@@ -1479,22 +1522,28 @@ export component AppWindow inherits Window {
                             clicked => { root.play-tracks(0); }
                         }
                         // Any playlist can go in a folder, read-only too.
-                        if root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0): MoreMenu {
-                            label: "Playlist";
+                        if (root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0)) || (root.can-play && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0): MoreMenu {
+                            label: root.page == Page.album ? "Album" : "Playlist";
                             opening => {
                                 self.entries = [];
-                                if root.playlist-editable {
+                                if root.can-play && root.tracks.length > 0 {
+                                    self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                                    self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
+                                }
+                                if root.page == Page.playlist && root.playlist-editable {
                                     self.entries.push({ id: "rename", label: "Rename", icon: Icons.pencil });
                                 }
-                                if root.move-targets.length > 0 {
+                                if root.page == Page.playlist && root.move-targets.length > 0 {
                                     self.entries.push({ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.move-targets });
                                 }
-                                if root.playlist-editable {
+                                if root.page == Page.playlist && root.playlist-editable {
                                     self.entries.push({ id: "delete", label: "Delete", icon: Icons.trash, danger: true });
                                 }
                             }
                             activated(id, choice) => {
-                                if id == "move" {
+                                if id == "next" || id == "queue" {
+                                    root.queue-page(id == "next");
+                                } else if id == "move" {
                                     root.move-playlist(choice);
                                 } else {
                                     root.ask(id == "rename" ? Asking.rename-playlist : Asking.delete-playlist);
@@ -1596,6 +1645,7 @@ export component AppWindow inherits Window {
                                 playable: root.can-play;
                                 open(link) => { root.open(link); }
                                 play => { root.play-tracks(row); }
+                                queue(next) => { root.queue-tracks(row, next); }
                                 add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
                                 remove => { root.remove-from-playlist(row); }
                                 toggle-love => { root.toggle-love(row); }
@@ -1636,6 +1686,8 @@ export component AppWindow inherits Window {
                         tiles: root.tiles;
                         more: true;
                         see-all => { root.open("albums:" + root.header-title); }
+                        entries: root.can-play ? root.queue-entries : [];
+                        activated(index, id) => { root.queue-link(root.tiles[index].link, id); }
                         open(link) => { root.open(link); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                         selecting: root.selected-tiles > 0;
@@ -1667,8 +1719,14 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
                         movable: root.page == Page.playlists && root.folders-offered;
-                        entries: root.page == Page.playlists && root.tile-moves.length > 0 ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
-                        activated(index, id, choice) => { root.move-tile(index, choice); }
+                        entries: root.tile-entries;
+                        activated(index, id, choice) => {
+                            if id == "move" {
+                                root.move-tile(index, choice);
+                            } else {
+                                root.queue-link(root.tiles[index].link, id);
+                            }
+                        }
                         dropped(index) => { root.drop-on-tile(index); }
                     }
                     // The library's genres, each opening its page.
@@ -1715,6 +1773,7 @@ export component AppWindow inherits Window {
                             playable: root.can-play && root.page != Page.compositions;
                             open(link) => { root.open(link); }
                             play => { root.play-tracks(row); }
+                            queue(next) => { root.queue-tracks(row, next); }
                             toggle-love => { root.toggle-line-love(row); }
                             select(range) => { root.select-line(row, range); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
@@ -1810,6 +1869,113 @@ export component AppWindow inherits Window {
                     }
                     // The settings: the server's scan of its libraries, which only
                     // its admins may start.
+                    // What plays, large, and the queue from it on. A song
+                    // after the one playing plays on a tap, and moves by a
+                    // mouse drag onto another.
+                    if root.page == Page.playing && !root.playing: Note {
+                        text: "Nothing is playing.";
+                        font-size: Theme.body;
+                    }
+                    if root.page == Page.playing && root.playing: NowPlaying {
+                        available: min(scroll.visible-width, 1600px) - 48px;
+                        cover: root.playing-art;
+                        title: root.playing-title;
+                        names: root.playing-names;
+                        album: root.playing-album;
+                        quality: root.playing-quality;
+                        level: root.playing-level;
+                        path: root.playing-path;
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.playing && root.playing && Screen.phone: PlayerControls {
+                        paused: root.playing-paused;
+                        position: root.playing-position;
+                        duration: root.playing-duration;
+                        shuffled: root.shuffled;
+                        repeat: root.repeat;
+                        toggle-pause => { root.toggle-pause(); }
+                        previous => { root.previous-track(); }
+                        next => { root.next-track(); }
+                        seek(seconds) => { root.seek(seconds); }
+                        toggle-shuffle => { root.toggle-shuffle(); }
+                        cycle-repeat => { root.cycle-repeat(); }
+                    }
+                    if root.page == Page.playing && root.queue-lines.length > 0: HorizontalLayout {
+                        spacing: 8px;
+                        SectionHeading {
+                            horizontal-stretch: 1;
+                            text: "Queue";
+                        }
+                        Button {
+                            cross-axis-self-alignment: CrossAxisAlignment.end;
+                            text: "Clear";
+                            enabled: !Input.modal;
+                            clicked => { root.clear-queue(); }
+                        }
+                    }
+                    if root.page == Page.playing: VerticalLayout {
+                        for line[row] in root.queue-lines: drag := DragArea {
+                            height: queued.preferred-height;
+                            enabled: row > 0 && !Input.touch;
+                            allow-move: true;
+                            data: Drag.data;
+                            changed dragging => {
+                                Drag.queued = self.dragging ? row : -1;
+                            }
+                            drag-finished => { Drag.queued = -1; }
+                            queued := ListRow {
+                                width: parent.width;
+                                height: parent.height;
+                                opacity: drag.dragging ? 0.4 : 1;
+                                title: line.title;
+                                link: row > 0 ? "jump" : "";
+                                details: line.details;
+                                cover: line.cover;
+                                covered: true;
+                                current: line.current;
+                                // All of them when opened; one so it shows.
+                                entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
+                                open => { root.jump-to(row); }
+                                opening => {
+                                    self.entries = [];
+                                    if row > 0 {
+                                        self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
+                                    }
+                                    if row > 1 {
+                                        self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                                    }
+                                    if line.album != "" {
+                                        self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
+                                    }
+                                    self.entries.push({ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true });
+                                }
+                                activated(id) => {
+                                    if id == "play" {
+                                        root.jump-to(row);
+                                    } else if id == "next" {
+                                        root.play-queued-next(row);
+                                    } else if id == "album" {
+                                        root.open(line.album);
+                                    } else {
+                                        root.remove-queued(row);
+                                    }
+                                }
+                            }
+                            DropArea {
+                                width: parent.width;
+                                height: parent.height;
+                                can-drop(event) => Drag.queued > 0 && row > 0 && Drag.queued != row ? event.proposed-action : DragAction.none;
+                                dropped(event) => {
+                                    root.move-queued(Drag.queued, row);
+                                    return event.proposed-action;
+                                }
+                            }
+                        }
+                    }
+                    if root.page == Page.playing && root.queue-more > 0: Note {
+                        text: root.queue-more == 1 ? "And 1 more" : "And " + root.queue-more + " more";
+                        font-size: Theme.body;
+                    }
                     if root.page == Page.settings: VerticalLayout {
                         max-width: 480px;
                         spacing: 12px;
@@ -2125,7 +2291,12 @@ export component AppWindow inherits Window {
                 level: root.playing-level;
                 path: root.playing-path;
                 problem: root.playing-problem;
+                shuffled: root.shuffled;
+                repeat: root.repeat;
                 open(link) => { root.open(link); }
+                open-playing => { root.open("playing"); }
+                toggle-shuffle => { root.toggle-shuffle(); }
+                cycle-repeat => { root.cycle-repeat(); }
                 toggle-pause => { root.toggle-pause(); }
                 previous => { root.previous-track(); }
                 next => { root.next-track(); }
@@ -2172,9 +2343,10 @@ export component AppWindow inherits Window {
         }
     }
 
+    // Over the player's bar, when it is up, as the selection bar.
     if root.step == Step.done && root.notice != "" && root.selected-tiles == 0: Rectangle {
         x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
-        y: root.height - self.height - 24px - root.bottom-inset;
+        y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0);
         width: min(notice.preferred-width, root.width - root.sidebar-width - 32px);
         height: notice.preferred-height;
         border-radius: 12px;

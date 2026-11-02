@@ -6,8 +6,8 @@
 //! servers with Fonoteca's compositions "composers", "compositions",
 //! "composer:<id>" or "composition:<id>", on servers with Fonoteca's tags
 //! "tags" and "tag:<id>", "genres", "genre:<name>" and a genre's albums or
-//! artists "albums:<genre>" or "artists:<genre>", "radio", "account" and
-//! "settings".
+//! artists "albums:<genre>" or "artists:<genre>", "radio", "account",
+//! "settings" and "playing", what plays and the queue.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -1011,6 +1011,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
                 load_me(ui, browser);
             }
         }
+        "playing" => ui.set_page(Page::Playing),
         "settings" => {
             ui.set_page(Page::Settings);
             scan_status(ui, browser);
@@ -3580,7 +3581,7 @@ async fn songs_of(client: &Client, links: &[String]) -> opensubsonic::Result<Vec
 }
 
 /// Puts up a short notice for a few seconds.
-fn notify(ui: &AppWindow, browser: &Shared, text: String) {
+pub fn notify(ui: &AppWindow, browser: &Shared, text: String) {
     ui.set_notice(text.into());
     let weak = ui.as_weak();
     browser
@@ -6346,7 +6347,7 @@ fn count(n: usize, one: &str, many: &str) -> String {
 }
 
 /// "4:05", or "1:02:05" from an hour on.
-fn duration(seconds: i64) -> String {
+pub fn duration(seconds: i64) -> String {
     let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
     if h > 0 {
         format!("{h}:{m:02}:{s:02}")

@@ -99,6 +99,10 @@ export global Icons {
     out property <string> trash: "M4 7h16 M9.5 7V4.5h5V7 M6.5 7l1 13h9l1-13 M10 11v6 M14 11v6";
     out property <string> folder: "M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-15a1.5 1.5 0 0 1-1.5-1.5z";
     out property <string> tag: "M3 3.5h8.5l9 9-8 8-9-9z M8 9.5a1.5 1.5 0 1 1 0-3a1.5 1.5 0 1 1 0 3z";
+    out property <string> queue: "M4 6h11 M4 11h11 M4 16h6 M14.5 13.5v7l6-3.5z";
+    out property <string> shuffle: "M3 7h3.5l10 10H21 M3 17h3.5l3-3 M14 10l2.5-3H21 M18.5 4.5L21 7l-2.5 2.5 M18.5 14.5L21 17l-2.5 2.5";
+    out property <string> repeat: "M4 11V9.5A2.5 2.5 0 0 1 6.5 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-2.5 2.5H5 M8 20l-3-3 3-3";
+    out property <string> repeat-one: "M4 11V9.5A2.5 2.5 0 0 1 6.5 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-2.5 2.5H5 M8 20l-3-3 3-3 M11 11l1.5-1v4.5";
     // Filled.
     out property <string> play: "M7.5 4.5v15l12-7.5z";
     out property <string> pause: "M6.5 5h4v14h-4z M13.5 5h4v14h-4z";
@@ -121,11 +125,12 @@ export global Input {
     in-out property <int> refocus;
 }
 
-// The playlist being dragged, by its link, while a drag is in flight; and
-// what every drag carries, set once at start, as Slint starts no drag
-// without it.
+// The playlist being dragged, by its link, while a drag is in flight, or
+// the song of the queue, by its row on the now playing page; and what every
+// drag carries, set once at start, as Slint starts no drag without it.
 export global Drag {
     in-out property <string> link;
+    in-out property <int> queued: -1;
     in property <data-transfer> data;
 }
 
@@ -931,6 +936,8 @@ export component TrackRow inherits Pressable {
     callback remove();
     callback tag();
     callback play();
+    // Puts its song in the queue, to play next or at the end.
+    callback queue(next: bool);
     label: self.title;
 
     Rectangle {
@@ -1005,6 +1012,8 @@ export component TrackRow inherits Pressable {
                 self.entries = [];
                 if root.playable {
                     self.entries.push({ id: "play", label: "Play from here", icon: Icons.play });
+                    self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                    self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
                 }
                 if root.playlists.length > 0 {
                     self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlists });
@@ -1019,6 +1028,8 @@ export component TrackRow inherits Pressable {
             activated(id, choice) => {
                 if id == "play" {
                     root.play();
+                } else if id == "next" || id == "queue" {
+                    root.queue(id == "next");
                 } else if id == "playlist" {
                     root.add-to-playlist(choice);
                 } else if id == "tags" {
@@ -1070,6 +1081,11 @@ export component ListRow inherits Rectangle {
     in property <string> link;
     in property <string> details;
     in property <int> depth;
+    // A cover before the words, when `covered`; and whether it is the one
+    // playing.
+    in property <image> cover;
+    in property <bool> covered;
+    in property <bool> current;
     in-out property <[MenuEntry]> entries;
     callback open(link: string);
     callback opening();
@@ -1082,6 +1098,11 @@ export component ListRow inherits Rectangle {
         padding: 8px;
         padding-left: 8px + root.depth * 20px;
         spacing: 12px;
+        if root.covered: Artwork {
+            cross-axis-self-alignment: center;
+            size: 40px;
+            source: root.cover;
+        }
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
@@ -1090,13 +1111,13 @@ export component ListRow inherits Rectangle {
                 text: root.title;
                 font-size: Theme.body;
                 font-weight: 600;
-                color: Theme.text;
+                color: root.current ? Theme.accent : Theme.text;
                 overflow: elide;
             }
             if root.link != "": Link {
                 text: root.title;
                 font-weight: 600;
-                color: Theme.text;
+                color: root.current ? Theme.accent : Theme.text;
                 clicked => { root.open(root.link); }
             }
             if root.details != "": Text {
@@ -1205,6 +1226,8 @@ export component TrackLineRow inherits Rectangle {
     callback add-to-playlist(id: string);
     callback tag();
     callback play();
+    // Puts its song in the queue, to play next or at the end.
+    callback queue(next: bool);
     property <bool> shift;
 
     height: 54px * Theme.zoom;
@@ -1327,6 +1350,8 @@ export component TrackLineRow inherits Rectangle {
                     self.entries = [];
                     if root.playable && !root.line.folder {
                         self.entries.push({ id: "play", label: "Play from here", icon: Icons.play });
+                        self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                        self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
                     }
                     self.entries.push({ id: "love", label: root.line.loved ? "Unlove" : "Love", icon: Icons.heart });
                     if root.line.album.link != "" {
@@ -1348,6 +1373,8 @@ export component TrackLineRow inherits Rectangle {
                 activated(id, choice) => {
                     if id == "play" {
                         root.play();
+                    } else if id == "next" || id == "queue" {
+                        root.queue(id == "next");
                     } else if id == "love" {
                         root.toggle-love();
                     } else if id == "album" {
@@ -2168,6 +2195,16 @@ export struct PathStep {
     quality: int,
 }
 
+// A song in the queue on the now playing page: its title, its artists and
+// length, its cover, its album's link, and whether it is the one playing.
+export struct QueueLine {
+    title: string,
+    details: string,
+    cover: image,
+    album: string,
+    current: bool,
+}
+
 // The track's position, to drag or click to a new one, which it hands to
 // `seek` once let go.
 component SeekBar {
@@ -2307,6 +2344,242 @@ export component EqBandRow inherits VerticalLayout {
     }
 }
 
+// Whether the queue is shuffled, lit when it is; a press turns it over.
+component ShuffleButton inherits IconButton {
+    in property <bool> shuffled;
+    icon: Icons.shuffle;
+    color: root.shuffled ? Theme.accent : Theme.muted;
+    label: root.shuffled ? "Shuffle off" : "Shuffle";
+}
+
+// Whether the queue repeats: 0 not, 1 all of it, 2 the track; lit while it
+// does. A press goes on to the next.
+component RepeatButton inherits IconButton {
+    in property <int> repeat;
+    icon: root.repeat == 2 ? Icons.repeat-one : Icons.repeat;
+    color: root.repeat > 0 ? Theme.accent : Theme.muted;
+    label: root.repeat == 0 ? "Repeat all" : root.repeat == 1 ? "Repeat one" : "Repeat off";
+}
+
+// Where the track is and how long it is, either side of the bar that moves
+// it.
+component SeekRow inherits HorizontalLayout {
+    in property <float> position;
+    in property <float> duration;
+    callback seek(seconds: float);
+
+    function clock(seconds: float) -> string {
+        let s = floor(max(seconds, 0));
+        return floor(s / 60) + ":" + (mod(s, 60) < 10 ? "0" : "") + mod(s, 60);
+    }
+
+    spacing: 8px;
+    Text {
+        min-width: 40px;
+        text: root.clock(root.position);
+        font-size: Theme.small;
+        color: Theme.muted;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+    SeekBar {
+        cross-axis-self-alignment: center;
+        horizontal-stretch: 1;
+        position: root.position;
+        duration: root.duration;
+        seek(seconds) => { root.seek(seconds); }
+    }
+    Text {
+        min-width: 40px;
+        text: root.duration > 0 ? root.clock(root.duration) : "";
+        font-size: Theme.small;
+        color: Theme.muted;
+        vertical-alignment: center;
+    }
+}
+
+// The now playing page's controls on a phone, whose bar has room for play
+// and next only: where the track is, then shuffle, previous, play, next and
+// repeat.
+export component PlayerControls inherits VerticalLayout {
+    in property <bool> paused;
+    in property <float> position;
+    in property <float> duration;
+    in property <bool> shuffled;
+    in property <int> repeat;
+    callback toggle-pause();
+    callback previous();
+    callback next();
+    callback seek(seconds: float);
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    spacing: 8px;
+
+    SeekRow {
+        position: root.position;
+        duration: root.duration;
+        seek(seconds) => { root.seek(seconds); }
+    }
+    HorizontalLayout {
+        alignment: space-between;
+        ShuffleButton {
+            cross-axis-self-alignment: center;
+            shuffled: root.shuffled;
+            clicked => { root.toggle-shuffle(); }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.previous;
+            filled: true;
+            label: "Previous";
+            clicked => { root.previous(); }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            width: 56px;
+            icon-size: 32px;
+            icon: root.paused ? Icons.play : Icons.pause;
+            filled: true;
+            label: root.paused ? "Play" : "Pause";
+            clicked => { root.toggle-pause(); }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.next;
+            filled: true;
+            label: "Next";
+            clicked => { root.next(); }
+        }
+        RepeatButton {
+            cross-axis-self-alignment: center;
+            repeat: root.repeat;
+            clicked => { root.cycle-repeat(); }
+        }
+    }
+}
+
+// The title, artists and album of what plays, and its signal path step by
+// step under the light of the whole.
+component NowPlayingDetails inherits VerticalLayout {
+    in property <string> title;
+    in property <[Name]> names;
+    in property <Name> album;
+    in property <string> quality;
+    in property <int> level;
+    in property <[PathStep]> path;
+    callback open(link: string);
+    spacing: 8px;
+    alignment: start;
+
+    Text {
+        text: root.title;
+        font-size: Theme.title;
+        font-weight: 700;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.names.length > 0: Links {
+        names: root.names;
+        font-size: Theme.heading;
+        open(link) => { root.open(link); }
+    }
+    if root.album.link != "": Link {
+        text: root.album.label;
+        clicked => { root.open(root.album.link); }
+    }
+    if root.level >= 0: VerticalLayout {
+        padding-top: 16px;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                cross-axis-self-alignment: center;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: Theme.quality-colors[root.level];
+            }
+            Text {
+                text: root.quality;
+                font-size: Theme.body;
+                font-weight: 600;
+                color: Theme.quality-colors[root.level];
+                vertical-alignment: center;
+            }
+        }
+        for step in root.path: HorizontalLayout {
+            padding-left: 1px;
+            spacing: 9px;
+            Rectangle {
+                cross-axis-self-alignment: center;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.quality-colors[step.quality];
+            }
+            Text {
+                text: step.text;
+                font-size: Theme.small;
+                color: Theme.muted;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// What plays, large, for the now playing page: its cover, and its words
+// beside it on a wide page or under it on a narrow one.
+export component NowPlaying inherits VerticalLayout {
+    // The page's width for it, which it can't read from its own: its
+    // height follows from it.
+    in property <length> available;
+    in property <image> cover;
+    in property <string> title;
+    in property <[Name]> names;
+    in property <Name> album;
+    in property <string> quality;
+    in property <int> level: -1;
+    in property <[PathStep]> path;
+    callback open(link: string);
+    property <bool> narrow: root.available < 720px;
+
+    if root.narrow: VerticalLayout {
+        spacing: 16px;
+        Artwork {
+            size: min(root.available, 360px);
+            source: root.cover;
+        }
+        NowPlayingDetails {
+            title: root.title;
+            names: root.names;
+            album: root.album;
+            quality: root.quality;
+            level: root.level;
+            path: root.path;
+            open(link) => { root.open(link); }
+        }
+    }
+    if !root.narrow: HorizontalLayout {
+        spacing: 32px;
+        alignment: start;
+        Artwork {
+            size: min(root.available * 0.45, 400px);
+            source: root.cover;
+        }
+        NowPlayingDetails {
+            horizontal-stretch: 1;
+            title: root.title;
+            names: root.names;
+            album: root.album;
+            quality: root.quality;
+            level: root.level;
+            path: root.path;
+            open(link) => { root.open(link); }
+        }
+    }
+}
+
 // The track playing, under the pages: its cover, title and artists, the
 // buttons and position, and how well it reaches the speakers, whose steps
 // open from it. A problem takes the artists' place.
@@ -2322,17 +2595,19 @@ export component PlayerBar inherits Rectangle {
     in property <int> level: -1;
     in property <[PathStep]> path;
     in property <string> problem;
+    // Whether the queue is shuffled, and whether it repeats: 0 not, 1 all
+    // of it, 2 the track.
+    in property <bool> shuffled;
+    in property <int> repeat;
     callback open(link: string);
+    callback open-playing();
     callback toggle-pause();
     callback previous();
     callback next();
     callback seek(seconds: float);
+    callback toggle-shuffle();
+    callback cycle-repeat();
     property <brush> light: root.level >= 0 ? Theme.quality-colors[root.level] : Theme.muted;
-
-    function clock(seconds: float) -> string {
-        let s = floor(max(seconds, 0));
-        return floor(s / 60) + ":" + (mod(s, 60) < 10 ? "0" : "") + mod(s, 60);
-    }
 
     height: Screen.phone ? 72px : 80px;
     background: Theme.surface;
@@ -2342,10 +2617,16 @@ export component PlayerBar inherits Rectangle {
         padding-right: 16px;
         spacing: 12px;
         alignment: stretch;
-        Artwork {
+        Pressable {
             cross-axis-self-alignment: center;
-            size: 48px;
-            source: root.cover;
+            width: 48px;
+            height: 48px;
+            label: "Now playing";
+            clicked => { root.open-playing(); }
+            Artwork {
+                size: 48px;
+                source: root.cover;
+            }
         }
         // Long titles and names are cut short, so they don't size it.
         VerticalLayout {
@@ -2354,12 +2635,11 @@ export component PlayerBar inherits Rectangle {
             preferred-width: 300px;
             alignment: center;
             spacing: 2px;
-            Text {
+            Link {
                 text: root.title;
-                font-size: Theme.body;
                 font-weight: 600;
                 color: Theme.text;
-                overflow: elide;
+                clicked => { root.open-playing(); }
             }
             if root.problem != "": Text {
                 text: root.problem;
@@ -2372,6 +2652,11 @@ export component PlayerBar inherits Rectangle {
                 font-size: Theme.small;
                 open(link) => { root.open(link); }
             }
+        }
+        if !Screen.phone: ShuffleButton {
+            cross-axis-self-alignment: center;
+            shuffled: root.shuffled;
+            clicked => { root.toggle-shuffle(); }
         }
         if !Screen.phone: IconButton {
             cross-axis-self-alignment: center;
@@ -2396,33 +2681,18 @@ export component PlayerBar inherits Rectangle {
             label: "Next";
             clicked => { root.next(); }
         }
-        if !Screen.phone: HorizontalLayout {
+        if !Screen.phone: RepeatButton {
+            cross-axis-self-alignment: center;
+            repeat: root.repeat;
+            clicked => { root.cycle-repeat(); }
+        }
+        if !Screen.phone: SeekRow {
             cross-axis-self-alignment: center;
             horizontal-stretch: 1;
             preferred-width: 300px;
-            spacing: 8px;
-            Text {
-                min-width: 40px;
-                text: root.clock(root.position);
-                font-size: Theme.small;
-                color: Theme.muted;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
-            SeekBar {
-                cross-axis-self-alignment: center;
-                horizontal-stretch: 1;
-                position: root.position;
-                duration: root.duration;
-                seek(seconds) => { root.seek(seconds); }
-            }
-            Text {
-                min-width: 40px;
-                text: root.duration > 0 ? root.clock(root.duration) : "";
-                font-size: Theme.small;
-                color: Theme.muted;
-                vertical-alignment: center;
-            }
+            position: root.position;
+            duration: root.duration;
+            seek(seconds) => { root.seek(seconds); }
         }
         if root.quality != "": Pressable {
             cross-axis-self-alignment: center;
