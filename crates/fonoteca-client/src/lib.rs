@@ -1,5 +1,7 @@
 slint::include_modules!();
 
+#[cfg(target_os = "android")]
+mod bit_perfect;
 mod browse;
 #[cfg(target_os = "android")]
 mod media;

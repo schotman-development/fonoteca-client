@@ -9,7 +9,7 @@ use ffmpeg_next::{
 };
 
 use crate::download::Download;
-use crate::output::{Kind, choose, upsampled};
+use crate::output::{Kind, bit_perfect, choose, upsampled};
 use crate::{Dsp, Format, Leveling, Quality, Step, Track};
 
 pub(crate) struct Decoding {
@@ -58,6 +58,7 @@ impl Decoding {
         leveling: Leveling,
         dsp: &Dsp,
         supported: &[SupportedStreamConfigRange],
+        bit_perfect_formats: &[Format],
         abort: impl FnMut() -> bool + Send + 'static,
     ) -> Result<Self, Stop> {
         let io = StreamIo::from_read_seek(download)?;
@@ -86,10 +87,14 @@ impl Decoding {
         };
         let channels = decoder.channels();
         let rate = decoder.rate();
-        let out = dsp
-            .upsampling
-            .then(|| upsampled(rate, channels, kind, supported))
-            .flatten()
+        // Where the system passes a format on untouched, that is the one to
+        // play in, even though the device's own list takes every rate.
+        let out = bit_perfect(rate, channels, kind, dsp.upsampling, bit_perfect_formats)
+            .or_else(|| {
+                dsp.upsampling
+                    .then(|| upsampled(rate, channels, kind, supported))
+                    .flatten()
+            })
             .or_else(|| choose(rate, channels, kind, supported))
             .ok_or_else(|| {
                 Stop::Failed("The sound device takes no format this can play.".into())

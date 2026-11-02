@@ -26,9 +26,25 @@ public class MainActivity extends NativeActivity {
         PlaybackService.hide();
     }
 
+    private BitPerfectOutput bitPerfect;
+
+    /** What the USB output takes untouched, for Rust's player (src/bit_perfect.rs). */
+    public int[] bitPerfectFormats() {
+        return bitPerfect.formats();
+    }
+
+    public boolean engageBitPerfect(int rate, int channels, int bits) {
+        return bitPerfect.engage(rate, channels, bits);
+    }
+
+    public void releaseBitPerfect() {
+        bitPerfect.release();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        bitPerfect = new BitPerfectOutput(this);
         matchStatusBar(getResources().getConfiguration());
     }
 
@@ -38,6 +54,7 @@ public class MainActivity extends NativeActivity {
     protected void onDestroy() {
         super.onDestroy();
         PlaybackService.hide();
+        bitPerfect.release();
     }
 
     // Dark mode turned on or off doesn't restart the activity (see

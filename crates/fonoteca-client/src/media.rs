@@ -13,7 +13,7 @@ use slint::ComponentHandle;
 use crate::AppWindow;
 
 /// The activity, whose Java side runs the service.
-static ACTIVITY: OnceLock<Global<JObject<'static>>> = OnceLock::new();
+pub(crate) static ACTIVITY: OnceLock<Global<JObject<'static>>> = OnceLock::new();
 /// The window the buttons act on.
 static WINDOW: OnceLock<slint::Weak<AppWindow>> = OnceLock::new();
 

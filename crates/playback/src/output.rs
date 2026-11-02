@@ -26,6 +26,31 @@ pub(crate) struct Segment {
     pub path: Vec<Step>,
 }
 
+/// What the operating system can do about how it mixes: Android's USB output
+/// can be told to pass a format on untouched, and otherwise resamples what it
+/// is given to the rate it runs the output at.
+pub trait SystemMixer: Send + Sync {
+    /// The formats the output passes on untouched, none where it can't.
+    fn bit_perfect_formats(&self) -> Vec<Format>;
+    /// Has the output pass `format` on untouched, until released or asked
+    /// again; false if it won't.
+    fn engage_bit_perfect(&self, format: Format) -> bool;
+    /// Gives the output back to the system's mixer.
+    fn release_bit_perfect(&self);
+}
+
+/// How the system carries what the device is given.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// The device is used as it is: no system mixer to ask about.
+    #[default]
+    Direct,
+    /// The system passes it on untouched.
+    BitPerfect,
+    /// The system's mixer takes it, and may change its rate.
+    Mixed,
+}
+
 /// What the device in use is.
 #[derive(Clone, Default)]
 pub(crate) struct Device {
@@ -45,6 +70,8 @@ pub(crate) struct Ring {
     pub device: Option<Device>,
     /// The format the device is open in.
     pub open: Option<Format>,
+    /// How the system carries what is played in `open`.
+    pub route: Route,
     pub problem: Option<String>,
     /// The last track that couldn't play, by its place in the queue, and
     /// why.
@@ -173,7 +200,8 @@ fn fill(shared: &Shared, format: Format, out: &mut [u8], latency: Duration) {
 /// Runs the device until `quit`: finds the device wanted, opens it in the
 /// format of the audio in front and reopens it when that changes, and lets
 /// it go for other apps once everything has played.
-pub(crate) fn run(shared: Arc<Shared>) {
+pub(crate) fn run(shared: Arc<Shared>, system: Option<Arc<dyn SystemMixer>>) {
+    let system = system.as_deref();
     let host = cpal::default_host();
     let mut generation = None;
     let mut device = None;
@@ -188,6 +216,9 @@ pub(crate) fn run(shared: Arc<Shared>) {
             })
             .unwrap();
         if ring.quit {
+            drop(ring);
+            drop(stream.take());
+            release(system);
             return;
         }
         if generation != Some(ring.generation) {
@@ -213,6 +244,7 @@ pub(crate) fn run(shared: Arc<Shared>) {
             continue;
         }
         let wanted = ring.wanted(open);
+        let wanted_device = ring.wanted.clone();
         let supported = ring
             .device
             .as_ref()
@@ -232,16 +264,19 @@ pub(crate) fn run(shared: Arc<Shared>) {
         // The old stream goes first, since a device opened directly can only
         // be open once.
         drop(stream.take());
-        let opened = match (wanted, &device) {
-            (None, _) => Ok(None),
-            (Some(_), None) => Err("There is no sound device to play on.".to_owned()),
-            (Some(format), Some(device)) => open_stream(device, format, &supported, shared.clone())
-                .map(|opened| Some((opened, format))),
-        };
+        let opened = open_output(
+            system,
+            wanted_device.as_deref(),
+            wanted,
+            device.as_ref(),
+            &supported,
+            &shared,
+        );
         let mut ring = shared.ring.lock().unwrap();
         match opened {
-            Ok(opened) => {
+            Ok((opened, route)) => {
                 ring.open = opened.as_ref().map(|(_, format)| *format);
+                ring.route = route;
                 stream = opened;
             }
             Err(problem) => {
@@ -252,6 +287,56 @@ pub(crate) fn run(shared: Arc<Shared>) {
             }
         }
         shared.changed.notify_all();
+    }
+}
+
+/// Opens `format` on `device`, or nothing for none, and says how the system
+/// carries it. Gives the output back to the system's mixer if it can't.
+fn open_output(
+    system: Option<&dyn SystemMixer>,
+    wanted_device: Option<&str>,
+    format: Option<Format>,
+    device: Option<&cpal::Device>,
+    supported: &[SupportedStreamConfigRange],
+    shared: &Arc<Shared>,
+) -> Result<(Option<(cpal::Stream, Format)>, Route), String> {
+    // After the old stream is gone, before the new one opens: the system
+    // reads its mixer settings as a stream opens. Only its own output can be
+    // told to pass audio on.
+    let route = route(system, format, wanted_device.is_none());
+    let opened = match (format, device) {
+        (None, _) => Ok(None),
+        (Some(_), None) => Err("There is no sound device to play on.".to_owned()),
+        (Some(format), Some(device)) => open_stream(device, format, supported, shared.clone())
+            .map(|stream| Some((stream, format))),
+    };
+    opened
+        .map(|opened| (opened, route))
+        .inspect_err(|_| release(system))
+}
+
+/// Asks the system to pass `format` on untouched where `allowed`, or else
+/// leaves it to the system's mixer; with no format, gives the output back.
+fn route(system: Option<&dyn SystemMixer>, format: Option<Format>, allowed: bool) -> Route {
+    let Some(system) = system else {
+        return Route::Direct;
+    };
+    match format {
+        Some(format) if allowed && system.engage_bit_perfect(format) => Route::BitPerfect,
+        Some(_) => {
+            system.release_bit_perfect();
+            Route::Mixed
+        }
+        None => {
+            system.release_bit_perfect();
+            Route::Direct
+        }
+    }
+}
+
+fn release(system: Option<&dyn SystemMixer>) {
+    if let Some(system) = system {
+        system.release_bit_perfect();
     }
 }
 
@@ -422,6 +507,35 @@ pub(crate) fn choose(
     })
 }
 
+/// The format to hand the system's bit-perfect output for audio of `rate` and
+/// `channels` in samples of `kind`, if it offers one that keeps the rate (or,
+/// with `upsampling`, multiplies it) and the channels.
+pub(crate) fn bit_perfect(
+    rate: u32,
+    channels: u16,
+    kind: Kind,
+    upsampling: bool,
+    offered: &[Format],
+) -> Option<Format> {
+    let ranges: Vec<_> = offered
+        .iter()
+        .map(|format| {
+            SupportedStreamConfigRange::new(
+                format.channels,
+                format.rate,
+                format.rate,
+                SupportedBufferSize::Unknown,
+                format.sample,
+            )
+        })
+        .collect();
+    upsampling
+        .then(|| upsampled(rate, channels, kind, &ranges))
+        .flatten()
+        .or_else(|| choose(rate, channels, kind, &ranges).filter(|format| format.rate == rate))
+        .filter(|format| format.channels == channels)
+}
+
 /// The format for audio of `rate` played at the highest rate the device
 /// takes of eight, four or two times it, if it takes one.
 pub(crate) fn upsampled(
@@ -500,5 +614,102 @@ mod tests {
             Some(format(44_100, SampleFormat::I16))
         );
         assert_eq!(choose(44_100, 2, Kind::Int(16), &[]), None);
+    }
+
+    fn fake(accepts: bool) -> crate::tests::FakeMixer {
+        crate::tests::FakeMixer {
+            accepts,
+            ..Default::default()
+        }
+    }
+
+    const SOME_FORMAT: Format = Format {
+        rate: 44_100,
+        channels: 2,
+        sample: SampleFormat::I16,
+    };
+
+    #[test]
+    fn the_output_is_engaged_or_given_back_by_the_route() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let engaged = fake(true);
+        assert_eq!(
+            route(Some(&engaged), Some(SOME_FORMAT), true),
+            Route::BitPerfect
+        );
+        assert_eq!(engaged.released.load(Relaxed), 0);
+        let refused = fake(false);
+        assert_eq!(route(Some(&refused), Some(SOME_FORMAT), true), Route::Mixed);
+        assert_eq!(refused.released.load(Relaxed), 1);
+        // Another output than the system's own is left to the mixer unasked.
+        let elsewhere = fake(true);
+        assert_eq!(
+            route(Some(&elsewhere), Some(SOME_FORMAT), false),
+            Route::Mixed
+        );
+        assert_eq!(elsewhere.engaged.load(Relaxed), 0);
+        let idle = fake(true);
+        assert_eq!(route(Some(&idle), None, true), Route::Direct);
+        assert_eq!(idle.released.load(Relaxed), 1);
+        assert_eq!(route(None, Some(SOME_FORMAT), true), Route::Direct);
+    }
+
+    #[test]
+    fn another_device_than_the_systems_is_not_engaged() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let system = fake(true);
+        let shared = Arc::new(Shared::default());
+        let _ = open_output(
+            Some(&system),
+            Some("alsa:hw:CARD=Other"),
+            Some(SOME_FORMAT),
+            None,
+            &[],
+            &shared,
+        );
+        assert_eq!(system.engaged.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn a_stream_that_cant_open_gives_the_output_back() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let system = fake(true);
+        let shared = Arc::new(Shared::default());
+        let opened = open_output(Some(&system), None, Some(SOME_FORMAT), None, &[], &shared);
+        assert!(opened.is_err());
+        assert_eq!(system.released.load(Relaxed), 1);
+    }
+
+    #[test]
+    fn bit_perfect_keeps_the_rate_and_channels_or_none() {
+        let format = |rate, channels, sample| Format {
+            rate,
+            channels,
+            sample,
+        };
+        let offered = [
+            format(44_100, 2, SampleFormat::I16),
+            format(96_000, 2, SampleFormat::F32),
+            format(192_000, 2, SampleFormat::F32),
+        ];
+        assert_eq!(
+            bit_perfect(44_100, 2, Kind::Int(16), false, &offered),
+            Some(format(44_100, 2, SampleFormat::I16))
+        );
+        // 24 bits fit a float exactly.
+        assert_eq!(
+            bit_perfect(96_000, 2, Kind::Int(24), false, &offered),
+            Some(format(96_000, 2, SampleFormat::F32))
+        );
+        // Upsampling takes the multiple the output offers.
+        assert_eq!(
+            bit_perfect(96_000, 2, Kind::Int(24), true, &offered),
+            Some(format(192_000, 2, SampleFormat::F32))
+        );
+        // A rate it doesn't offer is left to the system's mixer, not
+        // resampled here and called bit-perfect.
+        assert_eq!(bit_perfect(48_000, 2, Kind::Int(16), false, &offered), None);
+        assert_eq!(bit_perfect(44_100, 1, Kind::Int(16), false, &offered), None);
+        assert_eq!(bit_perfect(44_100, 2, Kind::Int(16), false, &[]), None);
     }
 }

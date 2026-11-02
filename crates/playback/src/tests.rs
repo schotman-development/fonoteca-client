@@ -59,6 +59,33 @@ fn device(rates: &[u32], samples: &[SampleFormat]) -> Vec<SupportedStreamConfigR
     supported
 }
 
+/// A system mixer that offers `offered`, takes an engage if `accepts`, and
+/// counts what it is asked.
+#[derive(Default)]
+pub(crate) struct FakeMixer {
+    pub offered: Vec<Format>,
+    pub accepts: bool,
+    pub asked: AtomicUsize,
+    pub engaged: AtomicUsize,
+    pub released: AtomicUsize,
+}
+
+impl SystemMixer for FakeMixer {
+    fn bit_perfect_formats(&self) -> Vec<Format> {
+        self.asked.fetch_add(1, Relaxed);
+        self.offered.clone()
+    }
+
+    fn engage_bit_perfect(&self, _: Format) -> bool {
+        self.engaged.fetch_add(1, Relaxed);
+        self.accepts
+    }
+
+    fn release_bit_perfect(&self) {
+        self.released.fetch_add(1, Relaxed);
+    }
+}
+
 fn track(gain: Gain) -> Track {
     Track {
         id: "test".into(),
@@ -88,8 +115,16 @@ fn process(
     seek: Option<f64>,
 ) -> (Vec<u8>, Decoding) {
     let _ = ffmpeg_next::init();
-    let mut decoding = Decoding::open(download, &track(gain), leveling, dsp, supported, || false)
-        .unwrap_or_else(|_| panic!("the test file opens"));
+    let mut decoding = Decoding::open(
+        download,
+        &track(gain),
+        leveling,
+        dsp,
+        supported,
+        &[],
+        || false,
+    )
+    .unwrap_or_else(|_| panic!("the test file opens"));
     if let Some(seconds) = seek {
         decoding.seek(seconds).unwrap_or_else(|_| panic!("seeks"));
     }
@@ -324,6 +359,7 @@ fn a_download_still_arriving_is_waited_for() {
         Leveling::Off,
         &Dsp::default(),
         &device(&[44_100], &[I16]),
+        &[],
         || false,
     )
     .unwrap_or_else(|_| panic!("opens"));
@@ -671,6 +707,7 @@ fn nothing_is_fetched_without_a_device() {
     let mut decoder = Decoder {
         shared: shared.clone(),
         pending: Arc::default(),
+        system: None,
         fetch: Box::new({
             let fetched = fetched.clone();
             move |_: &Track| {
@@ -718,6 +755,127 @@ fn a_skipped_track_is_told_of_while_the_one_in_its_place_plays() {
     }
 }
 
+#[test]
+fn the_offered_formats_decide_the_format_the_file_is_played_in() {
+    let offered = Format {
+        rate: 44_100,
+        channels: 2,
+        sample: I16,
+    };
+    let download = wav(44_100, 2, 16, &ramp(441, 2, 16));
+    let _ = ffmpeg_next::init();
+    // A device that takes only 48 kHz would resample, were it not offered.
+    let supported = device(&[48_000], &[I16]);
+    let open = |offered: &[Format]| {
+        let download = download.reader().unwrap();
+        Decoding::open(
+            download,
+            &track(Gain::default()),
+            Leveling::Off,
+            &Dsp::default(),
+            &supported,
+            offered,
+            || false,
+        )
+        .unwrap_or_else(|_| panic!("opens"))
+        .format
+    };
+    assert_eq!(open(&[offered]), offered);
+    assert_eq!(open(&[]).rate, 48_000);
+}
+
+#[test]
+fn the_decoder_asks_the_system_what_it_offers() {
+    let (mut decoder, shared, _) = decoder_of(&["a"]);
+    let offered = Format {
+        rate: 44_100,
+        channels: 2,
+        sample: F32,
+    };
+    decoder.system = Some(Arc::new(FakeMixer {
+        offered: vec![offered],
+        ..Default::default()
+    }));
+    decoder.open(0, 0.0, None);
+    assert_eq!(shared.ring.lock().unwrap().segments[0].format, offered);
+}
+
+#[test]
+fn a_player_asks_its_system_what_it_offers() {
+    let system = Arc::new(FakeMixer::default());
+    let silence = vec![0; 882];
+    let player = Player::with_system(
+        None,
+        Box::new(move |_| Ok(wav(44_100, 2, 16, &silence))),
+        system.clone(),
+    );
+    // Let the output thread find its device before putting one in its place.
+    let started = std::time::Instant::now();
+    while {
+        let ring = player.shared.ring.lock().unwrap();
+        ring.device.is_none() && ring.problem.is_none()
+    } {
+        assert!(started.elapsed().as_secs() < 10, "the output thread starts");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    {
+        let mut ring = player.shared.ring.lock().unwrap();
+        ring.problem = None;
+        ring.device = Some(output::Device {
+            supported: device(&[44_100], &[I16]),
+            ..Default::default()
+        });
+    }
+    // Silent, whatever the machine's own device does with it.
+    player.set_paused(true);
+    player.play(vec![track(Gain::default())], 0, 0.0);
+    player.set_paused(true);
+    while system.asked.load(Relaxed) == 0 {
+        assert!(started.elapsed().as_secs() < 10, "the decoder asks");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn the_output_is_given_back_when_the_player_quits() {
+    let system = Arc::new(FakeMixer::default());
+    drop(Player::with_system(
+        None,
+        Box::new(|_| Err(String::new())),
+        system.clone(),
+    ));
+    assert!(system.released.load(Relaxed) >= 1);
+}
+
+#[test]
+fn the_signal_path_says_who_carries_the_audio() {
+    let dac = output::Device {
+        name: "DAC".into(),
+        ..Default::default()
+    };
+    let open = Format {
+        rate: 96_000,
+        channels: 2,
+        sample: I16,
+    };
+    let steps = |route| device_steps(&dac, route, open);
+    let [bit_perfect] = &steps(Route::BitPerfect)[..] else {
+        panic!("one step");
+    };
+    assert!(bit_perfect.text.starts_with("Bit-perfect: DAC"));
+    assert_eq!(bit_perfect.quality, Quality::Lossless);
+    let [shared, mixer] = &steps(Route::Mixed)[..] else {
+        panic!("two steps");
+    };
+    assert!(shared.text.starts_with("Shared: DAC"));
+    assert!(mixer.text.contains("Android's mixer"));
+    assert_eq!(
+        (shared.quality, mixer.quality),
+        (Quality::High, Quality::High)
+    );
+    assert_eq!(steps(Route::Direct).len(), 1);
+}
+
 /// A decoder of tracks named `ids`, each a tenth of a second, for a 44.1
 /// kHz device; and the ids it fetches, in turn.
 fn decoder_of(ids: &[&str]) -> (Decoder, Arc<Shared>, Arc<std::sync::Mutex<Vec<String>>>) {
@@ -731,6 +889,7 @@ fn decoder_of(ids: &[&str]) -> (Decoder, Arc<Shared>, Arc<std::sync::Mutex<Vec<S
     let decoder = Decoder {
         shared: shared.clone(),
         pending: Arc::default(),
+        system: None,
         fetch: Box::new({
             let fetched = fetched.clone();
             move |track: &Track| {

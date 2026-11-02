@@ -21,12 +21,13 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
+pub use cpal::SampleFormat;
 pub use download::{Download, Fill, new as download};
 pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
-pub use output::devices;
+pub use output::{SystemMixer, devices};
 
 use decode::{Decoding, Stop};
-use output::{Segment, Shared};
+use output::{Route, Segment, Shared};
 
 /// The format the device is opened in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +204,16 @@ impl Player {
     /// A player on the device with this cpal id, or the system's default,
     /// that gets its tracks from `fetch`.
     pub fn new(device: Option<String>, fetch: Fetch) -> Self {
+        Self::build(device, fetch, None)
+    }
+
+    /// Like [`Player::new`], on a system whose mixer `system` can be asked
+    /// about and told to pass audio on untouched.
+    pub fn with_system(device: Option<String>, fetch: Fetch, system: Arc<dyn SystemMixer>) -> Self {
+        Self::build(device, fetch, Some(system))
+    }
+
+    fn build(device: Option<String>, fetch: Fetch, system: Option<Arc<dyn SystemMixer>>) -> Self {
         let _ = ffmpeg_next::init();
         ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Error);
         let shared = Arc::new(Shared::default());
@@ -214,13 +225,15 @@ impl Player {
             .name("audio output".into())
             .spawn({
                 let shared = shared.clone();
-                move || output::run(shared)
+                let system = system.clone();
+                move || output::run(shared, system)
             })
             .expect("a thread for the sound device");
         let decoder = Decoder {
             shared: shared.clone(),
             pending: pending.clone(),
             fetch,
+            system,
             queue: Vec::new(),
             leveling: Leveling::Off,
             dsp: Dsp::default(),
@@ -330,19 +343,7 @@ impl Player {
         // still plays the last one's.
         let open = front.and_then(|front| ring.open.filter(|&open| open == front.format));
         if let (Some(device), Some(open)) = (&ring.device, open) {
-            let how = if device.exclusive {
-                "Exclusive"
-            } else {
-                "Shared"
-            };
-            path.push(Step {
-                text: format!("{how}: {} ({open})", device.name),
-                quality: if device.exclusive {
-                    Quality::Lossless
-                } else {
-                    Quality::High
-                },
-            });
+            path.extend(device_steps(device, ring.route, open));
         }
         let quality = open.and_then(|_| path.iter().map(|step| step.quality).min());
         let heard = ring.heard();
@@ -358,6 +359,30 @@ impl Player {
             requeues: ring.requeues,
         }
     }
+}
+
+/// The steps from the audio, as the device is opened in `open`, to the
+/// sound: the device, and the system's mixer if it takes it first.
+fn device_steps(device: &output::Device, route: Route, open: Format) -> Vec<Step> {
+    let (how, quality) = if route == Route::BitPerfect {
+        ("Bit-perfect", Quality::Lossless)
+    } else if device.exclusive {
+        ("Exclusive", Quality::Lossless)
+    } else {
+        ("Shared", Quality::High)
+    };
+    let mut steps = vec![Step {
+        text: format!("{how}: {} ({open})", device.name),
+        quality,
+    }];
+    if route == Route::Mixed {
+        // Which rate it runs the output at isn't something Android says.
+        steps.push(Step {
+            text: "Android's mixer handles the stream and may change its rate".into(),
+            quality: Quality::High,
+        });
+    }
+    steps
 }
 
 impl Drop for Player {
@@ -385,6 +410,7 @@ struct Decoder {
     shared: Arc<Shared>,
     pending: Arc<AtomicUsize>,
     fetch: Fetch,
+    system: Option<Arc<dyn SystemMixer>>,
     queue: Vec<Track>,
     leveling: Leveling,
     dsp: Dsp,
@@ -645,6 +671,11 @@ impl Decoder {
                 return;
             }
         };
+        let bit_perfect_formats = self
+            .system
+            .as_ref()
+            .map(|system| system.bit_perfect_formats())
+            .unwrap_or_default();
         let download = match (download, self.next.take()) {
             (Some(download), next) => {
                 self.next = next;
@@ -664,6 +695,7 @@ impl Decoder {
                 self.leveling,
                 &self.dsp,
                 &supported,
+                &bit_perfect_formats,
                 move || pending.load(Relaxed) > 0,
             )?;
             if seconds > 0.0 {

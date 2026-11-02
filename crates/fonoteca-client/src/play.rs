@@ -384,7 +384,7 @@ fn begin(
     // lets the device go first, since a device played on directly can only
     // be open once.
     p.player = None;
-    let player = Player::new(device, fetch(client));
+    let player = new_player(device, fetch(client));
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
     player.set_repeat(REPEAT[ui.get_repeat().clamp(0, 2) as usize]);
     player.set_dsp(sound::dsp());
@@ -839,6 +839,18 @@ fn track(song: &Child) -> Track {
             fallback: gain.and_then(|gain| gain.fallback_gain),
         },
     }
+}
+
+/// Android's USB output can pass audio on untouched, which the player asks it
+/// for; elsewhere the device is opened as it is.
+#[cfg(target_os = "android")]
+fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
+    Player::with_system(device, fetch, crate::bit_perfect::system())
+}
+
+#[cfg(not(target_os = "android"))]
+fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
+    Player::new(device, fetch)
 }
 
 /// Fetches tracks from `client` as the server keeps them, into files in the
