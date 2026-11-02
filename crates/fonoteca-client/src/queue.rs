@@ -176,9 +176,11 @@ fn shuffled(songs: Vec<Child>, seed: u64) -> Vec<Child> {
     queue.songs().cloned().collect()
 }
 
-/// What to do with the songs of a page for one of its menu's words: "next",
-/// "queue", "shuffle-now", "shuffle-next" or "shuffle-last".
+/// What to do with the songs of a page for one of its menu's words: "play",
+/// "next", "queue", "shuffle-now", "shuffle-next" or "shuffle-last".
 pub enum Plan {
+    /// Play them in their order, in place of what played.
+    Play(Vec<Child>),
     /// Play them in a random order, the queue's shuffle on.
     PlayShuffled(Vec<Child>),
     /// Put them in after the song playing, or at the end.
@@ -189,6 +191,7 @@ pub enum Plan {
 /// "shuffle-now" does, so that turning the shuffle off restores their order.
 pub fn plan(how: &str, songs: Vec<Child>, queue_is_empty: bool, seed: u64) -> Plan {
     match how {
+        "play" => Plan::Play(songs),
         "shuffle-now" => Plan::PlayShuffled(songs),
         "shuffle-next" | "shuffle-last" if queue_is_empty => Plan::PlayShuffled(songs),
         "shuffle-next" | "shuffle-last" => {
@@ -270,13 +273,22 @@ mod tests {
     }
 
     #[test]
+    fn playing_keeps_the_order_and_queueing_says_where() {
+        let songs: Vec<Child> = ["a", "b", "c"].map(song).to_vec();
+        let Plan::Play(played) = plan("play", songs.clone(), false, 1) else {
+            panic!("play didn't play");
+        };
+        assert_eq!(ids_of(&played), ids_of(&songs));
+    }
+
+    #[test]
     fn shuffling_next_or_last_into_an_empty_queue_plays_them_as_shuffle_now_does() {
         let songs: Vec<Child> = ["a", "b", "c", "d", "e", "f"].map(song).to_vec();
         for how in ["shuffle-now", "shuffle-next", "shuffle-last"] {
             match plan(how, songs.clone(), true, 9) {
                 // In their own order: the queue shuffles them, so the shuffle is on.
                 Plan::PlayShuffled(played) => assert_eq!(ids_of(&played), ids_of(&songs), "{how}"),
-                Plan::Enqueue(..) => panic!("{how} queued into an empty queue"),
+                _ => panic!("{how} didn't play shuffled into an empty queue"),
             }
         }
     }

@@ -1519,9 +1519,16 @@ export component AppWindow inherits Window {
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
-                        if root.can-play && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0: PlayButton {
+                        if root.can-play && (((root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0) || (root.page == Page.artist && root.tiles.length > 0)): PlayButton {
                             enabled: !Input.modal;
-                            play => { root.play-tracks(0); }
+                            // An artist's songs on their page are their top ones; Play is all their own albums.
+                            play => {
+                                if root.page == Page.artist {
+                                    root.queue-page("play");
+                                } else {
+                                    root.play-tracks(0);
+                                }
+                            }
                             queue(how) => { root.queue-page(how); }
                         }
                         // Any playlist can go in a folder, read-only too.

@@ -478,6 +478,10 @@ export component Workbench inherits Window {
                             kind: "Artist";
                             title: root.long-text ? "Oskar Brandt-Falkenberg von Hohenstein" : "Mara Lind";
                             facts: "6 albums, 2 compilations";
+                            PlayButton {
+                                play => { root.event = "play"; }
+                                queue(how) => { root.event = how; }
+                            }
                         }
                     }
 

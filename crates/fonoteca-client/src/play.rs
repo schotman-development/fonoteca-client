@@ -18,7 +18,7 @@ use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, plan, run_from};
-use crate::{AppWindow, Name, PathStep, QueueLine, browse, prefs, sound};
+use crate::{AppWindow, Name, Page, PathStep, QueueLine, browse, prefs, sound};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -218,12 +218,11 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |how| {
             let ui = weak.unwrap();
-            let (songs, _) = browse::songs(&browser, ui.get_page(), 0);
-            let queue_is_empty = playing.borrow().queue.is_empty();
-            match plan(&how, songs, queue_is_empty, seed()) {
-                Plan::PlayShuffled(songs) => play_shuffled(&ui, &browser, &playing, songs),
-                Plan::Enqueue(songs, next) => enqueue(&ui, &browser, &playing, songs, next),
+            if ui.get_page() == Page::Artist {
+                return queue_artist(&ui, &browser, &playing, how.to_string());
             }
+            let (songs, _) = browse::songs(&browser, ui.get_page(), 0);
+            queue_songs(&ui, &browser, &playing, songs, &how);
         }
     });
     ui.on_queue_link({
@@ -354,6 +353,55 @@ fn play(
         start = 0;
     }
     begin(ui, browser, playing, queue, (start, 0.0), false);
+}
+
+/// Plays or queues `songs` as `how` says: "play", "next", "queue", or
+/// "shuffle-now", "shuffle-next" or "shuffle-last" for a random order.
+fn queue_songs(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    songs: Vec<Child>,
+    how: &str,
+) {
+    let queue_is_empty = playing.borrow().queue.is_empty();
+    match plan(how, songs, queue_is_empty, seed()) {
+        Plan::Play(songs) => play(ui, browser, playing, songs, 0),
+        Plan::PlayShuffled(songs) => play_shuffled(ui, browser, playing, songs),
+        Plan::Enqueue(songs, next) => enqueue(ui, browser, playing, songs, next),
+    }
+}
+
+/// Does `how` with every song of the artist's own albums, once all of them
+/// have arrived: a shuffle across albums needs them all, and an album fetched
+/// per call keeps the window free meanwhile.
+fn queue_artist(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, how: String) {
+    let Some(client) = browse::client(browser) else {
+        return;
+    };
+    let albums = browse::own_albums(browser);
+    if albums.is_empty() {
+        return browse::notify(ui, browser, "They have no albums of their own.".into());
+    }
+    browse::notify(ui, browser, format!("Fetching {} albums…", albums.len()));
+    let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+    slint::spawn_local(async move {
+        let mut songs = Vec::new();
+        for link in albums {
+            match songs_of(&client, &link).await {
+                Ok(album) => songs.extend(album),
+                Err(e) => {
+                    let Some(ui) = weak.upgrade() else { return };
+                    let text = format!("The songs couldn't be fetched: {e}");
+                    return browse::notify(&ui, &browser, text);
+                }
+            }
+        }
+        if let Some(ui) = weak.upgrade() {
+            queue_songs(&ui, &browser, &playing, songs, &how);
+        }
+    })
+    .expect("the event loop is running");
 }
 
 /// Plays `songs` in a random order in place of what played, with the

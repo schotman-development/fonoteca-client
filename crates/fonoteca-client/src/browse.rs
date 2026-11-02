@@ -142,6 +142,8 @@ pub struct Browser {
     tracks: Rc<VecModel<Track>>,
     /// The song of each track row.
     songs: Vec<Child>,
+    /// The links of an artist's own albums, in the order their page shows.
+    own_albums: Vec<String>,
     /// Tile or tracks table rows whose covers are still to fetch, the rows on
     /// screen or just below it, and how many fetches run.
     covers: BTreeMap<usize, String>,
@@ -289,6 +291,12 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     load_me(ui, browser);
     open(ui, browser, "home".into());
     ui.invoke_library_started();
+}
+
+/// The links of the albums of the artist on screen that are their own.
+#[cfg(not(target_family = "wasm"))]
+pub fn own_albums(browser: &Shared) -> Vec<String> {
+    browser.borrow().own_albums.clone()
 }
 
 /// The client signed in with, for calls made outside the pages.
@@ -2994,6 +3002,9 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
             }
             ui.set_header_title(artist.artist.name.as_str().into());
             ui.set_header_facts(count(artist.album.len(), "album", "albums").into());
+            browser.borrow_mut().own_albums = own_albums_of(&artist.artist, &artist.album)
+                .map(|album| format!("album:{}", album.id))
+                .collect();
             header_image(ui, browser, artist.artist.cover_art);
             let tiles = artist.album.iter().map(|album| {
                 let year = album.year.map(|year| unlinked(year.to_string()));
@@ -3002,6 +3013,28 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
             add_tiles(ui, browser, tiles.collect());
         },
     );
+}
+
+/// The albums of `artist` that are theirs: they are among its artists and it
+/// is no compilation, in the order given. The albums they only appear on, and
+/// compilations, are left out.
+fn own_albums_of<'a>(
+    artist: &'a ArtistID3,
+    albums: &'a [AlbumID3],
+) -> impl Iterator<Item = &'a AlbumID3> {
+    albums.iter().filter(|album| {
+        let compilation = album.is_compilation == Some(true)
+            || album
+                .release_types
+                .iter()
+                .any(|kind| kind.eq_ignore_ascii_case("compilation"));
+        let by_artist = if album.artists.is_empty() {
+            album.artist_id.as_deref() == Some(artist.id.as_str())
+        } else {
+            album.artists.iter().any(|by| by.id == artist.id)
+        };
+        by_artist && !compilation
+    })
 }
 
 /// A playlist's tracks: each with its artists and album, and the heart that
@@ -6365,6 +6398,46 @@ pub fn duration(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_artists_own_albums_are_theirs_alone_in_page_order() {
+        let album = |json: serde_json::Value| -> AlbumID3 {
+            let mut base = serde_json::json!({
+                "id": "", "name": "", "songCount": 1, "duration": 1,
+                "created": "2021-01-01T00:00:00Z"
+            });
+            base.as_object_mut()
+                .unwrap()
+                .extend(json.as_object().unwrap().clone());
+            serde_json::from_value(base).unwrap()
+        };
+        let artist: ArtistID3 =
+            serde_json::from_value(serde_json::json!({ "id": "r1", "name": "Mara" })).unwrap();
+        let albums = [
+            album(
+                serde_json::json!({ "id": "own-a", "artists": [{ "id": "r1", "name": "Mara" }] }),
+            ),
+            album(
+                serde_json::json!({ "id": "best-of", "isCompilation": true, "artists": [{ "id": "r1", "name": "Mara" }] }),
+            ),
+            album(
+                serde_json::json!({ "id": "appears", "artists": [{ "id": "r2", "name": "Tomas" }] }),
+            ),
+            album(
+                serde_json::json!({ "id": "typed", "releaseTypes": ["Album", "Compilation"], "artistId": "r1" }),
+            ),
+            album(serde_json::json!({ "id": "own-b", "artistId": "r1" })),
+            album(serde_json::json!({ "id": "elsewhere", "artistId": "r2" })),
+            album(serde_json::json!({ "id": "nobody" })),
+            album(
+                serde_json::json!({ "id": "duet", "artists": [{ "id": "r2", "name": "Tomas" }, { "id": "r1", "name": "Mara" }] }),
+            ),
+        ];
+        let own: Vec<&str> = own_albums_of(&artist, &albums)
+            .map(|album| album.id.as_str())
+            .collect();
+        assert_eq!(own, ["own-a", "own-b", "duet"]);
+    }
 
     #[test]
     fn biographies_as_plain_text() {
