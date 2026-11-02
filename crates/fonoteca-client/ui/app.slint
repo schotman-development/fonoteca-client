@@ -1,11 +1,11 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, radio, stations, tags, tag, genres, genre, playing }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, playing }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -1978,10 +1978,31 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.settings: VerticalLayout {
                         max-width: 480px;
-                        spacing: 12px;
-                        init => { root.list-devices(); }
+                        spacing: 4px;
                         Heading { text: "Settings"; }
-                        SectionHeading { text: "Library"; }
+                        SettingsRow {
+                            icon: Icons.album;
+                            title: "Library";
+                            summary: "Have the server scan its libraries";
+                            clicked => { root.open("setting:library"); }
+                        }
+                        if root.can-play: SettingsRow {
+                            icon: Icons.play;
+                            title: "Playback";
+                            summary: "Sound device and volume leveling";
+                            clicked => { root.open("setting:playback"); }
+                        }
+                        if root.can-play: SettingsRow {
+                            icon: Icons.sound;
+                            title: "Sound processing";
+                            summary: "Headroom, crossfeed, upsampling and EQ";
+                            clicked => { root.open("setting:sound"); }
+                        }
+                    }
+                    if root.page == Page.setting && root.shown-id == "library": VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        Heading { text: "Library"; }
                         if !root.may-administer: Note {
                             text: "Only the server's admins may have it scan the library.";
                             font-size: Theme.body;
@@ -1999,7 +2020,12 @@ export component AppWindow inherits Window {
                                 clicked => { root.start-scan(); }
                             }
                         }
-                        if root.can-play: SectionHeading { text: "Playback"; }
+                    }
+                    if root.page == Page.setting && root.shown-id == "playback": VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        init => { root.list-devices(); }
+                        Heading { text: "Playback"; }
                         if root.can-play: Text {
                             text: "Sound device";
                             font-size: Theme.body;
@@ -2025,8 +2051,12 @@ export component AppWindow inherits Window {
                             enabled: !Input.modal;
                             selected => { root.choose-leveling(self.current-index); }
                         }
-                        // Each entry's order is the one sound.rs takes them in.
-                        if root.can-play: SectionHeading { text: "Sound processing"; }
+                    }
+                    // Each entry's order is the one sound.rs takes them in.
+                    if root.page == Page.setting && root.shown-id == "sound": VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        Heading { text: "Sound processing"; }
                         if root.can-play: Text {
                             text: "Headroom, to leave room for the EQ's boosts";
                             font-size: Theme.body;

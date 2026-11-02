@@ -1112,6 +1112,17 @@ mod tests {
             .find_first()
     }
 
+    /// Whether a drop-down with `label` is in sight.
+    fn find_combo(ui: &AppWindow, label: &str) -> bool {
+        let label = label.to_owned();
+        ui.root_element()
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Combobox)
+            .match_predicate(move |combo| combo.accessible_label().is_some_and(|l| l == label))
+            .find_first()
+            .is_some()
+    }
+
     fn click(ui: &AppWindow, label: &str) {
         button(ui, label).invoke_accessible_default_action();
     }
@@ -1462,6 +1473,20 @@ mod tests {
             click(&ui, "Settings");
             assert_eq!(ui.get_page(), Page::Settings);
             assert_eq!(ui.get_selected_tiles(), 1);
+            for (section, choices) in [
+                ("Playback", ["Sound device", "Volume leveling"].as_slice()),
+                ("Sound processing", &["Headroom", "Crossfeed", "Upsampling"]),
+            ] {
+                click(&ui, section);
+                assert_eq!(ui.get_page(), Page::Setting);
+                for choice in choices {
+                    assert!(find_combo(&ui, choice), "no {choice} choice in {section}");
+                }
+                ui.invoke_back();
+                assert_eq!(ui.get_page(), Page::Settings);
+            }
+            click(&ui, "Library");
+            assert_eq!(ui.get_page(), Page::Setting);
             // The server's scan: where it stands, one the server refuses,
             // and one it takes, followed while the page is up until done.
             wait_for("the scan status", || {
@@ -1494,7 +1519,7 @@ mod tests {
             ui.invoke_back();
             assert!(quiet().await, "the scan is followed off its page");
             ui.invoke_forward();
-            assert_eq!(ui.get_page(), Page::Settings);
+            assert_eq!(ui.get_page(), Page::Setting);
             let asked = SCAN_ASKS.load(Relaxed);
             wait_for("a look on its page again", || {
                 SCAN_ASKS.load(Relaxed) > asked + 1
@@ -1688,7 +1713,7 @@ mod tests {
             // may they have the server scan.
             ADMIN.store(false, Relaxed);
             ui.invoke_back();
-            assert_eq!(ui.get_page(), Page::Settings);
+            assert_eq!(ui.get_page(), Page::Setting);
             wait_for("joe no admin", || !ui.get_may_administer()).await;
             assert_eq!(ui.get_roles(), "Settings · Stream · Download");
             assert!(find(&ui, "Scan library").is_none());
@@ -1701,6 +1726,8 @@ mod tests {
             wait_for("joe an admin once more", || ui.get_may_administer()).await;
             assert!(find(&ui, "Scan library").is_some());
             ui.set_notice("".into());
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Settings);
             ui.invoke_back();
             wait_for("the albums page", || links(&ui).len() == 3).await;
             assert_eq!(picked(&ui), ids(&["b1"]));

@@ -7,7 +7,8 @@
 //! "composer:<id>" or "composition:<id>", on servers with Fonoteca's tags
 //! "tags" and "tag:<id>", "genres", "genre:<name>" and a genre's albums or
 //! artists "albums:<genre>" or "artists:<genre>", "radio", "account",
-//! "settings" and "playing", what plays and the queue.
+//! "settings" and its sections "setting:<name>", and "playing", what plays and
+//! the queue.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -1012,11 +1013,15 @@ fn show(ui: &AppWindow, browser: &Shared) {
             }
         }
         "playing" => ui.set_page(Page::Playing),
-        "settings" => {
-            ui.set_page(Page::Settings);
-            scan_status(ui, browser);
-            // What it offers follows the roles the server gives now.
-            load_me(ui, browser);
+        "settings" => ui.set_page(Page::Settings),
+        "setting" => {
+            ui.set_page(Page::Setting);
+            ui.set_shown_id(id.as_str().into());
+            if id == "library" {
+                scan_status(ui, browser);
+                // Whether it offers the scan follows the roles the server gives now.
+                load_me(ui, browser);
+            }
         }
         "radio" => {
             ui.set_page(Page::Radio);

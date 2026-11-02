@@ -75,6 +75,7 @@ export global Icons {
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
     out property <string> forward: "M9 5l7 7-7 7";
+    out property <string> sound: "M6 4v16 M12 4v16 M18 4v16 M3.5 14h5 M9.5 8h5 M15.5 16h5";
     out property <string> refresh: "M20 12a8 8 0 1 1-8-8c2.2 0 4.3.9 5.9 2.4L20 8.5 M20 3.5v5h-5";
     out property <string> up: "M12 19V5 M6 11l6-6 6 6";
     out property <string> down: "M12 5v14 M6 13l6 6 6-6";
@@ -1133,6 +1134,63 @@ export component ListRow inherits Rectangle {
             entries: root.entries;
             opening => { root.opening(); }
             activated(id, choice) => { root.activated(id, choice); }
+        }
+    }
+}
+
+// A section of the settings on their list: its icon, its name, a line on
+// what it holds, and an arrow to the page it opens.
+export component SettingsRow inherits Pressable {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> summary;
+    label: self.title;
+    min-height: Screen.phone ? 64px : 52px;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: root.hovered ? Theme.hover : transparent;
+    }
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 16px;
+        Path {
+            cross-axis-self-alignment: center;
+            width: 22px;
+            height: 22px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon;
+            stroke: Theme.muted;
+            stroke-width: 1.75px;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                font-size: Theme.body;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            Text {
+                text: root.summary;
+                font-size: Theme.small;
+                color: Theme.muted;
+                overflow: elide;
+            }
+        }
+        Path {
+            cross-axis-self-alignment: center;
+            width: 16px;
+            height: 16px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Icons.forward;
+            stroke: Theme.muted;
+            stroke-width: 1.75px;
         }
     }
 }
