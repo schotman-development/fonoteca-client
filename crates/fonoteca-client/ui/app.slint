@@ -2401,32 +2401,39 @@ export component AppWindow inherits Window {
                             padding-top: 8px;
                             spacing: 24px;
                             alignment: start;
+                            // What plays fills the sheet's first screen: the queue
+                            // starts below its fold.
+                            VerticalLayout {
+                                min-height: sheet-scroll.visible-height - sheet-stage.padding-top - sheet-stage.spacing;
+                                spacing: 24px;
+                                alignment: start;
+                                NowPlaying {
+                                    available: min(sheet-scroll.visible-width, 1600px) - 48px;
+                                    cover: root.playing-art;
+                                    title: root.playing-title;
+                                    names: root.playing-names;
+                                    album: root.playing-album;
+                                    quality: root.playing-quality;
+                                    level: root.playing-level;
+                                    path: root.playing-path;
+                                    open(link) => { root.open-from-now-playing(link); }
+                                }
+                                if Screen.phone: PlayerControls {
+                                    paused: root.playing-paused;
+                                    position: root.playing-position;
+                                    duration: root.playing-duration;
+                                    shuffled: root.shuffled;
+                                    repeat: root.repeat;
+                                    toggle-pause => { root.toggle-pause(); }
+                                    previous => { root.previous-track(); }
+                                    next => { root.next-track(); }
+                                    seek(seconds) => { root.seek(seconds); }
+                                    toggle-shuffle => { root.toggle-shuffle(); }
+                                    cycle-repeat => { root.cycle-repeat(); }
+                                }
+                            }
                             // A song after the one playing plays on a tap, and
                             // moves by a mouse drag onto another.
-                            NowPlaying {
-                                available: min(sheet-scroll.visible-width, 1600px) - 48px;
-                                cover: root.playing-art;
-                                title: root.playing-title;
-                                names: root.playing-names;
-                                album: root.playing-album;
-                                quality: root.playing-quality;
-                                level: root.playing-level;
-                                path: root.playing-path;
-                                open(link) => { root.open-from-now-playing(link); }
-                            }
-                            if Screen.phone: PlayerControls {
-                                paused: root.playing-paused;
-                                position: root.playing-position;
-                                duration: root.playing-duration;
-                                shuffled: root.shuffled;
-                                repeat: root.repeat;
-                                toggle-pause => { root.toggle-pause(); }
-                                previous => { root.previous-track(); }
-                                next => { root.next-track(); }
-                                seek(seconds) => { root.seek(seconds); }
-                                toggle-shuffle => { root.toggle-shuffle(); }
-                                cycle-repeat => { root.cycle-repeat(); }
-                            }
                             if root.queue-lines.length > 0: HorizontalLayout {
                                 spacing: 8px;
                                 SectionHeading {
