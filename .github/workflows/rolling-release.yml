@@ -27,19 +27,32 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           echo "APP_VERSION=$version-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
 
+      # The runner's own ANDROID_NDK_HOME is another NDK.
+      - name: Install the NDK and the platform
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;30.0.16248370" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+
+      - name: Build FFmpeg
+        run: scripts/ffmpeg.sh android
+
       # Linked for Android 9 (API 28), the app's oldest. Not with cargo-ndk:
       # it tells Slint's build script to compile its Java helper against
       # that platform too, which lacks the classes the helper uses. The
-      # helper gets the platform the app is compiled against.
+      # helper gets the platform the app is compiled against. bindgen reads
+      # FFmpeg's headers against the NDK's C library rather than the
+      # runner's, with the API level in its target, which the NDK's headers
+      # insist on.
       - name: Build the Rust library
         env:
           ANDROID_PLATFORM: 36
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;30.0.16248370" "platforms;android-36" "build-tools;36.0.0" > /dev/null
-          tools="$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          tools="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$tools/aarch64-linux-android28-clang"
           export CC_aarch64_linux_android="$tools/aarch64-linux-android28-clang"
           export AR_aarch64_linux_android="$tools/llvm-ar"
+          export FFMPEG_DIR="$PWD/target/android-ffmpeg/prefix"
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android28 --sysroot=$tools/../sysroot"
           rustup target add aarch64-linux-android
           cargo rustc --locked -p fonoteca-client --lib --release --target aarch64-linux-android --crate-type cdylib
           mkdir -p android/src/main/jniLibs/arm64-v8a

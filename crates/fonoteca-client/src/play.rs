@@ -450,12 +450,19 @@ fn fetch(client: Arc<Client>) -> playback::Fetch {
     })
 }
 
-/// fonoteca-client in the system's cache folder.
+/// fonoteca-client in the system's cache folder, or on Android in a cache
+/// folder in the app's own, the only place it may write.
 fn cache() -> PathBuf {
+    #[cfg(target_os = "android")]
+    let folder = prefs::FOLDER.get().map(|folder| folder.join("cache"));
+    #[cfg(target_os = "macos")]
+    let folder = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches"));
+    #[cfg(not(any(target_os = "android", target_os = "macos")))]
     let folder = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|folder| folder.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
-    folder.join("fonoteca-client")
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
+    folder
+        .unwrap_or_else(std::env::temp_dir)
+        .join("fonoteca-client")
 }

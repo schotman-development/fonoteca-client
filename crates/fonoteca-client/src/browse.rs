@@ -299,7 +299,7 @@ pub fn client(browser: &Shared) -> Option<Arc<Client>> {
 /// among them: an album's, a playlist's or an artist's top songs, or the
 /// songs of the tracks, folders or a tag's page as filtered and sorted,
 /// without the folders between them.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_family = "wasm"))]
 pub fn songs(browser: &Shared, page: Page, row: usize) -> (Vec<Child>, usize) {
     let b = browser.borrow();
     if !matches!(page, Page::Tracks | Page::Folders | Page::Tag) {
@@ -312,7 +312,7 @@ pub fn songs(browser: &Shared, page: Page, row: usize) -> (Vec<Child>, usize) {
 }
 
 /// Fetches a cover `logical` pixels wide and hands it to `done`.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_family = "wasm"))]
 pub fn cover(
     ui: &AppWindow,
     browser: &Shared,
@@ -6407,7 +6407,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_family = "wasm"))]
     fn a_folder_plays_its_songs_in_the_rows_order_without_its_folders() {
         let browser = Shared::new(RefCell::new(Browser {
             entries: serde_json::from_str(

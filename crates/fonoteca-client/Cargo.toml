@@ -18,6 +18,7 @@ slint = "1.18"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 keyring-core = "1"
+playback = { path = "../playback" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -25,7 +26,6 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Storage", "Window"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-playback = { path = "../playback" }
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

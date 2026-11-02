@@ -1,10 +1,10 @@
 slint::include_modules!();
 
 mod browse;
-#[cfg(target_os = "linux")]
+#[cfg(not(target_family = "wasm"))]
 mod play;
 mod prefs;
-#[cfg(target_os = "linux")]
+#[cfg(not(target_family = "wasm"))]
 mod sound;
 mod store;
 mod zone;
@@ -290,7 +290,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let pending: Rc<RefCell<Option<(Account, Client)>>> = Rc::default();
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_family = "wasm"))]
     play::wire(&ui, &browser);
 
     // On a phone-sized screen everything is drawn a quarter larger than the

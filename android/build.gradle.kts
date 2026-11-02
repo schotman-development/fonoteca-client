@@ -1,6 +1,7 @@
-// Packages the Rust library, built beforehand into src/main/jniLibs (see
-// .github/workflows/rolling-release.yml), as an app that opens it in a
-// NativeActivity.
+// Packages the Rust library and FFmpeg, built beforehand into src/main/jniLibs
+// with FFmpeg's licence in src/main/assets (see
+// .github/workflows/rolling-release.yml), as an app that opens the library in
+// a NativeActivity.
 
 plugins {
     id("com.android.application") version "9.4.1"
