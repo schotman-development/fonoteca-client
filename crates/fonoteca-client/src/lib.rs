@@ -4,6 +4,8 @@ mod browse;
 #[cfg(target_os = "linux")]
 mod play;
 mod prefs;
+#[cfg(target_os = "linux")]
+mod sound;
 mod store;
 mod zone;
 

@@ -1,5 +1,5 @@
-import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, PathStep, PlayerBar, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MoreMenu, Name, PageHeader, PathStep, PlayerBar, Pressable, Screen, SelectionBar, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
@@ -12,7 +12,7 @@ export enum Page { home, albums, artists, tracks, playlists, album, artist, play
 // new password for the account signed in; a new radio station, changes to
 // one, or whether to delete one; a new tag, a tag's new name, or whether to
 // delete it; and which tags songs have.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs }
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-eq-preset, import-eq }
 
 // A tag on the tags page: its id, name and how many tracks have it, how
 // deep under other tags it sits, and where it can be moved.
@@ -753,6 +753,17 @@ export component AppWindow inherits Window {
     in property <[string]> output-devices;
     in-out property <int> output-device;
     in-out property <int> leveling;
+    // The sound processing: the headroom's, crossfeed's and upsampling's
+    // entries; whether the EQ is on, its preamp and bands as typed, its
+    // presets after a first "Custom" entry, and which of them it is.
+    in-out property <int> headroom;
+    in-out property <int> crossfeed;
+    in-out property <int> upsampling;
+    in-out property <bool> eq-on;
+    in-out property <string> eq-preamp;
+    in property <[EqBandLine]> eq-bands;
+    in property <[string]> eq-presets;
+    in-out property <int> eq-preset;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, how narrow they get together, and
     // every column there is to pick from.
@@ -856,6 +867,20 @@ export component AppWindow inherits Window {
     callback choose-output(index: int);
     // Looks for the sound devices there are now, such as one just plugged in.
     callback list-devices();
+    // The sound processing changed in the settings. Pasting AutoEQ's
+    // settings answers what is wrong with them, or nothing.
+    callback choose-headroom(index: int);
+    callback choose-crossfeed(index: int);
+    callback choose-upsampling(index: int);
+    callback toggle-eq(on: bool);
+    callback edit-preamp(text: string);
+    callback edit-band(row: int, line: EqBandLine);
+    callback add-band();
+    callback remove-band(row: int);
+    callback choose-eq-preset(index: int);
+    callback save-eq-preset(name: string);
+    callback delete-eq-preset();
+    callback import-eq(text: string) -> string;
     callback choose-leveling(index: int);
     callback add-selection-to-playlist(id: string);
     // Playlist folders: a new one with this name in the folder on screen;
@@ -906,8 +931,11 @@ export component AppWindow inherits Window {
     property <string> asked-id;
     property <string> asked-stream;
     property <string> asked-homepage;
+    // AutoEQ's settings pasted in, and what is wrong with them.
+    property <string> asked-text;
+    property <string> asked-problem;
     property <bool> asks-station: root.asking == Asking.new-station || root.asking == Asking.edit-station;
-    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag;
+    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag || root.asking == Asking.save-eq-preset;
     property <bool> asks-password: root.asking == Asking.own-password;
     property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-station || root.asking == Asking.delete-tag;
 
@@ -922,6 +950,8 @@ export component AppWindow inherits Window {
     function close-dialog() {
         root.asked-password = "";
         root.asked-repeat = "";
+        root.asked-text = "";
+        root.asked-problem = "";
         root.asking = Asking.nothing;
         Input.modal = false;
         Input.refocus += 1;
@@ -977,6 +1007,13 @@ export component AppWindow inherits Window {
             root.update-station(root.asked-id, root.asked-name, root.asked-stream, root.asked-homepage);
         } else if root.asking == Asking.delete-station {
             root.delete-station(root.asked-id, root.asked-name);
+        } else if root.asking == Asking.save-eq-preset {
+            root.save-eq-preset(root.asked-name);
+        } else if root.asking == Asking.import-eq {
+            root.asked-problem = root.import-eq(root.asked-text);
+            if root.asked-problem != "" {
+                return;
+            }
         }
         root.close-dialog();
     }
@@ -993,6 +1030,8 @@ export component AppWindow inherits Window {
         if root.asking == Asking.own-password { return "Change your password"; }
         if root.asking == Asking.new-station { return "New radio station"; }
         if root.asking == Asking.edit-station { return "Edit radio station"; }
+        if root.asking == Asking.save-eq-preset { return "Save EQ as preset"; }
+        if root.asking == Asking.import-eq { return "Paste AutoEQ settings"; }
         return "Delete “" + root.asked-name + "”?";
     }
 
@@ -1000,7 +1039,8 @@ export component AppWindow inherits Window {
         if root.deleting { return "Delete"; }
         if root.asking == Asking.rename-playlist || root.asking == Asking.rename-folder || root.asking == Asking.rename-tag { return "Rename"; }
         if root.asking == Asking.tag-songs { return "Done"; }
-        if root.asking == Asking.edit-station { return "Save"; }
+        if root.asking == Asking.edit-station || root.asking == Asking.save-eq-preset { return "Save"; }
+        if root.asking == Asking.import-eq { return "Use"; }
         if root.asking == Asking.own-password { return "Change"; }
         return "Create";
     }
@@ -1010,6 +1050,7 @@ export component AppWindow inherits Window {
     function may-answer() -> bool {
         return (!root.asks-name || root.asked-name != "")
             && (!root.asks-station || root.asked-stream != "")
+            && (root.asking != Asking.import-eq || root.asked-text != "")
             && (!root.asks-password || (root.asked-password != "" && root.asked-password == root.asked-repeat));
     }
 
@@ -1818,6 +1859,115 @@ export component AppWindow inherits Window {
                             enabled: !Input.modal;
                             selected => { root.choose-leveling(self.current-index); }
                         }
+                        // Each entry's order is the one sound.rs takes them in.
+                        if root.can-play: SectionHeading { text: "Sound processing"; }
+                        if root.can-play: Text {
+                            text: "Headroom, to leave room for the EQ's boosts";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                            wrap: word-wrap;
+                        }
+                        if root.can-play: ComboBox {
+                            accessible-label: "Headroom";
+                            model: ["None", "−1 dB", "−2 dB", "−3 dB", "−4.5 dB", "−6 dB", "−9 dB", "−12 dB"];
+                            current-index <=> root.headroom;
+                            enabled: !Input.modal;
+                            selected => { root.choose-headroom(self.current-index); }
+                        }
+                        if root.can-play: Text {
+                            text: "Crossfeed, for headphones";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                        }
+                        if root.can-play: ComboBox {
+                            accessible-label: "Crossfeed";
+                            model: ["Off", "Light", "Medium", "Strong"];
+                            current-index <=> root.crossfeed;
+                            enabled: !Input.modal;
+                            selected => { root.choose-crossfeed(self.current-index); }
+                        }
+                        if root.can-play: Text {
+                            text: "Upsampling";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                        }
+                        if root.can-play: ComboBox {
+                            accessible-label: "Upsampling";
+                            model: ["Off", "To the highest multiple of the file's rate"];
+                            current-index <=> root.upsampling;
+                            enabled: !Input.modal;
+                            selected => { root.choose-upsampling(self.current-index); }
+                        }
+                        if root.can-play: Switch {
+                            text: "Parametric EQ";
+                            checked <=> root.eq-on;
+                            enabled: !Input.modal;
+                            toggled => { root.toggle-eq(self.checked); }
+                        }
+                        if root.can-play && root.eq-on: HorizontalLayout {
+                            spacing: 8px;
+                            ComboBox {
+                                horizontal-stretch: 1;
+                                accessible-label: "EQ preset";
+                                model: root.eq-presets;
+                                current-index <=> root.eq-preset;
+                                enabled: !Input.modal;
+                                selected => { root.choose-eq-preset(self.current-index); }
+                            }
+                            MoreMenu {
+                                cross-axis-self-alignment: center;
+                                label: "EQ presets";
+                                opening => {
+                                    self.entries = [{ id: "save", label: "Save as preset", icon: Icons.plus }];
+                                    if root.eq-preset > 0 {
+                                        self.entries.push({ id: "delete", label: "Delete preset", icon: Icons.trash, danger: true });
+                                    }
+                                    self.entries.push({ id: "import", label: "Paste AutoEQ settings", icon: Icons.pencil });
+                                }
+                                activated(id) => {
+                                    if id == "save" {
+                                        root.asked-name = root.eq-preset > 0 ? root.eq-presets[root.eq-preset] : "";
+                                        root.open-dialog(Asking.save-eq-preset);
+                                    } else if id == "delete" {
+                                        root.delete-eq-preset();
+                                    } else {
+                                        root.open-dialog(Asking.import-eq);
+                                    }
+                                }
+                            }
+                        }
+                        if root.can-play && root.eq-on: VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Preamp, dB";
+                                font-size: Theme.small;
+                                color: Theme.muted;
+                            }
+                            LineEdit {
+                                text <=> root.eq-preamp;
+                                accessible-label: "EQ preamp in dB";
+                                enabled: !Input.modal;
+                                edited(text) => { root.edit-preamp(text); }
+                            }
+                        }
+                        if root.can-play && root.eq-on: VerticalLayout {
+                            spacing: 16px;
+                            for line[row] in root.eq-bands: EqBandRow {
+                                number: row + 1;
+                                line: line;
+                                enabled: !Input.modal;
+                                edited(line) => { root.edit-band(row, line); }
+                                remove => { root.remove-band(row); }
+                            }
+                        }
+                        if root.can-play && root.eq-on: HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Add band";
+                                enabled: !Input.modal;
+                                clicked => { root.add-band(); }
+                            }
+                        }
                     }
                     // Your tags, each under the one it sits in, each opening
                     // its page.
@@ -2371,6 +2521,17 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                        if root.asking == Asking.import-eq: Note {
+                            text: "From a headphone's ParametricEQ.txt in AutoEQ, or Equalizer APO's settings. It takes the EQ's place.";
+                        }
+                        if root.asking == Asking.import-eq: TextEdit {
+                            height: 160px;
+                            text <=> root.asked-text;
+                            accessible-label: "AutoEQ settings";
+                            init => { self.focus(); }
+                            edited => { root.asked-problem = ""; }
+                        }
+                        if root.asking == Asking.import-eq && root.asked-problem != "": Problem { text: root.asked-problem; }
                         if root.asking == Asking.delete-tag: Note { text: "The tags in it go too. The tracks stay."; }
                         // Each tick puts a tag on the songs or takes it off at once;
                         // a name typed below makes a tag and ticks it.

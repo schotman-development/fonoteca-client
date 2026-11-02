@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, PageHeader, PathStep, PersonTile, PlayerBar, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, PageHeader, PathStep, PersonTile, PlayerBar, Screen, SelectionBar, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -45,6 +45,7 @@ export component Workbench inherits Window {
         "Track table",
         "List row",
         "Player bar",
+        "EQ band",
     ];
     property <int> current;
     property <bool> long-text;
@@ -655,6 +656,23 @@ export component Workbench inherits Window {
                                 { text: "Resampled 44.1 kHz to 48 kHz", lossless: false },
                                 { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", lossless: false },
                             ];
+                        }
+                    }
+
+                    if root.current == 15: Example {
+                        caption: "A band of the EQ in the settings: its filter, then its numbers as typed; a pass has no gain";
+                        max-width: 480px;
+                        EqBandRow {
+                            number: 1;
+                            line: { filter: 1, frequency: "105", gain: "5.5", q: "0.7" };
+                            edited(line) => { root.event = "band 1: " + line.filter + " " + line.frequency + " Hz " + line.gain + " dB Q " + line.q; }
+                            remove => { root.event = "remove band 1"; }
+                        }
+                        EqBandRow {
+                            number: 2;
+                            line: { filter: 4, frequency: root.long-text ? "12345.67" : "30", gain: "0", q: "0.71" };
+                            edited(line) => { root.event = "band 2: " + line.filter + " " + line.frequency + " Hz " + line.gain + " dB Q " + line.q; }
+                            remove => { root.event = "remove band 2"; }
                         }
                     }
                 }

@@ -1,5 +1,6 @@
 //! Playing music on this device: a queue from the page on screen, the bar
-//! under the pages, and the sound device and volume leveling in the settings.
+//! under the pages, and the sound device, volume leveling and sound
+//! processing in the settings.
 //! The queue and where it is are saved on the server, for this app or any
 //! other to carry on with.
 
@@ -13,7 +14,7 @@ use opensubsonic::{Child, Client};
 use playback::{Gain, Leveling, Player, Step, Track};
 use slint::{ComponentHandle, Image, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::{AppWindow, PathStep, browse, prefs};
+use crate::{AppWindow, PathStep, browse, prefs, sound};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -135,6 +136,14 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             }
         }
     });
+    sound::wire(ui, {
+        let playing = playing.clone();
+        move |dsp| {
+            if let Some(player) = &playing.borrow().player {
+                player.set_dsp(dsp);
+            }
+        }
+    });
 }
 
 /// Puts the sound devices there are now in the settings, with the one chosen
@@ -201,6 +210,7 @@ fn begin(
     p.player = None;
     let player = Player::new(device, fetch(client));
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
+    player.set_dsp(sound::dsp());
     player.play(songs.iter().map(track).collect(), start, seconds);
     // Before any of it is heard: a track starts once some of it is in.
     player.set_paused(paused);

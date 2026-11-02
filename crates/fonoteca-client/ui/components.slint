@@ -2,7 +2,7 @@
 // `link` names where it leads (such as "artist:<id>"), and the component hands
 // it to `open`.
 
-import { LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 
 export global Theme {
     // How much bigger the phone's or the desktop's text size setting makes
@@ -2211,6 +2211,92 @@ component SeekBar {
         pointer-event(event) => {
             if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
                 root.seek(root.dragged);
+            }
+        }
+    }
+}
+
+// A band of the parametric EQ as the settings show it: its filter's entry,
+// and its frequency in Hz, gain in dB and Q as typed.
+export struct EqBandLine {
+    filter: int,
+    frequency: string,
+    gain: string,
+    q: string,
+}
+
+component EqFieldLabel inherits Text {
+    font-size: Theme.small;
+    color: Theme.muted;
+}
+
+// The `number`th band of the EQ in the settings: its filter on one line, the
+// numbers under it, so it fits a phone. A pass has no gain.
+export component EqBandRow inherits VerticalLayout {
+    in property <EqBandLine> line;
+    in property <int> number;
+    in property <bool> enabled: true;
+    callback edited(line: EqBandLine);
+    callback remove();
+    property <string> name: "Band " + root.number;
+    spacing: 8px;
+
+    function edit() {
+        root.edited({ filter: filter.current-index, frequency: frequency.text, gain: gain.text, q: q.text });
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+        filter := ComboBox {
+            horizontal-stretch: 1;
+            accessible-label: root.name + " filter";
+            // In the order sound.rs's `FILTERS` takes them.
+            model: ["Peak", "Low shelf", "High shelf", "Low pass", "High pass"];
+            current-index: root.line.filter;
+            enabled: root.enabled;
+            selected => { root.edit(); }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.trash;
+            label: "Remove " + root.name;
+            enabled: root.enabled;
+            clicked => { root.remove(); }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        VerticalLayout {
+            spacing: 4px;
+            EqFieldLabel { text: "Hz"; }
+            frequency := LineEdit {
+                min-width: 64px;
+                text: root.line.frequency;
+                accessible-label: root.name + " frequency in Hz";
+                enabled: root.enabled;
+                edited => { root.edit(); }
+            }
+        }
+        VerticalLayout {
+            spacing: 4px;
+            EqFieldLabel { text: "dB"; }
+            gain := LineEdit {
+                min-width: 64px;
+                text: root.line.gain;
+                accessible-label: root.name + " gain in dB";
+                enabled: root.enabled && filter.current-index < 3;
+                edited => { root.edit(); }
+            }
+        }
+        VerticalLayout {
+            spacing: 4px;
+            EqFieldLabel { text: "Q"; }
+            q := LineEdit {
+                min-width: 64px;
+                text: root.line.q;
+                accessible-label: root.name + " Q";
+                enabled: root.enabled;
+                edited => { root.edit(); }
             }
         }
     }

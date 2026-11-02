@@ -1,6 +1,6 @@
 //! Preferences kept on this device: how the albums, tracks, compositions and
 //! folders are sorted, which columns the tables show, the radio page's
-//! languages, and the sound device and volume leveling; and the pictures of saved stations the app found in the radio
+//! languages, the sound device, volume leveling and sound processing; and the pictures of saved stations the app found in the radio
 //! directory. They aren't secrets, so plain files in the system's settings
 //! folder keep them, and the browser preview its localStorage. Where neither
 //! works they last until the app closes.
@@ -37,6 +37,40 @@ pub struct Prefs {
     pub output_device: Option<String>,
     /// Volume leveling's entry in the settings: off, by track or by album.
     pub leveling: i32,
+    /// The sound processing's entries in the settings: headroom, crossfeed
+    /// and upsampling; the EQ, whether it is on, and the EQs saved by name.
+    pub headroom: i32,
+    pub crossfeed: i32,
+    pub upsampling: i32,
+    pub eq_on: bool,
+    pub eq: Equalizer,
+    pub eq_presets: Vec<EqPreset>,
+}
+
+/// A parametric EQ: its preamp in dB and its bands.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Equalizer {
+    pub preamp: f64,
+    pub bands: Vec<EqBand>,
+}
+
+/// A band: its filter's entry in the settings, its frequency in Hz, its
+/// gain in dB and its Q.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EqBand {
+    pub filter: i32,
+    pub frequency: f64,
+    pub gain: f64,
+    pub q: f64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EqPreset {
+    pub name: String,
+    pub eq: Equalizer,
 }
 
 /// The preferences saved, or the first choices when there are none.
