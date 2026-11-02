@@ -2796,21 +2796,22 @@ export component PlayerBar inherits Rectangle {
     height: Screen.phone ? 72px : 80px;
     background: Theme.surface;
 
+    // The whole bar opens it, but for the controls drawn over it.
+    Pressable {
+        width: parent.width;
+        height: parent.height;
+        label: "Now playing";
+        clicked => { root.open-playing(); }
+    }
     HorizontalLayout {
         padding-left: 16px;
         padding-right: 16px;
         spacing: 12px;
         alignment: stretch;
-        Pressable {
+        Artwork {
             cross-axis-self-alignment: center;
-            width: 48px;
-            height: 48px;
-            label: "Now playing";
-            clicked => { root.open-playing(); }
-            Artwork {
-                size: 48px;
-                source: root.cover;
-            }
+            size: 48px;
+            source: root.cover;
         }
         // Long titles and names are cut short, so they don't size it.
         VerticalLayout {
@@ -2819,11 +2820,11 @@ export component PlayerBar inherits Rectangle {
             preferred-width: 300px;
             alignment: center;
             spacing: 2px;
-            Link {
+            Text {
                 text: root.title;
                 font-weight: 600;
                 color: Theme.text;
-                clicked => { root.open-playing(); }
+                overflow: elide;
             }
             if root.problem != "": Text {
                 text: root.problem;
