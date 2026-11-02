@@ -420,6 +420,20 @@ pub(crate) fn choose(
     })
 }
 
+/// The format for audio of `rate` played at the highest rate the device
+/// takes of eight, four or two times it, if it takes one.
+pub(crate) fn upsampled(
+    rate: u32,
+    channels: u16,
+    kind: Kind,
+    supported: &[SupportedStreamConfigRange],
+) -> Option<Format> {
+    [8, 4, 2].into_iter().find_map(|times| {
+        let wanted = rate * times;
+        choose(wanted, channels, kind, supported).filter(|format| format.rate == wanted)
+    })
+}
+
 /// What a decoder's samples are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Kind {

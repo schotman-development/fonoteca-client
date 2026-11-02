@@ -75,8 +75,20 @@ fn decode(
     supported: &[SupportedStreamConfigRange],
     seek: Option<f64>,
 ) -> (Vec<u8>, Decoding) {
+    process(download, gain, leveling, &Dsp::default(), supported, seek)
+}
+
+/// The same, through `dsp`.
+fn process(
+    download: Download,
+    gain: Gain,
+    leveling: Leveling,
+    dsp: &Dsp,
+    supported: &[SupportedStreamConfigRange],
+    seek: Option<f64>,
+) -> (Vec<u8>, Decoding) {
     let _ = ffmpeg_next::init();
-    let mut decoding = Decoding::open(download, &track(gain), leveling, supported, || false)
+    let mut decoding = Decoding::open(download, &track(gain), leveling, dsp, supported, || false)
         .unwrap_or_else(|_| panic!("the test file opens"));
     if let Some(seconds) = seek {
         decoding.seek(seconds).unwrap_or_else(|_| panic!("seeks"));
@@ -298,6 +310,7 @@ fn a_download_still_arriving_is_waited_for() {
         download,
         &track(Gain::default()),
         Leveling::Off,
+        &Dsp::default(),
         &device(&[44_100], &[I16]),
         || false,
     )
@@ -309,6 +322,291 @@ fn a_download_still_arriving_is_waited_for() {
     {}
     writer.join().unwrap();
     assert_eq!(ints(&out, 2), samples);
+}
+
+/// A sine of `frequency` at a quarter of full scale, `seconds` long, as
+/// 24-bit stereo samples: in both channels, or the left only.
+fn sine(rate: u32, frequency: f64, seconds: f64, left_only: bool) -> Vec<i32> {
+    let amplitude = f64::from(1 << 23) / 4.0;
+    let frames = (f64::from(rate) * seconds) as usize;
+    (0..frames)
+        .flat_map(|at| {
+            let phase = 2.0 * std::f64::consts::PI * frequency * at as f64 / f64::from(rate);
+            let value = (amplitude * phase.sin()).round() as i32;
+            [value, if left_only { 0 } else { value }]
+        })
+        .collect()
+}
+
+/// The root mean square of a `channel` of 32-bit stereo `out`, past its
+/// first half second at `rate`, when filters have settled.
+fn rms(out: &[u8], channel: usize, rate: u32) -> f64 {
+    let samples: Vec<f64> = ints(out, 4)
+        .into_iter()
+        .skip(channel)
+        .step_by(2)
+        .skip(rate as usize / 2)
+        .map(f64::from)
+        .collect();
+    (samples.iter().map(|s| s * s).sum::<f64>() / samples.len() as f64).sqrt()
+}
+
+/// How many dB `dsp` changes a sine of `frequency` by, measured.
+fn measured(dsp: &Dsp, frequency: f64) -> f64 {
+    let rate = 48_000;
+    let device = device(&[rate], &[I32]);
+    let samples = sine(rate, frequency, 1.5, false);
+    let run = |dsp: &Dsp| {
+        let download = wav(rate, 2, 24, &samples);
+        process(download, Gain::default(), Leveling::Off, dsp, &device, None).0
+    };
+    20.0 * (rms(&run(dsp), 0, rate) / rms(&run(&Dsp::default()), 0, rate)).log10()
+}
+
+/// How many dB `band` changes `frequency` by at `rate`, from the Audio EQ
+/// Cookbook's formulas, which FFmpeg's biquads follow.
+fn calculated(band: Band, rate: f64, frequency: f64) -> f64 {
+    use std::f64::consts::PI;
+    let a = 10f64.powf(band.gain / 40.0);
+    let (sin, cos) = (2.0 * PI * band.frequency / rate).sin_cos();
+    let alpha = sin / (2.0 * band.q);
+    let root = 2.0 * a.sqrt() * alpha;
+    let (b, d) = match band.filter {
+        Filter::Peak => (
+            [1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a],
+            [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a],
+        ),
+        Filter::LowShelf => (
+            [
+                a * ((a + 1.0) - (a - 1.0) * cos + root),
+                2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
+                a * ((a + 1.0) - (a - 1.0) * cos - root),
+            ],
+            [
+                (a + 1.0) + (a - 1.0) * cos + root,
+                -2.0 * ((a - 1.0) + (a + 1.0) * cos),
+                (a + 1.0) + (a - 1.0) * cos - root,
+            ],
+        ),
+        Filter::HighShelf => (
+            [
+                a * ((a + 1.0) + (a - 1.0) * cos + root),
+                -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
+                a * ((a + 1.0) + (a - 1.0) * cos - root),
+            ],
+            [
+                (a + 1.0) - (a - 1.0) * cos + root,
+                2.0 * ((a - 1.0) - (a + 1.0) * cos),
+                (a + 1.0) - (a - 1.0) * cos - root,
+            ],
+        ),
+        Filter::LowPass => (
+            [(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0],
+            [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
+        ),
+        Filter::HighPass => (
+            [(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0],
+            [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
+        ),
+    };
+    let w = 2.0 * PI * frequency / rate;
+    let size = |c: [f64; 3]| {
+        let re = c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos();
+        let im = c[1] * w.sin() + c[2] * (2.0 * w).sin();
+        re.hypot(im)
+    };
+    20.0 * (size(b) / size(d)).log10()
+}
+
+#[test]
+fn each_eq_band_changes_the_sound_as_calculated() {
+    let band = |filter, frequency, gain, q| Band {
+        filter,
+        frequency,
+        gain,
+        q,
+    };
+    let bands = [
+        band(Filter::Peak, 1_000.0, 6.0, 1.0),
+        band(Filter::LowShelf, 100.0, 4.0, 0.7),
+        band(Filter::HighShelf, 8_000.0, -5.0, 0.7),
+        band(Filter::LowPass, 2_000.0, 0.0, 0.707),
+        band(Filter::HighPass, 200.0, 0.0, 0.707),
+    ];
+    for band in bands {
+        let dsp = Dsp {
+            eq: Some(Equalizer {
+                preamp: 0.0,
+                bands: vec![band],
+            }),
+            ..Dsp::default()
+        };
+        for frequency in [50.0, 200.0, 1_000.0, 3_000.0, 10_000.0] {
+            let (measured, calculated) = (
+                measured(&dsp, frequency),
+                calculated(band, 48_000.0, frequency),
+            );
+            assert!(
+                (measured - calculated).abs() < 0.1,
+                "{band:?} at {frequency} Hz: measured {measured:.2} dB, calculated {calculated:.2} dB"
+            );
+        }
+    }
+}
+
+#[test]
+fn headroom_and_the_eqs_preamp_turn_it_down_by_their_db() {
+    let dsp = Dsp {
+        headroom: -3.0,
+        eq: Some(Equalizer {
+            preamp: -2.5,
+            bands: Vec::new(),
+        }),
+        ..Dsp::default()
+    };
+    let change = measured(&dsp, 1_000.0);
+    assert!((change + 5.5).abs() < 0.01, "{change:.3} dB");
+}
+
+#[test]
+fn crossfeed_lets_one_ear_hear_the_other() {
+    let rate = 48_000;
+    let device = device(&[rate], &[I32]);
+    let samples = sine(rate, 500.0, 1.5, true);
+    let run = |crossfeed| {
+        let dsp = Dsp {
+            crossfeed,
+            ..Dsp::default()
+        };
+        let download = wav(rate, 2, 24, &samples);
+        let (out, decoding) = process(
+            download,
+            Gain::default(),
+            Leveling::Off,
+            &dsp,
+            &device,
+            None,
+        );
+        (rms(&out, 0, rate), rms(&out, 1, rate), decoding.path)
+    };
+    let (left, right, path) = run(Crossfeed::Off);
+    assert_eq!(right, 0.0);
+    assert_eq!(path.len(), 1);
+    let mut heard = Vec::new();
+    for crossfeed in [Crossfeed::Light, Crossfeed::Medium, Crossfeed::Strong] {
+        let (_, other, path) = run(crossfeed);
+        let db = 20.0 * (other / left).log10();
+        assert!((-40.0..-3.0).contains(&db), "{crossfeed:?}: {db:.1} dB");
+        assert!(path.iter().any(|step| step.text.starts_with("Crossfeed")));
+        heard.push(db);
+    }
+    assert!(heard.is_sorted(), "stronger is louder: {heard:?}");
+}
+
+#[test]
+fn upsampling_goes_to_the_highest_whole_multiple_the_device_takes() {
+    let samples = ramp(44_100 / 10, 2, 16);
+    let open = |rates: &[u32], upsampling| {
+        let dsp = Dsp {
+            upsampling,
+            ..Dsp::default()
+        };
+        let download = wav(44_100, 2, 16, &samples);
+        let device = device(rates, &[I32]);
+        let (_, decoding) = process(
+            download,
+            Gain::default(),
+            Leveling::Off,
+            &dsp,
+            &device,
+            None,
+        );
+        let steps: Vec<String> = decoding.path.into_iter().map(|step| step.text).collect();
+        (decoding.format.rate, steps)
+    };
+    let dac = [44_100, 88_200, 176_400, 192_000];
+    let (rate, steps) = open(&dac, true);
+    assert_eq!(rate, 176_400);
+    assert!(
+        steps.contains(&"Upsampled 44.1 kHz to 176.4 kHz".to_owned()),
+        "{steps:?}"
+    );
+    assert_eq!(open(&dac, false).0, 44_100);
+    // No multiple of 44.1 kHz: the nearest rate above, as without.
+    let (rate, steps) = open(&[48_000, 96_000], true);
+    assert_eq!(rate, 48_000);
+    assert!(
+        steps.contains(&"Resampled 44.1 kHz to 48 kHz".to_owned()),
+        "{steps:?}"
+    );
+}
+
+#[test]
+fn processing_that_changes_nothing_leaves_it_bit_perfect() {
+    let samples = ramp(44_100 / 4, 2, 24);
+    let device = device(&[44_100], &[I32]);
+    let flat = Dsp {
+        eq: Some(Equalizer {
+            preamp: 0.0,
+            bands: vec![
+                Band {
+                    filter: Filter::Peak,
+                    frequency: 1_000.0,
+                    gain: 0.0,
+                    q: 1.0,
+                },
+                // Above what 44.1 kHz holds.
+                Band {
+                    filter: Filter::HighShelf,
+                    frequency: 30_000.0,
+                    gain: 3.0,
+                    q: 0.7,
+                },
+            ],
+        }),
+        ..Dsp::default()
+    };
+    let run = |dsp: &Dsp| {
+        let download = wav(44_100, 2, 24, &samples);
+        process(download, Gain::default(), Leveling::Off, dsp, &device, None)
+    };
+    let (plain, _) = run(&Dsp::default());
+    let (out, decoding) = run(&flat);
+    assert_eq!(out, plain);
+    assert!(decoding.path.iter().all(|step| step.lossless));
+}
+
+#[test]
+fn processing_leaves_out_what_changes_nothing_or_cant_be_done() {
+    let band = |filter, frequency, gain, q| Band {
+        filter,
+        frequency,
+        gain,
+        q,
+    };
+    let dsp = Dsp {
+        headroom: -0.004,
+        eq: Some(Equalizer {
+            preamp: 0.004,
+            bands: vec![
+                band(Filter::Peak, 1_000.0, 0.004, 1.0),
+                // At what 48 kHz holds, and without a Q.
+                band(Filter::Peak, 24_000.0, 3.0, 1.0),
+                band(Filter::Peak, 1_000.0, 3.0, 0.0),
+                // A pass has no gain to be flat.
+                band(Filter::LowPass, 5_000.0, 0.0, 0.7),
+            ],
+        }),
+        crossfeed: Crossfeed::Medium,
+        upsampling: false,
+    };
+    let (filters, path) = dsp.filters(48_000, 2);
+    let lowpass = "lowpass=f=5000:t=q:w=0.7:precision=f64";
+    assert_eq!(filters, [lowpass, "crossfeed=strength=0.3"]);
+    let steps: Vec<&str> = path.iter().map(|step| step.text.as_str()).collect();
+    assert_eq!(steps, ["EQ, 1 band", "Crossfeed, medium"]);
+    // Mono has no other ear to feed.
+    assert_eq!(dsp.filters(48_000, 1).0, [lowpass]);
 }
 
 #[test]
@@ -328,6 +626,7 @@ fn nothing_is_fetched_without_a_device() {
         }),
         queue: vec![track(Gain::default()); 3],
         leveling: Leveling::Off,
+        dsp: Dsp::default(),
         current: None,
         next: None,
     };

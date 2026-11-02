@@ -9,8 +9,8 @@ use ffmpeg_next::{
 };
 
 use crate::download::Download;
-use crate::output::{Kind, choose};
-use crate::{Format, Leveling, Step, Track};
+use crate::output::{Kind, choose, upsampled};
+use crate::{Dsp, Format, Leveling, Step, Track};
 
 pub(crate) struct Decoding {
     input: Input,
@@ -49,12 +49,14 @@ impl From<Error> for Stop {
 }
 
 impl Decoding {
-    /// Opens `download` and readies it for a device that takes `supported`.
-    /// A read waiting for the download gives up once `abort` says so.
+    /// Opens `download` and readies it, through `dsp`, for a device that
+    /// takes `supported`. A read waiting for the download gives up once
+    /// `abort` says so.
     pub fn open(
         download: Download,
         track: &Track,
         leveling: Leveling,
+        dsp: &Dsp,
         supported: &[SupportedStreamConfigRange],
         abort: impl FnMut() -> bool + Send + 'static,
     ) -> Result<Self, Stop> {
@@ -84,9 +86,14 @@ impl Decoding {
         };
         let channels = decoder.channels();
         let rate = decoder.rate();
-        let out = choose(rate, channels, kind, supported).ok_or_else(|| {
-            Stop::Failed("The sound device takes no format this can play.".into())
-        })?;
+        let out = dsp
+            .upsampling
+            .then(|| upsampled(rate, channels, kind, supported))
+            .flatten()
+            .or_else(|| choose(rate, channels, kind, supported))
+            .ok_or_else(|| {
+                Stop::Failed("The sound device takes no format this can play.".into())
+            })?;
 
         let mut path = vec![Step {
             text: format!("{codec} {}", describe(rate, kind)),
@@ -104,13 +111,21 @@ impl Decoding {
                 lossless: false,
             });
         }
+        let (dsp_filters, dsp_path) = dsp.filters(rate, channels);
+        filters.extend(dsp_filters);
+        path.extend(dsp_path);
         if out.rate != rate {
             filters.push(format!(
                 "aresample=out_sample_rate={}:filter_size=64:phase_shift=10:cutoff=0.97",
                 out.rate
             ));
+            let how = if dsp.upsampling && out.rate > rate && out.rate % rate == 0 {
+                "Upsampled"
+            } else {
+                "Resampled"
+            };
             path.push(Step {
-                text: format!("Resampled {} to {}", khz(rate), khz(out.rate)),
+                text: format!("{how} {} to {}", khz(rate), khz(out.rate)),
                 lossless: false,
             });
         }
@@ -124,7 +139,8 @@ impl Decoding {
             SampleFormat::F32 => "flt",
             _ => "s32",
         };
-        // Leveling or resampling made new samples, finer than 16 bits.
+        // Leveling, processing or resampling made new samples, finer than 16
+        // bits.
         let changed = path.len() > 1;
         match (kind, out.sample) {
             (Kind::Int(bits), SampleFormat::I16 | SampleFormat::I24 | SampleFormat::I32)

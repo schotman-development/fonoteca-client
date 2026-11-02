@@ -6,11 +6,12 @@
 //!
 //! Tracks arrive as [`Download`]s the app fills from the network while they
 //! play. FFmpeg decodes them and its filters do what changes the samples
-//! (volume leveling, resampling for a device that can't take the file's
-//! rate); cpal plays the result.
+//! (volume leveling, the listener's [`Dsp`], resampling for a device that
+//! can't take the file's rate); cpal plays the result.
 
 mod decode;
 mod download;
+mod dsp;
 mod output;
 
 use std::collections::VecDeque;
@@ -21,6 +22,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 pub use download::{Download, Fill, new as download};
+pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
 pub use output::devices;
 
 use decode::{Decoding, Stop};
@@ -139,6 +141,7 @@ enum Command {
     Previous,
     Seek(f64),
     Leveling(Leveling),
+    Dsp(Dsp),
     /// Opens what plays again where it is, for another device.
     Reopen,
     Stop,
@@ -185,6 +188,7 @@ impl Player {
             fetch,
             queue: Vec::new(),
             leveling: Leveling::Off,
+            dsp: Dsp::default(),
             current: None,
             next: None,
         };
@@ -242,6 +246,11 @@ impl Player {
 
     pub fn set_leveling(&self, leveling: Leveling) {
         self.send(Command::Leveling(leveling));
+    }
+
+    /// Has what plays go through `dsp` from where it is.
+    pub fn set_dsp(&self, dsp: Dsp) {
+        self.send(Command::Dsp(dsp));
     }
 
     /// Plays on the device with this cpal id, or the system's default.
@@ -317,6 +326,7 @@ struct Decoder {
     fetch: Fetch,
     queue: Vec<Track>,
     leveling: Leveling,
+    dsp: Dsp,
     current: Option<Current>,
     /// The next track, fetched ahead once the current one has all arrived.
     next: Option<(usize, Result<Download, String>)>,
@@ -390,6 +400,14 @@ impl Decoder {
                     self.start(index, position);
                 }
             }
+            // Typing into the settings sends what changes nothing too.
+            Command::Dsp(dsp) if dsp == self.dsp => {}
+            Command::Dsp(dsp) => {
+                self.dsp = dsp;
+                if let Some((index, position)) = heard {
+                    self.start(index, position);
+                }
+            }
             Command::Reopen => {
                 if let Some((index, position)) = heard {
                     self.start(index, position);
@@ -412,8 +430,8 @@ impl Decoder {
 
     /// Plays the `index`th track from `seconds` into it, in place of
     /// whatever was playing. A track still being decoded opens again from
-    /// what has been downloaded, with the leveling and device as they are
-    /// now.
+    /// what has been downloaded, with the leveling, processing and device as
+    /// they are now.
     fn start(&mut self, index: usize, seconds: f64) {
         {
             let mut ring = self.shared.ring.lock().unwrap();
@@ -463,10 +481,14 @@ impl Decoder {
                 .reader()
                 .map_err(|e| Stop::Failed(format!("The track couldn't be read back: {e}")))?;
             let pending = self.pending.clone();
-            let mut decoding =
-                Decoding::open(download, &track, self.leveling, &supported, move || {
-                    pending.load(Relaxed) > 0
-                })?;
+            let mut decoding = Decoding::open(
+                download,
+                &track,
+                self.leveling,
+                &self.dsp,
+                &supported,
+                move || pending.load(Relaxed) > 0,
+            )?;
             if seconds > 0.0 {
                 decoding.seek(seconds)?;
             }
