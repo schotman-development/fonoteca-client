@@ -130,9 +130,9 @@ fn list_devices(ui: &AppWindow, playing: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Plays the page's songs from the `start`th, in place of what played.
-fn play(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, start: usize) {
-    let songs = browse::songs(browser);
+/// Plays the page's songs from its `row`th row, in place of what played.
+fn play(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, row: usize) {
+    let (songs, start) = browse::songs(browser, ui.get_page(), row);
     let Some(client) = browse::client(browser).filter(|_| start < songs.len()) else {
         return;
     };

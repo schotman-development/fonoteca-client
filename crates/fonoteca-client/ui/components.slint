@@ -1191,12 +1191,15 @@ export component TrackLineRow inherits Rectangle {
     // dialog for its song.
     in property <[Name]> playlists;
     in property <bool> taggable;
+    // Whether its menu plays the songs from it on.
+    in property <bool> playable;
     callback open(link: string);
     callback toggle-love();
     // With Shift held, everything from the row last picked to this one.
     callback select(range: bool);
     callback add-to-playlist(id: string);
     callback tag();
+    callback play();
     property <bool> shift;
 
     height: 54px * Theme.zoom;
@@ -1316,7 +1319,11 @@ export component TrackLineRow inherits Rectangle {
                 cross-axis-self-alignment: center;
                 label: "More for " + root.line.title;
                 opening => {
-                    self.entries = [{ id: "love", label: root.line.loved ? "Unlove" : "Love", icon: Icons.heart }];
+                    self.entries = [];
+                    if root.playable && !root.line.folder {
+                        self.entries.push({ id: "play", label: "Play from here", icon: Icons.play });
+                    }
+                    self.entries.push({ id: "love", label: root.line.loved ? "Unlove" : "Love", icon: Icons.heart });
                     if root.line.album.link != "" {
                         self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
                     }
@@ -1334,7 +1341,9 @@ export component TrackLineRow inherits Rectangle {
                     self.entries.push({ id: "select", label: root.line.selected ? "Deselect" : "Select", icon: Icons.check });
                 }
                 activated(id, choice) => {
-                    if id == "love" {
+                    if id == "play" {
+                        root.play();
+                    } else if id == "love" {
                         root.toggle-love();
                     } else if id == "album" {
                         root.open(root.line.album.link);

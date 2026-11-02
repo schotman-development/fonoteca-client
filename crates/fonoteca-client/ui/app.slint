@@ -758,6 +758,8 @@ export component AppWindow inherits Window {
     // every column there is to pick from.
     in property <[TrackColumn]> track-columns;
     in property <[TrackLine]> track-lines;
+    // Whether the table's rows hold a song, not only folders.
+    in property <bool> songs-listed;
     in property <length> track-table-width;
     in property <length> track-table-least;
     in property <[ColumnChoice]> track-choices;
@@ -839,7 +841,8 @@ export component AppWindow inherits Window {
     callback remove-from-playlist(row: int);
     callback add-line-to-playlist(row: int, id: string);
     callback add-track-to-playlist(row: int, id: string);
-    // Plays the album's, playlist's or artist's tracks from the `row`th.
+    // Plays the album's, playlist's or artist's tracks, or the songs of the
+    // table on screen, from the `row`th.
     callback play-tracks(row: int);
     callback toggle-pause();
     callback previous-track();
@@ -1124,6 +1127,13 @@ export component AppWindow inherits Window {
                                 root.ask-tag(Asking.delete-tag, root.shown-id, root.header-title);
                             }
                         }
+                    }
+                    if root.can-play && root.page != Page.compositions && root.songs-listed: Button {
+                        horizontal-stretch: 0;
+                        text: "Play";
+                        primary: true;
+                        enabled: !Input.modal;
+                        clicked => { root.play-tracks(0); }
                     }
                     if root.page == Page.tracks && root.width - root.sidebar-width >= 600px: Filter {
                         what: "tracks";
@@ -1658,7 +1668,9 @@ export component AppWindow inherits Window {
                             // A composition is no song to add or tag.
                             playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
                             taggable: root.tags-offered && root.page != Page.compositions;
+                            playable: root.can-play && root.page != Page.compositions;
                             open(link) => { root.open(link); }
+                            play => { root.play-tracks(row); }
                             toggle-love => { root.toggle-line-love(row); }
                             select(range) => { root.select-line(row, range); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }

@@ -294,11 +294,20 @@ pub fn client(browser: &Shared) -> Option<Arc<Client>> {
     browser.borrow().client.clone()
 }
 
-/// The songs of the album, playlist or artist's top songs on screen, in
-/// their rows' order.
+/// The songs on screen in their rows' order, and where the `row`th row is
+/// among them: an album's, a playlist's or an artist's top songs, or the
+/// songs of the tracks, folders or a tag's page as filtered and sorted,
+/// without the folders between them.
 #[cfg(target_os = "linux")]
-pub fn songs(browser: &Shared) -> Vec<Child> {
-    browser.borrow().songs.clone()
+pub fn songs(browser: &Shared, page: Page, row: usize) -> (Vec<Child>, usize) {
+    let b = browser.borrow();
+    if !matches!(page, Page::Tracks | Page::Folders | Page::Tag) {
+        return (b.songs.clone(), row);
+    }
+    let (songs, order) = listed(&b, page);
+    let rows = order.iter().map(|&song| &songs[song]);
+    let start = rows.clone().take(row).filter(|song| !song.is_dir).count();
+    (rows.filter(|song| !song.is_dir).cloned().collect(), start)
 }
 
 /// Fetches a cover `logical` pixels wide and hands it to `done`.
@@ -2362,6 +2371,7 @@ fn show_lines(ui: &AppWindow, browser: &Shared, upto: usize) {
         let tracks = page == Page::Tracks;
         let more = end < order.len() || (tracks && !b.song_list_loaded);
         let waiting = tracks && b.song_list_loading && b.song_view.is_empty();
+        ui.set_songs_listed(order.iter().any(|&song| !songs[song].is_dir));
         want_line_covers(&mut b, page, start);
         (more, waiting)
     };
@@ -6393,6 +6403,23 @@ mod tests {
         assert!(hearts(&b));
         mark_loved(&mut b, Page::Tracks, "s1", false);
         assert!(!hearts(&b));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_folder_plays_its_songs_in_the_rows_order_without_its_folders() {
+        let browser = Shared::new(RefCell::new(Browser {
+            entries: serde_json::from_str(
+                r#"[{"id":"d1","isDir":true,"title":"CD 1"},{"id":"s1","isDir":false,"title":"A"},
+                    {"id":"d2","isDir":true,"title":"CD 2"},{"id":"s2","isDir":false,"title":"B"}]"#,
+            )
+            .unwrap(),
+            view: vec![2, 3, 0, 1],
+            ..Browser::default()
+        }));
+        let (songs, start) = songs(&browser, Page::Folders, 3);
+        let ids: Vec<&str> = songs.iter().map(|song| song.id.as_str()).collect();
+        assert_eq!((ids, start), (vec!["s2", "s1"], 1));
     }
 
     #[test]
