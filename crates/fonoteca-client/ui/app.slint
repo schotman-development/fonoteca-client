@@ -753,6 +753,7 @@ export component AppWindow inherits Window {
     in property <bool> playing-paused;
     in property <float> playing-position;
     in property <float> playing-duration;
+    in property <string> playing-waveform;
     in property <string> playing-quality;
     in property <int> playing-level: -1;
     in property <[PathStep]> playing-path;
@@ -2251,6 +2252,7 @@ export component AppWindow inherits Window {
                     paused: root.playing-paused;
                     position: root.playing-position;
                     duration: root.playing-duration;
+                    waveform: root.playing-waveform;
                     quality: root.playing-quality;
                     level: root.playing-level;
                     path: root.playing-path;
@@ -2427,6 +2429,7 @@ export component AppWindow inherits Window {
                                     paused: root.playing-paused;
                                     position: root.playing-position;
                                     duration: root.playing-duration;
+                                    waveform: root.playing-waveform;
                                     shuffled: root.shuffled;
                                     repeat: root.repeat;
                                     toggle-pause => { root.toggle-pause(); }

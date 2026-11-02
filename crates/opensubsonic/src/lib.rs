@@ -763,6 +763,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn waveform_in_fonotecas_shape() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("id=tr-1") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","waveform":{"level":[0.0123,0.2,0]}}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"No such waveform."}}}"#
+            })
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let waveform = client.get_waveform("tr-1").await.unwrap();
+        assert_eq!(waveform.level, [0.0123, 0.2, 0.0]);
+        assert!(matches!(
+            client.get_waveform("tr-2").await,
+            Err(Error::Api(ApiError { code: 70, .. }))
+        ));
+        assert!(log.lock().unwrap()[0].contains("/rest/getWaveform"));
+    }
+
+    #[tokio::test]
     async fn composers_and_compositions_in_fonotecas_shape() {
         let (server, log) = serve(|request| {
             json(if request.contains("getComposers") {

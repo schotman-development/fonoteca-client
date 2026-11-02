@@ -756,6 +756,15 @@ impl Client {
         .await
     }
 
+    /// A song's level over its length, to draw as its waveform. Not in the
+    /// spec: Fonoteca's own call, offered where the client
+    /// [`supports`](Client::supports) `fonotecaWaveform`. A song without one
+    /// answers error 70.
+    pub async fn get_waveform(&self, id: &str) -> Result<Waveform> {
+        self.call("getWaveform", Params::new().req("id", id), "waveform")
+            .await
+    }
+
     /// Everyone credited as composer of a classical piece the server holds,
     /// indexed by letter. Not in the spec: Fonoteca's own call, offered where
     /// the client [`supports`](Client::supports) `fonotecaCompositions`.

@@ -13,6 +13,8 @@ mod queue;
 #[cfg(not(target_family = "wasm"))]
 mod sound;
 mod store;
+#[cfg(not(target_family = "wasm"))]
+mod waveform;
 mod zone;
 
 use std::cell::RefCell;
@@ -593,6 +595,9 @@ mod tests {
     /// While set, the classical album's motion cover takes a while to come.
     static SLOW_MOTION: AtomicBool = AtomicBool::new(false);
     static MOTIONS_ASKED: AtomicUsize = AtomicUsize::new(0);
+    static NO_WAVEFORM: AtomicBool = AtomicBool::new(false);
+    static SLOW_WAVEFORM: AtomicBool = AtomicBool::new(false);
+    static WAVEFORMS_ASKED: AtomicUsize = AtomicUsize::new(0);
     /// How many scans were asked for; the server refuses the first. Whether
     /// the one it took is still going, and how often that was asked.
     static SCANS: AtomicUsize = AtomicUsize::new(0);
@@ -746,8 +751,13 @@ mod tests {
             } else {
                 r#"{"name":"fonotecaAlbumMotion","versions":[1]},"#
             };
+            let waveform = if NO_WAVEFORM.load(Relaxed) {
+                ""
+            } else {
+                r#"{"name":"fonotecaWaveform","versions":[1]},"#
+            };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}]"#
             ))
         } else if !request.contains("u=joe&") {
             json(WRONG_PASSWORD)
@@ -825,6 +835,18 @@ mod tests {
             } else {
                 json(
                     r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Not found"}}}"#,
+                )
+            }
+        } else if request.contains("/rest/getWaveform") {
+            WAVEFORMS_ASKED.fetch_add(1, Relaxed);
+            if SLOW_WAVEFORM.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            if id == Some("w1") {
+                ok(r#""waveform":{"level":[0.1,0.4,0.2,0]}"#)
+            } else {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"No such waveform."}}}"#,
                 )
             }
         } else if request.contains("/rest/getAlbumInfo2") {
@@ -3671,12 +3693,33 @@ mod tests {
             })
             .await;
 
+            // A song with a waveform shows it as the seek bar, and one without
+            // keeps the plain bar. The last song's waveform goes at once, and
+            // one that comes late for a song left behind doesn't show.
+            let asked = WAVEFORMS_ASKED.load(Relaxed);
+            play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
+            wait_for("its waveform", || !ui.get_playing_waveform().is_empty()).await;
+            play::testing::show_song(&ui, vec![song("w2", "a1")], 0);
+            assert_eq!(ui.get_playing_waveform(), "", "the last song's is gone");
+            wait_for("the waveform asked for", || {
+                WAVEFORMS_ASKED.load(Relaxed) == asked + 2
+            })
+            .await;
+            SLOW_WAVEFORM.store(true, Relaxed);
+            play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
+            play::testing::show_song(&ui, vec![song("w2", "a1")], 0);
+            idle(Duration::from_millis(1000)).await;
+            assert_eq!(ui.get_playing_waveform(), "");
+            SLOW_WAVEFORM.store(false, Relaxed);
+
             // Without the extension the still cover stays and none is asked for.
             let asked = MOTIONS_ASKED.load(Relaxed);
+            let waveforms_asked = WAVEFORMS_ASKED.load(Relaxed);
             click(&ui, "Account");
             click(&ui, "Sign out");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
             NO_MOTION.store(true, Relaxed);
+            NO_WAVEFORM.store(true, Relaxed);
             ui.set_address(server.as_str().into());
             click(&ui, "Continue");
             wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
@@ -3694,6 +3737,11 @@ mod tests {
             assert_eq!(ui.get_playing_art().size().width, 1);
             assert_eq!(MOTIONS_ASKED.load(Relaxed), asked);
             NO_MOTION.store(false, Relaxed);
+            play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(ui.get_playing_waveform(), "");
+            assert_eq!(WAVEFORMS_ASKED.load(Relaxed), waveforms_asked);
+            NO_WAVEFORM.store(false, Relaxed);
             QUEUED.store(false, Relaxed);
 
             // On a server with playlist folders, the sidebar has every

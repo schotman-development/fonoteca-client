@@ -2402,10 +2402,13 @@ export struct QueueLine {
 }
 
 // The track's position, to drag or click to a new one, which it hands to
-// `seek` once let go.
+// `seek` once let go. With the song's `waveform`, the commands of a path 100
+// wide and 1 high, it is drawn as bars, the part played in the accent colour;
+// without one it is a plain line.
 component SeekBar {
     in property <float> position;
     in property <float> duration;
+    in property <string> waveform;
     callback seek(seconds: float);
 
     property <float> dragged: clamp(touch.mouse-x / root.width, 0, 1) * root.duration;
@@ -2413,7 +2416,7 @@ component SeekBar {
     property <float> fraction: root.duration > 0 ? clamp(root.shown / root.duration, 0, 1) : 0;
 
     min-width: 80px;
-    height: 20px;
+    height: 28px;
     accessible-role: slider;
     accessible-label: "Position";
     accessible-value: round(root.shown);
@@ -2423,7 +2426,7 @@ component SeekBar {
     accessible-action-increment => { root.seek(min(root.position + 10, root.duration)); }
     accessible-action-decrement => { root.seek(max(root.position - 10, 0)); }
 
-    Rectangle {
+    if root.waveform == "": Rectangle {
         y: (parent.height - self.height) / 2;
         height: 4px;
         border-radius: 2px;
@@ -2435,7 +2438,36 @@ component SeekBar {
             background: Theme.accent;
         }
     }
-    if touch.has-hover || touch.pressed: Rectangle {
+    if root.waveform != "": Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 100;
+        viewbox-height: 1;
+        fit: fill;
+        commands: root.waveform;
+        fill: Theme.text.transparentize(70%);
+    }
+    if root.waveform != "": Rectangle {
+        x: 0;
+        width: root.width * root.fraction;
+        clip: true;
+        Path {
+            x: 0;
+            width: root.width;
+            height: root.height;
+            viewbox-width: 100;
+            viewbox-height: 1;
+            fit: fill;
+            commands: root.waveform;
+            fill: Theme.accent;
+        }
+    }
+    if root.waveform != "": Rectangle {
+        x: root.width * root.fraction - self.width / 2;
+        width: 2px;
+        background: Theme.text;
+    }
+    if root.waveform == "" && (touch.has-hover || touch.pressed): Rectangle {
         x: root.width * root.fraction - self.width / 2;
         y: (parent.height - self.height) / 2;
         width: 12px;
@@ -2577,6 +2609,7 @@ component PlayPauseButton inherits IconButton {
 component SeekRow inherits HorizontalLayout {
     in property <float> position;
     in property <float> duration;
+    in property <string> waveform;
     callback seek(seconds: float);
 
     function clock(seconds: float) -> string {
@@ -2598,6 +2631,7 @@ component SeekRow inherits HorizontalLayout {
         horizontal-stretch: 1;
         position: root.position;
         duration: root.duration;
+        waveform: root.waveform;
         seek(seconds) => { root.seek(seconds); }
     }
     Text {
@@ -2616,6 +2650,7 @@ export component PlayerControls inherits VerticalLayout {
     in property <bool> paused;
     in property <float> position;
     in property <float> duration;
+    in property <string> waveform;
     in property <bool> shuffled;
     in property <int> repeat;
     callback toggle-pause();
@@ -2631,6 +2666,7 @@ export component PlayerControls inherits VerticalLayout {
     SeekRow {
         position: root.position;
         duration: root.duration;
+        waveform: root.waveform;
         seek(seconds) => { root.seek(seconds); }
     }
     HorizontalLayout {
@@ -2875,6 +2911,7 @@ export component PlayerBar inherits Rectangle {
     in property <bool> paused;
     in property <float> position;
     in property <float> duration;
+    in property <string> waveform;
     // The signal path's light, by its name and from 0 to 3, or -1 for none.
     in property <string> quality;
     in property <int> level: -1;
@@ -2985,9 +3022,10 @@ export component PlayerBar inherits Rectangle {
         if !Screen.phone: SeekRow {
             cross-axis-self-alignment: center;
             horizontal-stretch: 1;
-            preferred-width: 300px;
+            preferred-width: 380px;
             position: root.position;
             duration: root.duration;
+            waveform: root.waveform;
             seek(seconds) => { root.seek(seconds); }
         }
         if root.quality != "": SignalPathLight {

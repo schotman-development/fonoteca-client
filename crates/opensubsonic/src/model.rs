@@ -432,6 +432,16 @@ pub struct Recorded {
     pub places: Vec<String>,
 }
 
+/// Not in the spec: a song's level over time, from Fonoteca's
+/// `fonotecaWaveform` extension.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Waveform {
+    /// At most 500 RMS amplitudes against full scale, 0 to 1, evenly spaced
+    /// over the song, not normalised to it.
+    #[serde(default)]
+    pub level: Vec<f32>,
+}
+
 /// Not in the spec: the composers of classical pieces, indexed by letter, from
 /// Fonoteca's `fonotecaCompositions` extension.
 #[derive(Debug, Clone, PartialEq, Deserialize)]

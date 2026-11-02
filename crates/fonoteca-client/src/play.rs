@@ -18,7 +18,7 @@ use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, plan, run_from};
-use crate::{AppWindow, Name, Page, PathStep, QueueLine, browse, prefs, sound};
+use crate::{AppWindow, Name, Page, PathStep, QueueLine, browse, prefs, sound, waveform};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -673,6 +673,13 @@ fn show_song(
     });
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());
+    let (playing_now, song_id) = (playing.clone(), song.id.clone());
+    waveform::show(ui, browse::client(browser), song.id.clone(), move || {
+        let p = playing_now.borrow();
+        p.shown
+            .and_then(|shown| p.queue.get(shown))
+            .is_some_and(|song| song.id == song_id)
+    });
     browse::playing_motion(ui, browser, song.album_id.clone(), ART_SIZE, |ui, frame| {
         ui.set_playing_art(frame);
     });
