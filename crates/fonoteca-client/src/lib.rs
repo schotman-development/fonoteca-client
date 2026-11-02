@@ -2202,6 +2202,95 @@ mod tests {
             ui.global::<Input>().set_finger(false);
             hold(&ui, left, 100.0, 0).await;
             assert_eq!(ui.get_page(), Page::Albums, "a mouse doesn't swipe");
+            // Now playing is a sheet over the page: it comes and goes
+            // with the page, its place and its history as they were.
+            {
+                let (can_play, playing) = (ui.get_can_play(), ui.get_playing());
+                ui.set_can_play(true);
+                ui.set_playing(true);
+                ui.set_playing_title("Northern Lights".into());
+                let aurora = Name {
+                    label: "Aurora".into(),
+                    link: "albums".into(),
+                };
+                ui.set_playing_album(aurora);
+                scroll(-40.0);
+                let filter_at = || {
+                    ui.root_element()
+                        .query_descendants()
+                        .match_predicate(|e| e.accessible_label().is_some_and(|l| l == "Filter albums"))
+                        .find_first()
+                        .map(|filter| filter.absolute_position())
+                };
+                let before = (filter_at(), ui.get_arrival(), ui.get_can_go_forward());
+                assert!(before.0.is_some(), "the filter is in sight");
+                // PageDown scrolls the page when it has the keys, and the
+                // page goes back to where it was.
+                let page_has_the_keys = || {
+                    press(&ui, slint::platform::Key::PageDown);
+                    let scrolled = filter_at() != before.0;
+                    press(&ui, slint::platform::Key::PageUp);
+                    assert_eq!(filter_at(), before.0);
+                    scrolled
+                };
+                assert!(page_has_the_keys(), "the page has the keys");
+                assert!(find(&ui, "Back").is_some());
+                click(&ui, "Now playing");
+                assert!(ui.get_now_playing_open());
+                idle(Duration::from_millis(400)).await;
+                assert!(
+                    find(&ui, "Back").is_none() && filter_at().is_none(),
+                    "the top bar and the page are out of reach under it"
+                );
+                // Tab and Shift+Tab never stop on what the sheet covers: the
+                // keys would scroll the page, which sits under it.
+                for key in [slint::platform::Key::Tab, slint::platform::Key::Backtab] {
+                    for _ in 0..120 {
+                        press(&ui, key);
+                        press(&ui, slint::platform::Key::PageDown);
+                    }
+                }
+                click(&ui, "Close now playing");
+                idle(Duration::from_millis(400)).await;
+                assert_eq!(filter_at(), before.0, "Tab left the page alone");
+                click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+                // Whatever hands the keys back to the page, as a closed menu
+                // does, leaves them with the sheet while it is over the page.
+                let input = ui.global::<Input>();
+                input.set_refocus(input.get_refocus() + 1);
+                press(&ui, slint::platform::Key::Back);
+                assert!(!ui.get_now_playing_open(), "Back closes it");
+                assert!(page_has_the_keys(), "closing hands the page the keys");
+                click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+                press(&ui, slint::platform::Key::Escape);
+                assert!(!ui.get_now_playing_open(), "Escape closes it");
+                assert_eq!(ui.get_page(), Page::Albums);
+                idle(Duration::from_millis(400)).await;
+                assert_eq!(
+                    (filter_at(), ui.get_arrival(), ui.get_can_go_forward()),
+                    before
+                );
+                assert!(page_has_the_keys(), "closing hands the page the keys");
+                // The sidebar's entry for the page shown closes it too.
+                click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+                click(&ui, &lit(&ui));
+                assert!(!ui.get_now_playing_open(), "the sidebar closes it");
+                idle(Duration::from_millis(400)).await;
+                assert!(page_has_the_keys(), "the sidebar hands the page the keys");
+                click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+                click(&ui, "Aurora");
+                assert!(!ui.get_now_playing_open(), "a link out closes it");
+                assert_eq!(ui.get_page(), Page::Albums);
+                assert_eq!(ui.get_arrival(), before.1, "a link to this page is no step");
+                idle(Duration::from_millis(400)).await;
+                scroll(100000.0);
+                ui.set_playing(playing);
+                ui.set_can_play(can_play);
+            }
             // Android's back in a filter hands the keys back to the page,
             // and the next one goes back a page.
             let filter = ui

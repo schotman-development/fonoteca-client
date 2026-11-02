@@ -1,5 +1,5 @@
 //! Playing music on this device: a queue from the page on screen, the bar
-//! under the pages, the now playing page with the queue, and the sound
+//! under the pages, the now playing sheet with the queue, and the sound
 //! device, volume leveling and sound processing in the settings.
 //! The queue and where it is are saved on the server, for this app or any
 //! other to carry on with.
@@ -29,11 +29,11 @@ const TICK: Duration = Duration::from_millis(250);
 /// How many seconds play between saves of where the queue is, so the next
 /// start picks up close to where this one stopped.
 const SAVE_EVERY: f64 = 15.0;
-/// The now playing page's cover, which the bar shows too, and the covers
+/// The now playing sheet's cover, which the bar shows too, and the covers
 /// of the queue under it, in logical pixels.
 const ART_SIZE: f32 = 400.0;
 const LINE_COVER_SIZE: f32 = 40.0;
-/// How many songs of the queue the now playing page lists, from the one
+/// How many songs of the queue the now playing sheet lists, from the one
 /// playing on.
 // ponytail: a fixed window; page through it once queues that long need reordering.
 const QUEUE_SHOWN: usize = 100;
@@ -49,7 +49,7 @@ struct Playing {
     /// How many of the queue's changes the player was handed. Until it has
     /// made them all, the track it says plays counts in the queue before.
     requeued: u64,
-    /// Where the now playing page's list of the queue starts, and the
+    /// Where the now playing sheet's list of the queue starts, and the
     /// covers it has shown, by their ids.
     listed_from: usize,
     covers: HashMap<String, Image>,
@@ -678,7 +678,7 @@ fn show_song(
     }
 }
 
-/// Lists the queue on the now playing page from the song playing on, with
+/// Lists the queue on the now playing sheet from the song playing on, with
 /// the covers it has shown before and the others once they come.
 fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing: &Shared) {
     let from = p.shown.unwrap_or(0).min(p.queue.len());

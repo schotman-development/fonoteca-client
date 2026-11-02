@@ -74,6 +74,7 @@ export struct AlbumTile {
 export global Icons {
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
+    out property <string> chevron-down: "M6 9l6 6 6-6";
     out property <string> forward: "M9 5l7 7-7 7";
     out property <string> sound: "M6 4v16 M12 4v16 M18 4v16 M3.5 14h5 M9.5 8h5 M15.5 16h5";
     out property <string> refresh: "M20 12a8 8 0 1 1-8-8c2.2 0 4.3.9 5.9 2.4L20 8.5 M20 3.5v5h-5";
@@ -128,7 +129,7 @@ export global Input {
 }
 
 // The playlist being dragged, by its link, while a drag is in flight, or
-// the song of the queue, by its row on the now playing page; and what every
+// the song of the queue, by its row on the now playing sheet; and what every
 // drag carries, set once at start, as Slint starts no drag without it.
 export global Drag {
     in-out property <string> link;
@@ -2378,7 +2379,7 @@ export struct PathStep {
     quality: int,
 }
 
-// A song in the queue on the now playing page: its title, its artists and
+// A song in the queue on the now playing sheet: its title, its artists and
 // length, its cover, its album's link, and whether it is the one playing.
 export struct QueueLine {
     title: string,
@@ -2581,7 +2582,7 @@ component SeekRow inherits HorizontalLayout {
     }
 }
 
-// The now playing page's controls on a phone, whose bar has room for play
+// The now playing sheet's controls on a phone, whose bar has room for play
 // and next only: where the track is, then shuffle, previous, play, next and
 // repeat.
 export component PlayerControls inherits VerticalLayout {
@@ -2711,7 +2712,7 @@ component NowPlayingDetails inherits VerticalLayout {
     }
 }
 
-// What plays, large, for the now playing page: its cover, and its words
+// What plays, large, for the now playing sheet: its cover, and its words
 // beside it on a wide page or under it on a narrow one.
 export component NowPlaying inherits VerticalLayout {
     // The page's width for it, which it can't read from its own: its
