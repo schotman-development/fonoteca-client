@@ -10,7 +10,7 @@ use ffmpeg_next::{
 
 use crate::download::Download;
 use crate::output::{Kind, choose, upsampled};
-use crate::{Dsp, Format, Leveling, Step, Track};
+use crate::{Dsp, Format, Leveling, Quality, Step, Track};
 
 pub(crate) struct Decoding {
     input: Input,
@@ -97,7 +97,11 @@ impl Decoding {
 
         let mut path = vec![Step {
             text: format!("{codec} {}", describe(rate, kind)),
-            lossless,
+            quality: if lossless {
+                Quality::Lossless
+            } else {
+                Quality::Low
+            },
         }];
         let mut filters = Vec::new();
         if let Some(gain) = track.gain.applied(leveling) {
@@ -108,7 +112,7 @@ impl Decoding {
             };
             path.push(Step {
                 text: format!("Volume leveling {gain:+.1} dB ({which})"),
-                lossless: false,
+                quality: Quality::Enhanced,
             });
         }
         let (dsp_filters, dsp_path) = dsp.filters(rate, channels);
@@ -119,14 +123,15 @@ impl Decoding {
                 "aresample=out_sample_rate={}:filter_size=64:phase_shift=10:cutoff=0.97",
                 out.rate
             ));
-            let how = if dsp.upsampling && out.rate > rate && out.rate % rate == 0 {
-                "Upsampled"
+            // Upsampling is asked for; any other rate is the device's need.
+            let (how, quality) = if dsp.upsampling && out.rate > rate && out.rate % rate == 0 {
+                ("Upsampled", Quality::Enhanced)
             } else {
-                "Resampled"
+                ("Resampled", Quality::High)
             };
             path.push(Step {
                 text: format!("{how} {} to {}", khz(rate), khz(out.rate)),
-                lossless: false,
+                quality,
             });
         }
         let out_bits = match out.sample {
@@ -148,17 +153,17 @@ impl Decoding {
             {
                 path.push(Step {
                     text: format!("Reduced from {bits} to {out_bits} bits"),
-                    lossless: false,
+                    quality: Quality::High,
                 });
             }
             (Kind::Float, SampleFormat::F32) => {}
             (Kind::Float, _) => path.push(Step {
                 text: format!("Converted to {out_bits}-bit integers"),
-                lossless: false,
+                quality: Quality::High,
             }),
             (Kind::Int(bits), SampleFormat::F32) if bits > 24 => path.push(Step {
                 text: "Converted to 32-bit floats".into(),
-                lossless: false,
+                quality: Quality::High,
             }),
             _ => {}
         }
@@ -175,7 +180,7 @@ impl Decoding {
         if out.channels != channels {
             path.push(Step {
                 text: format!("{channels} channels played on {}", out.channels),
-                lossless: false,
+                quality: Quality::High,
             });
         }
 

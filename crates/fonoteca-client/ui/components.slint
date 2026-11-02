@@ -27,6 +27,11 @@ export global Theme {
     out property <length> bar-height: 64px;
 
     out property <brush> danger: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
+    // The signal path's lights, as Roon colours them, worst first: a lossy
+    // file, changed for the device, changed as asked, untouched.
+    out property <[color]> quality-colors: Palette.color-scheme == ColorScheme.dark
+        ? [#f2c94c, #4cd07d, #5aa9ff, #b38cff]
+        : [#a87b00, #1b8a45, #1f6fd1, #7c3aed];
 }
 
 // The window's size and what a phone draws over the bottom of it, for the
@@ -2156,11 +2161,11 @@ export component TopBar inherits HorizontalLayout {
     }
 }
 
-// A step the audio takes from the file to the speakers, and whether it
-// leaves every bit as it was.
+// A step of the signal path, and its light: from 0, a lossy file, to 3,
+// untouched.
 export struct PathStep {
     text: string,
-    lossless: bool,
+    quality: int,
 }
 
 // The track's position, to drag or click to a new one, which it hands to
@@ -2312,8 +2317,9 @@ export component PlayerBar inherits Rectangle {
     in property <bool> paused;
     in property <float> position;
     in property <float> duration;
+    // The signal path's light, by its name and from 0 to 3, or -1 for none.
     in property <string> quality;
-    in property <bool> bit-perfect;
+    in property <int> level: -1;
     in property <[PathStep]> path;
     in property <string> problem;
     callback open(link: string);
@@ -2321,6 +2327,7 @@ export component PlayerBar inherits Rectangle {
     callback previous();
     callback next();
     callback seek(seconds: float);
+    property <brush> light: root.level >= 0 ? Theme.quality-colors[root.level] : Theme.muted;
 
     function clock(seconds: float) -> string {
         let s = floor(max(seconds, 0));
@@ -2428,9 +2435,10 @@ export component PlayerBar inherits Rectangle {
             Rectangle {
                 border-radius: self.height / 2;
                 border-width: 1px;
-                border-color: root.bit-perfect ? Theme.accent : Theme.muted;
+                border-color: root.light;
                 background: parent.hovered ? Theme.hover : transparent;
             }
+            // A phone has room for the light only.
             badge := HorizontalLayout {
                 padding-left: 10px;
                 padding-right: 10px;
@@ -2440,12 +2448,12 @@ export component PlayerBar inherits Rectangle {
                     width: 8px;
                     height: 8px;
                     border-radius: 4px;
-                    background: root.bit-perfect ? Theme.accent : Theme.muted;
+                    background: root.light;
                 }
-                Text {
+                if !Screen.phone: Text {
                     text: root.quality;
                     font-size: Theme.small;
-                    color: root.bit-perfect ? Theme.accent : Theme.muted;
+                    color: root.light;
                     vertical-alignment: center;
                 }
             }
@@ -2474,7 +2482,7 @@ export component PlayerBar inherits Rectangle {
                                 width: 8px;
                                 height: 8px;
                                 border-radius: 4px;
-                                background: step.lossless ? Theme.accent : Theme.muted;
+                                background: Theme.quality-colors[step.quality];
                             }
                             Text {
                                 text: step.text;

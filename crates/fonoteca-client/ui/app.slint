@@ -745,7 +745,7 @@ export component AppWindow inherits Window {
     in property <float> playing-position;
     in property <float> playing-duration;
     in property <string> playing-quality;
-    in property <bool> playing-bit-perfect;
+    in property <int> playing-level: -1;
     in property <[PathStep]> playing-path;
     in property <string> playing-problem;
     // The sound devices to play on, the system's default first, and the one
@@ -2122,7 +2122,7 @@ export component AppWindow inherits Window {
                 position: root.playing-position;
                 duration: root.playing-duration;
                 quality: root.playing-quality;
-                bit-perfect: root.playing-bit-perfect;
+                level: root.playing-level;
                 path: root.playing-path;
                 problem: root.playing-problem;
                 open(link) => { root.open(link); }

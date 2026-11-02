@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use opensubsonic::{Child, Client};
-use playback::{Gain, Leveling, Player, Step, Track};
+use playback::{Gain, Leveling, Player, Quality, Step, Track};
 use slint::{ComponentHandle, Image, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::{AppWindow, PathStep, browse, prefs, sound};
@@ -271,26 +271,15 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         (None, None) => String::new(),
     };
     ui.set_playing_problem(problem.into());
-    ui.set_playing_bit_perfect(status.bit_perfect);
-    // The device step comes once it is open in the track's format; until
-    // then, every step can be lossless without the whole path being.
-    let quality = if status.bit_perfect {
-        "Bit-perfect"
-    } else if status.path.first().is_some_and(|step| !step.lossless) {
-        "Lossy source"
-    } else if status.path.iter().any(|step| !step.lossless) {
-        "Processed"
-    } else {
-        ""
-    };
-    ui.set_playing_quality(quality.into());
+    ui.set_playing_level(status.quality.map_or(-1, |quality| quality as i32));
+    ui.set_playing_quality(status.quality.map_or("", quality_name).into());
     if status.path != p.path {
         let steps: Vec<PathStep> = status
             .path
             .iter()
             .map(|step| PathStep {
                 text: step.text.as_str().into(),
-                lossless: step.lossless,
+                quality: step.quality as i32,
             })
             .collect();
         ui.set_playing_path(ModelRc::new(VecModel::from(steps)));
@@ -302,6 +291,16 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     p.shown = status.index;
     if let Some(index) = status.index {
         show_song(ui, browser, &p, playing, index);
+    }
+}
+
+/// The signal path's light by name, as Roon names it.
+fn quality_name(quality: Quality) -> &'static str {
+    match quality {
+        Quality::Lossless => "Lossless",
+        Quality::Enhanced => "Enhanced",
+        Quality::High => "High quality",
+        Quality::Low => "Low quality",
     }
 }
 
@@ -393,7 +392,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         ui.set_playing_position(seconds as f32);
         ui.set_playing_problem("".into());
         ui.set_playing_quality("".into());
-        ui.set_playing_bit_perfect(false);
+        ui.set_playing_level(-1);
         ui.set_playing_path(ModelRc::default());
         show_song(&ui, &browser, &p, &playing, index);
     })

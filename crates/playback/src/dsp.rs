@@ -2,7 +2,7 @@
 //! device: headroom, a parametric EQ and crossfeed, each an FFmpeg filter.
 //! Upsampling picks the device's rate, so the decoder sees to it.
 
-use crate::Step;
+use crate::{Quality, Step};
 
 /// What the listener has the sound go through. The default changes nothing.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -135,6 +135,6 @@ fn volume(db: f64) -> String {
 fn changed(text: String) -> Step {
     Step {
         text,
-        lossless: false,
+        quality: Quality::Enhanced,
     }
 }

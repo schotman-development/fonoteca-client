@@ -124,7 +124,10 @@ fn sixteen_bits_reach_a_sixteen_bit_device_untouched() {
     assert_eq!(decoding.format.sample, I16);
     assert_eq!(ints(&out, 2), samples);
     assert!(
-        decoding.path.iter().all(|step| step.lossless),
+        decoding
+            .path
+            .iter()
+            .all(|step| step.quality == Quality::Lossless),
         "{:?}",
         decoding.path
     );
@@ -143,7 +146,12 @@ fn sixteen_bits_are_only_padded_on_a_thirty_two_bit_device() {
     assert_eq!(decoding.format.sample, I32);
     let padded: Vec<i32> = samples.iter().map(|sample| sample << 16).collect();
     assert_eq!(ints(&out, 4), padded);
-    assert!(decoding.path.iter().all(|step| step.lossless));
+    assert!(
+        decoding
+            .path
+            .iter()
+            .all(|step| step.quality == Quality::Lossless)
+    );
 }
 
 #[test]
@@ -159,7 +167,12 @@ fn twenty_four_bits_reach_the_device_untouched_in_either_container() {
     assert_eq!(decoding.format.sample, I32);
     let left: Vec<i32> = samples.iter().map(|sample| sample << 8).collect();
     assert_eq!(ints(&out, 4), left);
-    assert!(decoding.path.iter().all(|step| step.lossless));
+    assert!(
+        decoding
+            .path
+            .iter()
+            .all(|step| step.quality == Quality::Lossless)
+    );
 
     let (out, decoding) = decode(
         wav(96_000, 2, 24, &samples),
@@ -186,10 +199,9 @@ fn a_rate_the_device_lacks_is_resampled_and_said_so() {
     let frames = out.len() / 4;
     assert!((47_900..=48_100).contains(&frames), "{frames} frames");
     assert!(
-        decoding
-            .path
-            .iter()
-            .any(|step| step.text == "Resampled 44.1 kHz to 48 kHz" && !step.lossless)
+        decoding.path.iter().any(
+            |step| step.text == "Resampled 44.1 kHz to 48 kHz" && step.quality == Quality::High
+        )
     );
 }
 
@@ -208,7 +220,7 @@ fn mono_spread_over_two_channels_is_said_to_change_it() {
         decoding
             .path
             .iter()
-            .any(|step| step.text == "1 channels played on 2" && !step.lossless),
+            .any(|step| step.text == "1 channels played on 2" && step.quality == Quality::High),
         "{:?}",
         decoding.path
     );
@@ -469,6 +481,39 @@ fn headroom_and_the_eqs_preamp_turn_it_down_by_their_db() {
 }
 
 #[test]
+fn each_step_is_graded_as_roon_grades_it() {
+    let samples = ramp(4_410, 2, 24);
+    let dsp = Dsp {
+        headroom: -3.0,
+        ..Dsp::default()
+    };
+    let gain = Gain {
+        track: Some(-6.0),
+        ..Gain::default()
+    };
+    let (_, decoding) = process(
+        wav(44_100, 2, 24, &samples),
+        gain,
+        Leveling::Track,
+        &dsp,
+        &device(&[44_100], &[I16]),
+        None,
+    );
+    let path = &decoding.path;
+    let graded = |start: &str, quality| {
+        path.iter()
+            .any(|step| step.text.starts_with(start) && step.quality == quality)
+    };
+    assert_eq!(path[0].quality, Quality::Lossless, "{path:?}");
+    assert!(graded("Volume leveling", Quality::Enhanced), "{path:?}");
+    assert!(graded("Headroom", Quality::Enhanced), "{path:?}");
+    assert!(
+        graded("Reduced from 24 to 16 bits", Quality::High),
+        "{path:?}"
+    );
+}
+
+#[test]
 fn crossfeed_lets_one_ear_hear_the_other() {
     let rate = 48_000;
     let device = device(&[rate], &[I32]);
@@ -521,14 +566,18 @@ fn upsampling_goes_to_the_highest_whole_multiple_the_device_takes() {
             &device,
             None,
         );
-        let steps: Vec<String> = decoding.path.into_iter().map(|step| step.text).collect();
+        let steps: Vec<(String, Quality)> = decoding
+            .path
+            .into_iter()
+            .map(|step| (step.text, step.quality))
+            .collect();
         (decoding.format.rate, steps)
     };
     let dac = [44_100, 88_200, 176_400, 192_000];
     let (rate, steps) = open(&dac, true);
     assert_eq!(rate, 176_400);
     assert!(
-        steps.contains(&"Upsampled 44.1 kHz to 176.4 kHz".to_owned()),
+        steps.contains(&("Upsampled 44.1 kHz to 176.4 kHz".into(), Quality::Enhanced)),
         "{steps:?}"
     );
     assert_eq!(open(&dac, false).0, 44_100);
@@ -536,7 +585,7 @@ fn upsampling_goes_to_the_highest_whole_multiple_the_device_takes() {
     let (rate, steps) = open(&[48_000, 96_000], true);
     assert_eq!(rate, 48_000);
     assert!(
-        steps.contains(&"Resampled 44.1 kHz to 48 kHz".to_owned()),
+        steps.contains(&("Resampled 44.1 kHz to 48 kHz".into(), Quality::High)),
         "{steps:?}"
     );
 }
@@ -573,7 +622,12 @@ fn processing_that_changes_nothing_leaves_it_bit_perfect() {
     let (plain, _) = run(&Dsp::default());
     let (out, decoding) = run(&flat);
     assert_eq!(out, plain);
-    assert!(decoding.path.iter().all(|step| step.lossless));
+    assert!(
+        decoding
+            .path
+            .iter()
+            .all(|step| step.quality == Quality::Lossless)
+    );
 }
 
 #[test]
@@ -737,7 +791,10 @@ fn plays_bit_perfect_and_gapless_through_alsa_loopback() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     drop(capture);
 
-    assert!(path.iter().all(|step| step.lossless), "{path:?}");
+    assert!(
+        path.iter().all(|step| step.quality == Quality::Lossless),
+        "{path:?}"
+    );
     assert!(
         path.last().unwrap().text.starts_with("Exclusive"),
         "{path:?}"
@@ -792,7 +849,7 @@ fn opens_the_device_in_each_tracks_own_rate() {
         let status = player.status();
         assert_eq!(status.problem, None);
         if let (Some(index), Some(device)) = (status.index, status.path.last())
-            && status.bit_perfect
+            && status.quality == Some(Quality::Lossless)
             && !seen.contains(&(index, device.text.clone()))
         {
             seen.push((index, device.text.clone()));

@@ -56,11 +56,26 @@ impl fmt::Display for Format {
     }
 }
 
-/// One step of the signal path, and whether it leaves the audio as it was.
+/// One step of the signal path, and what it does to the audio.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
     pub text: String,
-    pub lossless: bool,
+    pub quality: Quality,
+}
+
+/// What a step does to the audio, graded as Roon grades its signal path,
+/// worst first; a path is as good as its worst step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Quality {
+    /// A lossy file.
+    Low,
+    /// Changed to suit the device: resampled, fewer bits, other channels,
+    /// or mixed by the system.
+    High,
+    /// Changed because the listener asked: leveling and sound processing.
+    Enhanced,
+    /// Left as it was.
+    Lossless,
 }
 
 /// Which ReplayGain value evens out the volume, if any.
@@ -125,7 +140,8 @@ pub struct Status {
     pub ended: bool,
     /// From the file to the device.
     pub path: Vec<Step>,
-    pub bit_perfect: bool,
+    /// The worst step's, once the device is open in the track's format.
+    pub quality: Option<Quality>,
     pub problem: Option<String>,
     /// A track that couldn't play, by its place in the queue, and why; while
     /// the one played in its place is heard.
@@ -282,16 +298,21 @@ impl Player {
             };
             path.push(Step {
                 text: format!("{how}: {} ({open})", device.name),
-                lossless: device.exclusive,
+                quality: if device.exclusive {
+                    Quality::Lossless
+                } else {
+                    Quality::High
+                },
             });
         }
+        let quality = open.and_then(|_| path.iter().map(|step| step.quality).min());
         let heard = ring.heard();
         Status {
             index: heard.map(|(index, _)| index),
             position: heard.map_or(0.0, |(_, position)| position),
             paused: ring.paused,
             ended: ring.idle && ring.segments.iter().all(|s| s.data.is_empty()),
-            bit_perfect: open.is_some() && path.iter().all(|step| step.lossless),
+            quality,
             path,
             problem: ring.problem.clone(),
             skipped: ring.shown_skip().cloned(),
