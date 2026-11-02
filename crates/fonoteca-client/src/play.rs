@@ -1,5 +1,7 @@
 //! Playing music on this device: a queue from the page on screen, the bar
 //! under the pages, and the sound device and volume leveling in the settings.
+//! The queue and where it is are saved on the server, for this app or any
+//! other to carry on with.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -17,6 +19,9 @@ use crate::{AppWindow, PathStep, browse, prefs};
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
 /// How often the bar catches up with the player.
 const TICK: Duration = Duration::from_millis(250);
+/// How many seconds play between saves of where the queue is, so the next
+/// start picks up close to where this one stopped.
+const SAVE_EVERY: f64 = 15.0;
 /// The bar's cover, in logical pixels.
 const COVER_SIZE: f32 = 48.0;
 
@@ -28,6 +33,12 @@ struct Playing {
     queue: Vec<Child>,
     shown: Option<usize>,
     path: Vec<Step>,
+    /// Where the queue saved on the server left off, until it plays.
+    resume: Option<(usize, f64)>,
+    /// The track, whether it was paused and the seconds into it when the
+    /// queue was last saved; and whether the server turned the saving down.
+    saved: Option<(Option<usize>, bool, f64)>,
+    queue_refused: bool,
     /// The settings' sound devices by cpal id, none for the default.
     devices: Vec<Option<String>>,
     tick: Timer,
@@ -41,37 +52,59 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     ui.set_can_play(true);
     list_devices(ui, &playing);
 
+    ui.on_library_started({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || restore(&weak.unwrap(), &browser, &playing)
+    });
     ui.on_play_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |row| play(&weak.unwrap(), &browser, &playing, row as usize)
     });
     ui.on_toggle_pause({
-        let playing = playing.clone();
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move || {
+            if resume(&weak.unwrap(), &browser, &playing, false) {
+                return;
+            }
             let p = playing.borrow();
             let Some(player) = &p.player else { return };
             let status = player.status();
             if status.ended {
-                player.play(p.queue.iter().map(track).collect(), 0);
+                player.play(p.queue.iter().map(track).collect(), 0, 0.0);
             } else {
                 player.set_paused(!status.paused);
             }
         }
     });
     ui.on_previous_track({
-        let playing = playing.clone();
-        move || playing.borrow().player.iter().for_each(Player::previous)
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            resume(&weak.unwrap(), &browser, &playing, true);
+            playing.borrow().player.iter().for_each(Player::previous)
+        }
     });
     ui.on_next_track({
-        let playing = playing.clone();
-        move || playing.borrow().player.iter().for_each(Player::next)
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            resume(&weak.unwrap(), &browser, &playing, true);
+            playing.borrow().player.iter().for_each(Player::next)
+        }
     });
     ui.on_seek({
-        let playing = playing.clone();
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |seconds| {
-            if let Some(player) = &playing.borrow().player {
-                player.seek(f64::from(seconds));
+            let seconds = f64::from(seconds);
+            if let Some(at) = playing.borrow_mut().resume.as_mut() {
+                at.1 = seconds;
             }
+            if resume(&weak.unwrap(), &browser, &playing, true) {
+                return;
+            }
+            let p = playing.borrow();
+            let Some(player) = &p.player else { return };
+            player.seek(seconds);
+            let status = player.status();
+            save(&browser, &p, &playing, status.index, seconds);
         }
     });
     ui.on_list_devices({
@@ -133,6 +166,30 @@ fn list_devices(ui: &AppWindow, playing: &Shared) {
 /// Plays the page's songs from its `row`th row, in place of what played.
 fn play(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, row: usize) {
     let (songs, start) = browse::songs(browser, ui.get_page(), row);
+    begin(ui, browser, playing, songs, (start, 0.0), false);
+}
+
+/// Plays the queue saved on the server from where it left off, `paused` or
+/// not; false when there is none waiting.
+fn resume(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, paused: bool) -> bool {
+    let p = playing.borrow();
+    let Some(at) = p.resume else { return false };
+    let songs = p.queue.clone();
+    drop(p);
+    begin(ui, browser, playing, songs, at, paused);
+    true
+}
+
+/// Plays `songs` from `at`, a track and seconds into it, in place of what
+/// played, `paused` or not.
+fn begin(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    songs: Vec<Child>,
+    (start, seconds): (usize, f64),
+    paused: bool,
+) {
     let Some(client) = browse::client(browser).filter(|_| start < songs.len()) else {
         return;
     };
@@ -144,9 +201,13 @@ fn play(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, row: usize) 
     p.player = None;
     let player = Player::new(device, fetch(client));
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
-    player.play(songs.iter().map(track).collect(), start);
+    player.play(songs.iter().map(track).collect(), start, seconds);
+    // Before any of it is heard: a track starts once some of it is in.
+    player.set_paused(paused);
     p.player = Some(player);
     p.queue = songs;
+    p.resume = None;
+    p.saved = None;
     p.shown = None;
     p.path.clear();
     let (weak, pages, ticked) = (ui.as_weak(), browser.clone(), playing.clone());
@@ -171,6 +232,14 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     }
     let Some(player) = &p.player else { return };
     let status = player.status();
+    let state = (status.index, status.paused || status.ended);
+    let due = p.saved.is_none_or(|(index, paused, at)| {
+        (index, paused) != state || !paused && (status.position - at).abs() >= SAVE_EVERY
+    });
+    if due {
+        save(browser, &p, playing, status.index, status.position);
+        p.saved = Some((state.0, state.1, status.position));
+    }
     ui.set_playing(true);
     ui.set_playing_paused(status.paused || status.ended);
     ui.set_playing_position(status.position as f32);
@@ -212,7 +281,21 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         return;
     }
     p.shown = status.index;
-    let Some(song) = status.index.and_then(|index| p.queue.get(index)) else {
+    if let Some(index) = status.index {
+        show_song(ui, browser, &p, playing, index);
+    }
+}
+
+/// Puts the `index`th song of the queue on the bar, with its cover once it
+/// comes.
+fn show_song(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    p: &Playing,
+    playing: &Shared,
+    index: usize,
+) {
+    let Some(song) = p.queue.get(index) else {
         return;
     };
     ui.set_playing_title(song.title.as_str().into());
@@ -221,13 +304,101 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());
     if let Some(cover) = song.cover_art.clone() {
-        let (index, playing) = (status.index, playing.clone());
+        let playing = playing.clone();
         browse::cover(ui, browser, cover, COVER_SIZE, move |ui, image| {
-            if playing.borrow().shown == index {
+            if playing.borrow().shown == Some(index) {
                 ui.set_playing_cover(image);
             }
         });
     }
+}
+
+/// Takes up the queue saved on the server, paused on the bar where it left
+/// off, in place of anything from the account signed in before.
+fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
+    {
+        let mut p = playing.borrow_mut();
+        p.player = None;
+        p.tick.stop();
+        p.queue.clear();
+        p.resume = None;
+        p.shown = None;
+        p.saved = None;
+        p.queue_refused = false;
+    }
+    ui.set_playing(false);
+    let Some(client) = browse::client(browser) else {
+        return;
+    };
+    let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+    slint::spawn_local(async move {
+        let saved = client.get_play_queue().await;
+        let Some(ui) = weak.upgrade() else { return };
+        let mut p = playing.borrow_mut();
+        // Something played meanwhile, or another account signed in.
+        let current = browse::client(&browser).is_some_and(|now| Arc::ptr_eq(&now, &client));
+        if !current || p.player.is_some() {
+            return;
+        }
+        let queue = match saved {
+            Ok(Some(queue)) if !queue.entry.is_empty() => queue,
+            Err(opensubsonic::Error::Status(_) | opensubsonic::Error::Api(_)) => {
+                p.queue_refused = true;
+                return;
+            }
+            _ => return,
+        };
+        let index = queue
+            .current
+            .and_then(|id| queue.entry.iter().position(|song| song.id == id))
+            .unwrap_or(0);
+        let seconds = queue.position.unwrap_or(0) as f64 / 1000.0;
+        p.queue = queue.entry;
+        p.resume = Some((index, seconds));
+        p.shown = Some(index);
+        ui.set_playing(true);
+        ui.set_playing_paused(true);
+        ui.set_playing_position(seconds as f32);
+        ui.set_playing_problem("".into());
+        ui.set_playing_quality("".into());
+        ui.set_playing_bit_perfect(false);
+        ui.set_playing_path(ModelRc::default());
+        show_song(&ui, &browser, &p, &playing, index);
+    })
+    .expect("the event loop is running");
+}
+
+/// Saves the queue and where it is on the server, for any app to carry on
+/// with; a server that turned it down isn't asked again.
+fn save(
+    browser: &browse::Shared,
+    p: &Playing,
+    playing: &Shared,
+    index: Option<usize>,
+    seconds: f64,
+) {
+    let Some(client) = browse::client(browser).filter(|_| !p.queue_refused) else {
+        return;
+    };
+    // Nothing playing, as without a device, would lose where it was.
+    let Some(current) = index.and_then(|index| p.queue.get(index)) else {
+        return;
+    };
+    let current = current.id.clone();
+    let ids: Vec<String> = p.queue.iter().map(|song| song.id.clone()).collect();
+    let position = (seconds * 1000.0) as i64;
+    let playing = playing.clone();
+    slint::spawn_local(async move {
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let saved = client
+            .save_play_queue(&ids, Some(&current), Some(position))
+            .await;
+        // One lost on the way is made again with the next change.
+        if let Err(opensubsonic::Error::Status(_) | opensubsonic::Error::Api(_)) = saved {
+            playing.borrow_mut().queue_refused = true;
+        }
+    })
+    .expect("the event loop is running");
 }
 
 fn track(song: &Child) -> Track {

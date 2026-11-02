@@ -287,6 +287,7 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     load_tags(ui, browser);
     load_me(ui, browser);
     open(ui, browser, "home".into());
+    ui.invoke_library_started();
 }
 
 /// The client signed in with, for calls made outside the pages.

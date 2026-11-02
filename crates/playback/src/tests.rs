@@ -420,7 +420,7 @@ fn plays_bit_perfect_and_gapless_through_alsa_loopback() {
             gain: Gain::default(),
         })
         .collect();
-    player.play(queue, 0);
+    player.play(queue, 0, 0.0);
     let started = std::time::Instant::now();
     let mut path = Vec::new();
     while !player.status().ended {
@@ -486,7 +486,7 @@ fn opens_the_device_in_each_tracks_own_rate() {
             gain: Gain::default(),
         })
         .collect();
-    player.play(queue, 0);
+    player.play(queue, 0, 0.0);
     let started = std::time::Instant::now();
     let mut seen = Vec::new();
     while !player.status().ended {

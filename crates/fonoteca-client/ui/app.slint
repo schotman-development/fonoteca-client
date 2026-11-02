@@ -844,6 +844,9 @@ export component AppWindow inherits Window {
     // Plays the album's, playlist's or artist's tracks, or the songs of the
     // table on screen, from the `row`th.
     callback play-tracks(row: int);
+    // Said when a signed-in library opens, for what keeps its state on the
+    // server, such as the play queue.
+    callback library-started();
     callback toggle-pause();
     callback previous-track();
     callback next-track();

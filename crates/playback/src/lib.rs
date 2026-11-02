@@ -134,7 +134,7 @@ pub struct Status {
 pub type Fetch = Box<dyn FnMut(&Track) -> Result<Download, String> + Send>;
 
 enum Command {
-    Play(Vec<Track>, usize),
+    Play(Vec<Track>, usize, f64),
     Next,
     Previous,
     Seek(f64),
@@ -205,18 +205,18 @@ impl Player {
         let _ = self.commands.send(command);
     }
 
-    /// Plays `queue` from its `start`th track.
-    pub fn play(&self, queue: Vec<Track>, start: usize) {
+    /// Plays `queue` from `seconds` into its `start`th track.
+    pub fn play(&self, queue: Vec<Track>, start: usize, seconds: f64) {
         {
             // Playing from now on, before the decoder gets to it.
             let mut ring = self.shared.ring.lock().unwrap();
             ring.paused = false;
             ring.idle = false;
             ring.segments.clear();
-            ring.loading = Some((start, 0.0));
+            ring.loading = Some((start, seconds));
         }
         self.shared.changed.notify_all();
-        self.send(Command::Play(queue, start));
+        self.send(Command::Play(queue, start, seconds));
     }
 
     pub fn next(&self) {
@@ -362,11 +362,11 @@ impl Decoder {
         let heard = self.shared.ring.lock().unwrap().heard();
         match command {
             Command::Quit => return false,
-            Command::Play(queue, start) => {
+            Command::Play(queue, start, seconds) => {
                 self.queue = queue;
                 self.current = None;
                 self.next = None;
-                self.start(start, 0.0);
+                self.start(start, seconds);
             }
             Command::Next => match heard {
                 Some((index, _)) if index + 1 < self.queue.len() => self.start(index + 1, 0.0),
