@@ -640,7 +640,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 14: Example {
-                        caption: "The track playing: the light says how well it reaches the speakers, as Roon colours it, and opens the steps; a click anywhere on the bar but its controls opens the now playing sheet; a problem takes the artists' place; on a phone only play and next stay, without the position, shuffle and repeat";
+                        caption: "The track playing: the light says how well it reaches the speakers, as Roon colours it, and opens the steps; a click anywhere on the bar but its controls opens the now playing sheet; a problem takes the artists' place, and the artists are no links; on a phone only play and next stay, without the position, shuffle and repeat";
                         PlayerBar {
                             cover: root.albums[0].cover;
                             title: root.long-text ? root.long-title : "Northern Lights";
@@ -656,7 +656,6 @@ export component Workbench inherits Window {
                             ];
                             shuffled: root.player-shuffled;
                             repeat: root.player-repeat;
-                            open(link) => { root.event = "open " + link; }
                             open-playing => { root.event = "open playing"; }
                             toggle-shuffle => { root.player-shuffled = !root.player-shuffled; }
                             cycle-repeat => { root.player-repeat = mod(root.player-repeat + 1, 3); }

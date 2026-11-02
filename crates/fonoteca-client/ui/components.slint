@@ -292,6 +292,9 @@ export component Links inherits FlexboxLayout {
     in property <int> split;
     in property <length> font-size: Theme.body;
     in property <brush> text-color: Theme.muted;
+    // Whether the names open their pages; off, a click goes on to what is
+    // behind them.
+    in property <bool> linked: true;
     callback open(link: string);
     callback context-clicked();
 
@@ -300,7 +303,7 @@ export component Links inherits FlexboxLayout {
     for name[i] in root.names: Link {
         text: i == root.names.length - 1 ? name.label : i == root.split - 1 ? name.label + " ·" : name.label + ",";
         label: name.label;
-        enabled: name.link != "";
+        enabled: root.linked && name.link != "";
         font-size: root.font-size;
         color: root.text-color;
         clicked => { root.open(name.link); }
@@ -317,6 +320,7 @@ export component LinksLine inherits Rectangle {
     in property <LayoutAlignment> alignment: LayoutAlignment.stretch;
     in property <length> font-size: Theme.body;
     in property <brush> text-color: Theme.muted;
+    in property <bool> linked: true;
     callback open(link: string);
     callback context-clicked();
 
@@ -331,6 +335,7 @@ export component LinksLine inherits Rectangle {
     links := Links {
         alignment: root.alignment;
         names: root.names;
+        linked: root.linked;
         font-size: root.font-size;
         text-color: root.text-color;
         open(link) => { root.open(link); }
@@ -2783,7 +2788,6 @@ export component PlayerBar inherits Rectangle {
     // of it, 2 the track.
     in property <bool> shuffled;
     in property <int> repeat;
-    callback open(link: string);
     callback open-playing();
     callback toggle-pause();
     callback previous();
@@ -2834,8 +2838,9 @@ export component PlayerBar inherits Rectangle {
             }
             if root.problem == "" && root.names.length > 0: LinksLine {
                 names: root.names;
+                linked: false;
+                alignment: LayoutAlignment.start;
                 font-size: Theme.small;
-                open(link) => { root.open(link); }
             }
         }
         if !Screen.phone: ShuffleButton {
