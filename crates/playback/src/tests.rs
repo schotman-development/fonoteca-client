@@ -469,61 +469,6 @@ fn measured(dsp: &Dsp, frequency: f64) -> f64 {
     20.0 * (rms(&run(dsp), 0, rate) / rms(&run(&Dsp::default()), 0, rate)).log10()
 }
 
-/// How many dB `band` changes `frequency` by at `rate`, from the Audio EQ
-/// Cookbook's formulas, which FFmpeg's biquads follow.
-fn calculated(band: Band, rate: f64, frequency: f64) -> f64 {
-    use std::f64::consts::PI;
-    let a = 10f64.powf(band.gain / 40.0);
-    let (sin, cos) = (2.0 * PI * band.frequency / rate).sin_cos();
-    let alpha = sin / (2.0 * band.q);
-    let root = 2.0 * a.sqrt() * alpha;
-    let (b, d) = match band.filter {
-        Filter::Peak => (
-            [1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a],
-            [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a],
-        ),
-        Filter::LowShelf => (
-            [
-                a * ((a + 1.0) - (a - 1.0) * cos + root),
-                2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
-                a * ((a + 1.0) - (a - 1.0) * cos - root),
-            ],
-            [
-                (a + 1.0) + (a - 1.0) * cos + root,
-                -2.0 * ((a - 1.0) + (a + 1.0) * cos),
-                (a + 1.0) + (a - 1.0) * cos - root,
-            ],
-        ),
-        Filter::HighShelf => (
-            [
-                a * ((a + 1.0) + (a - 1.0) * cos + root),
-                -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
-                a * ((a + 1.0) + (a - 1.0) * cos - root),
-            ],
-            [
-                (a + 1.0) - (a - 1.0) * cos + root,
-                2.0 * ((a - 1.0) - (a + 1.0) * cos),
-                (a + 1.0) - (a - 1.0) * cos - root,
-            ],
-        ),
-        Filter::LowPass => (
-            [(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0],
-            [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
-        ),
-        Filter::HighPass => (
-            [(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0],
-            [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
-        ),
-    };
-    let w = 2.0 * PI * frequency / rate;
-    let size = |c: [f64; 3]| {
-        let re = c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos();
-        let im = c[1] * w.sin() + c[2] * (2.0 * w).sin();
-        re.hypot(im)
-    };
-    20.0 * (size(b) / size(d)).log10()
-}
-
 #[test]
 fn each_eq_band_changes_the_sound_as_calculated() {
     let band = |filter, frequency, gain, q| Band {
@@ -550,7 +495,7 @@ fn each_eq_band_changes_the_sound_as_calculated() {
         for frequency in [50.0, 200.0, 1_000.0, 3_000.0, 10_000.0] {
             let (measured, calculated) = (
                 measured(&dsp, frequency),
-                calculated(band, 48_000.0, frequency),
+                band.response(48_000.0, frequency),
             );
             assert!(
                 (measured - calculated).abs() < 0.1,
@@ -558,6 +503,25 @@ fn each_eq_band_changes_the_sound_as_calculated() {
             );
         }
     }
+}
+
+#[test]
+fn a_bands_response_reaches_its_gain_where_it_should() {
+    let band = |filter, frequency, gain| Band {
+        filter,
+        frequency,
+        gain,
+        q: 0.707,
+    };
+    let at = |band: Band, frequency| band.response(48_000.0, frequency);
+    assert!((at(band(Filter::Peak, 1_000.0, 6.0), 1_000.0) - 6.0).abs() < 1e-9);
+    assert!((at(band(Filter::LowShelf, 200.0, -4.0), 20.0) + 4.0).abs() < 0.05);
+    assert!((at(band(Filter::HighShelf, 2_000.0, 5.0), 20_000.0) - 5.0).abs() < 0.5);
+    for filter in [Filter::LowPass, Filter::HighPass] {
+        let corner = at(band(filter, 1_000.0, 9.0), 1_000.0);
+        assert!((corner + 3.01).abs() < 0.01, "{filter:?} {corner:.3} dB");
+    }
+    assert_eq!(at(band(Filter::Peak, 30_000.0, 6.0), 1_000.0), 0.0);
 }
 
 #[test]

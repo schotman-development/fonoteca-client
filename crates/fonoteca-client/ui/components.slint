@@ -2737,6 +2737,218 @@ export struct EqBandLine {
     q: string,
 }
 
+// A point of the EQ's graph, as how far from its left and how far from its
+// top it is, each from 0 to 1.
+export struct EqPoint {
+    x: float,
+    y: float,
+}
+
+// A line of the graph's grid, how far along its axis it is, from 0 to 1, and
+// its words; a vertical one is a frequency.
+export struct EqGridLine {
+    position: float,
+    label: string,
+    vertical: bool,
+}
+
+// The number of a band, on its point of the graph and on its row, so they
+// are seen to be the same band; lit while the band is the one picked.
+component EqBadge inherits Rectangle {
+    in property <int> number;
+    in property <bool> selected;
+    width: 24px;
+    height: 24px;
+    border-radius: 12px;
+    border-width: 2px;
+    border-color: Theme.accent;
+    background: root.selected ? Theme.accent : Palette.background;
+    Text {
+        text: root.number;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: Theme.small;
+        font-weight: 700;
+        color: root.selected ? Palette.accent-foreground : Theme.text;
+    }
+}
+
+// The EQ as a graph: gain up the side, frequency along the bottom on a log
+// axis, and the curve all the bands make. Each band has a point to drag
+// (a pass only sideways), and a click on the graph asks for a band there.
+// Points and places are fractions of the graph, from its left and top.
+// The curve is the commands of a path in a 1000 by 1000 box. Under the
+// graph, the picked band is named, with a button to remove it: a phone has
+// no right click.
+export component EqGraph inherits VerticalLayout {
+    in property <[EqPoint]> points;
+    in property <[EqGridLine]> grid;
+    in property <string> curve;
+    // What the picked band is called, or nothing.
+    in property <string> picked-name;
+    in property <bool> enabled: true;
+    in-out property <int> selected: -1;
+    callback added(x: float, y: float);
+    callback moved(row: int, x: float, y: float);
+    callback released();
+    callback removed(row: int);
+
+    // Room round the plot for the points at its edges.
+    property <length> inset: 14px;
+    // The size of a point's target, which a finger can find.
+    property <length> target: 44px;
+    // How far a press may drift and still be a click.
+    property <length> slack: 6px;
+    // The band whose point is being dragged, or -1.
+    property <int> dragging: -1;
+    spacing: 8px;
+
+    frame := Rectangle {
+        min-height: 160px;
+        preferred-height: 220px;
+        border-radius: Theme.radius;
+        background: Theme.surface;
+        accessible-role: groupbox;
+        accessible-label: "EQ graph";
+
+        plot := Rectangle {
+            x: root.inset;
+            y: root.inset;
+            width: parent.width - 2 * root.inset;
+            height: parent.height - 2 * root.inset;
+
+            for line in root.grid: Rectangle {
+                x: line.vertical ? line.position * plot.width : 0px;
+                y: line.vertical ? 0px : line.position * plot.height;
+                width: line.vertical ? 1px : plot.width;
+                height: line.vertical ? plot.height : 1px;
+                background: Palette.foreground.transparentize(line.label == "0" ? 70% : 88%);
+            }
+            for line in root.grid: Text {
+                x: line.vertical ? line.position * plot.width + 3px : 2px;
+                y: line.vertical ? plot.height - self.height : line.position * plot.height - self.height;
+                text: line.label;
+                font-size: Theme.small;
+                color: Theme.muted;
+            }
+            Path {
+                width: plot.width;
+                height: plot.height;
+                viewbox-width: 1000;
+                viewbox-height: 1000;
+                // Stretched, as the graph is not square.
+                fit: fill;
+                commands: root.curve;
+                stroke: Theme.accent;
+                stroke-width: 2px;
+            }
+        }
+        // Under the points, so a press on one goes to it.
+        background-touch := GripArea {
+            // Whether a press or a finger began on it, and where; a finger's
+            // press is held back by the page and dropped once the finger
+            // moves, so the first move begins it then.
+            property <bool> begun;
+            property <bool> dragged;
+            property <length> begun-x;
+            property <length> begun-y;
+            enabled: root.enabled;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    self.begun = true;
+                    self.dragged = false;
+                    self.begun-x = self.mouse-x;
+                    self.begun-y = self.mouse-y;
+                } else if event.kind == PointerEventKind.move && (self.pressed || Input.finger) {
+                    if !self.begun {
+                        self.begun = true;
+                        self.dragged = false;
+                        self.begun-x = self.mouse-x;
+                        self.begun-y = self.mouse-y;
+                    }
+                    if abs(self.mouse-x - self.begun-x) >= root.slack || abs(self.mouse-y - self.begun-y) >= root.slack {
+                        self.dragged = true;
+                    }
+                } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left && self.begun && !self.dragged && abs(self.mouse-x - self.begun-x) < root.slack && abs(self.mouse-y - self.begun-y) < root.slack {
+                        root.added((self.mouse-x - root.inset) / plot.width, (self.mouse-y - root.inset) / plot.height);
+                    }
+                    self.begun = false;
+                }
+            }
+        }
+        for point[row] in root.points: Rectangle {
+            x: root.inset + point.x * plot.width - self.width / 2;
+            y: root.inset + point.y * plot.height - self.height / 2;
+            width: root.target;
+            height: root.target;
+            accessible-role: button;
+            accessible-label: "Band " + (row + 1) + " point";
+            accessible-checkable: true;
+            accessible-checked: row == root.selected;
+            accessible-action-default => { root.selected = row; }
+            EqBadge {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                number: row + 1;
+                selected: row == root.selected;
+            }
+            GripArea {
+                // Where the pointer took hold of the point, which a finger's
+                // first move gives, as the page drops its press.
+                property <length> grip-x;
+                property <length> grip-y;
+                enabled: root.enabled;
+                mouse-cursor: MouseCursor.pointer;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.selected = row;
+                        root.dragging = row;
+                        self.grip-x = self.mouse-x;
+                        self.grip-y = self.mouse-y;
+                    } else if event.kind == PointerEventKind.move && Input.finger && root.dragging != row {
+                        root.selected = row;
+                        root.dragging = row;
+                        self.grip-x = self.mouse-x;
+                        self.grip-y = self.mouse-y;
+                    } else if event.kind == PointerEventKind.move && root.dragging == row {
+                        // Where the point goes is where it is plus how far the
+                        // pointer is from where it took hold, so it stays under it.
+                        root.moved(row,
+                            (point.x * plot.width + self.mouse-x - self.grip-x) / plot.width,
+                            (point.y * plot.height + self.mouse-y - self.grip-y) / plot.height);
+                    } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                        if root.dragging == row {
+                            root.dragging = -1;
+                            root.released();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        // As high as the button, so the page doesn't jump when it appears.
+        min-height: Screen.phone ? 44px : 32px;
+        spacing: 8px;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: root.picked-name != "" ? root.picked-name : "Click the graph to add a band, drag a point to move it.";
+            font-size: Theme.small;
+            color: Theme.muted;
+            wrap: word-wrap;
+        }
+        if root.selected >= 0: IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.trash;
+            label: "Remove band " + (root.selected + 1) + " from the graph";
+            enabled: root.enabled;
+            clicked => { root.removed(root.selected); }
+        }
+    }
+}
+
 component EqFieldLabel inherits Text {
     font-size: Theme.small;
     color: Theme.muted;
@@ -2787,11 +2999,24 @@ export component QualityPicker inherits VerticalLayout {
 export component EqBandRow inherits VerticalLayout {
     in property <EqBandLine> line;
     in property <int> number;
+    in property <bool> selected;
     in property <bool> enabled: true;
     callback edited(line: EqBandLine);
     callback remove();
     property <string> name: "Band " + root.number;
     spacing: 8px;
+    accessible-role: list-item;
+    accessible-label: root.name;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+
+    // A typed-in field no longer follows `line` by its binding, so a band
+    // moved on the graph is put in them here.
+    changed line => {
+        frequency.text = root.line.frequency;
+        gain.text = root.line.gain;
+        q.text = root.line.q;
+    }
 
     function edit() {
         root.edited({ filter: filter.current-index, frequency: frequency.text, gain: gain.text, q: q.text });
@@ -2799,6 +3024,11 @@ export component EqBandRow inherits VerticalLayout {
 
     HorizontalLayout {
         spacing: 8px;
+        EqBadge {
+            cross-axis-self-alignment: center;
+            number: root.number;
+            selected: root.selected;
+        }
         filter := ComboBox {
             horizontal-stretch: 1;
             accessible-label: root.name + " filter";

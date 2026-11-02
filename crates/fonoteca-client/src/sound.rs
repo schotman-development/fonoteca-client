@@ -2,14 +2,16 @@
 //! presets and AutoEQ's settings pasted in, crossfeed and upsampling. They
 //! are kept in the preferences and handed to the player as they change.
 
+use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::rc::Rc;
 use std::time::Duration;
 
 use playback::{Band, Crossfeed, Dsp, Equalizer, Filter};
-use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::prefs::{self, EqBand, EqPreset, Prefs};
-use crate::{AppWindow, EqBandLine};
+use crate::{AppWindow, EqBandLine, EqGridLine, EqPoint, eq_graph};
 
 /// The settings' headroom, crossfeed and filter entries, in their order.
 const HEADROOM: [f64; 8] = [0.0, -1.0, -2.0, -3.0, -4.5, -6.0, -9.0, -12.0];
@@ -36,10 +38,17 @@ const NEW_BAND: EqBand = EqBand {
 /// How long typing pauses before what was typed is heard: each change
 /// opens the track again where it is.
 const SETTLE: Duration = Duration::from_millis(400);
+/// How often the player gets the EQ while a point is being dragged. Each
+/// new EQ opens the track again where it is, so this is how often the sound
+/// catches up, not how often the mouse moves.
+const DRAG_FOLLOW: Duration = Duration::from_millis(500);
 
 /// The processing the settings ask for.
 pub fn dsp() -> Dsp {
-    let saved = prefs::load();
+    dsp_of(&prefs::load())
+}
+
+fn dsp_of(saved: &Prefs) -> Dsp {
     Dsp {
         headroom: HEADROOM[saved.headroom.clamp(0, 7) as usize],
         eq: saved.eq_on.then(|| Equalizer {
@@ -106,6 +115,11 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
     ui.on_edit_band({
         let (weak, changed) = (ui.as_weak(), changed.clone());
         move |row, line| {
+            // The row's model holds what is typed, even half typed, so a move
+            // on the graph always differs from it and reaches the fields.
+            weak.unwrap()
+                .get_eq_bands()
+                .set_row_data(row as usize, line.clone());
             let (Some(frequency), Some(gain), Some(q)) =
                 (number(&line.frequency), number(&line.gain), number(&line.q))
             else {
@@ -122,7 +136,9 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
                     *band = edited.clone();
                 }
             });
-            show_preset(&weak.unwrap(), &prefs::load());
+            let (ui, saved) = (weak.unwrap(), prefs::load());
+            show_graph(&ui, &saved.eq);
+            show_preset(&ui, &saved);
         }
     });
     ui.on_add_band({
@@ -140,7 +156,16 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
                     saved.eq.bands.remove(row as usize);
                 }
             });
-            show(&weak.unwrap(), &prefs::load());
+            let ui = weak.unwrap();
+            // The band picked stays picked, a place up when one before it
+            // went; the one that went leaves none picked.
+            let picked = ui.get_eq_selected();
+            ui.set_eq_selected(match picked.cmp(&row) {
+                Ordering::Less => picked,
+                Ordering::Equal => -1,
+                Ordering::Greater => picked - 1,
+            });
+            show(&ui, &prefs::load());
         }
     });
     ui.on_choose_eq_preset({
@@ -200,6 +225,81 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
             Err(problem) => problem.into(),
         }
     });
+    wire_graph(ui, changed, apply);
+}
+
+/// The EQ's graph: a click adds a band, and a point dragged moves its band.
+/// The drag is kept apart from the saved preferences until it ends, so the
+/// disk is written once, and the player follows every `DRAG_FOLLOW` instead
+/// of at each move.
+fn wire_graph(
+    ui: &AppWindow,
+    changed: Rc<impl Fn(&dyn Fn(&mut Prefs)) + 'static>,
+    apply: Rc<impl Fn(Dsp) + 'static>,
+) {
+    ui.set_eq_grid(ModelRc::new(VecModel::from(
+        eq_graph::grid()
+            .into_iter()
+            .map(|line| EqGridLine {
+                vertical: line.vertical,
+                position: line.position as f32,
+                label: line.label.into(),
+            })
+            .collect::<Vec<_>>(),
+    )));
+    let drag: Rc<RefCell<Option<Prefs>>> = Rc::default();
+    let follow = Rc::new(Timer::default());
+
+    ui.on_add_band_at({
+        let (weak, changed) = (ui.as_weak(), changed.clone());
+        move |x, y| {
+            let moved = eq_graph::moved(&band(&NEW_BAND), x.into(), y.into());
+            let new = EqBand {
+                frequency: moved.frequency,
+                gain: moved.gain,
+                ..NEW_BAND
+            };
+            changed(&|saved| saved.eq.bands.push(new.clone()));
+            let (ui, saved) = (weak.unwrap(), prefs::load());
+            show(&ui, &saved);
+            ui.set_eq_selected(saved.eq.bands.len() as i32 - 1);
+        }
+    });
+    ui.on_move_band({
+        let (weak, drag, follow) = (ui.as_weak(), drag.clone(), follow.clone());
+        move |row, x, y| {
+            let mut dragged = drag.borrow_mut();
+            let editing = dragged.get_or_insert_with(prefs::load);
+            let Some(saved) = editing.eq.bands.get_mut(row as usize) else {
+                return;
+            };
+            let moved = eq_graph::moved(&band(saved), x.into(), y.into());
+            saved.frequency = moved.frequency;
+            saved.gain = moved.gain;
+            let ui = weak.unwrap();
+            show_band(&ui, row as usize, saved);
+            show_graph(&ui, &editing.eq);
+            if !follow.running() {
+                let (drag, apply) = (drag.clone(), apply.clone());
+                follow.start(TimerMode::SingleShot, DRAG_FOLLOW, move || {
+                    if let Some(editing) = drag.borrow().as_ref() {
+                        apply(dsp_of(editing));
+                    }
+                });
+            }
+        }
+    });
+    ui.on_release_band({
+        let weak = ui.as_weak();
+        move || {
+            follow.stop();
+            let Some(editing) = drag.borrow_mut().take() else {
+                return;
+            };
+            changed(&|saved| saved.eq = editing.eq.clone());
+            show_preset(&weak.unwrap(), &editing);
+        }
+    });
 }
 
 /// Puts the saved processing in the settings.
@@ -209,18 +309,12 @@ fn show(ui: &AppWindow, saved: &Prefs) {
     ui.set_upsampling(saved.upsampling.clamp(0, 1));
     ui.set_eq_on(saved.eq_on);
     ui.set_eq_preamp(decimal(saved.eq.preamp).into());
-    let lines: Vec<EqBandLine> = saved
-        .eq
-        .bands
-        .iter()
-        .map(|band| EqBandLine {
-            filter: band.filter.clamp(0, 4),
-            frequency: decimal(band.frequency).into(),
-            gain: decimal(band.gain).into(),
-            q: decimal(band.q).into(),
-        })
-        .collect();
+    let lines: Vec<EqBandLine> = saved.eq.bands.iter().map(band_line).collect();
     ui.set_eq_bands(ModelRc::new(VecModel::from(lines)));
+    if ui.get_eq_selected() >= saved.eq.bands.len() as i32 {
+        ui.set_eq_selected(-1);
+    }
+    show_graph(ui, &saved.eq);
     let mut names = vec![SharedString::from("Custom")];
     names.extend(
         saved
@@ -230,6 +324,45 @@ fn show(ui: &AppWindow, saved: &Prefs) {
     );
     ui.set_eq_presets(ModelRc::new(VecModel::from(names)));
     show_preset(ui, saved);
+}
+
+fn band_line(band: &EqBand) -> EqBandLine {
+    EqBandLine {
+        filter: band.filter.clamp(0, 4),
+        frequency: decimal(band.frequency).into(),
+        gain: decimal(band.gain).into(),
+        q: decimal(band.q).into(),
+    }
+}
+
+/// Puts the `row`th band's numbers in its row, leaving the others as typed.
+fn show_band(ui: &AppWindow, row: usize, band: &EqBand) {
+    ui.get_eq_bands().set_row_data(row, band_line(band));
+}
+
+/// Puts the bands' points and their curve on the graph. A point already
+/// there is changed where it is, as a drag holds it.
+fn show_graph(ui: &AppWindow, eq: &prefs::Equalizer) {
+    let bands: Vec<Band> = eq.bands.iter().map(band).collect();
+    let points: Vec<EqPoint> = bands
+        .iter()
+        .map(|band| {
+            let (x, y) = eq_graph::point(band);
+            EqPoint {
+                x: x as f32,
+                y: y as f32,
+            }
+        })
+        .collect();
+    let shown = ui.get_eq_points();
+    if shown.row_count() == points.len() {
+        for (row, point) in points.into_iter().enumerate() {
+            shown.set_row_data(row, point);
+        }
+    } else {
+        ui.set_eq_points(ModelRc::new(VecModel::from(points)));
+    }
+    ui.set_eq_curve(eq_graph::curve(&bands).into());
 }
 
 /// Selects the preset the EQ is, or the first entry when it is none.

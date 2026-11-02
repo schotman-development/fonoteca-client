@@ -3,6 +3,8 @@ slint::include_modules!();
 #[cfg(target_os = "android")]
 mod bit_perfect;
 mod browse;
+#[cfg(not(target_family = "wasm"))]
+mod eq_graph;
 #[cfg(target_os = "android")]
 mod media;
 #[cfg(target_os = "android")]
@@ -1442,6 +1444,46 @@ mod tests {
             .dispatch_event(WindowEvent::KeyReleased { text });
     }
 
+    /// The field with `label`, which holds `text` once its old text is
+    /// deleted and `text` typed.
+    async fn type_into(ui: &AppWindow, label: &str, text: &str) {
+        let label = label.to_owned();
+        ui.root_element()
+            .query_descendants()
+            .match_predicate(move |field| field.accessible_label().is_some_and(|l| l == label))
+            .find_first()
+            .expect("no such field")
+            .single_click(PointerEventButton::Left)
+            .await;
+        press(ui, slint::platform::Key::End);
+        for _ in 0..12 {
+            press(ui, slint::platform::Key::Backspace);
+        }
+        for key in text.chars() {
+            press(ui, key);
+        }
+    }
+
+    /// Presses at `from` on the graph, once the page has held the press, and
+    /// moves to `to` in steps, without letting go.
+    async fn drag_to(ui: &AppWindow, from: slint::LogicalPosition, to: slint::LogicalPosition) {
+        let window = ui.window();
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position: from,
+            button: PointerEventButton::Left,
+        });
+        idle(Duration::from_millis(150)).await;
+        for step in 1..=5 {
+            let fraction = step as f32 / 5.0;
+            window.dispatch_event(WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(
+                    from.x + (to.x - from.x) * fraction,
+                    from.y + (to.y - from.y) * fraction,
+                ),
+            });
+        }
+    }
+
     /// Clicks the first heart that is `loved`, or the first that isn't.
     fn click_heart(ui: &AppWindow, loved: bool) {
         ui.root_element()
@@ -1877,6 +1919,217 @@ mod tests {
             assert_eq!(ui.get_step(), Step::Done);
             assert!(find(&ui, "Set token").is_some());
             ui.invoke_back();
+            // The EQ's graph: a click adds a band, a point dragged changes
+            // its numbers as it goes and is saved once let go, a typed
+            // number moves the point, and the picked band can be removed
+            // from under the graph.
+            click(&ui, "Sound processing");
+            ui.set_eq_on(true);
+            ui.invoke_toggle_eq(true);
+            // Tall, so the band rows are in sight too.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 1500.0));
+            idle(Duration::from_millis(100)).await;
+            let graph = || {
+                let graph = ui
+                    .root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Groupbox)
+                    .match_predicate(|graph| graph.accessible_label().is_some_and(|l| l == "EQ graph"))
+                    .find_first()
+                    .expect("no EQ graph");
+                let (corner, size) = (graph.absolute_position(), graph.size());
+                // The plot is inset 14px, where a place is a fraction of it.
+                move |x: f32, y: f32| {
+                    slint::LogicalPosition::new(
+                        corner.x + 14.0 + x * (size.width - 28.0),
+                        corner.y + 14.0 + y * (size.height - 28.0),
+                    )
+                }
+            };
+            let saved_band = || prefs::load().eq.bands.first().cloned();
+            let (window, left) = (ui.window(), PointerEventButton::Left);
+            let at = graph();
+            // The page holds a press back a moment, to see if it scrolls.
+            let held = Duration::from_millis(150);
+            window.dispatch_event(WindowEvent::PointerPressed { position: at(0.5, 0.25), button: left });
+            idle(held).await;
+            window.dispatch_event(WindowEvent::PointerReleased { position: at(0.5, 0.25), button: left });
+            let line = |row: usize| ui.get_eq_bands().row_data(row).unwrap();
+            assert_eq!(ui.get_eq_bands().row_count(), 1, "a click adds a band");
+            assert_eq!((line(0).frequency, line(0).gain), ("632".into(), "7.5".into()));
+            assert_eq!(ui.get_eq_selected(), 0);
+            assert_eq!(saved_band().unwrap().gain, 7.5);
+            // A click that drifts is a drag of nothing, not a band.
+            window.dispatch_event(WindowEvent::PointerPressed { position: at(0.2, 0.8), button: left });
+            idle(held).await;
+            window.dispatch_event(WindowEvent::PointerReleased { position: at(0.25, 0.8), button: left });
+            assert_eq!(ui.get_eq_bands().row_count(), 1);
+
+            let point = || button(&ui, "Band 1 point");
+            let center = |point: &ElementHandle| {
+                let (corner, size) = (point.absolute_position(), point.size());
+                slint::LogicalPosition::new(corner.x + size.width / 2.0, corner.y + size.height / 2.0)
+            };
+            let from = center(&point());
+            let target = at(0.8, 0.75);
+            drag_to(&ui, from, target).await;
+            let shown = ui.get_eq_points().row_data(0).unwrap();
+            assert!(
+                (shown.x - 0.8).abs() < 0.01 && (shown.y - 0.75).abs() < 0.01,
+                "the point follows the drag: {shown:?}"
+            );
+            let frequency: f64 = line(0).frequency.parse().unwrap();
+            assert!((frequency - 5024.0).abs() < 8.0, "{frequency} Hz");
+            assert_eq!(line(0).gain, "-7.5", "the numbers follow the drag");
+            assert_eq!(saved_band().unwrap().frequency, 632.0, "saved once let go");
+            window.dispatch_event(WindowEvent::PointerReleased { position: target, button: left });
+            let saved = saved_band().unwrap();
+            assert_eq!((saved.frequency, saved.gain), (frequency, -7.5));
+
+            // A band typed in is still the band the graph moves, and a band
+            // moved on the graph is still what the row's other fields keep.
+            let field_text = |label: &str| {
+                let label = label.to_owned();
+                ui.root_element()
+                    .query_descendants()
+                    .match_predicate(move |field| field.accessible_label().is_some_and(|l| l == label))
+                    .find_first()
+                    .expect("no such field")
+                    .accessible_value()
+                    .unwrap()
+                    .to_string()
+            };
+            let row = |ui: &AppWindow| {
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::ListItem)
+                    .match_predicate(|row| row.accessible_label().is_some_and(|l| l == "Band 1"))
+                    .find_first()
+                    .expect("no Band 1 row")
+            };
+            ui.set_eq_selected(-1);
+            assert_eq!(row(&ui).accessible_checked(), Some(false));
+            type_into(&ui, "Band 1 frequency in Hz", "2500").await;
+            assert_eq!(ui.get_eq_selected(), 0, "typing in a row picks its band");
+            assert_eq!(row(&ui).accessible_checked(), Some(true), "the row of the picked band is lit");
+            assert_eq!(saved_band().unwrap().frequency, 2500.0);
+            // One move, to where the row's last value was, which the typed
+            // field is not: only the graph's push puts it right.
+            ui.invoke_move_band(0, 0.8, 0.75);
+            ui.invoke_release_band();
+            // The fields take the change on the event loop's next turn.
+            idle(Duration::from_millis(50)).await;
+            // Back where the row's last value was, which a typed field is not.
+            assert_eq!(saved_band().unwrap().frequency, frequency);
+            assert_eq!(field_text("Band 1 frequency in Hz"), line(0).frequency.as_str(), "the typed field shows the drag");
+            assert_eq!(field_text("Band 1 gain in dB"), "-7.5");
+            type_into(&ui, "Band 1 gain in dB", "3").await;
+            let kept = saved_band().unwrap();
+            assert_eq!((kept.frequency, kept.gain), (frequency, 3.0), "the drag is kept by the next edit");
+            assert_eq!(line(0).frequency.as_str(), field_text("Band 1 frequency in Hz"));
+
+            // Typing 1 kHz and 0 dB puts the point there.
+            let typed = EqBandLine { filter: 0, frequency: "1000".into(), gain: "0".into(), q: "1".into() };
+            ui.invoke_edit_band(0, typed);
+            let moved = center(&point());
+            let expected = at(0.5663, 0.5);
+            assert!(
+                (moved.x - expected.x).abs() < 2.0 && (moved.y - expected.y).abs() < 2.0,
+                "{moved:?} against {expected:?}"
+            );
+            // A pass has no gain, so it moves sideways only.
+            ui.invoke_add_band_at(0.3, 0.5);
+            assert_eq!(ui.get_eq_selected(), 1);
+            ui.invoke_edit_band(1, EqBandLine { filter: 4, frequency: "100".into(), gain: "6".into(), q: "0.71".into() });
+            assert_eq!(ui.get_eq_points().row_data(1).unwrap().y, 0.5);
+            ui.invoke_move_band(1, 0.1, 0.0);
+            ui.invoke_release_band();
+            let pass = prefs::load().eq.bands[1].clone();
+            assert_eq!((pass.frequency, pass.gain), (40.0, 6.0));
+
+            click(&ui, "Remove band 2 from the graph");
+            assert_eq!(ui.get_eq_bands().row_count(), 1);
+            let left_over = prefs::load().eq.bands[0].clone();
+            assert_eq!((left_over.filter, left_over.frequency), (0, 1_000.0), "the picked band went");
+            assert_eq!(ui.get_eq_selected(), -1);
+            assert_eq!(prefs::load().eq.bands.len(), 1);
+            // A band that goes from before the picked one leaves it picked.
+            ui.invoke_add_band_at(0.2, 0.5);
+            ui.invoke_add_band_at(0.7, 0.5);
+            let before = prefs::load().eq.bands;
+            assert_eq!(ui.get_eq_selected(), 2);
+            ui.invoke_remove_band(1);
+            let after = prefs::load().eq.bands;
+            assert_eq!(after, [before[0].clone(), before[2].clone()]);
+            assert_eq!(ui.get_eq_selected(), 1, "the picked band is still the one picked");
+            ui.invoke_remove_band(1);
+            assert_eq!((ui.get_eq_selected(), prefs::load().eq.bands.len()), (-1, 1));
+            // While a point is dragged the player is handed the EQ now and
+            // then, not at each move, and the saved one once it is let go.
+            let heard: std::rc::Rc<std::cell::RefCell<Vec<playback::Dsp>>> = Default::default();
+            let other = AppWindow::new().unwrap();
+            sound::wire(&other, {
+                let heard = heard.clone();
+                move |dsp| heard.borrow_mut().push(dsp)
+            });
+            let band_heard = |at: usize| heard.borrow()[at].eq.clone().unwrap().bands[0].frequency;
+            let started = Instant::now();
+            for _ in 0..5 {
+                other.invoke_move_band(0, 0.3, 0.4);
+            }
+            idle(Duration::from_millis(200)).await;
+            assert!(heard.borrow().is_empty(), "not at each move");
+            wait_for("the player to follow", || !heard.borrow().is_empty()).await;
+            assert!(started.elapsed() >= Duration::from_millis(400), "{:?}", started.elapsed());
+            assert_eq!((heard.borrow().len(), band_heard(0)), (1, 159.0));
+            assert_eq!(prefs::load().eq.bands[0].frequency, 1_000.0, "saved once let go");
+            for _ in 0..5 {
+                other.invoke_move_band(0, 0.35, 0.4);
+            }
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(heard.borrow().len(), 1, "not at each move");
+            // A drag that goes on is followed while it does, not only once
+            // it stops.
+            for _ in 0..8 {
+                other.invoke_move_band(0, 0.35, 0.4);
+                idle(Duration::from_millis(100)).await;
+            }
+            let followed = heard.borrow().len();
+            assert!((2..=3).contains(&followed), "{followed} times during the drag");
+            other.invoke_release_band();
+            wait_for("the saved EQ", || heard.borrow().len() == followed + 1).await;
+            assert_eq!(band_heard(followed), 224.0);
+            assert_eq!(prefs::load().eq.bands[0].frequency, 224.0);
+            // A finger dragging a point, or the graph's empty part, with some
+            // drift up or down moves the point and leaves the page where it
+            // is; the next finger elsewhere scrolls it.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(100)).await;
+            ui.global::<Input>().set_finger(true);
+            let frame = || {
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Groupbox)
+                    .match_predicate(|graph| graph.accessible_label().is_some_and(|l| l == "EQ graph"))
+                    .find_first()
+                    .expect("no EQ graph")
+            };
+            let page_at = frame().absolute_position().y;
+            let (x_before, bands) = (ui.get_eq_points().row_data(0).unwrap().x, ui.get_eq_bands().row_count());
+            let path = [(0, 4.0, -3.0), (16, 12.0, -14.0), (16, 40.0, -30.0), (16, 80.0, -45.0)];
+            drag(&ui, middle(&button(&ui, "Band 1 point")), &path, 0).await;
+            assert!(ui.get_eq_points().row_data(0).unwrap().x > x_before, "the point follows the finger");
+            assert_eq!(frame().absolute_position().y, page_at, "the page stays put");
+            let empty = frame().absolute_position();
+            let corner = slint::LogicalPosition::new(empty.x + 20.0, empty.y + frame().size().height - 20.0);
+            drag(&ui, corner, &path, 0).await;
+            assert_eq!(frame().absolute_position().y, page_at, "the page stays put");
+            assert_eq!(ui.get_eq_bands().row_count(), bands, "a drag adds no band");
+            drag(&ui, slint::LogicalPosition::new(900.0, 400.0), &[(0, 0.0, -20.0), (0, 0.0, -40.0)], 100).await;
+            assert!(frame().absolute_position().y < page_at, "the page scrolls elsewhere");
+            ui.global::<Input>().set_finger(false);
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Settings);
             click(&ui, "Library");
             assert_eq!(ui.get_page(), Page::Setting);
             // The server's scan: where it stands, one the server refuses,

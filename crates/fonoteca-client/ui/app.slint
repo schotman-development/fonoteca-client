@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
 
@@ -1012,6 +1012,12 @@ export component AppWindow inherits Window {
     in-out property <bool> eq-on;
     in-out property <string> eq-preamp;
     in property <[EqBandLine]> eq-bands;
+    // The graph: a point for each band, the curve of them all, its grid, and
+    // the band picked on it or in a row, or -1.
+    in property <[EqPoint]> eq-points;
+    in property <string> eq-curve;
+    in property <[EqGridLine]> eq-grid;
+    in-out property <int> eq-selected: -1;
     in property <[string]> eq-presets;
     in-out property <int> eq-preset;
     // The tracks or compositions page's table: the columns shown, their
@@ -1144,6 +1150,11 @@ export component AppWindow inherits Window {
     callback edit-preamp(text: string);
     callback edit-band(row: int, line: EqBandLine);
     callback add-band();
+    // A click on the graph asks for a band there; a point dragged moves its
+    // band as it goes, and lets go once.
+    callback add-band-at(x: float, y: float);
+    callback move-band(row: int, x: float, y: float);
+    callback release-band();
     callback remove-band(row: int);
     callback choose-eq-preset(index: int);
     callback save-eq-preset(name: string);
@@ -2369,6 +2380,18 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                        if root.can-play && root.eq-on: EqGraph {
+                            points: root.eq-points;
+                            grid: root.eq-grid;
+                            curve: root.eq-curve;
+                            selected <=> root.eq-selected;
+                            enabled: !Input.modal;
+                            picked-name: root.eq-selected < 0 || root.eq-selected >= root.eq-bands.length ? "" : "Band " + (root.eq-selected + 1) + ", " + root.eq-bands[root.eq-selected].frequency + " Hz" + (root.eq-bands[root.eq-selected].filter < 3 ? ", " + root.eq-bands[root.eq-selected].gain + " dB" : "");
+                            added(x, y) => { root.add-band-at(x, y); }
+                            moved(row, x, y) => { root.move-band(row, x, y); }
+                            released => { root.release-band(); }
+                            removed(row) => { root.remove-band(row); }
+                        }
                         if root.can-play && root.eq-on: VerticalLayout {
                             spacing: 4px;
                             Text {
@@ -2388,8 +2411,12 @@ export component AppWindow inherits Window {
                             for line[row] in root.eq-bands: EqBandRow {
                                 number: row + 1;
                                 line: line;
+                                selected: row == root.eq-selected;
                                 enabled: !Input.modal;
-                                edited(line) => { root.edit-band(row, line); }
+                                edited(line) => {
+                                    root.eq-selected = row;
+                                    root.edit-band(row, line);
+                                }
                                 remove => { root.remove-band(row); }
                             }
                         }

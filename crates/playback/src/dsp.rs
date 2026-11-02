@@ -104,12 +104,25 @@ impl Dsp {
     }
 }
 
+impl Filter {
+    /// Whether the filter has a gain: passes have none.
+    pub fn has_gain(self) -> bool {
+        !matches!(self, Filter::LowPass | Filter::HighPass)
+    }
+}
+
 impl Band {
+    /// Whether FFmpeg gets a filter of it at `rate`: not at a frequency at
+    /// or above what `rate` holds.
+    fn fits(&self, rate: f64) -> bool {
+        self.frequency > 0.0 && self.frequency < rate / 2.0 && self.q > 0.0
+    }
+
     /// The FFmpeg filter, in double precision, or none where it would
     /// change nothing: a flat peak or shelf, or a frequency at or above
     /// what `rate` holds.
     fn filter(&self, rate: u32) -> Option<String> {
-        if self.frequency <= 0.0 || self.frequency >= f64::from(rate) / 2.0 || self.q <= 0.0 {
+        if !self.fits(f64::from(rate)) {
             return None;
         }
         let name = match self.filter {
@@ -125,6 +138,64 @@ impl Band {
             _ if self.gain.abs() < UNCHANGED => None,
             _ => Some(format!("{shape}:g={}", self.gain)),
         }
+    }
+
+    /// How many dB the band changes `frequency` by at `rate`, from the Audio
+    /// EQ Cookbook's formulas, which FFmpeg's biquads follow.
+    pub fn response(&self, rate: f64, frequency: f64) -> f64 {
+        use std::f64::consts::PI;
+        if !self.fits(rate) {
+            return 0.0;
+        }
+        let a = 10f64.powf(self.gain / 40.0);
+        let (sin, cos) = (2.0 * PI * self.frequency / rate).sin_cos();
+        let alpha = sin / (2.0 * self.q);
+        let root = 2.0 * a.sqrt() * alpha;
+        let (b, d) = match self.filter {
+            Filter::Peak => (
+                [1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a],
+                [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a],
+            ),
+            Filter::LowShelf => (
+                [
+                    a * ((a + 1.0) - (a - 1.0) * cos + root),
+                    2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
+                    a * ((a + 1.0) - (a - 1.0) * cos - root),
+                ],
+                [
+                    (a + 1.0) + (a - 1.0) * cos + root,
+                    -2.0 * ((a - 1.0) + (a + 1.0) * cos),
+                    (a + 1.0) + (a - 1.0) * cos - root,
+                ],
+            ),
+            Filter::HighShelf => (
+                [
+                    a * ((a + 1.0) + (a - 1.0) * cos + root),
+                    -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
+                    a * ((a + 1.0) + (a - 1.0) * cos - root),
+                ],
+                [
+                    (a + 1.0) - (a - 1.0) * cos + root,
+                    2.0 * ((a - 1.0) - (a + 1.0) * cos),
+                    (a + 1.0) - (a - 1.0) * cos - root,
+                ],
+            ),
+            Filter::LowPass => (
+                [(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0],
+                [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
+            ),
+            Filter::HighPass => (
+                [(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0],
+                [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
+            ),
+        };
+        let w = 2.0 * PI * frequency / rate;
+        let size = |c: [f64; 3]| {
+            let re = c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos();
+            let im = c[1] * w.sin() + c[2] * (2.0 * w).sin();
+            re.hypot(im)
+        };
+        20.0 * (size(b) / size(d)).log10()
     }
 }
 

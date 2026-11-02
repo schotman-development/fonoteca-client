@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -29,6 +29,8 @@ export component Workbench inherits Window {
         Screen.height = self.height;
     }
 
+    // The graph's points, which dragging moves.
+    property <[EqPoint]> eq-points: [{ x: 0.2, y: 0.3 }, { x: 0.55, y: 0.65 }, { x: 0.86, y: 0.5 }];
     property <[string]> entries: [
         "Artwork",
         "Links",
@@ -841,10 +843,37 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 15: Example {
+                        caption: "The EQ as a graph: a point for each band, a click on it adds one, a drag moves one, and the picked band can be removed";
+                        max-width: 480px;
+                        graph := EqGraph {
+                            points: root.eq-points;
+                            grid: [
+                                { position: 0.23, label: "", vertical: true },
+                                { position: 0.33, label: "100", vertical: true },
+                                { position: 0.66, label: "1k", vertical: true },
+                                { position: 1.0, label: "10k", vertical: true },
+                                { position: 0.17, label: "+10", vertical: false },
+                                { position: 0.5, label: "0", vertical: false },
+                                { position: 0.83, label: "−10", vertical: false },
+                            ];
+                            curve: "M0 500 C150 500 150 280 250 300 S400 600 550 650 S750 520 860 500 S950 500 1000 500";
+                            picked-name: self.selected < 0 ? "" : "Band " + (self.selected + 1) + ", 1000 Hz, +3.5 dB";
+                            added(x, y) => { root.event = "add a band at " + x + ", " + y; }
+                            moved(row, x, y) => {
+                                root.eq-points[row] = { x: x, y: y };
+                                root.event = "move band " + (row + 1);
+                            }
+                            released => { root.event = "let go"; }
+                            removed(row) => { root.event = "remove band " + (row + 1); }
+                        }
+                    }
+
+                    if root.current == 15: Example {
                         caption: "A band of the EQ in the settings: its filter, then its numbers as typed; a pass has no gain";
                         max-width: 480px;
                         EqBandRow {
                             number: 1;
+                            selected: true;
                             line: { filter: 1, frequency: "105", gain: "5.5", q: "0.7" };
                             edited(line) => { root.event = "band 1: " + line.filter + " " + line.frequency + " Hz " + line.gain + " dB Q " + line.q; }
                             remove => { root.event = "remove band 1"; }
