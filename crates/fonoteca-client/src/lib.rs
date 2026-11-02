@@ -470,6 +470,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::io::{BufRead, BufReader, Write};
     use std::pin::Pin;
     use std::sync::Mutex;
@@ -585,6 +586,13 @@ mod tests {
     /// While set, the server takes only an artist's name for their top
     /// songs, not their id, as Fonoteca does.
     static NAMES_ONLY: AtomicBool = AtomicBool::new(false);
+    /// While set, the server has a saved play queue, one song of the
+    /// classical album, and no motion covers; and how many it was asked for.
+    static QUEUED: AtomicBool = AtomicBool::new(false);
+    static NO_MOTION: AtomicBool = AtomicBool::new(false);
+    /// While set, the classical album's motion cover takes a while to come.
+    static SLOW_MOTION: AtomicBool = AtomicBool::new(false);
+    static MOTIONS_ASKED: AtomicUsize = AtomicUsize::new(0);
     /// How many scans were asked for; the server refuses the first. Whether
     /// the one it took is still going, and how often that was asked.
     static SCANS: AtomicUsize = AtomicUsize::new(0);
@@ -704,7 +712,7 @@ mod tests {
 
     /// An OpenSubsonic server without API keys that knows one user, joe, and
     /// 603 albums, more than the client asks for at once. The first has songs, two on two discs; unstarring them is
-    /// refused. The second is classical, with a motion cover. The last three
+    /// refused. The second is classical, with a motion cover, as is a4. The last three
     /// are by or about Bach, and each order puts them differently. It knows
     /// 122 artists, in three indexes, two playlists, one of them empty and
     /// read-only, and 230 songs for the empty search, more than the client
@@ -733,8 +741,13 @@ mod tests {
             } else {
                 ""
             };
+            let motion = if NO_MOTION.load(Relaxed) {
+                ""
+            } else {
+                r#"{"name":"fonotecaAlbumMotion","versions":[1]},"#
+            };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{{"name":"fonotecaAlbumMotion","versions":[1]}},{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}]"#
             ))
         } else if !request.contains("u=joe&") {
             json(WRONG_PASSWORD)
@@ -803,7 +816,11 @@ mod tests {
                 albums.join(",")
             ))
         } else if request.contains("/rest/getAlbumMotion") {
-            if id == Some("a2") {
+            MOTIONS_ASKED.fetch_add(1, Relaxed);
+            if id == Some("a2") || id == Some("a4") {
+                if SLOW_MOTION.load(Relaxed) {
+                    std::thread::sleep(Duration::from_millis(400));
+                }
                 reply("200 OK", "image/webp", MOTION)
             } else {
                 json(
@@ -982,6 +999,10 @@ mod tests {
         } else if request.contains("/rest/startScan") {
             SCANNING.store(true, Relaxed);
             ok(r#""scanStatus":{"scanning":true,"count":3}"#)
+        } else if request.contains("/rest/getPlayQueue") && QUEUED.load(Relaxed) {
+            ok(
+                r#""playQueue":{"current":"c1","position":0,"username":"joe","changed":"2024-01-01T00:00:00Z","changedBy":"test","entry":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","album":"Symphonies","albumId":"a2","coverArt":"al-a2","duration":441}]}"#,
+            )
         } else if request.contains("/rest/getCoverArt") {
             if COVERS.fetch_add(1, Relaxed) < 6 {
                 FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
@@ -1074,6 +1095,32 @@ mod tests {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             YieldNow(false).await;
         }
+    }
+
+    /// What the playing art is: its motion's colour, as far as encoding
+    /// lets them be, the still cover, or nothing.
+    fn art_looks(ui: &AppWindow) -> &'static str {
+        let art = ui.get_playing_art();
+        match art.size().width {
+            0 => "blank",
+            1 => "still",
+            _ => match art.to_rgba8().map(|picture| picture.as_slice()[0]) {
+                Some(pixel) if pixel.r > pixel.b => "red",
+                _ => "blue",
+            },
+        }
+    }
+
+    /// How the playing art looked over `time`.
+    async fn art_over(ui: &AppWindow, time: Duration) -> BTreeSet<&'static str> {
+        let seen = std::cell::RefCell::new(BTreeSet::new());
+        let until = Instant::now() + time;
+        wait_for("the time to pass", || {
+            seen.borrow_mut().insert(art_looks(ui));
+            Instant::now() >= until
+        })
+        .await;
+        seen.into_inner()
     }
 
     /// Lets the app run for `time`.
@@ -2445,6 +2492,17 @@ mod tests {
             wait_for("a few frames' time", || Instant::now() > later).await;
             assert_ne!(ui.get_header_image().size().width, 2);
 
+            // A motion cover that comes after its album's page was left
+            // doesn't take the page shown now.
+            SLOW_MOTION.store(true, Relaxed);
+            ui.invoke_open("album:a2".into());
+            wait_for("the classical album", || ui.get_header_title() == "Symphonies").await;
+            ui.invoke_open("album:a1".into());
+            wait_for("the album left for", || ui.get_header_title() == "Night Harbour").await;
+            idle(Duration::from_millis(1000)).await;
+            assert_ne!(ui.get_header_image().size().width, 2);
+            SLOW_MOTION.store(false, Relaxed);
+
             // A composer's page opened before the composers have arrived asks
             // for them too, for the picture.
             ui.invoke_open("composer:r9".into());
@@ -3405,6 +3463,8 @@ mod tests {
             NAMES_ONLY.store(true, Relaxed);
             ORGANIZED.store(true, Relaxed);
             TAGS_DOWN.store(true, Relaxed);
+            QUEUED.store(true, Relaxed);
+            let asked = MOTIONS_ASKED.load(Relaxed);
             ui.set_address(server.as_str().into());
             click(&ui, "Continue");
             wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
@@ -3419,6 +3479,129 @@ mod tests {
             ui.invoke_open("artist:r1".into());
             wait_for("her top songs by name", || ui.get_tracks().row_count() == 2).await;
             wait_for("the account saved", || !ui.get_busy()).await;
+
+            // The album of the saved queue's song has its motion cover come
+            // to the now playing sheet, whose still cover stood in until then.
+            wait_for("the playing album's motion cover", || {
+                ui.get_playing_art().size().width == 2
+            })
+            .await;
+            assert_eq!(MOTIONS_ASKED.load(Relaxed), asked + 1);
+            let moving = || BTreeSet::from(["blue", "red"]);
+            let held = |frame: &'static str| BTreeSet::from([frame]);
+
+            // It moves only while the sheet is open and the song plays, and is
+            // held on its frame otherwise, never blanked.
+            let frame = art_looks(&ui);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame));
+            ui.set_playing_paused(false);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame));
+            ui.set_playing_paused(true);
+            click(&ui, "Now playing");
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame));
+            ui.set_playing_paused(false);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
+            ui.set_playing_paused(true);
+            idle(Duration::from_millis(50)).await;
+            let frame = art_looks(&ui);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame));
+            ui.set_playing_paused(false);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
+            click(&ui, "Close now playing");
+            idle(Duration::from_millis(50)).await;
+            let frame = art_looks(&ui);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame));
+            click(&ui, "Now playing");
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
+
+            // The next song of the album goes on with it: no new request, no
+            // blank, and its still cover doesn't take a frame's place.
+            let song = |id: &str, album: &str| -> opensubsonic::Child {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"{id}","isDir":false,"title":"{id}","albumId":"{album}","coverArt":"al-{album}"}}"#
+                ))
+                .unwrap()
+            };
+            let queue = || vec![song("c1", "a2"), song("c2", "a2"), song("t1", "a1"), song("c3", "a2")];
+            let asked = MOTIONS_ASKED.load(Relaxed);
+            play::testing::show_song(&ui, queue(), 1);
+            assert_eq!(ui.get_playing_art().size().width, 2, "not blanked");
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
+            assert_eq!(MOTIONS_ASKED.load(Relaxed), asked);
+
+            // Another album's motion cover moves too, as the sheet stays open
+            // and the song plays.
+            play::testing::show_song(&ui, vec![song("d1", "a4")], 0);
+            wait_for("the other album's motion", || {
+                ["red", "blue"].contains(&art_looks(&ui))
+            })
+            .await;
+            assert_eq!(MOTIONS_ASKED.load(Relaxed), asked + 1);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
+            let asked = MOTIONS_ASKED.load(Relaxed);
+
+            // An album without one shows its still cover, and the last
+            // album's frames stop.
+            play::testing::show_song(&ui, queue(), 2);
+            wait_for("the still cover", || art_looks(&ui) == "still").await;
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held("still"));
+            assert_eq!(MOTIONS_ASKED.load(Relaxed), asked + 1);
+
+            // Frames that come late for an album left behind don't show.
+            SLOW_MOTION.store(true, Relaxed);
+            play::testing::show_song(&ui, queue(), 3);
+            play::testing::show_song(&ui, queue(), 2);
+            let seen = art_over(&ui, Duration::from_millis(1200)).await;
+            assert!(seen.is_subset(&BTreeSet::from(["blank", "still"])), "{seen:?}");
+            assert_eq!(art_looks(&ui), "still");
+            SLOW_MOTION.store(false, Relaxed);
+
+            // With the queue gone, the same album asks again and plays.
+            play::testing::show_song(&ui, queue(), 0);
+            wait_for("its motion again", || ["red", "blue"].contains(&art_looks(&ui))).await;
+            play::testing::clear(&ui);
+            assert_eq!(play::testing::motion_album(), None);
+            let asked = MOTIONS_ASKED.load(Relaxed);
+            play::testing::show_song(&ui, queue(), 0);
+            wait_for("its motion once more", || MOTIONS_ASKED.load(Relaxed) > asked).await;
+            ui.set_playing(true);
+            click(&ui, "Now playing");
+            ui.set_playing_paused(false);
+            wait_for("its frames", || ["red", "blue"].contains(&art_looks(&ui))).await;
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
+
+            // So does the queue loaded anew, as on a sign in.
+            let asked = MOTIONS_ASKED.load(Relaxed);
+            play::testing::restore(&ui);
+            wait_for("its motion after the sign in", || {
+                MOTIONS_ASKED.load(Relaxed) > asked
+            })
+            .await;
+
+            // Without the extension the still cover stays and none is asked for.
+            let asked = MOTIONS_ASKED.load(Relaxed);
+            click(&ui, "Account");
+            click(&ui, "Sign out");
+            wait_for("the server step", || ui.get_step() == Step::Server).await;
+            NO_MOTION.store(true, Relaxed);
+            ui.set_address(server.as_str().into());
+            click(&ui, "Continue");
+            wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
+            ui.set_username("joe".into());
+            ui.set_password("pw".into());
+            click(&ui, "Sign in");
+            wait_for("the ListenBrainz step", || {
+                ui.get_step() == Step::Listenbrainz
+            })
+            .await;
+            click(&ui, "Skip");
+            wait_for("the still cover", || ui.get_playing_art().size().width == 1).await;
+            let later = Instant::now() + Duration::from_millis(300);
+            wait_for("a few frames' time", || Instant::now() > later).await;
+            assert_eq!(ui.get_playing_art().size().width, 1);
+            assert_eq!(MOTIONS_ASKED.load(Relaxed), asked);
+            NO_MOTION.store(false, Relaxed);
+            QUEUED.store(false, Relaxed);
 
             // On a server with playlist folders, the sidebar has every
             // playlist, the one in a folder too, and no folders.

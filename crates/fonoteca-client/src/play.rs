@@ -68,12 +68,18 @@ type Shared = Rc<RefCell<Playing>>;
 
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     let playing = Shared::default();
+    #[cfg(test)]
+    testing::keep(browser, &playing);
     let saved = prefs::load();
     ui.set_leveling(saved.leveling.clamp(0, 2));
     ui.set_repeat(saved.repeat.clamp(0, 2));
     ui.set_can_play(true);
     list_devices(ui, &playing);
 
+    ui.on_now_playing_moving_changed({
+        let browser = browser.clone();
+        move |moving| browse::move_playing_motion(&browser, moving)
+    });
     ui.on_library_started({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move || restore(&weak.unwrap(), &browser, &playing)
@@ -563,6 +569,7 @@ fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     p.saved = None;
     save(browser, &p, playing, None, 0.0);
     list_queue(ui, browser, &mut p, playing);
+    browse::stop_playing_motion(browser);
     ui.set_playing(false);
 }
 
@@ -666,13 +673,23 @@ fn show_song(
     });
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());
-    ui.set_playing_art(Image::default());
+    browse::playing_motion(ui, browser, song.album_id.clone(), ART_SIZE, |ui, frame| {
+        ui.set_playing_art(frame);
+    });
+    // The motion cover of the album goes on across its tracks, held or
+    // moving, so the still cover only stands in until its first frame comes,
+    // or when there are none.
+    if !browse::playing_motion_framed(browser) {
+        ui.set_playing_art(Image::default());
+    }
     if let Some(cover) = song.cover_art.clone() {
-        let playing = playing.clone();
+        let (playing, browser_playing) = (playing.clone(), browser.clone());
         browse::cover(ui, browser, cover, ART_SIZE, move |ui, image| {
             if playing.borrow().shown == Some(index) {
                 ui.set_playing_cover(image.clone());
-                ui.set_playing_art(image);
+                if !browse::playing_motion_framed(&browser_playing) {
+                    ui.set_playing_art(image);
+                }
             }
         });
     }
@@ -784,6 +801,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         p.covers.clear();
         list_queue(ui, browser, &mut p, playing);
     }
+    browse::stop_playing_motion(browser);
     ui.set_playing(false);
     let Some(client) = browse::client(browser) else {
         return;
@@ -951,4 +969,58 @@ fn cache() -> PathBuf {
     folder
         .unwrap_or_else(std::env::temp_dir)
         .join("fonoteca-client")
+}
+
+/// What the flow test needs of a player it can't have: the queue's songs put
+/// on the sheet as the player would, and the ends a queue can come to.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    thread_local! {
+        static HANDLES: RefCell<Option<(browse::Shared, Shared)>> = const { RefCell::new(None) };
+    }
+
+    /// Keeps the first window's, since a test may start others.
+    pub(super) fn keep(browser: &browse::Shared, playing: &Shared) {
+        HANDLES.with(|handles| {
+            handles
+                .borrow_mut()
+                .get_or_insert_with(|| (browser.clone(), playing.clone()));
+        });
+    }
+
+    fn handles() -> (browse::Shared, Shared) {
+        HANDLES.with(|handles| handles.borrow().clone().expect("the player is wired"))
+    }
+
+    /// Queues `songs` and shows the `index`th, as when the player moves on.
+    pub(crate) fn show_song(ui: &AppWindow, songs: Vec<Child>, index: usize) {
+        let (browser, playing) = handles();
+        {
+            let mut p = playing.borrow_mut();
+            p.queue = Queue::new(songs);
+            p.shown = Some(index);
+        }
+        super::show_song(ui, &browser, &playing.borrow(), &playing, index);
+    }
+
+    /// Takes the queue away, as when its last song is removed.
+    pub(crate) fn clear(ui: &AppWindow) {
+        let (browser, playing) = handles();
+        super::clear(ui, &browser, &playing);
+    }
+
+    /// Loads the queue saved on the server again, as on a sign in.
+    pub(crate) fn restore(ui: &AppWindow) {
+        let (browser, playing) = handles();
+        super::restore(ui, &browser, &playing);
+    }
+
+    /// The album whose motion cover is kept.
+    pub(crate) fn motion_album() -> Option<String> {
+        browse::playing_motion_album(&handles().0)
+    }
 }

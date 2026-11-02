@@ -762,6 +762,11 @@ export component AppWindow inherits Window {
     in property <image> playing-art;
     in property <Name> playing-album;
     out property <bool> now-playing-open;
+    // Whether what plays moves on the sheet: the motion cover plays only
+    // while the sheet is open and the song plays.
+    property <bool> now-playing-moving: root.now-playing-open && root.playing && !root.playing-paused;
+    callback now-playing-moving-changed(moving: bool);
+    changed now-playing-moving => { root.now-playing-moving-changed(root.now-playing-moving); }
     in property <[QueueLine]> queue-lines;
     in property <int> queue-more;
     // Whether the queue is shuffled, and whether it repeats: 0 not, 1 all

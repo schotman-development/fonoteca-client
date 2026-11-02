@@ -130,6 +130,18 @@ const TOP_SONGS: u32 = 5;
 /// About how long the start of a biography or notes is, before More.
 const ABOUT_SHORT: usize = 320;
 
+/// The motion cover of the album playing, for the now playing sheet.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Default)]
+struct PlayingMotion {
+    /// The album it is of, and whether it has shown a frame yet.
+    album: Option<String>,
+    framed: bool,
+    /// Shows the next frame, and runs only while `moving`.
+    timer: Timer,
+    moving: bool,
+}
+
 #[derive(Default)]
 pub struct Browser {
     client: Option<Arc<Client>>,
@@ -151,8 +163,10 @@ pub struct Browser {
     /// Covers seen this session, by cover id and size.
     // ponytail: unbounded, every cover seen stays decoded; an LRU when big libraries need it.
     pictures: HashMap<(String, u32), Image>,
-    /// Shows the next frame of the album's motion cover.
+    /// Shows the next frame of the motion cover of the album page's header.
     motion: Timer,
+    #[cfg(not(target_family = "wasm"))]
+    playing: PlayingMotion,
     /// Every album on the server in the order they arrived, while they arrive
     /// and once they all have.
     library: Vec<AlbumID3>,
@@ -5892,24 +5906,131 @@ fn header_image(ui: &AppWindow, browser: &Shared, cover: Option<String>) {
     .expect("the event loop is running");
 }
 
-/// Plays the album's motion cover in the header in place of its cover, on
-/// servers that have them. Frames are decoded as they are shown, so only the
-/// file stays in memory.
+/// Plays the album's motion cover in the header in place of its cover.
 fn header_motion(ui: &AppWindow, browser: &Shared, album: String) {
+    let visit = browser.borrow().visit;
+    let on_page = browser.clone();
+    motion_cover(
+        ui,
+        browser,
+        album,
+        HEADER_SIZE,
+        |b| &b.motion,
+        move || on_page.borrow().visit == visit,
+        || true,
+        |ui, image| ui.set_header_image(image),
+    );
+}
+
+/// Starts the motion cover of the album that plays, `logical` pixels wide, to
+/// go in place of the cover `show` puts on the now playing sheet, until
+/// another album plays. The same album again, as the next track, goes on
+/// with it.
+#[cfg(not(target_family = "wasm"))]
+pub fn playing_motion(
+    ui: &AppWindow,
+    browser: &Shared,
+    album: Option<String>,
+    logical: f32,
+    show: impl Fn(&AppWindow, Image) + 'static,
+) {
+    {
+        let mut b = browser.borrow_mut();
+        if b.playing.album == album {
+            return;
+        }
+        // A timer of its own, so the last album's frames can't come back
+        // when this one's are started.
+        b.playing = PlayingMotion {
+            album: album.clone(),
+            moving: b.playing.moving,
+            ..PlayingMotion::default()
+        };
+    }
+    let Some(album) = album else { return };
+    let (still_playing, moving, framed) = (browser.clone(), browser.clone(), browser.clone());
+    let wanted = album.clone();
+    motion_cover(
+        ui,
+        browser,
+        album,
+        logical,
+        |b| &b.playing.timer,
+        move || still_playing.borrow().playing.album.as_ref() == Some(&wanted),
+        move || moving.borrow().playing.moving,
+        move |ui, image| {
+            framed.borrow_mut().playing.framed = true;
+            show(ui, image);
+        },
+    );
+}
+
+/// Whether the motion cover of the album that plays has shown a frame, which
+/// stays up while it is held and until another album plays.
+#[cfg(not(target_family = "wasm"))]
+pub fn playing_motion_framed(browser: &Shared) -> bool {
+    browser.borrow().playing.framed
+}
+
+/// Runs the motion cover of the album that plays, or holds it on the frame it
+/// is at: it moves only while the sheet is open and the song plays.
+#[cfg(not(target_family = "wasm"))]
+pub fn move_playing_motion(browser: &Shared, moving: bool) {
+    let mut b = browser.borrow_mut();
+    b.playing.moving = moving;
+    if moving {
+        b.playing.timer.restart();
+    } else {
+        b.playing.timer.stop();
+    }
+}
+
+/// Drops the motion cover of the album that plays, as when nothing plays.
+#[cfg(not(target_family = "wasm"))]
+pub fn stop_playing_motion(browser: &Shared) {
+    let mut b = browser.borrow_mut();
+    b.playing = PlayingMotion {
+        moving: b.playing.moving,
+        ..PlayingMotion::default()
+    };
+}
+
+/// The album whose motion cover is kept, for the tests.
+#[cfg(test)]
+pub fn playing_motion_album(browser: &Shared) -> Option<String> {
+    browser.borrow().playing.album.clone()
+}
+
+/// Plays the album's motion cover through `show`, on servers that have
+/// them, for as long as `wanted` holds, one frame at a time off the timer
+/// `timer` picks, which runs only while `moving` says so. Frames are decoded
+/// as they are shown, so only the file stays in memory.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the header's and the player's motion differ in each"
+)]
+fn motion_cover(
+    ui: &AppWindow,
+    browser: &Shared,
+    album: String,
+    logical: f32,
+    timer: fn(&Browser) -> &Timer,
+    wanted: impl Fn() -> bool + 'static,
+    moving: impl Fn() -> bool + 'static,
+    show: impl Fn(&AppWindow, Image) + 'static,
+) {
     let client = browser.borrow().client.clone();
     let Some(client) = client.filter(|client| client.supports(MOTION)) else {
         return;
     };
-    let size = pixels(ui, HEADER_SIZE);
-    let visit = browser.borrow().visit;
+    let size = pixels(ui, logical);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
         let Ok(bytes) = client.get_album_motion(&album, Some(size)).await else {
             return;
         };
         let bytes: Rc<[u8]> = bytes.into();
-        let b = browser.borrow();
-        let (Some(mut frames), true) = (motion_frames(&bytes), b.visit == visit) else {
+        let (Some(mut frames), true) = (motion_frames(&bytes), wanted()) else {
             return;
         };
         let Some(Ok(first)) = frames.next() else {
@@ -5917,17 +6038,22 @@ fn header_motion(ui: &AppWindow, browser: &Shared, album: String) {
         };
         let interval = Duration::from(first.delay()).max(Duration::from_millis(10));
         if let Some(ui) = weak.upgrade() {
-            ui.set_header_image(picture(first));
+            show(&ui, picture(first));
         }
-        b.motion.start(TimerMode::Repeated, interval, move || {
+        let kept = browser.borrow();
+        let timer = timer(&kept);
+        timer.start(TimerMode::Repeated, interval, move || {
             let next = frames.next().or_else(|| {
                 frames = motion_frames(&bytes)?;
                 frames.next()
             });
             if let (Some(ui), Some(Ok(frame))) = (weak.upgrade(), next) {
-                ui.set_header_image(picture(frame));
+                show(&ui, picture(frame));
             }
         });
+        if !moving() {
+            timer.stop();
+        }
     })
     .expect("the event loop is running");
 }
