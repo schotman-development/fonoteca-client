@@ -1,0 +1,82 @@
+# Builds the macOS app for Apple silicon from a dev/macos branch, for trying
+# it on a Mac before it reaches main. Signed ad hoc, not by a developer, so
+# macOS asks once in Privacy & Security before it opens. The build is the
+# run's artifact; the version stays as it is in Cargo.toml.
+name: macOS dev build
+
+on:
+  push:
+    branches: ["dev/macos*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name the build
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "APP_VERSION=$version-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Build FFmpeg
+        run: scripts/ffmpeg.sh macos
+
+      # The rpath is where the app's bundle keeps FFmpeg.
+      - name: Build the app
+        env:
+          FFMPEG_DIR: ${{ github.workspace }}/target/macos-ffmpeg/prefix
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,@executable_path/../Frameworks
+        run: cargo build --locked --release -p fonoteca-client --bin fonoteca-client
+
+      - name: Put it in an app
+        run: |
+          app="target/Fonoteca Dev.app"
+          rm -rf "$app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Resources/ffmpeg"
+          cp target/release/fonoteca-client "$app/Contents/MacOS/"
+          # Each library under the name the binary looks for, such as
+          # libavcodec.61.dylib.
+          for lib in target/macos-ffmpeg/prefix/lib/lib*.dylib; do
+            name=$(otool -D "$lib" | tail -1)
+            cp -L "$lib" "$app/Contents/Frameworks/${name#@rpath/}"
+          done
+          cp target/macos-ffmpeg/notice/* "$app/Contents/Resources/ffmpeg/"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>fonoteca-client</string>
+            <key>CFBundleIdentifier</key><string>io.github.schotman-development.fonoteca.dev</string>
+            <key>CFBundleName</key><string>Fonoteca Dev</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
+            <key>CFBundleVersion</key><string>$GITHUB_RUN_NUMBER</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # Every library the binary names must be in the bundle.
+          otool -L "$app/Contents/MacOS/fonoteca-client" | awk '/@rpath/ { sub("@rpath/", "", $1); print $1 }' |
+            while read -r name; do test -f "$app/Contents/Frameworks/$name" || { echo "missing $name"; exit 1; }; done
+          codesign --force --sign - "$app"/Contents/Frameworks/*.dylib
+          codesign --force --sign - "$app"
+          codesign --verify --strict "$app"
+          ditto -c -k --keepParent "$app" "target/Fonoteca-$APP_VERSION-macos-arm64.zip"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Fonoteca-${{ env.APP_VERSION }}-macos-arm64
+          path: target/Fonoteca-${{ env.APP_VERSION }}-macos-arm64.zip
+          retention-days: 14
