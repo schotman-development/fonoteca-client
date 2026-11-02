@@ -681,8 +681,10 @@ fn nothing_is_fetched_without_a_device() {
         queue: vec![track(Gain::default()); 3],
         leveling: Leveling::Off,
         dsp: Dsp::default(),
+        repeat: Repeat::Off,
         current: None,
         next: None,
+        failures: 0,
     };
     decoder.open(0, 0.0, None);
     assert_eq!(fetched.load(Relaxed), 0);
@@ -714,6 +716,137 @@ fn a_skipped_track_is_told_of_while_the_one_in_its_place_plays() {
         }]);
         assert_eq!(ring.shown_skip().is_some(), shown, "track {track}");
     }
+}
+
+/// A decoder of tracks named `ids`, each a tenth of a second, for a 44.1
+/// kHz device; and the ids it fetches, in turn.
+fn decoder_of(ids: &[&str]) -> (Decoder, Arc<Shared>, Arc<std::sync::Mutex<Vec<String>>>) {
+    let shared = Arc::new(Shared::default());
+    shared.ring.lock().unwrap().device = Some(output::Device {
+        supported: device(&[44_100], &[I16]),
+        ..Default::default()
+    });
+    let fetched = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let samples = ramp(4_410, 2, 16);
+    let decoder = Decoder {
+        shared: shared.clone(),
+        pending: Arc::default(),
+        fetch: Box::new({
+            let fetched = fetched.clone();
+            move |track: &Track| {
+                fetched.lock().unwrap().push(track.id.clone());
+                Ok(wav(44_100, 2, 16, &samples))
+            }
+        }),
+        queue: ids
+            .iter()
+            .map(|id| Track {
+                id: (*id).into(),
+                gain: Gain::default(),
+            })
+            .collect(),
+        leveling: Leveling::Off,
+        dsp: Dsp::default(),
+        repeat: Repeat::Off,
+        current: None,
+        next: None,
+        failures: 0,
+    };
+    (decoder, shared, fetched)
+}
+
+/// Decodes until `count` tracks are in, or the queue has ended; the ids of
+/// the tracks in, in their order.
+fn decode_until(decoder: &mut Decoder, shared: &Shared, count: usize) -> Vec<String> {
+    while decoder.current.is_some() && shared.ring.lock().unwrap().segments.len() < count {
+        decoder.step();
+    }
+    let ring = shared.ring.lock().unwrap();
+    ring.segments
+        .iter()
+        .map(|segment| decoder.queue[segment.track].id.clone())
+        .collect()
+}
+
+#[test]
+fn a_changed_queue_plays_on_and_follows_its_new_order() {
+    let (mut decoder, shared, _) = decoder_of(&["a", "b", "c", "d"]);
+    decoder.open(0, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 3), ["a", "b", "c"]);
+    let heard = shared.ring.lock().unwrap().segments[0].data.len();
+    // b and c swap, d is taken out.
+    let queue = vec![
+        decoder.queue[0].clone(),
+        decoder.queue[2].clone(),
+        decoder.queue[1].clone(),
+    ];
+    decoder.handle(Command::Requeue(
+        queue,
+        vec![Some(0), Some(2), Some(1), None],
+    ));
+    assert_eq!(decode_until(&mut decoder, &shared, 4), ["a", "c", "b"]);
+    let ring = shared.ring.lock().unwrap();
+    assert_eq!(ring.segments[0].data.len(), heard, "a went on as it was");
+    assert_eq!(ring.requeues, 1);
+}
+
+#[test]
+fn a_queue_without_the_track_heard_plays_the_first_after_it_that_stayed() {
+    let (mut decoder, shared, _) = decoder_of(&["a", "b", "c", "d"]);
+    decoder.open(1, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 2), ["b", "c"]);
+    // b, heard, and c go.
+    let queue = vec![decoder.queue[0].clone(), decoder.queue[3].clone()];
+    decoder.handle(Command::Requeue(queue, vec![Some(0), None, None, Some(1)]));
+    assert_eq!(decode_until(&mut decoder, &shared, 1), ["d"]);
+    decoder.handle(Command::Jump(0));
+    assert_eq!(decode_until(&mut decoder, &shared, 1), ["a"]);
+    // With none after it, it stops.
+    let queue = vec![decoder.queue[1].clone()];
+    decoder.handle(Command::Requeue(queue, vec![None, Some(0)]));
+    assert_eq!(decode_until(&mut decoder, &shared, 1), ["d"]);
+    let queue = Vec::new();
+    decoder.handle(Command::Requeue(queue, vec![None]));
+    assert!(decoder.current.is_none());
+    assert!(shared.ring.lock().unwrap().idle);
+}
+
+#[test]
+fn repeat_plays_a_track_again_or_the_queue_round() {
+    let (mut decoder, shared, fetched) = decoder_of(&["a", "b"]);
+    decoder.repeat = Repeat::One;
+    decoder.open(0, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 3), ["a", "a", "a"]);
+    assert_eq!(*fetched.lock().unwrap(), ["a"], "read again, not fetched");
+
+    let (mut decoder, shared, _) = decoder_of(&["a", "b"]);
+    decoder.repeat = Repeat::All;
+    decoder.open(1, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 3), ["b", "a", "b"]);
+
+    // Turned on while the next track is in already, it takes its place.
+    let (mut decoder, shared, _) = decoder_of(&["a", "b"]);
+    decoder.open(0, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 2), ["a", "b"]);
+    decoder.handle(Command::Repeat(Repeat::One));
+    assert_eq!(decode_until(&mut decoder, &shared, 2), ["a", "a"]);
+}
+
+#[test]
+fn a_repeating_queue_whose_tracks_all_fail_stops() {
+    let (mut decoder, shared, _) = decoder_of(&["a", "b", "c"]);
+    let tries = Arc::new(AtomicUsize::new(0));
+    decoder.fetch = Box::new({
+        let tries = tries.clone();
+        move |_: &Track| {
+            tries.fetch_add(1, Relaxed);
+            Err("Gone.".into())
+        }
+    });
+    decoder.repeat = Repeat::All;
+    decoder.open(1, 0.0, None);
+    assert_eq!(tries.load(Relaxed), 3);
+    assert!(shared.ring.lock().unwrap().idle);
 }
 
 /// The loopback card, which one test at a time plays on.

@@ -61,6 +61,8 @@ pub(crate) struct Ring {
     pub quit: bool,
     /// Bumped to make the output thread find the device again.
     pub generation: u64,
+    /// How many of the queue's changes the decoder has made.
+    pub requeues: u64,
 }
 
 impl Ring {

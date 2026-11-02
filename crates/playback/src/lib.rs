@@ -78,6 +78,18 @@ pub enum Quality {
     Lossless,
 }
 
+/// What plays once a track ends.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    /// The next track, until the queue ends.
+    #[default]
+    Off,
+    /// The next track, and the first after the last.
+    All,
+    /// The same track again.
+    One,
+}
+
 /// Which ReplayGain value evens out the volume, if any.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Leveling {
@@ -146,6 +158,9 @@ pub struct Status {
     /// A track that couldn't play, by its place in the queue, and why; while
     /// the one played in its place is heard.
     pub skipped: Option<(usize, String)>,
+    /// How many of the queue's changes the player has made. Until it has
+    /// made all that were asked, `index` counts in the queue as it was.
+    pub requeues: u64,
 }
 
 /// Fetches a track: starts its download and hands back the reading side.
@@ -153,9 +168,13 @@ pub type Fetch = Box<dyn FnMut(&Track) -> Result<Download, String> + Send>;
 
 enum Command {
     Play(Vec<Track>, usize, f64),
+    /// A changed queue, and where each track of the one before went.
+    Requeue(Vec<Track>, Vec<Option<usize>>),
+    Jump(usize),
     Next,
     Previous,
     Seek(f64),
+    Repeat(Repeat),
     Leveling(Leveling),
     Dsp(Dsp),
     /// Opens what plays again where it is, for another device.
@@ -205,8 +224,10 @@ impl Player {
             queue: Vec::new(),
             leveling: Leveling::Off,
             dsp: Dsp::default(),
+            repeat: Repeat::Off,
             current: None,
             next: None,
+            failures: 0,
         };
         std::thread::Builder::new()
             .name("audio decoder".into())
@@ -239,6 +260,20 @@ impl Player {
         self.send(Command::Play(queue, start, seconds));
     }
 
+    /// Puts `queue` in place of the one playing, where `moved` gives each
+    /// track of the one before its place in `queue`, or none if it was taken
+    /// out. What plays goes on, followed by what follows it in `queue`.
+    pub fn requeue(&self, queue: Vec<Track>, moved: Vec<Option<usize>>) {
+        self.send(Command::Requeue(queue, moved));
+    }
+
+    /// Plays the queue's `index`th track from its start.
+    pub fn jump(&self, index: usize) {
+        self.shared.ring.lock().unwrap().paused = false;
+        self.shared.changed.notify_all();
+        self.send(Command::Jump(index));
+    }
+
     pub fn next(&self) {
         self.send(Command::Next);
     }
@@ -262,6 +297,10 @@ impl Player {
 
     pub fn set_leveling(&self, leveling: Leveling) {
         self.send(Command::Leveling(leveling));
+    }
+
+    pub fn set_repeat(&self, repeat: Repeat) {
+        self.send(Command::Repeat(repeat));
     }
 
     /// Has what plays go through `dsp` from where it is.
@@ -316,6 +355,7 @@ impl Player {
             path,
             problem: ring.problem.clone(),
             skipped: ring.shown_skip().cloned(),
+            requeues: ring.requeues,
         }
     }
 }
@@ -348,9 +388,12 @@ struct Decoder {
     queue: Vec<Track>,
     leveling: Leveling,
     dsp: Dsp,
+    repeat: Repeat,
     current: Option<Current>,
     /// The next track, fetched ahead once the current one has all arrived.
     next: Option<(usize, Result<Download, String>)>,
+    /// Tracks that couldn't play, one after the other.
+    failures: usize,
 }
 
 impl Decoder {
@@ -399,9 +442,11 @@ impl Decoder {
                 self.next = None;
                 self.start(start, seconds);
             }
-            Command::Next => match heard {
-                Some((index, _)) if index + 1 < self.queue.len() => self.start(index + 1, 0.0),
-                _ => self.stop(),
+            Command::Requeue(queue, moved) => self.requeue(queue, &moved),
+            Command::Jump(index) => self.start(index, 0.0),
+            Command::Next => match heard.and_then(|(index, _)| self.following(index)) {
+                Some(next) => self.start(next, 0.0),
+                None => self.stop(),
             },
             Command::Previous => match heard {
                 Some((index, position)) if position > RESTART_AFTER || index == 0 => {
@@ -414,6 +459,10 @@ impl Decoder {
                 if let Some((index, _)) = heard {
                     self.start(index, seconds.max(0.0));
                 }
+            }
+            Command::Repeat(repeat) => {
+                self.repeat = repeat;
+                self.rechain();
             }
             Command::Leveling(leveling) => {
                 self.leveling = leveling;
@@ -439,6 +488,111 @@ impl Decoder {
         true
     }
 
+    /// The track after the `index`th, as Next goes: the queue's next, or its
+    /// first after its last when all of it repeats.
+    fn following(&self, index: usize) -> Option<usize> {
+        if index + 1 < self.queue.len() {
+            Some(index + 1)
+        } else {
+            (self.repeat == Repeat::All && !self.queue.is_empty()).then_some(0)
+        }
+    }
+
+    /// The track that plays once the `index`th ends.
+    fn after(&self, index: usize) -> Option<usize> {
+        match self.repeat {
+            Repeat::One => Some(index),
+            _ => self.following(index),
+        }
+    }
+
+    /// Takes up `queue` in place of the one before, where `moved` gives each
+    /// track of that one its place in `queue`.
+    fn requeue(&mut self, queue: Vec<Track>, moved: &[Option<usize>]) {
+        let place = |index: usize| moved.get(index).copied().flatten();
+        self.queue = queue;
+        self.current = self.current.take().and_then(|mut current| {
+            current.index = place(current.index)?;
+            Some(current)
+        });
+        self.next = self
+            .next
+            .take()
+            .and_then(|(index, download)| Some((place(index)?, download)));
+        let heard_gone = {
+            let mut ring = self.shared.ring.lock().unwrap();
+            ring.requeues += 1;
+            ring.loading = ring
+                .loading
+                .and_then(|(index, seconds)| Some((place(index)?, seconds)));
+            ring.skipped = ring
+                .skipped
+                .take()
+                .and_then(|(index, why)| Some((place(index)?, why)));
+            let heard_gone = ring
+                .segments
+                .front()
+                .map(|front| front.track)
+                .filter(|&track| place(track).is_none());
+            for segment in &mut ring.segments {
+                segment.track = place(segment.track).unwrap_or(usize::MAX);
+            }
+            heard_gone
+        };
+        // The track heard was taken out as the app asked; the first after it
+        // that stayed plays in its place.
+        if let Some(heard) = heard_gone {
+            match (heard..moved.len()).find_map(place) {
+                Some(index) => self.start(index, 0.0),
+                None => self.stop(),
+            }
+            return;
+        }
+        self.rechain();
+    }
+
+    /// Keeps what has been decoded as far as it follows on in the queue, and
+    /// goes on from there.
+    fn rechain(&mut self) {
+        let (last, last_ended, loading) = {
+            let mut ring = self.shared.ring.lock().unwrap();
+            let mut kept = 0;
+            let mut last: Option<usize> = None;
+            for segment in &ring.segments {
+                let follows = match last {
+                    None => segment.track < self.queue.len(),
+                    Some(last) => self.after(last) == Some(segment.track),
+                };
+                if !follows {
+                    break;
+                }
+                last = Some(segment.track);
+                kept += 1;
+            }
+            ring.segments.truncate(kept);
+            let last_ended = ring.segments.back().is_some_and(|back| back.ended);
+            (last, last_ended, ring.loading)
+        };
+        match last {
+            // The one kept last is still being decoded, so what follows it
+            // comes as it ends.
+            Some(_) if !last_ended => {}
+            Some(last) => {
+                self.current = None;
+                let next = self.after(last).unwrap_or(self.queue.len());
+                self.open(next, 0.0, None);
+            }
+            // Nothing decoded yet, as when a command broke into opening it.
+            None => {
+                if let Some((index, seconds)) =
+                    loading.filter(|(index, _)| *index < self.queue.len())
+                {
+                    self.start(index, seconds);
+                }
+            }
+        }
+    }
+
     fn stop(&mut self) {
         self.current = None;
         self.next = None;
@@ -454,6 +608,8 @@ impl Decoder {
     /// what has been downloaded, with the leveling, processing and device as
     /// they are now.
     fn start(&mut self, index: usize, seconds: f64) {
+        // A track asked for counts the failures afresh.
+        self.failures = 0;
         {
             let mut ring = self.shared.ring.lock().unwrap();
             ring.segments.clear();
@@ -517,6 +673,7 @@ impl Decoder {
         });
         match opened {
             Ok((decoding, download)) => {
+                self.failures = 0;
                 self.push(segment(index, &decoding, seconds));
                 self.current = Some(Current {
                     index,
@@ -534,7 +691,13 @@ impl Decoder {
     fn skip(&mut self, index: usize, problem: String) {
         self.shared.ring.lock().unwrap().skipped = Some((index, problem));
         self.current = None;
-        self.open(index + 1, 0.0, None);
+        self.failures += 1;
+        // Round a repeating queue whose every track fails, it would go on
+        // for good.
+        let next = self
+            .following(index)
+            .filter(|_| self.failures < self.queue.len());
+        self.open(next.unwrap_or(self.queue.len()), 0.0, None);
     }
 
     /// The formats the device takes, once it has been found.
@@ -588,21 +751,35 @@ impl Decoder {
         match result {
             Ok(true) => {}
             Ok(false) => {
-                self.current = None;
-                self.open(index + 1, 0.0, None);
+                let next = self.after(index);
+                // A track played again is read again from what has arrived.
+                let again = self
+                    .current
+                    .take()
+                    .filter(|_| next == Some(index))
+                    .and_then(|current| current.download.reader().ok());
+                self.open(next.unwrap_or(self.queue.len()), 0.0, again);
             }
             // A command is waiting and is handled next.
             Err(Stop::Interrupted) => current.decoding.resume(),
             Err(Stop::Failed(problem)) => self.skip(index, problem),
         }
         // The next track starts downloading once this one is in, so a gap
-        // in the network doesn't become one in the music.
+        // in the network doesn't become one in the music. One played again
+        // needs none.
         let ahead = self
             .current
             .as_ref()
-            .filter(|current| self.next.is_none() && current.download.complete())
-            .map(|current| current.index + 1)
-            .filter(|&next| next < self.queue.len());
+            .filter(|current| current.download.complete())
+            .and_then(|current| {
+                self.after(current.index)
+                    .filter(|&next| next != current.index)
+            })
+            .filter(|&next| {
+                self.next
+                    .as_ref()
+                    .is_none_or(|(fetched, _)| *fetched != next)
+            });
         // Tried once: a failure shows when the track's turn comes.
         if let Some(next) = ahead {
             self.next = Some((next, (self.fetch)(&self.queue[next])));
