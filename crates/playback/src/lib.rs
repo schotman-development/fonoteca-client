@@ -125,6 +125,9 @@ pub struct Status {
     pub path: Vec<Step>,
     pub bit_perfect: bool,
     pub problem: Option<String>,
+    /// A track that couldn't play, by its place in the queue, and why; while
+    /// the one played in its place is heard.
+    pub skipped: Option<(usize, String)>,
 }
 
 /// Fetches a track: starts its download and hands back the reading side.
@@ -282,6 +285,7 @@ impl Player {
             bit_perfect: open.is_some() && path.iter().all(|step| step.lossless),
             path,
             problem: ring.problem.clone(),
+            skipped: ring.shown_skip().cloned(),
         }
     }
 }
@@ -415,6 +419,7 @@ impl Decoder {
             let mut ring = self.shared.ring.lock().unwrap();
             ring.segments.clear();
             ring.problem = None;
+            ring.skipped = None;
             ring.loading = Some((index, seconds));
         }
         let again = self
@@ -435,6 +440,16 @@ impl Decoder {
             self.shared.changed.notify_all();
             return;
         };
+        // Without a device nothing plays, so nothing is fetched; the
+        // problem it found says why.
+        let supported = match self.supported() {
+            Ok(supported) => supported,
+            Err(Stop::Interrupted) => return,
+            Err(Stop::Failed(_)) => {
+                self.stop();
+                return;
+            }
+        };
         let download = match (download, self.next.take()) {
             (Some(download), next) => {
                 self.next = next;
@@ -447,7 +462,6 @@ impl Decoder {
             let spare = download
                 .reader()
                 .map_err(|e| Stop::Failed(format!("The track couldn't be read back: {e}")))?;
-            let supported = self.supported()?;
             let pending = self.pending.clone();
             let mut decoding =
                 Decoding::open(download, &track, self.leveling, &supported, move || {
@@ -475,7 +489,7 @@ impl Decoder {
 
     /// Reports why the `index`th track can't play and goes on with the next.
     fn skip(&mut self, index: usize, problem: String) {
-        self.shared.ring.lock().unwrap().problem = Some(problem);
+        self.shared.ring.lock().unwrap().skipped = Some((index, problem));
         self.current = None;
         self.open(index + 1, 0.0, None);
     }

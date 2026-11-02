@@ -37,20 +37,9 @@ type Shared = Rc<RefCell<Playing>>;
 
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     let playing = Shared::default();
-    let saved = prefs::load();
-    let mut names = vec![SharedString::from("System default")];
-    let mut devices = vec![None];
-    for (id, name) in playback::devices() {
-        let pcm = id.strip_prefix("alsa:").unwrap_or(&id);
-        names.push(format!("{name} ({pcm})").into());
-        devices.push(Some(id));
-    }
-    let chosen = devices.iter().position(|id| *id == saved.output_device);
-    ui.set_output_devices(ModelRc::new(VecModel::from(names)));
-    ui.set_output_device(chosen.unwrap_or(0) as i32);
-    ui.set_leveling(saved.leveling.clamp(0, 2));
+    ui.set_leveling(prefs::load().leveling.clamp(0, 2));
     ui.set_can_play(true);
-    playing.borrow_mut().devices = devices;
+    list_devices(ui, &playing);
 
     ui.on_play_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
@@ -85,6 +74,10 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             }
         }
     });
+    ui.on_list_devices({
+        let (weak, playing) = (ui.as_weak(), playing.clone());
+        move || list_devices(&weak.unwrap(), &playing)
+    });
     ui.on_choose_output({
         let playing = playing.clone();
         move |index| {
@@ -111,6 +104,32 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     });
 }
 
+/// Puts the sound devices there are now in the settings, with the one chosen
+/// selected. Looking for them can take a moment, so it happens off the event
+/// loop.
+fn list_devices(ui: &AppWindow, playing: &Shared) {
+    let found = tokio::task::spawn_blocking(playback::devices);
+    let (weak, playing) = (ui.as_weak(), playing.clone());
+    slint::spawn_local(async move {
+        let Ok(found) = found.await else { return };
+        let Some(ui) = weak.upgrade() else { return };
+        let mut names = vec![SharedString::from("System default")];
+        let mut devices = vec![None];
+        for (id, name) in found {
+            let pcm = id.strip_prefix("alsa:").unwrap_or(&id);
+            names.push(format!("{name} ({pcm})").into());
+            devices.push(Some(id));
+        }
+        let chosen = devices
+            .iter()
+            .position(|id| *id == prefs::load().output_device);
+        ui.set_output_devices(ModelRc::new(VecModel::from(names)));
+        ui.set_output_device(chosen.unwrap_or(0) as i32);
+        playing.borrow_mut().devices = devices;
+    })
+    .expect("the event loop is running");
+}
+
 /// Plays the page's songs from the `start`th, in place of what played.
 fn play(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, start: usize) {
     let songs = browse::songs(browser);
@@ -118,11 +137,7 @@ fn play(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, start: usize
         return;
     };
     let mut p = playing.borrow_mut();
-    let device = p
-        .devices
-        .get(ui.get_output_device() as usize)
-        .cloned()
-        .flatten();
+    let device = prefs::load().output_device;
     // Each queue gets a player with the client signed in now. The last one
     // lets the device go first, since a device played on directly can only
     // be open once.
@@ -159,7 +174,15 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     ui.set_playing(true);
     ui.set_playing_paused(status.paused || status.ended);
     ui.set_playing_position(status.position as f32);
-    ui.set_playing_problem(status.problem.unwrap_or_default().into());
+    let problem = match (status.problem, &status.skipped) {
+        (Some(problem), _) => problem,
+        (None, Some((index, why))) => match p.queue.get(*index) {
+            Some(song) => format!("Skipped {}: {why}", song.title),
+            None => why.clone(),
+        },
+        (None, None) => String::new(),
+    };
+    ui.set_playing_problem(problem.into());
     ui.set_playing_bit_perfect(status.bit_perfect);
     // The device step comes once it is open in the track's format; until
     // then, every step can be lossless without the whole path being.

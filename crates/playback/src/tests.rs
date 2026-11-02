@@ -311,6 +311,58 @@ fn a_download_still_arriving_is_waited_for() {
     assert_eq!(ints(&out, 2), samples);
 }
 
+#[test]
+fn nothing_is_fetched_without_a_device() {
+    let shared = Arc::new(Shared::default());
+    shared.ring.lock().unwrap().problem = Some("There is no sound device to play on.".into());
+    let fetched = Arc::new(AtomicUsize::new(0));
+    let mut decoder = Decoder {
+        shared: shared.clone(),
+        pending: Arc::default(),
+        fetch: Box::new({
+            let fetched = fetched.clone();
+            move |_: &Track| {
+                fetched.fetch_add(1, Relaxed);
+                Err("Not here.".into())
+            }
+        }),
+        queue: vec![track(Gain::default()); 3],
+        leveling: Leveling::Off,
+        current: None,
+        next: None,
+    };
+    decoder.open(0, 0.0, None);
+    assert_eq!(fetched.load(Relaxed), 0);
+    let ring = shared.ring.lock().unwrap();
+    assert!(ring.idle);
+    assert_eq!(ring.skipped, None);
+}
+
+#[test]
+fn a_skipped_track_is_told_of_while_the_one_in_its_place_plays() {
+    let mut ring = output::Ring {
+        skipped: Some((1, "Gone.".into())),
+        ..Default::default()
+    };
+    assert!(ring.shown_skip().is_some(), "before anything plays");
+    for (track, shown) in [(2, true), (3, false)] {
+        ring.segments = VecDeque::from([Segment {
+            track,
+            format: Format {
+                rate: 44_100,
+                channels: 2,
+                sample: I16,
+            },
+            data: VecDeque::new(),
+            ended: false,
+            start: 0,
+            played: 0,
+            path: Vec::new(),
+        }]);
+        assert_eq!(ring.shown_skip().is_some(), shown, "track {track}");
+    }
+}
+
 /// The loopback card, which one test at a time plays on.
 static LOOPBACK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

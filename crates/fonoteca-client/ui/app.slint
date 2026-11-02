@@ -848,6 +848,8 @@ export component AppWindow inherits Window {
     // A sound device or volume leveling chosen in the settings, by its
     // index in the list.
     callback choose-output(index: int);
+    // Looks for the sound devices there are now, such as one just plugged in.
+    callback list-devices();
     callback choose-leveling(index: int);
     callback add-selection-to-playlist(id: string);
     // Playlist folders: a new one with this name in the folder on screen;
@@ -1755,6 +1757,7 @@ export component AppWindow inherits Window {
                     if root.page == Page.settings: VerticalLayout {
                         max-width: 480px;
                         spacing: 12px;
+                        init => { root.list-devices(); }
                         Heading { text: "Settings"; }
                         SectionHeading { text: "Library"; }
                         if !root.may-administer: Note {

@@ -46,6 +46,9 @@ pub(crate) struct Ring {
     /// The format the device is open in.
     pub open: Option<Format>,
     pub problem: Option<String>,
+    /// The last track that couldn't play, by its place in the queue, and
+    /// why.
+    pub skipped: Option<(usize, String)>,
     /// Nothing more is coming, so the device can be let go once it has
     /// played what is here.
     pub idle: bool,
@@ -79,6 +82,15 @@ impl Ring {
             }
             None => self.loading,
         }
+    }
+
+    /// The track that couldn't play and why, while the one played in its
+    /// place is heard, or nothing is.
+    pub fn shown_skip(&self) -> Option<&(usize, String)> {
+        let heard = self.heard().map(|(index, _)| index);
+        self.skipped
+            .as_ref()
+            .filter(|(track, _)| heard.is_none_or(|heard| heard <= track + 1))
     }
 
     /// The format the device should be open in: that of the first audio
@@ -186,8 +198,13 @@ pub(crate) fn run(shared: Arc<Shared>) {
             drop(stream.take());
             device = find(&host, wanted.as_deref());
             let mut ring = shared.ring.lock().unwrap();
-            ring.device = device.as_ref().map(describe);
-            if device.is_none() {
+            // One that takes no format at all, such as ALSA's default on a
+            // machine without a sound card, is none.
+            ring.device = device
+                .as_ref()
+                .map(describe)
+                .filter(|device| !device.supported.is_empty());
+            if ring.device.is_none() {
                 ring.problem = Some("There is no sound device to play on.".into());
             }
             shared.changed.notify_all();
