@@ -96,6 +96,8 @@ export struct Track {
     work-duration: string,
     work-years: string,
     work-performed: string,
+    // How many tracks the work spans, for its row to queue them all.
+    work-tracks: int,
     // A movement, under its work's row.
     part: bool,
     // A work's only track on the album, a row as strong as a work's.
@@ -890,10 +892,10 @@ export component AppWindow inherits Window {
     callback seek(seconds: float);
     callback toggle-shuffle();
     callback cycle-repeat();
-    // Puts the `row`th track of the page in the queue, to play next or at
-    // its end; the songs of an album's or a playlist's link, to play now,
+    // Puts `count` tracks of the page from the `row`th in the queue, to play
+    // next or at its end; the songs of an album's or a playlist's link, to play now,
     // next or at the end; or the songs of the album or playlist on screen.
-    callback queue-tracks(row: int, next: bool);
+    callback queue-tracks(row: int, count: int, next: bool);
     callback queue-link(link: string, how: string);
     callback queue-page(next: bool);
     // The queue on the now playing page, by its rows there: the first is
@@ -1627,7 +1629,10 @@ export component AppWindow inherits Window {
                                 performed: track.work-performed;
                                 lovable: false;
                                 strong: true;
+                                playable: root.can-play;
                                 open(link) => { root.open(link); }
+                                play => { root.play-tracks(row); }
+                                queue(next) => { root.queue-tracks(row, track.work-tracks, next); }
                             }
                             TrackRow {
                                 title: track.title;
@@ -1645,7 +1650,7 @@ export component AppWindow inherits Window {
                                 playable: root.can-play;
                                 open(link) => { root.open(link); }
                                 play => { root.play-tracks(row); }
-                                queue(next) => { root.queue-tracks(row, next); }
+                                queue(next) => { root.queue-tracks(row, 1, next); }
                                 add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
                                 remove => { root.remove-from-playlist(row); }
                                 toggle-love => { root.toggle-love(row); }
@@ -1773,7 +1778,7 @@ export component AppWindow inherits Window {
                             playable: root.can-play && root.page != Page.compositions;
                             open(link) => { root.open(link); }
                             play => { root.play-tracks(row); }
-                            queue(next) => { root.queue-tracks(row, next); }
+                            queue(next) => { root.queue-tracks(row, 1, next); }
                             toggle-love => { root.toggle-line-love(row); }
                             select(range) => { root.select-line(row, range); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }

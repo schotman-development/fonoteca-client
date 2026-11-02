@@ -2282,6 +2282,9 @@ mod tests {
                     "17:09"
                 )
             );
+            // The work's row queues the movements it heads, and no other row does.
+            let work_tracks: Vec<i32> = tracks.iter().map(|track| track.work_tracks).collect();
+            assert_eq!(work_tracks, [2, 0, 0, 0, 0, 2, 0]);
             assert_eq!(row(0), ("I. Allegro con brio", to(&[]), 0, true, false));
             assert_eq!(
                 performance(0),

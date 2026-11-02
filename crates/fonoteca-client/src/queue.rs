@@ -163,6 +163,12 @@ impl Queue {
     }
 }
 
+/// The `count` songs from the `start`th, as a work's row queues its
+/// movements.
+pub fn run_from(songs: Vec<Child>, start: usize, count: usize) -> Vec<Child> {
+    songs.into_iter().skip(start).take(count).collect()
+}
+
 /// SplitMix64: a well-spread run of numbers from one seed, enough to shuffle
 /// songs.
 struct Random(u64);
@@ -207,6 +213,16 @@ mod tests {
         assert_eq!(ids(&q), ["a", "d", "a", "c"]);
         assert_eq!(q.keep_only(2), [None, None, Some(0), None]);
         assert_eq!(ids(&q), ["a"]);
+    }
+
+    #[test]
+    fn a_run_is_the_songs_from_a_row_and_stops_at_the_last() {
+        let songs: Vec<Child> = ["a", "b", "c", "d", "e"].map(song).to_vec();
+        let ids = |songs: Vec<Child>| songs.into_iter().map(|song| song.id).collect::<Vec<_>>();
+        assert_eq!(ids(run_from(songs.clone(), 1, 3)), ["b", "c", "d"]);
+        assert_eq!(ids(run_from(songs.clone(), 3, 4)), ["d", "e"]);
+        assert_eq!(ids(run_from(songs.clone(), 2, 1)), ["c"]);
+        assert!(run_from(songs, 5, 2).is_empty());
     }
 
     #[test]

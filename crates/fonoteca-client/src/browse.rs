@@ -2951,6 +2951,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
                         work_duration: work_duration.into(),
                         work_years: work_years.into(),
                         work_performed: work_performed.into(),
+                        work_tracks: if work.is_empty() { 0 } else { run.len() as i32 },
                         part: parts,
                         alone,
                         ..Track::default()

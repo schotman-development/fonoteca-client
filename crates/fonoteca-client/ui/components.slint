@@ -940,6 +940,11 @@ export component TrackRow inherits Pressable {
     // Puts its song in the queue, to play next or at the end.
     callback queue(next: bool);
     label: self.title;
+    clicked => {
+        if root.playable {
+            root.play();
+        }
+    }
 
     Rectangle {
         border-radius: Theme.radius;

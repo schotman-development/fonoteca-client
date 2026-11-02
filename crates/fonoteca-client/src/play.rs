@@ -17,7 +17,7 @@ use opensubsonic::{Child, Client};
 use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::queue::{Moved, Queue};
+use crate::queue::{Moved, Queue, run_from};
 use crate::{AppWindow, Name, PathStep, QueueLine, browse, prefs, sound};
 
 /// The settings' volume leveling entries, in their order.
@@ -207,13 +207,11 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
 fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     ui.on_queue_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
-        move |row, next| {
+        move |row, count, next| {
             let ui = weak.unwrap();
             let (songs, start) = browse::songs(&browser, ui.get_page(), row as usize);
-            let Some(song) = songs.into_iter().nth(start) else {
-                return;
-            };
-            enqueue(&ui, &browser, &playing, vec![song], next);
+            let songs = run_from(songs, start, count as usize);
+            enqueue(&ui, &browser, &playing, songs, next);
         }
     });
     ui.on_queue_page({
