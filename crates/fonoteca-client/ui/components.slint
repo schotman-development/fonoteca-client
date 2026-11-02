@@ -2735,9 +2735,12 @@ export component NowPlaying inherits VerticalLayout {
 
     if root.narrow: VerticalLayout {
         spacing: 16px;
-        Artwork {
-            size: min(root.available, 360px);
-            source: root.cover;
+        HorizontalLayout {
+            alignment: center;
+            Artwork {
+                size: min(root.available, 360px);
+                source: root.cover;
+            }
         }
         NowPlayingDetails {
             title: root.title;
@@ -2751,13 +2754,14 @@ export component NowPlaying inherits VerticalLayout {
     }
     if !root.narrow: HorizontalLayout {
         spacing: 32px;
-        alignment: start;
+        alignment: center;
         Artwork {
             size: min(root.available * 0.45, 400px);
             source: root.cover;
         }
+        // A fixed width, so the cover sits where it does whatever the title.
         NowPlayingDetails {
-            horizontal-stretch: 1;
+            preferred-width: 480px;
             title: root.title;
             names: root.names;
             album: root.album;
