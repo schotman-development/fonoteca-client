@@ -169,6 +169,35 @@ pub fn run_from(songs: Vec<Child>, start: usize, count: usize) -> Vec<Child> {
     songs.into_iter().skip(start).take(count).collect()
 }
 
+/// `songs` in an order `seed` picks.
+fn shuffled(songs: Vec<Child>, seed: u64) -> Vec<Child> {
+    let mut queue = Queue::new(songs);
+    queue.shuffle(None, seed);
+    queue.songs().cloned().collect()
+}
+
+/// What to do with the songs of a page for one of its menu's words: "next",
+/// "queue", "shuffle-now", "shuffle-next" or "shuffle-last".
+pub enum Plan {
+    /// Play them in a random order, the queue's shuffle on.
+    PlayShuffled(Vec<Child>),
+    /// Put them in after the song playing, or at the end.
+    Enqueue(Vec<Child>, bool),
+}
+
+/// An empty queue has no order to put shuffled songs into: they play as
+/// "shuffle-now" does, so that turning the shuffle off restores their order.
+pub fn plan(how: &str, songs: Vec<Child>, queue_is_empty: bool, seed: u64) -> Plan {
+    match how {
+        "shuffle-now" => Plan::PlayShuffled(songs),
+        "shuffle-next" | "shuffle-last" if queue_is_empty => Plan::PlayShuffled(songs),
+        "shuffle-next" | "shuffle-last" => {
+            Plan::Enqueue(shuffled(songs, seed), how == "shuffle-next")
+        }
+        _ => Plan::Enqueue(songs, how == "next"),
+    }
+}
+
 /// SplitMix64: a well-spread run of numbers from one seed, enough to shuffle
 /// songs.
 struct Random(u64);
@@ -234,6 +263,57 @@ mod tests {
         };
         let orders: std::collections::HashSet<String> = (0..5).map(order).collect();
         assert!(orders.len() > 3, "{orders:?}");
+    }
+
+    fn ids_of(songs: &[Child]) -> Vec<String> {
+        songs.iter().map(|song| song.id.clone()).collect()
+    }
+
+    #[test]
+    fn shuffling_next_or_last_into_an_empty_queue_plays_them_as_shuffle_now_does() {
+        let songs: Vec<Child> = ["a", "b", "c", "d", "e", "f"].map(song).to_vec();
+        for how in ["shuffle-now", "shuffle-next", "shuffle-last"] {
+            match plan(how, songs.clone(), true, 9) {
+                // In their own order: the queue shuffles them, so the shuffle is on.
+                Plan::PlayShuffled(played) => assert_eq!(ids_of(&played), ids_of(&songs), "{how}"),
+                Plan::Enqueue(..) => panic!("{how} queued into an empty queue"),
+            }
+        }
+    }
+
+    #[test]
+    fn shuffling_next_or_last_into_a_queue_puts_them_in_at_random() {
+        let songs: Vec<Child> = ["a", "b", "c", "d", "e", "f"].map(song).to_vec();
+        for (how, next) in [("shuffle-next", true), ("shuffle-last", false)] {
+            let Plan::Enqueue(added, put_next) = plan(how, songs.clone(), false, 9) else {
+                panic!("{how} didn't queue into a queue");
+            };
+            assert_eq!(put_next, next);
+            assert_ne!(ids_of(&added), ids_of(&songs), "{how}");
+            let mut sorted = ids_of(&added);
+            sorted.sort();
+            assert_eq!(sorted, ids_of(&songs));
+        }
+        let Plan::Enqueue(added, next) = plan("queue", songs.clone(), false, 9) else {
+            panic!("queue didn't queue");
+        };
+        assert_eq!((ids_of(&added), next), (ids_of(&songs), false));
+        let Plan::Enqueue(_, next) = plan("next", songs, false, 9) else {
+            panic!("next didn't queue");
+        };
+        assert!(next);
+    }
+
+    #[test]
+    fn shuffled_songs_keep_every_song_in_an_order_the_seed_picks() {
+        let songs: Vec<Child> = ["a", "b", "c", "d", "e", "f", "g", "h"].map(song).to_vec();
+        let ids = |songs: &[Child]| songs.iter().map(|song| song.id.clone()).collect::<Vec<_>>();
+        let mixed = shuffled(songs.clone(), 3);
+        assert_eq!(ids(&mixed), ids(&shuffled(songs.clone(), 3)));
+        assert_ne!(ids(&mixed), ids(&songs));
+        let mut sorted = ids(&mixed);
+        sorted.sort();
+        assert_eq!(sorted, ids(&songs));
     }
 
     #[test]

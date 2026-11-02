@@ -2,7 +2,7 @@
 // `link` names where it leads (such as "artist:<id>"), and the component hands
 // it to `open`.
 
-import { ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 
 export global Theme {
     // How much bigger the phone's or the desktop's text size setting makes
@@ -109,6 +109,7 @@ export global Icons {
     out property <string> pause: "M6.5 5h4v14h-4z M13.5 5h4v14h-4z";
     out property <string> previous: "M5.5 5v14 M19 5v14l-11-7z";
     out property <string> next: "M18.5 5v14 M5 5v14l11-7z";
+    out property <string> chevron: "M6 9l6 6 6-6";
     out property <string> more: "M3.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M10.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z M17.5 12a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0z";
 }
 
@@ -189,6 +190,7 @@ export component Pressable {
     in property <brush> ring-color: Theme.accent;
     out property <bool> hovered: root.enabled && touch.has-hover;
     out property <bool> focused: focus.has-focus;
+    out property <bool> pressed: touch.pressed;
     // Whether Shift was held on the press or key that clicked it, and
     // whether a finger made the last press.
     out property <bool> shift;
@@ -377,13 +379,14 @@ export component IconButton inherits Pressable {
     in property <bool> filled;
     in property <brush> color: Theme.text;
     in property <length> icon-size: 20px;
+    in property <brush> hover-color: Theme.hover;
 
     width: Screen.phone ? 44px : 32px;
     height: self.width;
 
     Rectangle {
         border-radius: self.height / 2;
-        background: root.hovered ? Theme.hover : transparent;
+        background: root.hovered ? root.hover-color : transparent;
     }
     Path {
         width: root.icon-size;
@@ -473,8 +476,13 @@ component MenuRow {
 export component MoreMenu {
     in-out property <[MenuEntry]> entries;
     in property <string> label: "More";
+    in property <string> icon: Icons.more;
+    in property <bool> filled: true;
     in property <brush> color: Theme.muted;
+    in property <brush> hover-color: Theme.hover;
     in property <brush> ring-color: Theme.accent;
+    out property <bool> hovered: button.hovered;
+    out property <bool> pressed: button.pressed;
     callback opening();
     callback activated(id: string, choice: string);
 
@@ -556,9 +564,10 @@ export component MoreMenu {
     button := IconButton {
         width: parent.width;
         height: parent.height;
-        icon: Icons.more;
-        filled: true;
+        icon: root.icon;
+        filled: root.filled;
         color: root.color;
+        hover-color: root.hover-color;
         ring-color: root.ring-color;
         label: root.label;
         accessible-expandable: true;
@@ -1925,6 +1934,117 @@ export component SelectionBar inherits Rectangle {
             color: Palette.accent-foreground;
             ring-color: Palette.accent-foreground;
             clicked => { root.clear(); }
+        }
+    }
+}
+
+// The Play button of an album's or a playlist's header, split in two joined
+// segments: Play itself, and a chevron opening a menu to play the songs next
+// or add them to the queue.
+export component PlayButton inherits HorizontalLayout {
+    in property <bool> enabled: true;
+    callback play();
+    // How to queue the songs: "next", "queue", "shuffle-now", "shuffle-next"
+    // or "shuffle-last".
+    callback queue(how: string);
+
+    property <length> bar-height: Screen.phone ? 44px : 32px;
+    property <length> outer-radius: Screen.phone ? root.bar-height / 2 : Theme.radius;
+    property <length> inner-radius: 2px;
+    property <brush> segment: root.enabled ? Theme.accent : Theme.accent.transparentize(50%);
+    // Lightens a segment under the pointer, more while pressed.
+    function shade(hovered: bool, pressed: bool) -> brush {
+        Palette.accent-foreground.transparentize(pressed ? 70% : hovered ? 85% : 100%)
+    }
+
+    spacing: 0;
+
+    Pressable {
+        enabled: root.enabled;
+        label: "Play";
+        height: root.bar-height;
+        clicked => { root.play(); }
+
+        Rectangle {
+            background: root.segment;
+            border-top-left-radius: root.outer-radius;
+            border-bottom-left-radius: root.outer-radius;
+            border-top-right-radius: root.inner-radius;
+            border-bottom-right-radius: root.inner-radius;
+        }
+        Rectangle {
+            background: root.shade(parent.hovered, parent.pressed);
+            border-top-left-radius: root.outer-radius;
+            border-bottom-left-radius: root.outer-radius;
+            border-top-right-radius: root.inner-radius;
+            border-bottom-right-radius: root.inner-radius;
+        }
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 6px;
+            alignment: center;
+            Path {
+                cross-axis-self-alignment: center;
+                width: 16px;
+                height: 16px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Icons.play;
+                fill: Palette.accent-foreground;
+            }
+            Text {
+                text: "Play";
+                font-size: Theme.body;
+                font-weight: 600;
+                color: Palette.accent-foreground;
+                vertical-alignment: center;
+            }
+        }
+    }
+    Rectangle {
+        width: 1px;
+        height: root.bar-height;
+
+        Rectangle {
+            y: 6px;
+            height: parent.height - 12px;
+            background: Palette.accent-foreground.transparentize(60%);
+        }
+    }
+    Rectangle {
+        width: Screen.phone ? 44px : 36px;
+        height: root.bar-height;
+        background: root.segment;
+        border-top-right-radius: root.outer-radius;
+        border-bottom-right-radius: root.outer-radius;
+        border-top-left-radius: root.inner-radius;
+        border-bottom-left-radius: root.inner-radius;
+
+        Rectangle {
+            background: root.shade(more.hovered, more.pressed);
+            border-top-right-radius: root.outer-radius;
+            border-bottom-right-radius: root.outer-radius;
+            border-top-left-radius: root.inner-radius;
+            border-bottom-left-radius: root.inner-radius;
+        }
+        more := MoreMenu {
+            x: 0;
+            width: parent.width;
+            height: parent.height;
+            label: "More ways to play";
+            icon: Icons.chevron;
+            filled: false;
+            color: Palette.accent-foreground;
+            hover-color: transparent;
+            entries: [
+                { id: "next", label: "Play next", icon: Icons.next },
+                { id: "queue", label: "Add to queue", icon: Icons.queue },
+                { id: "shuffle-now", label: "Shuffle now", icon: Icons.shuffle },
+                { id: "shuffle-next", label: "Shuffle next", icon: Icons.shuffle },
+                { id: "shuffle-last", label: "Shuffle last", icon: Icons.shuffle },
+            ];
+            activated(id, choice) => { root.queue(id); }
         }
     }
 }

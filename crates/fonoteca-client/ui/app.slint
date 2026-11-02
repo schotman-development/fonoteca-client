@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
@@ -894,10 +894,12 @@ export component AppWindow inherits Window {
     callback cycle-repeat();
     // Puts `count` tracks of the page from the `row`th in the queue, to play
     // next or at its end; the songs of an album's or a playlist's link, to play now,
-    // next or at the end; or the songs of the album or playlist on screen.
+    // next or at the end; or the songs of the album or playlist on screen,
+    // as `how` says: "next", "queue", or "shuffle-now", "shuffle-next" or
+    // "shuffle-last" for them in a random order.
     callback queue-tracks(row: int, count: int, next: bool);
     callback queue-link(link: string, how: string);
-    callback queue-page(next: bool);
+    callback queue-page(how: string);
     // The queue on the now playing page, by its rows there: the first is
     // the track playing.
     callback jump-to(row: int);
@@ -1517,21 +1519,16 @@ export component AppWindow inherits Window {
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
-                        if root.can-play && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0: Button {
-                            text: "Play";
-                            primary: true;
+                        if root.can-play && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0: PlayButton {
                             enabled: !Input.modal;
-                            clicked => { root.play-tracks(0); }
+                            play => { root.play-tracks(0); }
+                            queue(how) => { root.queue-page(how); }
                         }
                         // Any playlist can go in a folder, read-only too.
-                        if (root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0)) || (root.can-play && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0): MoreMenu {
-                            label: root.page == Page.album ? "Album" : "Playlist";
+                        if root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0): MoreMenu {
+                            label: "Playlist";
                             opening => {
                                 self.entries = [];
-                                if root.can-play && root.tracks.length > 0 {
-                                    self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
-                                    self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
-                                }
                                 if root.page == Page.playlist && root.playlist-editable {
                                     self.entries.push({ id: "rename", label: "Rename", icon: Icons.pencil });
                                 }
@@ -1543,9 +1540,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                             activated(id, choice) => {
-                                if id == "next" || id == "queue" {
-                                    root.queue-page(id == "next");
-                                } else if id == "move" {
+                                if id == "move" {
                                     root.move-playlist(choice);
                                 } else {
                                     root.ask(id == "rename" ? Asking.rename-playlist : Asking.delete-playlist);

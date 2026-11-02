@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayerBar, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -457,6 +457,10 @@ export component Workbench inherits Window {
                             names: root.long-text ? root.many : root.mara;
                             facts: "2021 · Folk · 9 tracks, 41 minutes";
                             open(link) => { root.event = "open " + link; }
+                            PlayButton {
+                                play => { root.event = "play"; }
+                                queue(how) => { root.event = how; }
+                            }
                             IconButton {
                                 icon: Icons.heart;
                                 filled: root.loved-album;

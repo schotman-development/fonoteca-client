@@ -17,7 +17,7 @@ use opensubsonic::{Child, Client};
 use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::queue::{Moved, Queue, run_from};
+use crate::queue::{Moved, Plan, Queue, plan, run_from};
 use crate::{AppWindow, Name, PathStep, QueueLine, browse, prefs, sound};
 
 /// The settings' volume leveling entries, in their order.
@@ -216,10 +216,14 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     });
     ui.on_queue_page({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
-        move |next| {
+        move |how| {
             let ui = weak.unwrap();
             let (songs, _) = browse::songs(&browser, ui.get_page(), 0);
-            enqueue(&ui, &browser, &playing, songs, next);
+            let queue_is_empty = playing.borrow().queue.is_empty();
+            match plan(&how, songs, queue_is_empty, seed()) {
+                Plan::PlayShuffled(songs) => play_shuffled(&ui, &browser, &playing, songs),
+                Plan::Enqueue(songs, next) => enqueue(&ui, &browser, &playing, songs, next),
+            }
         }
     });
     ui.on_queue_link({
@@ -350,6 +354,14 @@ fn play(
         start = 0;
     }
     begin(ui, browser, playing, queue, (start, 0.0), false);
+}
+
+/// Plays `songs` in a random order in place of what played, with the
+/// queue's shuffle on so that turning it off puts them back in order.
+fn play_shuffled(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, songs: Vec<Child>) {
+    let mut queue = Queue::new(songs);
+    queue.shuffle(None, seed());
+    begin(ui, browser, playing, queue, (0, 0.0), false);
 }
 
 /// Plays the queue saved on the server from where it left off, `paused` or
