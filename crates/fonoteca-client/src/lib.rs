@@ -1162,6 +1162,44 @@ mod tests {
         window.dispatch_event(WindowEvent::PointerReleased { position, button });
     }
 
+    /// Drags the left button, or a finger with `Input.finger` on, from
+    /// `from` along `path`: each step `ms` after the one before, to `dx`,
+    /// `dy` from where it went down. Lets go `rest` ms after the last.
+    async fn drag(
+        ui: &AppWindow,
+        from: slint::LogicalPosition,
+        path: &[(u64, f32, f32)],
+        rest: u64,
+    ) {
+        let (window, button) = (ui.window(), PointerEventButton::Left);
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position: from,
+            button,
+        });
+        let mut position = from;
+        for &(ms, dx, dy) in path {
+            idle(Duration::from_millis(ms)).await;
+            position = slint::LogicalPosition::new(from.x + dx, from.y + dy);
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+        }
+        idle(Duration::from_millis(rest)).await;
+        window.dispatch_event(WindowEvent::PointerReleased { position, button });
+    }
+
+    /// Waits for `value` to stop changing, and gives where it stopped.
+    async fn settled(value: impl Fn() -> f32) -> f32 {
+        let mut last = value();
+        for _ in 0..50 {
+            idle(Duration::from_millis(200)).await;
+            let now = value();
+            if now == last {
+                return now;
+            }
+            last = now;
+        }
+        panic!("still moving at {last}");
+    }
+
     fn middle(element: &ElementHandle) -> slint::LogicalPosition {
         let (at, size) = (element.absolute_position(), element.size());
         slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0)
@@ -2251,6 +2289,9 @@ mod tests {
             pull(margin, 100.0);
             idle(Duration::from_millis(200)).await;
             assert_eq!(LISTS.load(Relaxed), lists, "away from the top");
+            pull(margin, 300.0);
+            idle(Duration::from_millis(200)).await;
+            assert_eq!(LISTS.load(Relaxed), lists, "reaching the top on the way");
             scroll(100000.0);
             pull(middle(&page), 100.0);
             wait_for("the library anew", || {
@@ -2259,6 +2300,47 @@ mod tests {
             .await;
             assert_eq!(ui.get_page(), Page::Albums);
             assert!(ui.get_can_go_back() && !ui.get_can_go_forward());
+            // A finger's drag scrolls the page from its first touch on, the
+            // page following the finger, and glides on when let go while
+            // moving, as far as Android's lists do, but not once it rested.
+            // Slint holds each press 100ms to see where it goes: these drags
+            // go within it.
+            let heading = page
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::Text)
+                .match_predicate(|text| text.accessible_label().is_some_and(|l| l == "Albums"))
+                .find_first()
+                .unwrap();
+            let top = heading.absolute_position().y;
+            let scrolled = || top - heading.absolute_position().y;
+            let from = middle(&page);
+            drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -70.0), (0, 0.0, -120.0)], 100).await;
+            let followed = settled(scrolled).await;
+            assert!((followed - 120.0).abs() < 0.01, "followed to {followed}");
+            // One more sideways than up or down leaves a page no wider than
+            // the window.
+            drag(&ui, margin, &[(0, 12.0, -10.0), (0, 30.0, -20.0)], 100).await;
+            assert!((scrolled() - followed).abs() < 0.01, "the page stays put");
+            // At 2000px/s, 32px in a frame, the shortest a speed is measured
+            // over, Android glides 647px; Slint's Flickable glided 1000px.
+            drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -52.0)], 0).await;
+            let glided = settled(scrolled).await - 172.0;
+            assert!((glided - 647.4).abs() < 0.5, "glided {glided}px");
+            // A finger landing stops a glide. Lifting one leaves the window.
+            let let_go = scrolled() + 52.0;
+            drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -52.0)], 0).await;
+            ui.window().dispatch_event(WindowEvent::PointerExited);
+            idle(Duration::from_millis(100)).await;
+            drag(&ui, margin, &[], 0).await;
+            let stopped = settled(scrolled).await - let_go;
+            assert!(stopped > 0.0 && stopped < glided, "stopped after {stopped}px");
+            // Past 8000px/s, Android's top speed, it glides no further: at
+            // 12500px/s 7186px, where Slint's Flickable glided 39062px.
+            let let_go = scrolled() + 220.0;
+            drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -220.0)], 0).await;
+            let glided = settled(scrolled).await - let_go;
+            assert!((glided - 7186.4).abs() < 0.5, "glided {glided}px");
+            scroll(100000.0);
             hold(&ui, left, 50.0, 0).await;
             assert_eq!(ui.get_page(), Page::Albums, "not far enough");
             hold(&ui, left, 100.0, 0).await;
@@ -3104,6 +3186,24 @@ mod tests {
                 ]
             );
             assert!(ui.get_track_table_width() > width);
+            // A finger's drag more sideways than up or down pans a table
+            // wider than the page, as far as its edges.
+            let page = ui
+                .root_element()
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::Main)
+                .find_first()
+                .unwrap();
+            let first_title = cell(&ui, 0, 1)[0].0.clone();
+            let title_x = || button(&ui, &first_title).absolute_position().x;
+            let unpanned = title_x();
+            ui.global::<Input>().set_finger(true);
+            drag(&ui, middle(&page), &[(0, -20.0, 4.0), (0, -60.0, 6.0)], 100).await;
+            let panned = unpanned - title_x();
+            assert!((panned - 60.0).abs() < 0.01, "panned {panned}px");
+            drag(&ui, middle(&page), &[(0, 20.0, 0.0), (0, 200.0, 0.0)], 100).await;
+            assert!((title_x() - unpanned).abs() < 0.01, "back at its left edge");
+            ui.global::<Input>().set_finger(false);
             assert_eq!(ui.get_track_lines().row_count(), 100);
             assert_eq!(cell(&ui, 0, 2), one("Night Harbour", "album:a1"));
             assert_eq!(
@@ -3457,14 +3557,24 @@ mod tests {
             let newest: Vec<String> = again.get_tiles().iter().map(|t| t.link.into()).collect();
             assert_eq!(newest[..4], ids(&["b2", "b3", "b1", "a1"]));
             // The shelf comes to rest with a tile at its left edge: Next and
-            // Previous move a width, three tiles here, a swipe or a sideways
-            // scroll on to the next tile its way.
+            // Previous move a width, three tiles here, a drag on the nearest
+            // tile, a fling on further, and a sideways scroll on to the next
+            // tile its way.
             let x = |title: &str| find(&again, title).map_or(f32::NAN, |b| b.absolute_position().x);
             let tile =
                 |row: usize| -> String { again.get_tiles().row_data(row).unwrap().title.into() };
             let (left, pitch) = (x(&tile(0)), x(&tile(1)) - x(&tile(0)));
             // Whether the `row`th tile is at the left edge.
             let rests = |row: usize| move || (x(&tile(row)) - left).abs() < 0.5;
+            // Where the first tile is, drawn or not.
+            let shelf_at = || {
+                (0..again.get_tiles().row_count())
+                    .find_map(|row| {
+                        let at = x(&tile(row));
+                        at.is_finite().then_some(at - row as f32 * pitch)
+                    })
+                    .unwrap_or(f32::NAN)
+            };
             click(&again, "Next in Recently added");
             wait_for("the next three", rests(3)).await;
             let y = {
@@ -3473,39 +3583,48 @@ mod tests {
             };
             let at = |x: f32| slint::LogicalPosition::new(x, y);
             let window = again.window();
-            // Drags from the second tile `by` tiles sideways.
-            let swipe = |by: f32| {
-                let from = left + pitch;
-                window.dispatch_event(WindowEvent::PointerPressed {
-                    position: at(from),
-                    button: PointerEventButton::Left,
-                });
-                for step in 1..=6 {
-                    window.dispatch_event(WindowEvent::PointerMoved {
-                        position: at(from + by * pitch * step as f32 / 6.0),
-                    });
-                }
-                // The page lets go of a finger while the shelf slides.
-                assert!(again.global::<Input>().get_sliding());
-                window.dispatch_event(WindowEvent::PointerReleased {
-                    position: at(from + by * pitch),
-                    button: PointerEventButton::Left,
-                });
-                assert!(!again.global::<Input>().get_sliding());
+            // Drags from the second tile `by` tiles sideways, slowly, and
+            // stops before letting go.
+            let slide = async |by: f32| {
+                let path: Vec<_> =
+                    (1..=6).map(|step| (40, by * pitch * step as f32 / 6.0, 0.0)).collect();
+                drag(&again, at(left + pitch), &path, 60).await;
             };
-            swipe(-1.2);
-            wait_for("two tiles on", rests(5)).await;
-            assert_eq!(again.get_page(), Page::Home, "a swipe opens nothing");
-            swipe(0.3);
-            wait_for("one tile back", rests(4)).await;
-            click(&again, "Previous in Recently added");
-            wait_for("three tiles back", rests(1)).await;
+            slide(-1.2).await;
+            assert!(!again.global::<Input>().get_sliding());
+            wait_for("the nearest tile on", rests(4)).await;
+            assert_eq!(again.get_page(), Page::Home, "a drag opens nothing");
+            slide(0.3).await;
+            settled(shelf_at).await;
+            assert!(rests(4)(), "a short drag goes back");
+            // At 15 tiles a second, a fling glides on past the tile it was
+            // let go nearest to.
+            let flick = [
+                (0, -0.12 * pitch, 0.0),
+                (16, -0.36 * pitch, 0.0),
+                (16, -0.6 * pitch, 0.0),
+            ];
+            drag(&again, at(left + pitch), &flick, 0).await;
+            let resting = (left - settled(shelf_at).await) / pitch;
+            assert!(
+                resting > 5.99 && (resting - resting.round()).abs() < 0.01,
+                "came to rest on {resting}"
+            );
+            while !rests(0)() {
+                click(&again, "Previous in Recently added");
+                settled(shelf_at).await;
+            }
+            // A drag past its start goes nowhere, and opens nothing.
+            slide(0.3).await;
+            settled(shelf_at).await;
+            assert!(rests(0)());
+            assert_eq!(again.get_page(), Page::Home);
             window.dispatch_event(WindowEvent::PointerScrolled {
                 position: at(left + pitch),
                 delta_x: -0.3 * pitch,
                 delta_y: 0.0,
             });
-            wait_for("one tile on", rests(2)).await;
+            wait_for("one tile on", rests(1)).await;
             // Scrolling down over it scrolls the page, not the shelf.
             window.dispatch_event(WindowEvent::PointerScrolled {
                 position: at(left + pitch),
@@ -3514,7 +3633,42 @@ mod tests {
             });
             let later = Instant::now() + Duration::from_millis(400);
             wait_for("a pause", || Instant::now() > later).await;
+            assert!(rests(1)(), "the shelf stays put");
+            // A finger's drag mostly sideways moves only the shelf; one
+            // mostly up or down only the page. The page holds a finger's
+            // first 100ms to see where it goes, so the shelf takes a drag
+            // after that only.
+            window.dispatch_event(WindowEvent::PointerScrolled {
+                position: at(left + pitch),
+                delta_x: 0.0,
+                delta_y: 100000.0,
+            });
+            again.global::<Input>().set_touch(true);
+            again.global::<Input>().set_finger(true);
+            let tile_y = || find(&again, &tile(2)).map_or(f32::NAN, |b| b.absolute_position().y);
+            let page_at = tile_y();
+            // Once the shelf has the finger, the page doesn't take it even
+            // when it goes on up.
+            let sideways = [
+                (0, -12.0, 3.0),
+                (120, -0.6 * pitch, 8.0),
+                (40, -1.2 * pitch, 10.0),
+                (20, -1.2 * pitch, -1.2 * pitch - 40.0),
+            ];
+            drag(&again, at(left + pitch), &sideways, 60).await;
+            wait_for("the shelf one tile on", rests(2)).await;
+            assert_eq!(tile_y(), page_at, "the page stays put");
+            assert_eq!(again.get_page(), Page::Home);
+            drag(&again, at(left + pitch), &[(0, 6.0, -30.0), (0, 10.0, -50.0)], 60).await;
+            assert!((page_at - tile_y() - 50.0).abs() < 0.01, "the page follows the finger");
             assert!(rests(2)(), "the shelf stays put");
+            again.global::<Input>().set_touch(false);
+            again.global::<Input>().set_finger(false);
+            window.dispatch_event(WindowEvent::PointerScrolled {
+                position: at(left + pitch),
+                delta_x: 0.0,
+                delta_y: 100000.0,
+            });
             // Try again asks only for what's missing, and keeps the shelf.
             again.invoke_show_more();
             assert_eq!(again.get_tiles().row_count(), 24);

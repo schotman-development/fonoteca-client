@@ -118,7 +118,7 @@ export global Icons {
 // test backend can only send mouse presses. Whether a shelf is being slid
 // sideways, which the page then doesn't scroll. Whether a dialog is open,
 // which leaves the keys nothing to reach behind it. Whether the last press
-// was a finger's, which the page's pull and edge swipes wait for.
+// was a finger's, which the page's drag, pull and edge swipes wait for.
 export global Input {
     in-out property <bool> touch;
     in-out property <bool> finger;
@@ -126,6 +126,92 @@ export global Input {
     in-out property <bool> modal;
     // Counts up when the page is to take the keys back, as from a dialog.
     in-out property <int> refocus;
+}
+
+// How a drag glides on when a finger lets go of it while moving: as Android's
+// lists do (OverScroller with the default scroll friction), in logical pixels,
+// which are Android's dp. Slint 1.18's Flickable slows evenly with no top
+// speed instead, so its glide grows with the square of the speed, and a quick
+// swipe goes on far.
+export global Fling {
+    // The slowest and the fastest a fling goes, in px/s.
+    property <float> slowest: 50;
+    property <float> fastest: 8000;
+    // How far along its glide a fling is over its time: fast at first.
+    out property <easing> curve: cubic-bezier(0.175, 0.5, 0.35, 1);
+
+    // OverScroller's spline: a fling at speed v glides
+    // reach * (v / pace) ^ (rate / (rate - 1)) in (v / pace) ^ (1 / (rate - 1))
+    // seconds. Its reach is the friction times Earth's gravity in dp/s², tuned
+    // by 0.84; its pace is the speed that glides for a second.
+    property <float> rate: ln(0.78) / ln(0.9);
+    property <length> reach: 0.015 * 9.80665 * 39.37 * 160 * 0.84 * 1px;
+    property <float> pace: self.reach / 1px / 0.35;
+
+    // How far a fling at `speed` px/s glides, signed as the speed.
+    public pure function distance(speed: float) -> length {
+        if abs(speed) < self.slowest {
+            return 0px;
+        }
+        sign(speed) * self.reach * pow(min(abs(speed), self.fastest) / self.pace, self.rate / (self.rate - 1))
+    }
+
+    // How long a fling at `speed` px/s glides.
+    public pure function time(speed: float) -> duration {
+        if abs(speed) < self.slowest {
+            return 0ms;
+        }
+        1s * pow(min(abs(speed), self.fastest) / self.pace, 1 / (self.rate - 1))
+    }
+}
+
+// How fast a finger drags along one axis, in px/s, to fling with: over the
+// last 50 to 100ms of the drag only, as Android goes by its last tenth of a
+// second, and not at all once it rested 40ms before letting go. Slint times
+// each move by when it handled it, not when the finger made it, so a few
+// moves handled at once would make a short span and a wild speed; a span
+// counts as a frame at least.
+export component FingerSpeed {
+    property <duration> stretch: 50ms;
+    property <duration> rest: 40ms;
+    property <duration> frame: 16ms;
+    // Where the finger was at the start of the stretch before the latest,
+    // which the speed goes from, and of the latest; when it last moved.
+    property <duration> from-time;
+    property <length> from-at;
+    property <duration> latest-time;
+    property <length> latest-at;
+    property <duration> moved-time;
+
+    // The finger took the drag at `at`.
+    public function begin(at: length) {
+        root.from-time = animation-tick();
+        root.from-at = at;
+        root.latest-time = root.from-time;
+        root.latest-at = at;
+        root.moved-time = root.from-time;
+    }
+
+    // The finger moved to `at`.
+    public function follow(at: length) {
+        let now = animation-tick();
+        if now - root.latest-time >= root.stretch {
+            root.from-time = root.latest-time;
+            root.from-at = root.latest-at;
+            root.latest-time = now;
+            root.latest-at = at;
+        }
+        root.moved-time = now;
+    }
+
+    // How fast the finger was going when it let go at `at`.
+    public function at-release(at: length) -> float {
+        let now = animation-tick();
+        if now - root.moved-time > root.rest {
+            return 0;
+        }
+        (at - root.from-at) / 1px / (max(now - root.from-time, root.frame) / 1s)
+    }
 }
 
 // The playlist being dragged, by its link, while a drag is in flight, or
@@ -1696,8 +1782,10 @@ export component CoverGrid {
 
 // A titled row of album tiles that slides sideways: as many to the width, and
 // as wide, as a CoverGrid's of the same width, so the two line up. It comes to
-// rest with a tile at its left edge. A swipe, a drag or a sideways scroll goes
-// on to the next tile in its direction, the buttons a whole width at a time.
+// rest with a tile at its left edge. A finger or a mouse dragging it glides on
+// when let go while moving, as a fling does, to the tile nearest to where the
+// glide ends; a sideways scroll goes on to the next tile in its direction, the
+// buttons a whole width at a time.
 export component CoverShelf {
     in property <string> title;
     in property <[AlbumTile]> tiles;
@@ -1721,9 +1809,12 @@ export component CoverShelf {
     // The tile at the left edge, and the furthest one that can be.
     property <int> first;
     property <int> last-first: max(0, self.tiles.length - self.columns);
-    // The tile at the left edge on its way there.
+    // The tile at the left edge on its way there, gliding over `glide-time`:
+    // a fling's own time, else a `step`.
     property <float> at: self.first;
-    animate at { duration: 250ms; easing: ease-out; }
+    property <duration> step: 250ms;
+    property <duration> glide-time: self.step;
+    animate at { duration: root.glide-time; easing: Fling.curve; }
     // How far a sideways scroll has moved it, while scrolling.
     property <length> scrolled;
     property <bool> scrolling;
@@ -1743,13 +1834,27 @@ export component CoverShelf {
         self.in-view(self.first-in-view, self.last-in-view);
     }
 
+    // Comes to rest with `tile`, or the nearest one there can be, at the
+    // left edge, gliding there over `time`.
+    function rest-on(tile: int, time: duration) {
+        self.glide-time = time;
+        self.first = clamp(tile, 0, self.last-first);
+    }
+
     // Comes to rest on the next tile the way it was `moved`.
     function settle(moved: length) {
         if moved < 0 {
-            self.first = min(self.last-first, self.first + ceil(-moved / self.pitch));
+            self.rest-on(self.first + ceil(-moved / self.pitch), self.step);
         } else if moved > 0 {
-            self.first = max(0, self.first - ceil(moved / self.pitch));
+            self.rest-on(self.first - ceil(moved / self.pitch), self.step);
         }
+    }
+
+    // Comes to rest on the tile nearest to where it glides to once let go
+    // of at `speed`, `moved` from where it rested.
+    function fling(moved: length, speed: float) {
+        let glided = self.first * self.pitch - moved - Fling.distance(speed);
+        self.rest-on(Math.round(glided / self.pitch), max(self.step, Fling.time(speed)));
     }
 
     // Measures a tile's height at this width.
@@ -1761,6 +1866,8 @@ export component CoverShelf {
         names: [{ label: "Probe", link: "" }];
         entries: root.entries;
     }
+
+    speed := FingerSpeed { }
 
     // A sideways scroll settles once it pauses.
     pause := Timer {
@@ -1799,25 +1906,37 @@ export component CoverShelf {
                 icon: Icons.back;
                 label: "Previous in " + root.title;
                 enabled: root.first > 0;
-                clicked => { root.first = max(0, root.first - root.columns); }
+                clicked => { root.rest-on(root.first - root.columns, root.step); }
             }
             if root.last-first > 0 && !Screen.phone: IconButton {
                 icon: Icons.forward;
                 label: "Next in " + root.title;
                 enabled: root.first < root.last-first;
-                clicked => { root.first = min(root.last-first, root.first + root.columns); }
+                clicked => { root.rest-on(root.first + root.columns, root.step); }
             }
         }
         swipe := SwipeGestureHandler {
             height: probe.preferred-height;
-            handle-swipe-left: root.first < root.last-first;
-            handle-swipe-right: root.first > 0;
+            // Its ends take a drag too, which goes nowhere there, rather
+            // than a tap on the tile under it.
+            handle-swipe-left: root.last-first > 0;
+            handle-swipe-right: root.last-first > 0;
             // While it slides the page lets go of the finger, which would
-            // otherwise take it over on drifting a little up or down.
-            moved => { Input.sliding = self.swiping; }
+            // otherwise take it over on drifting up or down.
+            moved => {
+                if !self.swiping {
+                    return;
+                }
+                if Input.sliding {
+                    speed.follow(self.current-position.x);
+                } else {
+                    speed.begin(self.current-position.x);
+                    Input.sliding = true;
+                }
+            }
             swiped => {
                 Input.sliding = false;
-                root.settle(self.current-position.x - self.pressed-position.x);
+                root.fling(self.current-position.x - self.pressed-position.x, speed.at-release(self.current-position.x));
             }
             cancelled => { Input.sliding = false; }
 
@@ -1853,13 +1972,13 @@ export component CoverShelf {
                             swiping when swipe.swiping: {
                                 offset: clamp(swipe.current-position.x - swipe.pressed-position.x, (root.first - root.last-first) * root.pitch, root.first * root.pitch);
                                 out {
-                                    animate offset { duration: 250ms; easing: ease-out; }
+                                    animate offset { duration: root.glide-time; easing: Fling.curve; }
                                 }
                             }
                             scrolling when root.scrolling: {
                                 offset: root.scrolled;
                                 out {
-                                    animate offset { duration: 250ms; easing: ease-out; }
+                                    animate offset { duration: root.glide-time; easing: Fling.curve; }
                                 }
                             }
                         ]
@@ -1881,9 +2000,9 @@ export component CoverShelf {
                             // A tile reached with Tab slides into view.
                             changed focused => {
                                 if self.focused && i < root.first {
-                                    root.first = i;
+                                    root.rest-on(i, root.step);
                                 } else if self.focused && i >= root.first + root.columns {
-                                    root.first = min(root.last-first, i - root.columns + 1);
+                                    root.rest-on(i - root.columns + 1, root.step);
                                 }
                             }
                             clicked => {

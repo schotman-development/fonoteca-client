@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, Name, TrackColumn, TrackLine }
 
@@ -207,14 +207,16 @@ component GestureHint inherits Rectangle {
     }
 }
 
-// The pages' scroll view: a Flickable of its own rather than a ScrollView,
-// whose Flickable can't be told to let go of a finger. While a shelf slides
-// sideways the page doesn't scroll, else a finger drifting a little up or
-// down would take the slide over. Starts at the top left again whenever
-// `visit` changes, that is on every page shown. Takes the keys when
-// `arrival` does, on a page opened, so Tab goes on from the page's top and a
-// screen reader names the page; not on a new sort or filter, which goes on
-// taking them.
+// The pages' scroll view: a Flickable of its own rather than a ScrollView, for
+// the wheel, the keys and the bars, and a drag of its own for a finger, which
+// Slint 1.18's Flickable gets wrong on a phone. A finger's drag follows the
+// finger from where it went down and glides on when let go, as Android's
+// lists do (Fling), along one axis: up or down, or sideways on a page wider
+// than the view, whichever way it went more; none while a shelf slides.
+// Starts at the top left again whenever `visit` changes, that is on every page
+// shown. Takes the keys when `arrival` does, on a page opened, so Tab goes on
+// from the page's top and a screen reader names the page; not on a new sort or
+// filter, which goes on taking them.
 // Says when the bottom is less than a screen away, so more can load before
 // it's reached. The arrow keys, Page Up and Down, Home and End scroll it
 // when what has the keys doesn't take them; Escape goes to `escape`, and
@@ -251,13 +253,70 @@ component PageScroll inherits FocusScope {
     // wide the edges are that a swipe starts from.
     property <length> reach: 72px;
     property <length> edge: 20px;
-    // How much of `reach` the finger has come, on each.
-    property <float> pulled: pull.swiping ? (pull.current-position.y - pull.pressed-position.y) / root.reach : 0;
+    // How much of `reach` the finger has come, on each: a pull is a drag
+    // down past the page's top.
+    property <float> pulled: drag.swiping && root.from-top ? root.dragged-to / root.reach : 0;
     property <float> backed: back-edge.pressed ? (back-edge.mouse-x - back-edge.pressed-x) / root.reach : 0;
     property <float> forwarded: forward-edge.pressed ? (forward-edge.pressed-x - forward-edge.mouse-x) / root.reach : 0;
+
+    // Whether the finger has gone more up or down than sideways since it
+    // went down, which the drag waits for before it takes the finger.
+    property <bool> upright: abs(finger.mouse-y - drag.pressed-position.y) >= abs(finger.mouse-x - drag.pressed-position.x);
+    // How far right and down the page goes.
+    property <length> right: min(0, flick.width - flick.content-width);
+    property <length> bottom: min(0, flick.height - flick.content-height);
+    // Whether the drag has the finger, and whether sideways; how far the
+    // page goes that way, where it was when the drag took the finger, and
+    // where the finger has dragged it to since, past its top when pulled.
+    property <bool> taken;
+    property <bool> across;
+    property <length> far: root.across ? root.right : root.bottom;
+    property <length> taken-at;
+    property <length> finger-at: root.across ? drag.current-position.x : drag.current-position.y;
+    property <length> pressed-at: root.across ? drag.pressed-position.x : drag.pressed-position.y;
+    property <length> dragged-to: root.taken-at + root.finger-at - root.pressed-at;
+    // Whether the drag took the finger down from the page's top, a pull.
+    property <bool> from-top: !root.across && root.taken-at >= 0;
+
+    // Where a fling glides the page from, how far, for how long, and how
+    // far along its curve it has come.
+    property <length> glide-from;
+    property <length> glide-by;
+    property <duration> glide-time;
+    property <bool> gliding;
+    property <float> glided;
+    states [
+        flung when root.gliding: {
+            glided: 1;
+            in {
+                animate glided { duration: root.glide-time; easing: Fling.curve; }
+            }
+        }
+    ]
+    changed glided => {
+        if !root.gliding {
+            return;
+        }
+        let to = root.glide-from + root.glide-by * root.glided;
+        root.move-to(to);
+        if root.glided >= 1 || to < root.far || to > 0 {
+            root.gliding = false;
+        }
+    }
+
+    // Puts the page `at` along the drag's axis, as far as it goes.
+    function move-to(at: length) {
+        if root.across {
+            flick.content-x = clamp(at, root.right, 0);
+        } else {
+            flick.content-y = clamp(at, root.bottom, 0);
+        }
+    }
+
     changed visit => {
         self.content-x = 0;
         self.content-y = 0;
+        self.gliding = false;
         Input.sliding = false;
     }
     changed arrival => {
@@ -307,34 +366,78 @@ component PageScroll inherits FocusScope {
         }
     }
 
-    // It holds every press back a moment to see where it goes, so it waits
-    // only while the page is at its top.
-    pull := SwipeGestureHandler {
+    speed := FingerSpeed { }
+
+    // Around the drag, so it sees each move first, as Slint asks the outer
+    // element first: where the finger is, for `upright`. A finger landing
+    // stops a glide.
+    finger := TouchArea {
         width: parent.width;
         height: parent.height;
-        enabled: Input.finger && flick.content-y >= 0;
-        handle-swipe-down: !Input.sliding;
-        swiped => {
-            if self.current-position.y - self.pressed-position.y >= root.reach {
-                root.refresh();
+        enabled: drag.enabled;
+        changed has-hover => {
+            if self.has-hover {
+                root.gliding = false;
             }
         }
 
-        // Slint drops the held press, and the page doesn't scroll, when the
-        // finger moves meanwhile over nothing that takes the move; this, under
-        // all of the page, takes it.
-        TouchArea {
+        // It holds every press back a moment to see where it goes.
+        drag := SwipeGestureHandler {
             width: parent.width;
             height: parent.height;
-            enabled: pull.enabled;
-        }
-        flick := Flickable {
-            width: parent.width;
-            height: parent.height;
-            interactive: !Input.sliding;
-            // A mouse drags playlists; it scrolls with the wheel and the bars.
-            mouse-drag-pan-enabled: false;
-            @children
+            enabled: Input.finger;
+            handle-swipe-up: root.upright && !Input.sliding;
+            handle-swipe-down: root.upright && !Input.sliding;
+            handle-swipe-left: !root.upright && root.right < 0 && !Input.sliding;
+            handle-swipe-right: !root.upright && root.right < 0 && !Input.sliding;
+            moved => {
+                if !self.swiping {
+                    return;
+                }
+                if root.taken {
+                    speed.follow(root.finger-at);
+                } else {
+                    root.taken = true;
+                    root.across = !root.upright;
+                    root.taken-at = root.across ? flick.content-x : flick.content-y;
+                    root.gliding = false;
+                    speed.begin(root.finger-at);
+                }
+                root.move-to(root.dragged-to);
+            }
+            swiped => {
+                root.taken = false;
+                if root.from-top && root.dragged-to >= root.reach {
+                    root.refresh();
+                    return;
+                }
+                let flung = speed.at-release(root.finger-at);
+                root.glide-from = clamp(root.dragged-to, root.far, 0);
+                root.glide-by = Fling.distance(flung);
+                root.glide-time = Fling.time(flung);
+                root.gliding = root.glide-by != 0;
+            }
+            cancelled => { root.taken = false; }
+
+            // Slint drops the held press, and the page doesn't scroll, when the
+            // finger moves meanwhile over nothing that takes the move; this,
+            // under all of the page, takes it.
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: drag.enabled;
+            }
+            flick := Flickable {
+                width: parent.width;
+                height: parent.height;
+                // A finger has the drag above. A touch screen's touches
+                // before a press has told a finger from a mouse are the
+                // Flickable's own, but not while a shelf slides.
+                interactive: !Input.finger && !Input.sliding;
+                // A mouse drags playlists; it scrolls with the wheel and the bars.
+                mouse-drag-pan-enabled: false;
+                @children
+            }
         }
     }
     PageBar {
