@@ -106,6 +106,8 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             player.seek(seconds);
             let status = player.status();
             save(&browser, &p, &playing, status.index, seconds);
+            #[cfg(target_os = "android")]
+            announce(&p, status.index, status.paused || status.ended, seconds);
         }
     });
     ui.on_list_devices({
@@ -238,12 +240,19 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         p.player = None;
         p.tick.stop();
         ui.set_playing(false);
+        #[cfg(target_os = "android")]
+        crate::media::hide();
         return;
     }
     let Some(player) = &p.player else { return };
     let status = player.status();
     let state = (status.index, status.paused || status.ended);
-    let due = p.saved.is_none_or(|(index, paused, at)| {
+    let last = p.saved;
+    #[cfg(target_os = "android")]
+    if last.map(|(index, paused, _)| (index, paused)) != Some(state) {
+        announce(&p, state.0, state.1, status.position);
+    }
+    let due = last.is_none_or(|(index, paused, at)| {
         (index, paused) != state || !paused && (status.position - at).abs() >= SAVE_EVERY
     });
     if due {
@@ -323,9 +332,22 @@ fn show_song(
     }
 }
 
+/// Tells Android what plays, for its notification and lock screen.
+#[cfg(target_os = "android")]
+fn announce(p: &Playing, index: Option<usize>, paused: bool, seconds: f64) {
+    let Some(song) = index.and_then(|index| p.queue.get(index)) else {
+        return crate::media::hide();
+    };
+    let artists = song.artist.as_deref().unwrap_or_default();
+    let duration = song.duration.unwrap_or_default() as f64;
+    crate::media::show(&song.title, artists, !paused, duration, seconds);
+}
+
 /// Takes up the queue saved on the server, paused on the bar where it left
 /// off, in place of anything from the account signed in before.
 fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
+    #[cfg(target_os = "android")]
+    crate::media::hide();
     {
         let mut p = playing.borrow_mut();
         p.player = None;

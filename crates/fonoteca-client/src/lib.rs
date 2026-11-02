@@ -1,6 +1,8 @@
 slint::include_modules!();
 
 mod browse;
+#[cfg(target_os = "android")]
+mod media;
 #[cfg(not(target_family = "wasm"))]
 mod play;
 mod prefs;
@@ -249,6 +251,12 @@ fn android_main(app: slint::android::AndroidApp) {
         rustls_platform_verifier::android::init_with_env(env, activity)
     })
     .expect("Android's certificate verifier");
+    vm.attach_current_thread(|env| {
+        let activity =
+            unsafe { jni::objects::JObject::from_raw(env, app.activity_as_ptr().cast()) };
+        media::init(env, &activity)
+    })
+    .expect("Android's media controls");
     // The time zone tells the radio page the country for its local shelf.
     let zone = vm.attach_current_thread(|env| -> jni::errors::Result<String> {
         let zone = env
@@ -292,6 +300,8 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     browse::wire(&ui, &browser);
     #[cfg(not(target_family = "wasm"))]
     play::wire(&ui, &browser);
+    #[cfg(target_os = "android")]
+    media::wire(&ui);
 
     // On a phone-sized screen everything is drawn a quarter larger than the
     // browser's pixel ratio. This runs whenever the width or the scale

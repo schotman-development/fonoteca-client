@@ -14,10 +14,30 @@ import android.view.WindowInsetsController;
  * icons light.
  */
 public class MainActivity extends NativeActivity {
+    /** A media button pressed: Rust's (src/media.rs), registered as the app starts. */
+    static native void command(int button, double seconds);
+
+    /** What plays, from Rust's thread, for the notification and lock screen. */
+    public void showPlaying(String title, String artists, boolean playing, long duration, long position) {
+        PlaybackService.show(this, new PlaybackService.Playing(title, artists, playing, duration, position));
+    }
+
+    public void hidePlaying() {
+        PlaybackService.hide();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         matchStatusBar(getResources().getConfiguration());
+    }
+
+    // Leaving the app ends its player, so its controls go too: after the
+    // Rust side has stopped, so nothing it shows lands after this.
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        PlaybackService.hide();
     }
 
     // Dark mode turned on or off doesn't restart the activity (see
