@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -64,6 +64,12 @@ export component Workbench inherits Window {
     property <bool> player-shuffled;
     property <int> player-repeat;
     property <bool> queue-work-open;
+    property <[QueueLine]> reorderables: [
+        { title: "Northern Lights", details: "Mara · 4:31", current: true },
+        { title: "Song of the Sea", details: "Mara · 3:12" },
+        { title: "Symphony No. 5", details: "4 movements · 29:06", work: true },
+        { title: "Harbour Lights", details: "Ove Strand · 5:02" },
+    ];
     property <int> quality-format: 1;
     property <int> quality-bitrate: 2;
     property <int> output-device;
@@ -743,6 +749,39 @@ export component Workbench inherits Window {
                                 { text: "Parametric EQ, 5 bands", quality: 2 },
                                 { text: "Exclusive: USB DAC (44100 Hz 24-bit, 2 channels)", quality: 3 },
                             ];
+                        }
+                    }
+
+                    if root.current == 16: Example {
+                        caption: "The queue's rows with a grip each, but for the song playing and the work that is open: drag one by a mouse or a finger, and the row follows as a copy with a line where it lands; the list scrolls when the pointer nears the edge of the view";
+                        max-width: 640px;
+                        Rectangle {
+                            height: 4 * 56px;
+                            VerticalLayout {
+                                for line[row] in root.reorderables: ListRow {
+                                    min-height: 56px;
+                                    max-height: 56px;
+                                    opacity: reorder.dragged == row ? 0.4 : 1;
+                                    reserve: Screen.phone ? 44px : 32px;
+                                    title: line.title;
+                                    details: line.details;
+                                    covered: true;
+                                    current: line.current;
+                                    entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
+                                }
+                            }
+                            reorder := QueueReorder {
+                                width: parent.width;
+                                height: parent.height;
+                                lines: root.reorderables;
+                                row-height: 56px;
+                                view-top: 0px;
+                                view-bottom: root.height;
+                                slot-at(lines, from, at) => {
+                                    clamp(round(at), 1, lines.length) == from || clamp(round(at), 1, lines.length) == from + 1 ? -1 : clamp(round(at), 1, lines.length)
+                                }
+                                moved(from, slot) => { root.event = "move row " + from + " to slot " + slot; }
+                            }
                         }
                     }
 

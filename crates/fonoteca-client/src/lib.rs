@@ -21,6 +21,8 @@ mod quality;
 #[cfg(not(target_family = "wasm"))]
 mod queue;
 #[cfg(not(target_family = "wasm"))]
+mod queue_drag;
+#[cfg(not(target_family = "wasm"))]
 mod sound;
 mod store;
 #[cfg(not(target_family = "wasm"))]
@@ -4912,6 +4914,184 @@ mod tests {
             };
             play::testing::play_page(&ui, vec![counted("II", 2), counted("III", 3)], 0);
             assert_eq!(rows(), [row("II", false, false), row("III", false, false)]);
+
+            // A row of the queue moves by its grip, dragged by a mouse or a
+            // finger, and the song playing plays on.
+            let singles = || (0..5).map(|n| song(&format!("q{n}"), "a2")).collect::<Vec<_>>();
+            let titles = || rows().into_iter().map(|line| line.0).collect::<Vec<_>>();
+            let to_the_end = async |x: f32| {
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(x, 300.0),
+                    delta_x: 0.0,
+                    delta_y: -100000.0,
+                });
+                idle(Duration::from_millis(600)).await;
+            };
+            let row_in_sight = |title: &str| -> Option<ElementHandle> {
+                let wanted = title.to_owned();
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::ListItem)
+                    .match_predicate(move |row| row.accessible_label().is_some_and(|l| l == wanted))
+                    .find_first()
+            };
+            let queue_row = |title: &str| -> ElementHandle {
+                row_in_sight(title).unwrap_or_else(|| panic!("no row {title}"))
+            };
+            let grip_of = |title: &str| {
+                let row = queue_row(title);
+                let (at, size) = (row.absolute_position(), row.size());
+                slint::LogicalPosition::new(at.x + size.width - 12.0, at.y + size.height / 2.0)
+            };
+            let row_height = 56.0;
+            play::testing::play_page(&ui, singles(), 0);
+            to_the_end(550.0).await;
+            assert_eq!(queue_row("q1").size().height, row_height);
+            // The row follows the pointer as a copy, the row itself dimmed in
+            // its place, while the pointer is down.
+            let (window, left) = (ui.window(), PointerEventButton::Left);
+            let from = grip_of("q1");
+            window.dispatch_event(WindowEvent::PointerPressed { position: from, button: left });
+            let down_two = slint::LogicalPosition::new(from.x, from.y + 2.0 * row_height + 20.0);
+            window.dispatch_event(WindowEvent::PointerMoved { position: slint::LogicalPosition::new(from.x, from.y + 6.0) });
+            window.dispatch_event(WindowEvent::PointerMoved { position: down_two });
+            let copies = |title: &str| {
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::ListItem)
+                    .match_predicate({
+                        let title = title.to_owned();
+                        move |row| row.accessible_label().is_some_and(|l| l == title)
+                    })
+                    .find_all()
+            };
+            let held = copies("q1");
+            assert_eq!(held.len(), 2, "the copy is drawn with the row");
+            let copy_y = held.iter().map(|row| row.absolute_position().y).fold(f32::MIN, f32::max);
+            assert!((copy_y - (queue_row("q0").absolute_position().y + 3.0 * row_height + 20.0)).abs() < 0.5, "it follows the pointer");
+            assert_eq!(titles(), ["q0", "q1", "q2", "q3", "q4"], "nothing moves before it is let go");
+            window.dispatch_event(WindowEvent::PointerReleased { position: down_two, button: left });
+            assert_eq!(titles(), ["q0", "q2", "q3", "q1", "q4"], "two places down");
+            assert!(ui.get_queue_lines().row_data(0).unwrap().current, "the song playing is the first still");
+            let (ids, shown) = play::testing::queued_ids();
+            assert_eq!((ids, shown), (["q0", "q2", "q3", "q1", "q4"].map(String::from).to_vec(), Some(0)));
+            // A mouse dragging nowhere in particular moves nothing, nor does
+            // one let go on the row it started from.
+            drag(&ui, grip_of("q2"), &[(0, 0.0, 4.0), (20, 0.0, 12.0)], 20).await;
+            assert_eq!(titles(), ["q0", "q2", "q3", "q1", "q4"]);
+            // The next song follows the new order when one moves up past it.
+            drag(&ui, grip_of("q4"), &[(0, 0.0, -6.0), (20, 0.0, -40.0), (20, 0.0, -3.0 * row_height - 20.0)], 20).await;
+            assert_eq!(titles(), ["q0", "q4", "q2", "q3", "q1"]);
+            assert_eq!(play::testing::queued_ids().0[..2].to_vec(), ["q0", "q4"], "q4 plays after q0");
+            // Not above the song playing, and not by its own grip.
+            drag(&ui, grip_of("q1"), &[(0, 0.0, -6.0), (20, 0.0, -400.0)], 20).await;
+            assert_eq!(titles(), ["q0", "q1", "q4", "q2", "q3"], "the top slot is below the one playing");
+
+            // A work moves as one unit, collapsed.
+            play::testing::play_page(&ui, pieces(), 0);
+            to_the_end(550.0).await;
+            drag(&ui, grip_of("Suite"), &[(0, 0.0, -6.0), (20, 0.0, -row_height - 16.0)], 20).await;
+            assert_eq!(titles(), ["Sonata", "Suite", "solo"]);
+            assert_eq!(play::testing::queued_ids().0, ["I", "II", "III", "one", "two", "solo"]);
+            drag(&ui, grip_of("Sonata"), &[(0, 0.0, 6.0), (20, 0.0, 60.0), (20, 0.0, 130.0)], 20).await;
+            assert_eq!(titles(), ["Sonata", "Suite", "solo"], "the work playing has no grip to move by");
+
+            // A finger on a grip drags the row; one anywhere else on the row
+            // scrolls the page, as the page's drag takes it.
+            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            idle(Duration::from_millis(400)).await;
+            let input = ui.global::<Input>();
+            input.set_touch(true);
+            input.set_finger(true);
+            play::testing::play_page(&ui, singles(), 0);
+            to_the_end(180.0).await;
+            let path_down = |rows_down: f32| [(0, 0.0, 4.0), (120, 0.0, 14.0), (16, 0.0, 40.0), (16, 0.0, rows_down * row_height + 20.0)];
+            let page_at = queue_row("q0").absolute_position().y;
+            drag(&ui, grip_of("q2"), &path_down(1.0), 40).await;
+            assert_eq!(titles(), ["q0", "q1", "q3", "q2", "q4"], "a finger drags the row");
+            assert_eq!(queue_row("q0").absolute_position().y, page_at, "the page stays put");
+            let middle_of = |title: &str| middle(&queue_row(title));
+            let (title_x, title_y) = (middle_of("q1").x - 40.0, middle_of("q1").y);
+            drag(&ui, slint::LogicalPosition::new(title_x, title_y), &[(0, 0.0, 6.0), (16, 0.0, 30.0), (16, 0.0, 60.0)], 100).await;
+            assert_eq!(titles(), ["q0", "q1", "q3", "q2", "q4"], "a swipe on a row moves nothing");
+            assert!(queue_row("q0").absolute_position().y > page_at + 30.0, "it scrolls the page");
+            input.set_touch(false);
+            input.set_finger(false);
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(400)).await;
+
+            // Alt and an arrow key move the row that has the keys by one unit,
+            // and it keeps the keys, so the next press moves it on.
+            let with_alt = |key: slint::platform::Key| {
+                let alt = || slint::platform::Key::Alt.into();
+                ui.window().dispatch_event(WindowEvent::KeyPressed { text: alt() });
+                press(&ui, key);
+                ui.window().dispatch_event(WindowEvent::KeyReleased { text: alt() });
+            };
+            play::testing::play_page(&ui, singles(), 0);
+            to_the_end(550.0).await;
+            let before = titles();
+            // A tap on q2's cover, which is no link or button, gives it the keys.
+            let row = queue_row("q2");
+            let (at, size) = (row.absolute_position(), row.size());
+            hold(&ui, slint::LogicalPosition::new(at.x + 28.0, at.y + size.height / 2.0), 0.0, 0).await;
+            assert_eq!(titles(), before, "a tap on a row moves nothing");
+            with_alt(slint::platform::Key::DownArrow);
+            assert_eq!(titles(), ["q0", "q1", "q3", "q2", "q4"], "down one unit");
+            press(&ui, slint::platform::Key::DownArrow);
+            assert_eq!(titles(), ["q0", "q1", "q3", "q2", "q4"], "the arrow key alone moves nothing");
+            with_alt(slint::platform::Key::DownArrow);
+            assert_eq!(titles(), ["q0", "q1", "q3", "q4", "q2"], "the row kept the keys");
+            with_alt(slint::platform::Key::DownArrow);
+            assert_eq!(titles(), ["q0", "q1", "q3", "q4", "q2"], "and no further than the end");
+            for _ in 0..4 {
+                with_alt(slint::platform::Key::UpArrow);
+            }
+            assert_eq!(titles(), ["q0", "q2", "q1", "q3", "q4"], "up, and not above the song playing");
+
+            // The pointer near the bottom of the sheet scrolls it on, so a row
+            // reaches rows that were far below the view.
+            let long: Vec<_> = (0..40).map(|n| song(&format!("q{n}"), "a2")).collect();
+            play::testing::play_page(&ui, long, 0);
+            for _ in 0..40 {
+                if row_in_sight("q1").is_some_and(|row| row.absolute_position().y < 500.0) {
+                    break;
+                }
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(550.0, 300.0),
+                    delta_x: 0.0,
+                    delta_y: -150.0,
+                });
+                idle(Duration::from_millis(50)).await;
+            }
+            let from = grip_of("q1");
+            let near_bottom = slint::LogicalPosition::new(from.x, 752.0);
+            window.dispatch_event(WindowEvent::PointerPressed { position: from, button: left });
+            window.dispatch_event(WindowEvent::PointerMoved { position: slint::LogicalPosition::new(from.x, from.y + 6.0) });
+            window.dispatch_event(WindowEvent::PointerMoved { position: near_bottom });
+            idle(Duration::from_millis(1500)).await;
+            window.dispatch_event(WindowEvent::PointerReleased { position: near_bottom, button: left });
+            let landed = titles().iter().position(|title| title == "q1").unwrap();
+            assert!(landed > 20, "q1 landed at {landed}, past what the view showed");
+
+            // An open work and its movements have no grip, and nothing lands
+            // between its movements.
+            let mut lead_in = vec![song("lead", "a2")];
+            lead_in.extend(pieces());
+            play::testing::play_page(&ui, lead_in, 0);
+            to_the_end(550.0).await;
+            click(&ui, "Show the movements of Sonata");
+            to_the_end(550.0).await;
+            let open = titles();
+            assert_eq!(open, ["lead", "Sonata", "I", "II", "III", "solo", "Suite"]);
+            // Far enough down that the work would land past the song, if a grip moved it.
+            for title in ["Sonata", "I"] {
+                drag(&ui, grip_of(title), &[(0, 0.0, 6.0), (20, 0.0, 4.6 * row_height)], 20).await;
+                assert_eq!(titles(), open, "{title} has no grip");
+            }
+            drag(&ui, grip_of("solo"), &[(0, 0.0, -6.0), (20, 0.0, -3.3 * row_height)], 20).await;
+            assert_eq!(titles(), ["lead", "solo", "Sonata", "I", "II", "III", "Suite"], "above the work, not among its movements");
+            assert_eq!(play::testing::queued_ids().0, ["lead", "solo", "I", "II", "III", "one", "two"]);
 
             // So does the queue loaded anew, as on a sign in.
             let asked = MOTIONS_ASKED.load(Relaxed);

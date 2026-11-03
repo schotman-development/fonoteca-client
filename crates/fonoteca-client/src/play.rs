@@ -20,8 +20,8 @@ use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMo
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::{
-    AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, prefs, quality, sound,
-    waveform,
+    AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, prefs, quality,
+    queue_drag, sound, waveform,
 };
 
 /// The settings' volume leveling entries, in their order.
@@ -310,15 +310,24 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     });
     ui.on_move_queued({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
-        move |from, to| {
+        move |from, slot| {
             let mut p = playing.borrow_mut();
-            let (Some(from), Some(onto)) = (listed_songs(&p, from), listed_songs(&p, to)) else {
+            let onto = queue_drag::onto_row(from, slot);
+            let (Some(from), Some(onto)) = (listed_songs(&p, from), listed_songs(&p, onto)) else {
                 return;
             };
             let moved = p.queue.move_onto(from, onto);
             drop(p);
             requeued(&weak.unwrap(), &browser, &playing, moved);
         }
+    });
+    ui.on_drop_slot(|lines, from, at| {
+        let from = usize::try_from(from).unwrap_or_default();
+        queue_drag::drop_slot(&parts(&lines), from, at).map_or(-1, |slot| slot as i32)
+    });
+    ui.on_step_slot(|lines, from, down| {
+        let from = usize::try_from(from).unwrap_or_default();
+        queue_drag::step_slot(&parts(&lines), from, down).map_or(-1, |slot| slot as i32)
     });
     ui.on_remove_queued({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
@@ -813,6 +822,11 @@ fn show_song(
     }
 }
 
+/// Which of the sheet's `lines` are movements under an open work.
+fn parts(lines: &ModelRc<QueueLine>) -> Vec<bool> {
+    lines.iter().map(|line| line.part).collect()
+}
+
 /// The songs the `row` of the sheet's list stands for.
 fn listed_songs(p: &Playing, row: i32) -> Option<Range<usize>> {
     p.listed.get(row as usize).map(|row| row.songs.clone())
@@ -1226,6 +1240,16 @@ pub(crate) mod testing {
         p.queue = queue;
         p.shown = Some(start);
         list_queue(ui, &browser, &mut p, &playing);
+    }
+
+    /// The ids of the songs queued, in order, and the place of the one playing.
+    pub(crate) fn queued_ids() -> (Vec<String>, Option<usize>) {
+        let (_, playing) = handles();
+        let p = playing.borrow();
+        (
+            p.queue.songs().map(|song| song.id.clone()).collect(),
+            p.shown,
+        )
     }
 
     /// Takes the queue away, as when its last song is removed.

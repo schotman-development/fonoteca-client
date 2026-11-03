@@ -98,6 +98,7 @@ export global Icons {
     out property <string> close: "M6 6l12 12 M18 6L6 18";
     out property <string> plus: "M12 5v14 M5 12h14";
     out property <string> menu: "M4 7h16 M4 12h16 M4 17h16";
+    out property <string> grip: "M5 9h14 M5 15h14";
     out property <string> artist: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M19 18v-7l3 1 M19 18a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
     out property <string> album: "M12 21a9 9 0 1 1 0-18a9 9 0 1 1 0 18z M12 14a2 2 0 1 1 0-4a2 2 0 1 1 0 4z";
     out property <string> composer: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M15 21l1-3.5 5-5a1.4 1.4 0 0 1 2 2l-5 5z";
@@ -253,12 +254,11 @@ export component FingerSpeed {
     }
 }
 
-// The playlist being dragged, by its link, while a drag is in flight, or
-// the song of the queue, by its row on the now playing sheet; and what every
-// drag carries, set once at start, as Slint starts no drag without it.
+// The playlist being dragged, by its link, while a drag is in flight; and
+// what every drag carries, set once at start, as Slint starts no drag without
+// it.
 export global Drag {
     in-out property <string> link;
-    in-out property <int> queued: -1;
     in property <data-transfer> data;
 }
 
@@ -1273,6 +1273,8 @@ export component ListRow inherits Rectangle {
     in property <bool> expandable;
     in property <bool> expanded;
     in-out property <[MenuEntry]> entries;
+    // Room kept free at the right, for what is laid over the row.
+    in property <length> reserve;
     callback open(link: string);
     callback toggled();
     callback opening();
@@ -1286,6 +1288,7 @@ export component ListRow inherits Rectangle {
     HorizontalLayout {
         padding: 8px;
         padding-left: 8px + root.depth * 20px;
+        padding-right: 8px + root.reserve;
         spacing: 12px;
         if root.covered: Artwork {
             cross-axis-self-alignment: center;
@@ -2637,10 +2640,145 @@ export struct QueueLine {
 
 // A TouchArea with a drag of its own, as a seek bar has: a finger that
 // first moves over it after landing on a page is its, and the page's drag
-// leaves it alone (Landing).
+// leaves it alone (Landing). Says when the pointer moved.
 component GripArea inherits TouchArea {
-    changed mouse-x => { Landing.gripped = Landing.count; }
-    changed mouse-y => { Landing.gripped = Landing.count; }
+    callback pointer-moved();
+    changed mouse-x => {
+        Landing.gripped = Landing.count;
+        root.pointer-moved();
+    }
+    changed mouse-y => {
+        Landing.gripped = Landing.count;
+        root.pointer-moved();
+    }
+}
+
+// Laid over a list of rows `row-height` high, one for each of `lines`, it puts
+// a grip at the right of those that can move: not the first, which plays, nor
+// a movement, nor a work that is open. A grip dragged by a mouse or a finger
+// takes the row along as a copy, shows with a line where the row lands, and
+// scrolls the view by `scroll` when the pointer comes near the edge of the
+// space between `view-top` and `view-bottom`, in the window. Says `moved`
+// with the slot, a gap among the rows, when let go. Only the grips take
+// presses, so a finger anywhere else on a row scrolls the page.
+export component QueueReorder {
+    in property <[QueueLine]> lines;
+    in property <length> row-height;
+    in property <length> view-top;
+    in property <length> view-bottom;
+    // The row being dragged, or -1.
+    out property <int> dragged: -1;
+    pure callback slot-at(lines: [QueueLine], from: int, at: float) -> int;
+    callback moved(from: int, slot: int);
+    callback scroll(by: length);
+
+    // How fast the view scrolls at the edge at most, per 16ms, and how far
+    // from the edge it starts.
+    property <length> scroll-step: 16px;
+    property <length> scroll-zone: root.row-height;
+    // Where the pointer is in the window, and how far down its row it took
+    // hold.
+    property <length> pointer-y;
+    property <length> grab;
+    property <length> ghost-y: clamp(root.pointer-y - root.absolute-position.y - root.grab, 0, max(0px, root.height - root.row-height));
+    // The slot the row would land in, or -1 where that moves nothing.
+    property <int> slot: root.dragged < 0 ? -1 : root.slot-at(root.lines, root.dragged, (root.ghost-y + root.row-height / 2) / root.row-height);
+
+    public pure function draggable(row: int) -> bool {
+        row > 0 && !root.lines[row].part && !(root.lines[row].work && root.lines[row].expanded)
+    }
+
+    function finish(drop: bool) {
+        if drop && root.slot >= 0 {
+            root.moved(root.dragged, root.slot);
+        }
+        root.dragged = -1;
+    }
+
+    // A list made anew leaves the grips behind that were let go of.
+    changed lines => { root.dragged = -1; }
+
+    for line[row] in root.lines: Rectangle {
+        y: row * root.row-height;
+        width: root.width;
+        height: root.row-height;
+        grip := GripArea {
+            x: parent.width - self.width;
+            width: Screen.phone ? 44px : 32px;
+            enabled: root.draggable(row);
+            mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+            pointer-moved => {
+                if root.dragged == row {
+                    root.pointer-y = self.absolute-position.y + self.mouse-y;
+                }
+            }
+            changed pressed => {
+                if self.pressed {
+                    root.dragged = row;
+                    root.grab = self.pressed-y;
+                    root.pointer-y = self.absolute-position.y + self.pressed-y;
+                }
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.up {
+                    root.finish(true);
+                } else if event.kind == PointerEventKind.cancel {
+                    root.finish(false);
+                }
+            }
+            if root.draggable(row): Path {
+                width: 20px;
+                height: 20px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Icons.grip;
+                stroke: grip.has-hover || grip.pressed ? Theme.text : Theme.muted;
+                stroke-width: 1.75px;
+            }
+        }
+    }
+
+    if root.dragged >= 0: Rectangle {
+        y: root.ghost-y;
+        width: root.width;
+        height: root.row-height;
+        border-radius: Theme.radius;
+        background: Theme.surface;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #0000004d;
+        ListRow {
+            width: parent.width;
+            height: parent.height;
+            reserve: Screen.phone ? 44px : 32px;
+            title: root.lines[root.dragged].title;
+            details: root.lines[root.dragged].details;
+            cover: root.lines[root.dragged].cover;
+            covered: true;
+            current: root.lines[root.dragged].current;
+        }
+    }
+    if root.slot >= 0: Rectangle {
+        y: root.slot * root.row-height - self.height / 2;
+        width: root.width;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+
+    Timer {
+        interval: 16ms;
+        running: root.dragged >= 0;
+        triggered => {
+            let near-top = root.view-top + root.scroll-zone - root.pointer-y;
+            let near-bottom = root.pointer-y - (root.view-bottom - root.scroll-zone);
+            if near-top > 0 {
+                root.scroll(min(near-top, root.scroll-zone) / root.scroll-zone * root.scroll-step);
+            } else if near-bottom > 0 {
+                root.scroll(-min(near-bottom, root.scroll-zone) / root.scroll-zone * root.scroll-step);
+            }
+        }
+    }
 }
 
 // The track's position, to drag or click to a new one, which it hands to
