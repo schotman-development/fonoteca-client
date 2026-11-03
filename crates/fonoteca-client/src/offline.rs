@@ -128,6 +128,9 @@ struct State {
     /// original, and whether the pages show what is kept, not the server.
     sends_originals_only: bool,
     offline: bool,
+    /// Whether something waits for wifi, since the connection is mobile
+    /// data and the user didn't allow it.
+    waiting_for_wifi: bool,
     /// The song being fetched and the flag that stops it.
     running: Option<(String, Arc<AtomicBool>)>,
     attempt: usize,
@@ -338,6 +341,7 @@ pub struct Summary {
     pub halted: Option<String>,
     /// Whether the server sent originals where another format was asked.
     pub originals_only: bool,
+    pub waiting_for_wifi: bool,
 }
 
 impl Summary {
@@ -361,6 +365,9 @@ impl Summary {
         let progress = match (&self.halted, self.missing) {
             (Some(reason), _) => reason.clone(),
             (None, 0) => String::new(),
+            (None, missing) if self.waiting_for_wifi => {
+                format!("Waiting for wifi, {missing} to go.")
+            }
             (None, missing) => format!("{missing} to go."),
         };
         let note = if self.originals_only {
@@ -474,6 +481,11 @@ impl Downloads {
         self.state().asked = Some((format.to_owned(), bit_rate));
     }
 
+    /// Whether something waits for wifi.
+    pub fn is_waiting_for_wifi(&self) -> bool {
+        self.state().waiting_for_wifi
+    }
+
     /// Notes that the server sent an original where a conversion was asked.
     pub fn note_originals_only(&self) {
         self.state().sends_originals_only = true;
@@ -570,15 +582,24 @@ impl Downloads {
     /// The next song to fetch, and where its file goes while it arrives and
     /// when it is whole, with the flag that stops the fetch. None while a
     /// song is being fetched, or after a stop, or with none left. The reason
-    /// when the size limit stops it, once.
-    pub fn start_next(&self) -> Result<Option<Fetch>, String> {
+    /// when the size limit stops it, once. Without `may_use_network`, none,
+    /// and it is noted that something waits for wifi.
+    pub fn start_next(&self, may_use_network: bool) -> Result<Option<Fetch>, String> {
         let mut state = self.state();
         if state.running.is_some() || state.halted.is_some() {
             return Ok(None);
         }
+        state.waiting_for_wifi = false;
         let Some(folder) = state.folder.clone() else {
             return Ok(None);
         };
+        let cover_missing =
+            (wanted_covers(&state.manifest.items).iter()).any(|id| !state.covers.contains(*id));
+        let wanted = cover_missing || !missing(&state.manifest.items, &state.present).is_empty();
+        if !may_use_network {
+            state.waiting_for_wifi = wanted;
+            return Ok(None);
+        }
         // The covers first: they are small, and the pages need them at once.
         let cover = wanted_covers(&state.manifest.items)
             .into_iter()
@@ -636,6 +657,7 @@ impl Downloads {
             missing: missing(&state.manifest.items, &state.present).len(),
             halted: state.halted.clone(),
             originals_only: state.sends_originals_only,
+            waiting_for_wifi: state.waiting_for_wifi,
         }
     }
 
@@ -1288,6 +1310,7 @@ mod tests {
             missing,
             halted: halted.map(str::to_owned),
             originals_only: false,
+            waiting_for_wifi: false,
         };
         assert_eq!(summary(0, 0, None).space(), "Nothing is downloaded.");
         assert_eq!(summary(1, 0, None).space(), "3.0 GB used by 1 song.");
@@ -1296,6 +1319,9 @@ mod tests {
         assert_eq!(summary(14, 0, None).frees(), "3.0 GB");
         assert_eq!(summary(0, 2, None).frees(), "");
         assert_eq!(summary(14, 3, None).status(), "3 to go.");
+        let mut waiting = summary(14, 3, None);
+        waiting.waiting_for_wifi = true;
+        assert_eq!(waiting.status(), "Waiting for wifi, 3 to go.");
         assert_eq!(summary(14, 3, Some("Full")).status(), "Full");
     }
 
@@ -1311,11 +1337,11 @@ mod tests {
             state.manifest.items.push(Item::Album(big));
             state.limit = limit_of(1);
         }
-        assert!(downloads.start_next().is_err());
-        assert!(matches!(downloads.start_next(), Ok(None)), "said once");
+        assert!(downloads.start_next(true).is_err());
+        assert!(matches!(downloads.start_next(true), Ok(None)), "said once");
         assert_eq!(downloads.summary().missing, 1);
         downloads.set_limit(limit_of(2));
-        let Ok(Some(fetch)) = downloads.start_next() else {
+        let Ok(Some(fetch)) = downloads.start_next(true) else {
             panic!("the song is let go on");
         };
         assert_eq!(fetch.room, Some(5 * BYTES_PER_GB), "what may arrive");
@@ -1339,15 +1365,34 @@ mod tests {
             state.present.get_mut("x").unwrap().size = 500 * 1_048_576;
         }
         assert!(
-            downloads.start_next().is_err(),
+            downloads.start_next(true).is_err(),
             "an original would pass 1 GB"
         );
         downloads.set_limit(limit_of(1));
         downloads.set_quality("opus", 128);
-        let Ok(Some(fetch)) = downloads.start_next() else {
+        let Ok(Some(fetch)) = downloads.start_next(true) else {
             panic!("300 s of Opus 128 is under 5 MB");
         };
         assert_eq!(fetch.room, Some(BYTES_PER_GB - 500 * 1_048_576));
+    }
+
+    #[test]
+    fn nothing_is_fetched_on_a_connection_that_isnt_allowed_and_that_is_noted() {
+        let folder = std::env::temp_dir().join(format!("wifi-test-{}", std::process::id()));
+        let downloads = Downloads::default();
+        {
+            let mut state = downloads.state();
+            state.folder = Some(folder);
+            state.manifest.items.push(album("one", &["a"]));
+        }
+        assert!(matches!(downloads.start_next(false), Ok(None)));
+        assert!(downloads.is_waiting_for_wifi());
+        assert!(matches!(downloads.start_next(true), Ok(Some(_))));
+        assert!(!downloads.is_waiting_for_wifi());
+        downloads.ended();
+        downloads.state().manifest.items.clear();
+        assert!(matches!(downloads.start_next(false), Ok(None)));
+        assert!(!downloads.is_waiting_for_wifi(), "nothing is wanted");
     }
 
     #[test]

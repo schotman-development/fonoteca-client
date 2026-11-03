@@ -969,6 +969,8 @@ export component AppWindow inherits Window {
     // The format and bitrate downloads are fetched in, by the picker's entries.
     in-out property <int> download-format;
     in-out property <int> download-bitrate;
+    // Whether downloads may use mobile data; wifi only without.
+    in-out property <bool> download-mobile;
     in property <[StationRow]> station-rows;
     // The radio directory's shelves, each a genre's stations with the most
     // votes, and the stations saved on the server, for the home page.
@@ -1171,6 +1173,7 @@ export component AppWindow inherits Window {
     callback remove-link-download(link: string);
     callback choose-download-limit(index: int);
     callback choose-download-quality(format: int, bitrate: int);
+    callback choose-download-mobile(allowed: bool);
     // The answer yes to the question what a download takes, asked with
     // `ask-download`.
     callback confirm-download();
@@ -2419,6 +2422,12 @@ export component AppWindow inherits Window {
                             bitrate <=> root.download-bitrate;
                             enabled: !Input.modal;
                             chosen(format, bitrate) => { root.choose-download-quality(format, bitrate); }
+                        }
+                        if root.has-mobile-data: Switch {
+                            text: "Download over mobile data";
+                            checked <=> root.download-mobile;
+                            enabled: !Input.modal;
+                            toggled => { root.choose-download-mobile(self.checked); }
                         }
                         Text {
                             text: "Size limit";

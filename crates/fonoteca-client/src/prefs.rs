@@ -42,6 +42,8 @@ pub struct Prefs {
     pub mobile_quality: StreamQuality,
     /// The format and bitrate to download in.
     pub download_quality: StreamQuality,
+    /// Whether songs may be downloaded over mobile data; wifi only without.
+    pub download_on_mobile_data: bool,
     /// The sound processing's entries in the settings: headroom, crossfeed
     /// and upsampling; the EQ, whether it is on, and the EQs saved by name.
     pub headroom: i32,

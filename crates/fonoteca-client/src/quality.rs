@@ -28,9 +28,25 @@ pub fn connection() -> Connection {
 #[cfg(target_os = "android")]
 use crate::network::on_mobile_data;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), not(test)))]
 fn on_mobile_data() -> bool {
     false
+}
+
+/// What the tests say the connection is, since a computer has no mobile data.
+#[cfg(test)]
+pub static TEST_ON_MOBILE_DATA: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(all(not(target_os = "android"), test))]
+fn on_mobile_data() -> bool {
+    TEST_ON_MOBILE_DATA.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether songs may be downloaded over `connection`: wifi always, mobile
+/// data only when the user allowed it.
+pub fn may_download(prefs: &Prefs, connection: Connection) -> bool {
+    connection == Connection::Wifi || prefs.download_on_mobile_data
 }
 
 /// Whether the settings offer a choice for mobile data apart from wifi's.
@@ -87,6 +103,17 @@ mod tests {
             mobile_quality: quality(mobile),
             ..Prefs::default()
         }
+    }
+
+    #[test]
+    fn mobile_data_is_downloaded_over_only_when_allowed() {
+        let allowed = Prefs {
+            download_on_mobile_data: true,
+            ..Prefs::default()
+        };
+        assert!(may_download(&Prefs::default(), Connection::Wifi));
+        assert!(!may_download(&Prefs::default(), Connection::MobileData));
+        assert!(may_download(&allowed, Connection::MobileData));
     }
 
     #[test]

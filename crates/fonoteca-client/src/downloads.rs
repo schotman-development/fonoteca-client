@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
 
 use opensubsonic::Client;
-use slint::{ComponentHandle, Timer};
+use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::offline::{Fetch, Item, Work};
 use crate::{AppWindow, browse, offline, prefs, quality};
@@ -24,12 +24,26 @@ const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(5 * 60),
 ];
 
+/// How many bytes of a song arrive between looks at the connection.
+// ponytail: a paused song starts over, resuming its partial file with a
+// Range request would save the bytes already fetched.
+const CHECK_CONNECTION_EVERY: usize = 8 * 1024 * 1024;
+
+/// How long to wait before looking again at the connection that held
+/// downloads back.
+#[cfg(not(test))]
+const CONNECTION_CHECK_EVERY: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const CONNECTION_CHECK_EVERY: Duration = Duration::from_millis(200);
+
 /// Why a song didn't arrive.
 enum Failure {
     /// It isn't wanted any more.
     Stopped,
     /// More arrived than the size limit leaves room for.
     OverLimit,
+    /// The connection became one downloads may not use.
+    Paused,
     Disk(io::Error),
     Server(opensubsonic::Error),
 }
@@ -56,6 +70,16 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         }
     });
     let pending: Rc<RefCell<Option<Item>>> = Rc::default();
+    ui.set_download_mobile(saved.download_on_mobile_data);
+    ui.on_choose_download_mobile({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |allowed| {
+            let mut saved = prefs::load();
+            saved.download_on_mobile_data = allowed;
+            prefs::save(&saved);
+            pump(&weak.unwrap(), &browser);
+        }
+    });
     ui.on_confirm_download({
         let (weak, browser, pending) = (ui.as_weak(), browser.clone(), pending.clone());
         move || {
@@ -254,9 +278,16 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         return;
     };
     let downloads = browse::downloads(browser);
-    let next = match downloads.start_next() {
+    let may_use_network = may_download_now();
+    let next = match downloads.start_next(may_use_network) {
         Ok(Some(next)) => next,
-        Ok(None) => return,
+        Ok(None) => {
+            if downloads.is_waiting_for_wifi() {
+                browse::show_downloads(ui, browser);
+                check_connection_later(ui, browser);
+            }
+            return;
+        }
         Err(reason) => return browse::notify(ui, browser, reason),
     };
     let work = next.work.clone();
@@ -280,6 +311,28 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         }
     })
     .expect("the event loop is running");
+}
+
+/// Whether the connection now allows downloading: wifi always, mobile data
+/// when the user said it may.
+fn may_download_now() -> bool {
+    quality::may_download(&prefs::load(), quality::connection())
+}
+
+thread_local! {
+    /// Looks again at the connection while downloads wait for wifi.
+    static CONNECTION_CHECK: Timer = Timer::default();
+}
+
+fn check_connection_later(ui: &AppWindow, browser: &browse::Shared) {
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    CONNECTION_CHECK.with(|check| {
+        check.start(TimerMode::SingleShot, CONNECTION_CHECK_EVERY, move || {
+            if let Some(ui) = weak.upgrade() {
+                pump(&ui, &browser);
+            }
+        });
+    });
 }
 
 /// Records how the fetch of `work` ended, and says how long to wait
@@ -311,6 +364,8 @@ fn settle(
             browse::notify(ui, browser, offline::LIMIT_REACHED.to_owned());
             None
         }
+        // Waits for wifi at the next try, which starts the song over.
+        Failure::Paused => None,
         Failure::Disk(e) => {
             let reason = stop_reason(&e);
             downloads.halt(reason.clone());
@@ -435,6 +490,7 @@ async fn receive(
     let path = offline::song_file(&next.folder, song, &tag);
     let mut file = create(partial.insert(offline::partial_of(&path)), &next.cancel)?;
     let mut written = 0;
+    let mut since_check = 0;
     while let Some(bytes) = stream.chunk().await.map_err(Failure::Server)? {
         if next.cancel.load(Relaxed) {
             return Err(Failure::Stopped);
@@ -444,6 +500,11 @@ async fn receive(
             return Err(Failure::OverLimit);
         }
         file.write_all(&bytes).map_err(disk)?;
+        since_check += bytes.len();
+        if since_check >= CHECK_CONNECTION_EVERY && !may_download_now() {
+            return Err(Failure::Paused);
+        }
+        since_check %= CHECK_CONNECTION_EVERY;
     }
     Ok(Arrived {
         path,

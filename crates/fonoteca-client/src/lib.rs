@@ -5757,6 +5757,34 @@ mod tests {
             ui.invoke_choose_download_quality(0, 0);
             ui.invoke_remove_all_downloads();
 
+            // On mobile data nothing is fetched unless allowed; it waits for
+            // wifi and goes on when there is some.
+            crate::quality::TEST_ON_MOBILE_DATA.store(true, Relaxed);
+            ui.invoke_open("album:a1".into());
+            wait_for("the album to wait", || ui.get_tracks().row_count() == 2).await;
+            download_page(&ui);
+            wait_for("the wait for wifi", || {
+                ui.get_download_status().starts_with("Waiting for wifi")
+            })
+            .await;
+            assert_eq!(ui.get_download_state(), 1);
+            assert_eq!(ui.get_download_progress(), "0 of 2");
+            crate::quality::TEST_ON_MOBILE_DATA.store(false, Relaxed);
+            wait_for("wifi", || ui.get_download_state() == 2).await;
+            assert!(!ui.get_download_status().contains("Waiting"));
+            // Allowed, it goes on over mobile data.
+            ui.invoke_remove_all_downloads();
+            ui.invoke_choose_download_mobile(true);
+            crate::quality::TEST_ON_MOBILE_DATA.store(true, Relaxed);
+            ui.invoke_open("playlists".into());
+            ui.invoke_open("album:a1".into());
+            wait_for("the album to take mobile data", || ui.get_tracks().row_count() == 2).await;
+            download_page(&ui);
+            wait_for("mobile data", || ui.get_download_state() == 2).await;
+            crate::quality::TEST_ON_MOBILE_DATA.store(false, Relaxed);
+            ui.invoke_choose_download_mobile(false);
+            ui.invoke_remove_all_downloads();
+
             // A playlist downloads from its page, a song from its row's menu
             // and an album from its tile's; a song several want stays until
             // the last of them is let go.
