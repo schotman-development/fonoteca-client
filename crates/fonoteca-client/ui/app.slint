@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreGrid, IconButton, Icons, Input, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
 
@@ -212,7 +212,10 @@ component GestureHint inherits Rectangle {
 // Slint 1.18's Flickable gets wrong on a phone. A finger's drag follows the
 // finger from where it went down and glides on when let go, as Android's
 // lists do (Fling), along one axis: up or down, or sideways on a page wider
-// than the view, whichever way it went more; none while a shelf slides.
+// than the view, whichever way it went more. Sideways on a shelf it slides
+// the shelf instead; it leaves alone a control with a drag of its own, as a
+// seek bar has, and a shelf sliding itself (Landing). A finger that stops a
+// glide taps nothing, as on Android, and the wheel or a key take over from it.
 // Starts at the top left again whenever `visit` changes, that is on every page
 // shown. Takes the keys when `arrival` does, on a page opened, so Tab goes on
 // from the page's top and a screen reader names the page; not on a new sort or
@@ -271,20 +274,35 @@ component PageScroll inherits FocusScope {
     property <bool> taken;
     property <bool> across;
     property <length> far: root.across ? root.right : root.bottom;
+    property <length> page-at: root.across ? flick.content-x : flick.content-y;
     property <length> taken-at;
     property <length> finger-at: root.across ? drag.current-position.x : drag.current-position.y;
     property <length> pressed-at: root.across ? drag.pressed-position.x : drag.pressed-position.y;
     property <length> dragged-to: root.taken-at + root.finger-at - root.pressed-at;
     // Whether the drag took the finger down from the page's top, a pull.
     property <bool> from-top: !root.across && root.taken-at >= 0;
+    // Whether the drag slides a shelf the finger went sideways on rather
+    // than the page.
+    property <bool> shelving;
 
-    // Where a fling glides the page from, how far, for how long, and how
-    // far along its curve it has come.
+    // When the finger landed, and whether a control with a drag of its own,
+    // or a shelf, claimed it on its first move (Landing). The drag leaves
+    // the finger to such a control, and to a shelf sliding itself.
+    property <duration> landed-at;
+    property <bool> gripped: Landing.gripped == Landing.count;
+    property <bool> shelved: Landing.shelved == Landing.count;
+    property <bool> yielded: Input.sliding || root.gripped;
+    // Whether the finger stopped a glide, which leaves it tapping nothing.
+    property <bool> caught;
+
+    // Where a fling glides the page from, how far, for how long, how far
+    // along its curve it has come, and where it last put the page.
     property <length> glide-from;
     property <length> glide-by;
     property <duration> glide-time;
     property <bool> gliding;
     property <float> glided;
+    property <length> glided-to;
     states [
         flung when root.gliding: {
             glided: 1;
@@ -297,8 +315,14 @@ component PageScroll inherits FocusScope {
         if !root.gliding {
             return;
         }
+        // The wheel, a key or a bar moved the page meanwhile: they take over.
+        if root.page-at != root.glided-to {
+            root.gliding = false;
+            return;
+        }
         let to = root.glide-from + root.glide-by * root.glided;
         root.move-to(to);
+        root.glided-to = root.page-at;
         if root.glided >= 1 || to < root.far || to > 0 {
             root.gliding = false;
         }
@@ -310,6 +334,32 @@ component PageScroll inherits FocusScope {
             flick.content-x = clamp(at, root.right, 0);
         } else {
             flick.content-y = clamp(at, root.bottom, 0);
+        }
+    }
+
+    // A finger landed: it stops a glide, and what is under it may claim it
+    // anew.
+    function land() {
+        Landing.count += 1;
+        root.landed-at = animation-tick();
+        root.caught = root.gliding;
+        root.gliding = false;
+    }
+
+    // The drag takes the finger, along the way it went more.
+    function take() {
+        root.taken = true;
+        root.caught = false;
+        root.across = !root.upright;
+        root.shelving = root.across && root.shelved;
+        root.taken-at = root.page-at;
+        root.gliding = false;
+        if root.shelving {
+            // Its first move went to the shelf, which claimed it then.
+            speed.begin-from(root.pressed-at, root.landed-at, root.finger-at);
+            Landing.sliding = true;
+        } else {
+            speed.begin(root.finger-at);
         }
     }
 
@@ -369,27 +419,30 @@ component PageScroll inherits FocusScope {
     speed := FingerSpeed { }
 
     // Around the drag, so it sees each move first, as Slint asks the outer
-    // element first: where the finger is, for `upright`. A finger landing
-    // stops a glide.
+    // element first: where the finger is, for `upright`. Lifting a finger
+    // leaves the window, so each one lands anew.
     finger := TouchArea {
         width: parent.width;
         height: parent.height;
         enabled: drag.enabled;
         changed has-hover => {
             if self.has-hover {
-                root.gliding = false;
+                root.land();
             }
         }
 
-        // It holds every press back a moment to see where it goes.
+        // It holds every press back a moment to see where it goes. Up or
+        // down it takes the finger from its first move on; sideways on a
+        // page wider than the view, or on a shelf once the shelf has seen
+        // that first move and claimed the finger.
         drag := SwipeGestureHandler {
             width: parent.width;
             height: parent.height;
             enabled: Input.finger;
-            handle-swipe-up: root.upright && !Input.sliding;
-            handle-swipe-down: root.upright && !Input.sliding;
-            handle-swipe-left: !root.upright && root.right < 0 && !Input.sliding;
-            handle-swipe-right: !root.upright && root.right < 0 && !Input.sliding;
+            handle-swipe-up: root.upright && !root.yielded;
+            handle-swipe-down: root.upright && !root.yielded;
+            handle-swipe-left: !root.upright && (root.right < 0 || root.shelved) && !root.yielded;
+            handle-swipe-right: !root.upright && (root.right < 0 || root.shelved) && !root.yielded;
             moved => {
                 if !self.swiping {
                     return;
@@ -397,27 +450,42 @@ component PageScroll inherits FocusScope {
                 if root.taken {
                     speed.follow(root.finger-at);
                 } else {
-                    root.taken = true;
-                    root.across = !root.upright;
-                    root.taken-at = root.across ? flick.content-x : flick.content-y;
-                    root.gliding = false;
-                    speed.begin(root.finger-at);
+                    root.take();
                 }
-                root.move-to(root.dragged-to);
+                if root.shelving {
+                    Landing.slid = root.finger-at - root.pressed-at;
+                } else {
+                    root.move-to(root.dragged-to);
+                }
             }
             swiped => {
                 root.taken = false;
+                let flung = speed.at-release(root.finger-at);
+                if root.shelving {
+                    Landing.slid = root.finger-at - root.pressed-at;
+                    Landing.flung = flung;
+                    Landing.sliding = false;
+                    return;
+                }
                 if root.from-top && root.dragged-to >= root.reach {
                     root.refresh();
                     return;
                 }
-                let flung = speed.at-release(root.finger-at);
                 root.glide-from = clamp(root.dragged-to, root.far, 0);
+                root.glided-to = root.page-at;
                 root.glide-by = Fling.distance(flung);
                 root.glide-time = Fling.time(flung);
                 root.gliding = root.glide-by != 0;
             }
-            cancelled => { root.taken = false; }
+            // A shelf goes back to where it rested.
+            cancelled => {
+                root.taken = false;
+                if root.shelving {
+                    Landing.slid = 0;
+                    Landing.flung = 0;
+                    Landing.sliding = false;
+                }
+            }
 
             // Slint drops the held press, and the page doesn't scroll, when the
             // finger moves meanwhile over nothing that takes the move; this,
@@ -437,6 +505,18 @@ component PageScroll inherits FocusScope {
                 // A mouse drags playlists; it scrolls with the wheel and the bars.
                 mouse-drag-pan-enabled: false;
                 @children
+            }
+            // Over the page while a finger that stopped a glide is down, to
+            // take its tap: on Android one taps nothing.
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.caught;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                        root.caught = false;
+                    }
+                }
             }
         }
     }

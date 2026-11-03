@@ -1176,7 +1176,8 @@ mod tests {
 
     /// Drags the left button, or a finger with `Input.finger` on, from
     /// `from` along `path`: each step `ms` after the one before, to `dx`,
-    /// `dy` from where it went down. Lets go `rest` ms after the last.
+    /// `dy` from where it went down. Lets go `rest` ms after the last. A
+    /// finger lifted leaves the window, as on a phone.
     async fn drag(
         ui: &AppWindow,
         from: slint::LogicalPosition,
@@ -1196,6 +1197,9 @@ mod tests {
         }
         idle(Duration::from_millis(rest)).await;
         window.dispatch_event(WindowEvent::PointerReleased { position, button });
+        if ui.global::<Input>().get_finger() {
+            window.dispatch_event(WindowEvent::PointerExited);
+        }
     }
 
     /// Waits for `value` to stop changing, and gives where it stopped.
@@ -2383,14 +2387,25 @@ mod tests {
             drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -52.0)], 0).await;
             let glided = settled(scrolled).await - 172.0;
             assert!((glided - 647.4).abs() < 0.5, "glided {glided}px");
-            // A finger landing stops a glide. Lifting one leaves the window.
+            // A finger landing stops a glide, and taps nothing, as on Android.
             let let_go = scrolled() + 52.0;
             drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -52.0)], 0).await;
-            ui.window().dispatch_event(WindowEvent::PointerExited);
             idle(Duration::from_millis(100)).await;
-            drag(&ui, margin, &[], 0).await;
+            drag(&ui, from, &[], 0).await;
             let stopped = settled(scrolled).await - let_go;
             assert!(stopped > 0.0 && stopped < glided, "stopped after {stopped}px");
+            assert_eq!(ui.get_page(), Page::Albums, "the tap opened nothing");
+            // A key or the wheel moving the page meanwhile takes over from a
+            // glide.
+            let take_over = async |by: &dyn Fn()| {
+                drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -52.0)], 0).await;
+                idle(Duration::from_millis(50)).await;
+                by();
+                let moved = scrolled();
+                assert_eq!(settled(scrolled).await, moved, "the glide went on");
+            };
+            take_over(&|| press(&ui, slint::platform::Key::PageUp)).await;
+            take_over(&|| scroll(40.0)).await;
             // Past 8000px/s, Android's top speed, it glides no further: at
             // 12500px/s 7186px, where Slint's Flickable glided 39062px.
             let let_go = scrolled() + 220.0;
@@ -3816,9 +3831,9 @@ mod tests {
             wait_for("a pause", || Instant::now() > later).await;
             assert!(rests(1)(), "the shelf stays put");
             // A finger's drag mostly sideways moves only the shelf; one
-            // mostly up or down only the page. The page holds a finger's
-            // first 100ms to see where it goes, so the shelf takes a drag
-            // after that only.
+            // mostly up or down only the page. Its first move finds the
+            // shelf, and the page's drag slides the shelf from the next on,
+            // also once the page has let the press through after 100ms.
             window.dispatch_event(WindowEvent::PointerScrolled {
                 position: at(left + pitch),
                 delta_x: 0.0,
@@ -3843,6 +3858,109 @@ mod tests {
             drag(&again, at(left + pitch), &[(0, 6.0, -30.0), (0, 10.0, -50.0)], 60).await;
             assert!((page_at - tile_y() - 50.0).abs() < 0.01, "the page follows the finger");
             assert!(rests(2)(), "the shelf stays put");
+            // A quick flick, let go within the 100ms the page holds a finger
+            // back, slides the shelf on rather than tapping the tile under
+            // the finger. The shelf follows it as soon as its first move has
+            // found the shelf.
+            let start = shelf_at();
+            let shelf_y = middle(&button(&again, &tile(2))).y;
+            let along = |dx: f32| slint::LogicalPosition::new(left + pitch + dx, shelf_y);
+            let finger = PointerEventButton::Left;
+            window.dispatch_event(WindowEvent::PointerPressed { position: along(0.0), button: finger });
+            window.dispatch_event(WindowEvent::PointerMoved { position: along(-4.0) });
+            window.dispatch_event(WindowEvent::PointerMoved { position: along(-30.0) });
+            assert!((start - shelf_at() - 30.0).abs() < 0.01, "the shelf follows the finger");
+            window.dispatch_event(WindowEvent::PointerReleased { position: along(-30.0), button: finger });
+            window.dispatch_event(WindowEvent::PointerExited);
+            let resting = (left - settled(shelf_at).await) / pitch;
+            assert!(resting > 2.5, "came to rest on {resting}");
+            assert_eq!(again.get_page(), Page::Home, "the flick opened nothing");
+            // Enter and Space on a tile reached with Tab, and a screen
+            // reader's action, still open it.
+            let back_home = async || {
+                wait_for("its album", || again.get_page() == Page::Album).await;
+                again.invoke_back();
+                wait_for("the shelf", || find(&again, "Next in Recently added").is_some()).await;
+            };
+            // Tab reaches only the tiles in view. The Menu key, which selects
+            // a tile and does nothing to what else Tab stops on, tells when
+            // a tile has the keys.
+            let opens = async |key: slint::platform::Key| {
+                let reached = (0..100).any(|_| {
+                    press(&again, slint::platform::Key::Tab);
+                    press(&again, slint::platform::Key::Menu);
+                    again.get_selected_tiles() > 0
+                });
+                assert!(reached, "Tab reached no tile");
+                press(&again, slint::platform::Key::Escape);
+                assert_eq!(again.get_selected_tiles(), 0);
+                press(&again, key);
+                back_home().await;
+            };
+            opens(slint::platform::Key::Return).await;
+            opens(slint::platform::Key::Space).await;
+            let shown = (0..again.get_tiles().row_count())
+                .map(tile)
+                .find(|title| find(&again, title).is_some())
+                .unwrap();
+            click(&again, &shown);
+            back_home().await;
+            // A finger on the seek bar is the bar's: on the player bar, and
+            // on the now playing sheet, whose page leaves it the finger even
+            // when it goes more up than sideways.
+            let (can_play, playing) = (again.get_can_play(), again.get_playing());
+            let seeks = Rc::new(RefCell::new(Vec::new()));
+            again.on_seek({
+                let seeks = seeks.clone();
+                move |seconds| seeks.borrow_mut().push(seconds)
+            });
+            again.set_can_play(true);
+            again.set_playing(true);
+            again.set_playing_duration(200.0);
+            let seek_bar = || {
+                again
+                    .root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Slider)
+                    .match_predicate(|bar| bar.accessible_label().is_some_and(|l| l == "Position"))
+                    .find_first()
+                    .unwrap()
+            };
+            // Scrubs it with a finger drifting up as it goes right; gives
+            // where the bar was, and where it seeks to.
+            let scrub = async || {
+                let bar = seek_bar();
+                let (from, at, width) = (middle(&bar), bar.absolute_position(), bar.size().width);
+                let path = [(0, 4.0, -3.0), (16, 12.0, -14.0), (16, 40.0, -30.0), (16, 80.0, -45.0)];
+                drag(&again, from, &path, 0).await;
+                (at.y, ((from.x + 80.0 - at.x) / width).clamp(0.0, 1.0) * 200.0)
+            };
+            let (_, to) = scrub().await;
+            assert!(seeks.borrow().last().is_some_and(|seek| (seek - to).abs() < 0.01), "the bar's");
+            let queue_lines = again.get_queue_lines();
+            again.set_queue_lines(slint::ModelRc::new(slint::VecModel::from(vec![
+                QueueLine::default(),
+                QueueLine::default(),
+            ])));
+            again.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            click(&again, "Now playing");
+            idle(Duration::from_millis(400)).await;
+            let (y, to) = scrub().await;
+            assert_eq!(seeks.borrow().len(), 2);
+            assert!(seeks.borrow().last().is_some_and(|seek| (seek - to).abs() < 0.01), "the sheet's");
+            assert_eq!(seek_bar().absolute_position().y, y, "the sheet stays put");
+            // The bar's claim ends with its finger: the next one scrolls it.
+            let above = slint::LogicalPosition::new(180.0, y - 120.0);
+            drag(&again, above, &[(0, 0.0, -20.0), (0, 0.0, -40.0)], 100).await;
+            assert!(seek_bar().absolute_position().y < y, "the sheet scrolls");
+            press(&again, slint::platform::Key::Escape);
+            wait_for("the sheet to close", || !again.get_now_playing_open()).await;
+            again.set_queue_lines(queue_lines);
+            again.set_playing(playing);
+            again.set_can_play(can_play);
+            again
+                .window()
+                .set_size(slint::LogicalSize::new(1100.0, 760.0));
             again.global::<Input>().set_touch(false);
             again.global::<Input>().set_finger(false);
             window.dispatch_event(WindowEvent::PointerScrolled {

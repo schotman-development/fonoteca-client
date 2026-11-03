@@ -136,6 +136,26 @@ export global Input {
     in-out property <int> refocus;
 }
 
+// A finger landing on a page. The page's drag holds it back from what is
+// under it while it sees where it goes, and drops it once it takes it, so
+// what is under the finger learns of it only as the finger first moves over
+// it, and claims it then: a control with a drag of its own (GripArea), which
+// the page's drag then leaves alone, or a shelf, which the page's drag
+// slides when the finger goes sideways. A shelf sliding itself would have to
+// wait out that hold, and a quick flick would tap the tile under the finger.
+export global Landing {
+    // Counts the fingers that have landed on a page, and gives the one a
+    // control claimed, and the one a shelf did.
+    in-out property <int> count;
+    in-out property <int> gripped: -1;
+    in-out property <int> shelved: -1;
+    // Whether the page's drag slides that shelf, and how far it has; how
+    // fast the finger went when it let go.
+    in-out property <bool> sliding;
+    in-out property <length> slid;
+    in-out property <float> flung;
+}
+
 // How a drag glides on when a finger lets go of it while moving: as Android's
 // lists do (OverScroller with the default scroll friction), in logical pixels,
 // which are Android's dp. Slint 1.18's Flickable slows evenly with no top
@@ -198,6 +218,17 @@ export component FingerSpeed {
         root.latest-time = root.from-time;
         root.latest-at = at;
         root.moved-time = root.from-time;
+    }
+
+    // The finger took the drag at `at` on its second move, having landed at
+    // `landed` at `since`: the speed goes from where it landed, unless it
+    // came long enough after to have rested there.
+    public function begin-from(landed: length, since: duration, at: length) {
+        root.begin(at);
+        if root.from-time - since <= root.rest {
+            root.from-time = since;
+            root.from-at = landed;
+        }
     }
 
     // The finger moved to `at`.
@@ -1907,6 +1938,21 @@ export component CoverShelf {
         self.rest-on(Math.round(glided / self.pitch), max(self.step, Fling.time(speed)));
     }
 
+    // The finger that first moved over the shelf after landing on the page,
+    // by its count (Landing), and whether the page's drag slides the shelf
+    // for it; once it lets go, the shelf flings.
+    property <int> landing: -1;
+    property <bool> page-slides: self.landing == Landing.count && Landing.sliding;
+    changed page-slides => {
+        if !self.page-slides {
+            self.fling(Landing.slid, Landing.flung);
+        }
+    }
+    function claim() {
+        self.landing = Landing.count;
+        Landing.shelved = Landing.count;
+    }
+
     // Measures a tile's height at this width.
     probe := CoverTile {
         visible: false;
@@ -1991,6 +2037,8 @@ export component CoverShelf {
             cancelled => { Input.sliding = false; }
 
             TouchArea {
+                changed mouse-x => { root.claim(); }
+                changed mouse-y => { root.claim(); }
                 scroll-event(event) => {
                     if abs(event.delta-x) <= abs(event.delta-y) {
                         return reject;
@@ -2013,14 +2061,14 @@ export component CoverShelf {
                     height: parent.height + 16px;
                     clip: true;
                     Rectangle {
-                        // Where a finger or a scroll has the tiles, which
-                        // glide back from there to where they rest.
+                        // Where a finger, the page's drag or a scroll has the
+                        // tiles, which glide back from there to where they rest.
                         property <length> offset;
                         x: 8px - root.at * root.pitch + self.offset;
                         y: 8px;
                         states [
-                            swiping when swipe.swiping: {
-                                offset: clamp(swipe.current-position.x - swipe.pressed-position.x, (root.first - root.last-first) * root.pitch, root.first * root.pitch);
+                            swiping when swipe.swiping || root.page-slides: {
+                                offset: clamp(root.page-slides ? Landing.slid : swipe.current-position.x - swipe.pressed-position.x, (root.first - root.last-first) * root.pitch, root.first * root.pitch);
                                 out {
                                     animate offset { duration: root.glide-time; easing: Fling.curve; }
                                 }
@@ -2575,6 +2623,14 @@ export struct QueueLine {
     part: bool,
 }
 
+// A TouchArea with a drag of its own, as a seek bar has: a finger that
+// first moves over it after landing on a page is its, and the page's drag
+// leaves it alone (Landing).
+component GripArea inherits TouchArea {
+    changed mouse-x => { Landing.gripped = Landing.count; }
+    changed mouse-y => { Landing.gripped = Landing.count; }
+}
+
 // The track's position, to drag or click to a new one, which it hands to
 // `seek` once let go. With the song's `waveform`, the commands of a path 100
 // wide and 1 high, it is drawn as bars, the part played in the accent colour;
@@ -2649,7 +2705,7 @@ component SeekBar {
         border-radius: 6px;
         background: Theme.accent;
     }
-    touch := TouchArea {
+    touch := GripArea {
         enabled: root.duration > 0;
         mouse-cursor: pointer;
         pointer-event(event) => {
