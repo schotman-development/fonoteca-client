@@ -1178,6 +1178,9 @@ export component AppWindow inherits Window {
     // `ask-download`.
     callback confirm-download();
     callback remove-all-downloads();
+    // Android stopped the downloads' job, which the user did from its Task
+    // Manager.
+    callback stop-downloads();
     // Plays the album's, playlist's or artist's tracks, or the songs of the
     // table on screen, from the `row`th.
     callback play-tracks(row: int);

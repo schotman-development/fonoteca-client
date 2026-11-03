@@ -1,6 +1,7 @@
 package io.github.schotman_development.fonoteca;
 
 import android.app.NativeActivity;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
@@ -18,6 +19,38 @@ import android.view.WindowInsetsController;
 public class MainActivity extends NativeActivity {
     /** A media button pressed: Rust's (src/media.rs), registered as the app starts. */
     static native void command(int button, double seconds);
+
+    /** The user stopped the downloads' job: Rust's (src/download_job.rs), registered as the app starts. */
+    static native void downloadsStopped();
+
+    /**
+     * Keeps the downloads going in the background (Android 14 and later) for
+     * about `bytes`, from Rust's thread when a download starts. The
+     * notification the job shows needs the user's permission from Android 13.
+     */
+    public void startDownloads(long bytes, boolean unmetered) {
+        // Only where there is a job to show it for, and only once a run.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !askedForNotifications) {
+            askedForNotifications = true;
+            runOnUiThread(() -> {
+                String notifications = "android.permission.POST_NOTIFICATIONS";
+                if (checkSelfPermission(notifications) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[] {notifications}, 0);
+                }
+            });
+        }
+        DownloadService.schedule(this, bytes, unmetered);
+    }
+
+    private boolean askedForNotifications;
+
+    public void progressDownloads(String text, int done, int total) {
+        DownloadService.progress(text, done, total);
+    }
+
+    public void finishDownloads() {
+        DownloadService.finish(this);
+    }
 
     /** What plays, from Rust's thread, for the notification and lock screen. */
     public void showPlaying(String title, String artists, boolean playing, long duration, long position) {

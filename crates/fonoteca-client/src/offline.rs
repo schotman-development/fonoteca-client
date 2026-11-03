@@ -481,6 +481,27 @@ impl Downloads {
         self.state().asked = Some((format.to_owned(), bit_rate));
     }
 
+    /// Whether a song is being fetched, or more is still to come and nothing
+    /// has stopped it: while so, Android's job that keeps the app going in
+    /// the background is wanted. Waiting for wifi or between tries counts.
+    pub fn is_working(&self) -> bool {
+        let state = self.state();
+        if state.running.is_some() {
+            return true;
+        }
+        if state.halted.is_some() {
+            return false;
+        }
+        let covers = wanted_covers(&state.manifest.items);
+        let cover_to_come = (covers.iter())
+            .any(|id| !state.covers.contains(*id) && !state.failed.contains_key(&cover_key(id)));
+        let songs = missing(&state.manifest.items, &state.present);
+        cover_to_come
+            || songs
+                .iter()
+                .any(|song| !state.failed.contains_key(&song.id))
+    }
+
     /// Whether something waits for wifi.
     pub fn is_waiting_for_wifi(&self) -> bool {
         self.state().waiting_for_wifi
@@ -647,6 +668,18 @@ impl Downloads {
         let mut state = self.state();
         state.limit = limit;
         state.halted = None;
+    }
+
+    /// About how many bytes the songs still to come will take, as they are
+    /// asked for.
+    pub fn remaining_estimate(&self) -> u64 {
+        let state = self.state();
+        let (format, bit_rate) = state.asked.clone().unwrap_or_else(original_request);
+        let songs: Vec<Child> = missing(&state.manifest.items, &state.present)
+            .into_iter()
+            .cloned()
+            .collect();
+        estimate(&songs, &format, bit_rate)
     }
 
     pub fn summary(&self) -> Summary {
@@ -1289,6 +1322,22 @@ mod tests {
     }
 
     #[test]
+    fn the_job_is_told_what_is_still_to_come() {
+        let downloads = Downloads::default();
+        let mut one = album_with_songs("one", &["a", "b"]);
+        one.song[0].size = Some(1000);
+        one.song[1].size = Some(500);
+        {
+            let mut state = downloads.state();
+            state.manifest.items.push(Item::Album(one));
+            state.present = saved(&["a"]);
+        }
+        assert_eq!(downloads.remaining_estimate(), 500);
+        downloads.set_quality("opus", 128);
+        assert_eq!(downloads.remaining_estimate(), 0, "no length is known");
+    }
+
+    #[test]
     fn a_song_fits_until_it_would_pass_the_limit() {
         assert!(fits(u64::MAX / 2, BYTES_PER_GB, None));
         assert!(fits(0, 0, Some(BYTES_PER_GB)));
@@ -1374,6 +1423,35 @@ mod tests {
             panic!("300 s of Opus 128 is under 5 MB");
         };
         assert_eq!(fetch.room, Some(BYTES_PER_GB - 500 * 1_048_576));
+    }
+
+    #[test]
+    fn the_job_stays_while_a_song_is_being_fetched_or_more_is_to_come() {
+        let folder = std::env::temp_dir().join(format!("working-test-{}", std::process::id()));
+        let downloads = Downloads::default();
+        assert!(!downloads.is_working(), "nothing is wanted");
+        {
+            let mut state = downloads.state();
+            state.folder = Some(folder);
+            state.manifest.items.push(album("one", &["a"]));
+        }
+        assert!(downloads.is_working(), "a song is to come");
+        let Ok(Some(_)) = downloads.start_next(true) else {
+            panic!("a song to fetch");
+        };
+        assert!(
+            downloads.is_working(),
+            "a pump during a fetch must not end the job"
+        );
+        downloads.ended();
+        downloads.give_up(&Work::Song(Box::new(song("a", None))), "refused".into());
+        assert!(
+            !downloads.is_working(),
+            "only what the server refused is left"
+        );
+        downloads.state().failed.clear();
+        downloads.halt("full".into());
+        assert!(!downloads.is_working(), "stopped");
     }
 
     #[test]

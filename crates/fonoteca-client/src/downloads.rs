@@ -14,7 +14,7 @@ use opensubsonic::Client;
 use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::offline::{Fetch, Item, Work};
-use crate::{AppWindow, browse, offline, prefs, quality};
+use crate::{AppWindow, browse, download_job, offline, prefs, quality};
 
 /// How long to wait before the first, second and third new try of a song
 /// the server or the network failed on.
@@ -78,6 +78,13 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             saved.download_on_mobile_data = allowed;
             prefs::save(&saved);
             pump(&weak.unwrap(), &browser);
+        }
+    });
+    ui.on_stop_downloads({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || {
+            browse::downloads(&browser).halt("Downloads stopped.".to_owned());
+            browse::show_downloads(&weak.unwrap(), &browser);
         }
     });
     ui.on_confirm_download({
@@ -275,6 +282,9 @@ pub fn resume(ui: &AppWindow, browser: &browse::Shared) {
 /// ends, goes on to the next.
 fn pump(ui: &AppWindow, browser: &browse::Shared) {
     let Some(client) = browse::client(browser) else {
+        // Signed out with a song on its way: nothing goes on, and the job
+        // that kept the app alive for it is done.
+        download_job::finish();
         return;
     };
     let downloads = browse::downloads(browser);
@@ -282,14 +292,24 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
     let next = match downloads.start_next(may_use_network) {
         Ok(Some(next)) => next,
         Ok(None) => {
+            // Nothing starts while a song is in flight, or waits for wifi or
+            // a new try; the job is for then.
+            if !downloads.is_working() {
+                download_job::finish();
+            }
             if downloads.is_waiting_for_wifi() {
                 browse::show_downloads(ui, browser);
                 check_connection_later(ui, browser);
             }
             return;
         }
-        Err(reason) => return browse::notify(ui, browser, reason),
+        Err(reason) => {
+            download_job::finish();
+            return browse::notify(ui, browser, reason);
+        }
     };
+    let unmetered = !prefs::load().download_on_mobile_data;
+    download_job::start(downloads.remaining_estimate(), unmetered);
     let work = next.work.clone();
     let job = tokio::spawn(fetch(client, next));
     let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -298,6 +318,7 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         let Some(ui) = weak.upgrade() else { return };
         let delay = settle(&ui, &browser, &work, result);
         browse::show_downloads(&ui, &browser);
+        report_progress(&browse::downloads(&browser));
         match delay {
             None => pump(&ui, &browser),
             Some(delay) => {
@@ -311,6 +332,13 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         }
     })
     .expect("the event loop is running");
+}
+
+/// Tells Android's notification for the downloads how far they are.
+fn report_progress(downloads: &offline::Downloads) {
+    let summary = downloads.summary();
+    let total = summary.songs + summary.missing;
+    download_job::progress(&summary.status(), summary.songs, total);
 }
 
 /// Whether the connection now allows downloading: wifi always, mobile data

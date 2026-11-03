@@ -4,6 +4,8 @@ slint::include_modules!();
 mod bit_perfect;
 mod browse;
 #[cfg(not(target_family = "wasm"))]
+mod download_job;
+#[cfg(not(target_family = "wasm"))]
 mod downloads;
 #[cfg(not(target_family = "wasm"))]
 mod eq_graph;
@@ -404,7 +406,8 @@ fn android_main(app: slint::android::AndroidApp) {
     vm.attach_current_thread(|env| {
         let activity =
             unsafe { jni::objects::JObject::from_raw(env, app.activity_as_ptr().cast()) };
-        media::init(env, &activity)
+        media::init(env, &activity)?;
+        download_job::init(env, &activity)
     })
     .expect("Android's media controls");
     // The time zone tells the radio page the country for its local shelf.
@@ -453,7 +456,10 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     #[cfg(not(target_family = "wasm"))]
     downloads::wire(&ui, &browser);
     #[cfg(target_os = "android")]
-    media::wire(&ui);
+    {
+        media::wire(&ui);
+        download_job::wire(&ui);
+    }
 
     // On a phone-sized screen everything is drawn a quarter larger than the
     // browser's pixel ratio. This runs whenever the width or the scale
@@ -5886,6 +5892,30 @@ mod tests {
             assert!(listed(&ui));
             ui.invoke_remove_all_downloads();
             assert!(!listed(&ui), "the sidebar's entry goes with the downloads");
+
+            // A pump with a song on its way leaves the background job alone,
+            // and signing out then ends it.
+            ui.invoke_open("album:a1".into());
+            wait_for("the album for the job", || ui.get_tracks().row_count() == 2).await;
+            SLOW_DOWNLOAD.store(true, Relaxed);
+            let finishes = || download_job::told::FINISHES.load(Relaxed);
+            let before = finishes();
+            download_page(&ui);
+            idle(Duration::from_millis(150)).await;
+            ui.invoke_choose_download_limit(0);
+            idle(Duration::from_millis(100)).await;
+            assert_eq!(finishes(), before, "a pump during a fetch");
+            ui.invoke_sign_out();
+            wait_for("the job ended", || finishes() > before).await;
+            SLOW_DOWNLOAD.store(false, Relaxed);
+            wait_for("the sign-in step after it", || ui.get_step() == Step::SignIn).await;
+            ui.set_username("joe".into());
+            ui.set_password("pw".into());
+            click(&ui, "Sign in");
+            wait_for("the ListenBrainz step again", || ui.get_step() == Step::Listenbrainz).await;
+            click(&ui, "Skip");
+            wait_for("signed in again", || ui.get_step() == Step::Done).await;
+            wait_for("the account saved again", || !ui.get_busy()).await;
 
             // Signing out takes the downloads with it, and the button says
             // what that frees.
