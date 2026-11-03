@@ -28,6 +28,8 @@ const CACHEDIR_TAG: &str = "CACHEDIR.TAG";
 const CACHEDIR_TAG_CONTENT: &str = "Signature: 8a477f597d28d172789f06886806bc55\n# Songs downloaded from the server; they can be fetched again.\n";
 /// The tag of a file that is the song as the server keeps it.
 pub const ORIGINAL: &str = "original";
+/// The `format` that asks for the original.
+pub const RAW: &str = "raw";
 /// What a song's file is called while it arrives.
 const PARTIAL: &str = "partial";
 /// For a song whose file name gives no extension.
@@ -62,6 +64,15 @@ impl Item {
         }
     }
 
+    /// What to call it in a question about it.
+    pub fn title(&self) -> &str {
+        match self {
+            Item::Album(album) => &album.album.name,
+            Item::Playlist(playlist) => &playlist.playlist.name,
+            Item::Song(song) => &song.title,
+        }
+    }
+
     /// The id of its cover art.
     fn cover_art(&self) -> Option<&str> {
         match self {
@@ -93,6 +104,9 @@ struct Manifest {
 pub struct Saved {
     pub path: PathBuf,
     pub size: u64,
+    /// How it was fetched: `ORIGINAL`, or the format and kbit/s, as
+    /// "opus-128".
+    pub tag: String,
 }
 
 #[derive(Default)]
@@ -108,6 +122,12 @@ struct State {
     halted: Option<String>,
     /// The most the songs may take, if the user set one.
     limit: Option<u64>,
+    /// The format and kbit/s songs are asked for in; the original without.
+    asked: Option<(String, u32)>,
+    /// Whether the server answered a request for another format with the
+    /// original, and whether the pages show what is kept, not the server.
+    sends_originals_only: bool,
+    offline: bool,
     /// The song being fetched and the flag that stops it.
     running: Option<(String, Arc<AtomicBool>)>,
     attempt: usize,
@@ -202,6 +222,86 @@ fn extension_of(song: &Child) -> String {
         .unwrap_or_else(|| UNKNOWN_EXTENSION.to_owned())
 }
 
+/// The tag of a file fetched as `format` at `bit_rate` kbit/s.
+pub fn tag_of(format: &str, bit_rate: u32) -> String {
+    if format == RAW {
+        ORIGINAL.to_owned()
+    } else {
+        format!("{format}-{bit_rate}")
+    }
+}
+
+/// The kbit/s a lossy file's tag says it was fetched at.
+fn bit_rate_of(tag: &str) -> Option<u32> {
+    tag.split_once('-')?.1.parse().ok()
+}
+
+/// Whether a download tagged `tag` plays in place of streaming: always while
+/// the server isn't there and for an original, and else when it is at least
+/// as good as `wanted`, the format and kbit/s the settings stream in. A lossy
+/// one never replaces streaming the original.
+fn plays_download(tag: &str, online: bool, wanted: (&str, u32)) -> bool {
+    if !online || tag == ORIGINAL {
+        return true;
+    }
+    wanted.0 != RAW && bit_rate_of(tag).is_some_and(|kept| kept >= wanted.1)
+}
+
+/// Whether a server that was asked for `format` and said the file is
+/// `content_type` did convert it.
+pub fn sent_as_asked(format: &str, content_type: Option<&str>) -> bool {
+    let Some(content_type) = content_type else {
+        return true;
+    };
+    let types: &[&str] = match format {
+        "mp3" => &["audio/mpeg", "audio/mp3"],
+        "opus" => &["audio/ogg", "audio/opus", "application/ogg"],
+        "aac" => &[
+            "audio/aac",
+            "audio/aacp",
+            "audio/x-aac",
+            "audio/mp4",
+            "audio/x-m4a",
+        ],
+        _ => return true,
+    };
+    types.contains(&content_type)
+}
+
+/// About how many bytes `songs` take fetched as `format` at `bit_rate`
+/// kbit/s: the sizes the server gives for the originals, the length times
+/// the rate for a conversion.
+pub fn estimate(songs: &[Child], format: &str, bit_rate: u32) -> u64 {
+    songs
+        .iter()
+        .map(|song| {
+            if format == RAW {
+                return u64::try_from(song.size.unwrap_or(0)).unwrap_or(0);
+            }
+            let seconds = u64::try_from(song.duration.unwrap_or(0)).unwrap_or(0);
+            seconds * u64::from(bit_rate) * 1000 / 8
+        })
+        .sum()
+}
+
+/// What to tell before `songs` are fetched as `format` at `bit_rate`: how
+/// many, about how big and in what form.
+pub fn estimate_note(songs: &[Child], format: &str, bit_rate: u32) -> String {
+    let count = match songs.len() {
+        1 => "1 song".to_owned(),
+        count => format!("{count} songs"),
+    };
+    let form = match format {
+        RAW => "as the original files".to_owned(),
+        "opus" => format!("as Opus at {bit_rate} kbit/s"),
+        other => format!("as {} at {bit_rate} kbit/s", other.to_uppercase()),
+    };
+    match estimate(songs, format, bit_rate) {
+        0 => format!("{count}, {form}."),
+        bytes => format!("{count}, about {}, {form}.", bytes_text(bytes)),
+    }
+}
+
 /// The size limit the settings' `index`th entry stands for.
 pub fn limit_of(index: usize) -> Option<u64> {
     LIMITS_GB
@@ -210,10 +310,11 @@ pub fn limit_of(index: usize) -> Option<u64> {
         .map(|gigabytes| gigabytes * BYTES_PER_GB)
 }
 
-/// Whether a song of `size` bytes, when the server says, still fits in
-/// `limit` with `used` already kept.
-fn fits(used: u64, size: Option<i64>, limit: Option<u64>) -> bool {
-    let size = u64::try_from(size.unwrap_or(0)).unwrap_or(0);
+/// Whether a song estimated at `size` bytes, in the form it is asked for,
+/// still fits in `limit` with `used` already kept. An estimate of nothing,
+/// for a song whose size or length isn't known, always does; what arrives is
+/// held to the limit as it comes.
+fn fits(used: u64, size: u64, limit: Option<u64>) -> bool {
     limit.is_none_or(|limit| used + size <= limit)
 }
 
@@ -235,6 +336,8 @@ pub struct Summary {
     pub missing: usize,
     /// Why nothing is arriving, when something should.
     pub halted: Option<String>,
+    /// Whether the server sent originals where another format was asked.
+    pub originals_only: bool,
 }
 
 impl Summary {
@@ -255,11 +358,22 @@ impl Summary {
     }
 
     pub fn status(&self) -> String {
-        match (&self.halted, self.missing) {
+        let progress = match (&self.halted, self.missing) {
             (Some(reason), _) => reason.clone(),
             (None, 0) => String::new(),
             (None, missing) => format!("{missing} to go."),
-        }
+        };
+        let note = if self.originals_only {
+            "This server sends original files only."
+        } else {
+            ""
+        };
+        [progress.as_str(), note]
+            .iter()
+            .filter(|part| !part.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -341,6 +455,30 @@ impl Downloads {
         self.state().present.get(id).map(|saved| saved.path.clone())
     }
 
+    /// The finished file of song `id` if it should play in place of
+    /// streaming it as `wanted` says: the format and kbit/s the settings
+    /// stream in over the connection in use.
+    pub fn playable(&self, id: &str, wanted: (&str, u32)) -> Option<PathBuf> {
+        let state = self.state();
+        let saved = state.present.get(id)?;
+        plays_download(&saved.tag, !state.offline, wanted).then(|| saved.path.clone())
+    }
+
+    /// Says whether the pages show what is kept instead of the server's.
+    pub fn set_offline(&self, offline: bool) {
+        self.state().offline = offline;
+    }
+
+    /// Sets the format and kbit/s songs are fetched in from now on.
+    pub fn set_quality(&self, format: &str, bit_rate: u32) {
+        self.state().asked = Some((format.to_owned(), bit_rate));
+    }
+
+    /// Notes that the server sent an original where a conversion was asked.
+    pub fn note_originals_only(&self) {
+        self.state().sends_originals_only = true;
+    }
+
     /// How many songs of the item shown at `link` have arrived, and how many
     /// it has; none when it wasn't asked for.
     pub fn progress_of(&self, link: &str) -> Option<(usize, usize)> {
@@ -378,6 +516,7 @@ impl Downloads {
                 server: server.to_owned(),
                 items: Vec::new(),
             };
+            state.sends_originals_only = false;
         }
         let link = item.link();
         state.manifest.items.retain(|kept| kept.link() != link);
@@ -448,16 +587,14 @@ impl Downloads {
         if let Some(id) = cover {
             let cancel = Arc::new(AtomicBool::new(false));
             state.running = Some((cover_key(&id), cancel.clone()));
-            let path = folder.join(COVERS).join(hex(&id));
             return Ok(Some(Fetch {
-                partial: path.with_extension(PARTIAL),
-                path,
                 work: Work::Cover(id),
+                folder: folder.join(COVERS),
+                asked: state.asked.clone().unwrap_or_else(original_request),
                 room: None,
                 cancel,
             }));
         }
-        let folder = folder.join(SONGS);
         let Some(song) = missing(&state.manifest.items, &state.present)
             .into_iter()
             .find(|song| !state.failed.contains_key(&song.id))
@@ -465,19 +602,20 @@ impl Downloads {
         else {
             return Ok(None);
         };
+        let asked = state.asked.clone().unwrap_or_else(original_request);
         let used = used(&state.present);
-        if !fits(used, song.size, state.limit) {
+        let size = estimate(std::slice::from_ref(&song), &asked.0, asked.1);
+        if !fits(used, size, state.limit) {
             state.halted = Some(LIMIT_REACHED.to_owned());
             return Err(LIMIT_REACHED.to_owned());
         }
         let cancel = Arc::new(AtomicBool::new(false));
         state.running = Some((song.id.clone(), cancel.clone()));
-        let name = file_name(&song.id, ORIGINAL, &extension_of(&song));
         Ok(Some(Fetch {
-            partial: folder.join(format!("{name}.{PARTIAL}")),
-            path: folder.join(name),
-            room: state.limit.map(|limit| limit.saturating_sub(used)),
             work: Work::Song(Box::new(song)),
+            folder: folder.join(SONGS),
+            asked,
+            room: state.limit.map(|limit| limit.saturating_sub(used)),
             cancel,
         }))
     }
@@ -497,6 +635,7 @@ impl Downloads {
             songs: state.present.len(),
             missing: missing(&state.manifest.items, &state.present).len(),
             halted: state.halted.clone(),
+            originals_only: state.sends_originals_only,
         }
     }
 
@@ -506,6 +645,7 @@ impl Downloads {
         state.manifest.items.clear();
         state.present.clear();
         state.covers.clear();
+        state.sends_originals_only = false;
         if let Some((_, cancel)) = &state.running {
             cancel.store(true, Relaxed);
         }
@@ -518,8 +658,8 @@ impl Downloads {
         }
     }
 
-    /// The fetch of `work` ended with its whole file at `path`.
-    pub fn finished(&self, work: &Work, path: PathBuf) -> io::Result<()> {
+    /// The fetch of `work` ended with its whole file at `path`, tagged `tag`.
+    pub fn finished(&self, work: &Work, path: PathBuf, tag: &str) -> io::Result<()> {
         let mut state = self.state();
         state.running = None;
         state.attempt = 0;
@@ -541,7 +681,10 @@ impl Downloads {
         }
         match work {
             Work::Song(song) => {
-                state.present.insert(song.id.clone(), Saved { path, size });
+                let tag = tag.to_owned();
+                state
+                    .present
+                    .insert(song.id.clone(), Saved { path, size, tag });
             }
             Work::Cover(id) => {
                 state.covers.insert(id.clone());
@@ -727,12 +870,39 @@ impl Work {
 /// What the job needs to fetch one thing.
 pub struct Fetch {
     pub work: Work,
-    pub partial: PathBuf,
-    pub path: PathBuf,
+    /// The folder its file goes in, and the format and kbit/s asked for.
+    pub folder: PathBuf,
+    pub asked: (String, u32),
     /// How many bytes may arrive before the size limit is passed, whatever
     /// size the server said the song has.
     pub room: Option<u64>,
     pub cancel: Arc<AtomicBool>,
+}
+
+fn original_request() -> (String, u32) {
+    (RAW.to_owned(), 0)
+}
+
+/// Where the finished file of a song fetched as `tag` goes in `folder`:
+/// with the extension of its format, or for an original of its own suffix.
+pub fn song_file(folder: &Path, song: &Child, tag: &str) -> PathBuf {
+    let extension = match tag.split_once('-') {
+        Some((format, _)) => format.to_owned(),
+        None => extension_of(song),
+    };
+    folder.join(file_name(&song.id, tag, &extension))
+}
+
+/// Where the finished file of cover art `id` goes in `folder`.
+pub fn cover_file(folder: &Path, id: &str) -> PathBuf {
+    folder.join(hex(id))
+}
+
+/// Where a file is written while it arrives.
+pub fn partial_of(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{PARTIAL}"));
+    PathBuf::from(name)
 }
 
 fn prepare(folder: &Path) -> io::Result<()> {
@@ -776,7 +946,7 @@ fn scan(folder: &Path) -> HashMap<String, Saved> {
     let mut present = HashMap::new();
     for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
         let name = entry.file_name();
-        let Some((id, _)) = name.to_str().and_then(parse_name) else {
+        let Some((id, tag)) = name.to_str().and_then(parse_name) else {
             continue;
         };
         if let Ok(metadata) = entry.metadata() {
@@ -785,6 +955,7 @@ fn scan(folder: &Path) -> HashMap<String, Saved> {
                 Saved {
                     path: entry.path(),
                     size: metadata.len(),
+                    tag: tag.to_owned(),
                 },
             );
         }
@@ -823,6 +994,7 @@ mod tests {
                 let saved = Saved {
                     path: PathBuf::from(id),
                     size: 1,
+                    tag: ORIGINAL.to_owned(),
                 };
                 (id.to_string(), saved)
             })
@@ -882,7 +1054,7 @@ mod tests {
         downloads.state().running = Some(("a".to_owned(), Arc::default()));
         let gone = std::env::temp_dir().join("offline-test-never-there/a.original.flac");
         let work = Work::Song(Box::new(song("a", None)));
-        assert!(downloads.finished(&work, gone).is_ok());
+        assert!(downloads.finished(&work, gone, ORIGINAL).is_ok());
         assert!(
             downloads.state().running.is_none(),
             "the next song can start"
@@ -1028,12 +1200,78 @@ mod tests {
     }
 
     #[test]
+    fn a_download_plays_in_place_of_streaming_only_when_as_good() {
+        // Offline anything kept plays; an original always does.
+        assert!(plays_download("opus-64", false, ("raw", 0)));
+        assert!(plays_download(ORIGINAL, true, ("mp3", 320)));
+        // A lossy one never replaces streaming the original.
+        assert!(!plays_download("opus-320", true, ("raw", 0)));
+        // Else it must be at least the bitrate streamed.
+        assert!(plays_download("opus-128", true, ("mp3", 128)));
+        assert!(plays_download("opus-128", true, ("mp3", 96)));
+        assert!(!plays_download("opus-96", true, ("mp3", 128)));
+        assert!(!plays_download("mystery", true, ("mp3", 128)));
+        assert_eq!(tag_of("raw", 0), ORIGINAL);
+        assert_eq!(tag_of("opus", 128), "opus-128");
+    }
+
+    #[test]
+    fn a_server_that_ignores_the_format_is_told_by_the_type_it_sends() {
+        assert!(sent_as_asked("opus", Some("audio/ogg")));
+        assert!(sent_as_asked("mp3", Some("audio/mpeg")));
+        assert!(sent_as_asked("aac", Some("audio/mp4")));
+        assert!(!sent_as_asked("opus", Some("audio/flac")));
+        assert!(!sent_as_asked("mp3", Some("audio/flac")));
+        assert!(sent_as_asked("mp3", None), "nothing to tell it by");
+    }
+
+    #[test]
+    fn what_a_download_will_take_is_estimated_by_size_or_by_length_and_rate() {
+        let mut one = song("a", None);
+        one.size = Some(30_000_000);
+        one.duration = Some(240);
+        let mut two = song("b", None);
+        two.size = Some(10_000_000);
+        two.duration = Some(60);
+        let songs = [one, two];
+        assert_eq!(estimate(&songs, RAW, 0), 40_000_000);
+        // 300 s at 128 kbit/s is 4.8 MB.
+        assert_eq!(estimate(&songs, "opus", 128), 4_800_000);
+        assert_eq!(
+            estimate_note(&songs, RAW, 0),
+            "2 songs, about 38.1 MB, as the original files."
+        );
+        assert_eq!(
+            estimate_note(&songs[..1], "opus", 128),
+            "1 song, about 3.7 MB, as Opus at 128 kbit/s."
+        );
+        assert_eq!(
+            estimate_note(&[song("c", None)], RAW, 0),
+            "1 song, as the original files."
+        );
+    }
+
+    #[test]
+    fn a_song_file_is_named_by_how_it_was_fetched() {
+        let folder = Path::new("songs");
+        let flac = song("a", Some("flac"));
+        let path = song_file(folder, &flac, ORIGINAL);
+        assert_eq!(path, folder.join(file_name("a", ORIGINAL, "flac")));
+        let path = song_file(folder, &flac, "opus-128");
+        assert_eq!(path, folder.join(file_name("a", "opus-128", "opus")));
+        assert_eq!(
+            parse_name(path.file_name().unwrap().to_str().unwrap()),
+            Some(("a".to_owned(), "opus-128"))
+        );
+        assert_eq!(partial_of(&path).extension().unwrap(), PARTIAL);
+    }
+
+    #[test]
     fn a_song_fits_until_it_would_pass_the_limit() {
-        let gigabyte = i64::try_from(BYTES_PER_GB).unwrap();
-        assert!(fits(u64::MAX / 2, Some(gigabyte), None));
-        assert!(fits(0, None, Some(BYTES_PER_GB)));
-        assert!(fits(BYTES_PER_GB - 10, Some(10), Some(BYTES_PER_GB)));
-        assert!(!fits(BYTES_PER_GB - 10, Some(11), Some(BYTES_PER_GB)));
+        assert!(fits(u64::MAX / 2, BYTES_PER_GB, None));
+        assert!(fits(0, 0, Some(BYTES_PER_GB)));
+        assert!(fits(BYTES_PER_GB - 10, 10, Some(BYTES_PER_GB)));
+        assert!(!fits(BYTES_PER_GB - 10, 11, Some(BYTES_PER_GB)));
         assert_eq!(limit_of(0), None);
         assert_eq!(limit_of(2), Some(5 * BYTES_PER_GB));
         assert_eq!(limit_of(LIMITS_GB.len()), None);
@@ -1049,6 +1287,7 @@ mod tests {
             songs,
             missing,
             halted: halted.map(str::to_owned),
+            originals_only: false,
         };
         assert_eq!(summary(0, 0, None).space(), "Nothing is downloaded.");
         assert_eq!(summary(1, 0, None).space(), "3.0 GB used by 1 song.");
@@ -1080,6 +1319,35 @@ mod tests {
             panic!("the song is let go on");
         };
         assert_eq!(fetch.room, Some(5 * BYTES_PER_GB), "what may arrive");
+    }
+
+    #[test]
+    fn the_limit_counts_what_a_conversion_takes_not_the_original() {
+        let folder = std::env::temp_dir().join(format!("convert-limit-{}", std::process::id()));
+        let mut big = album_with_songs("one", &["a", "b"]);
+        for song in &mut big.song {
+            song.size = Some(600 * 1_048_576);
+            song.duration = Some(300);
+        }
+        let downloads = Downloads::default();
+        {
+            let mut state = downloads.state();
+            state.folder = Some(folder);
+            state.manifest.items.push(Item::Album(big));
+            state.limit = limit_of(1);
+            state.present = saved(&["x"]);
+            state.present.get_mut("x").unwrap().size = 500 * 1_048_576;
+        }
+        assert!(
+            downloads.start_next().is_err(),
+            "an original would pass 1 GB"
+        );
+        downloads.set_limit(limit_of(1));
+        downloads.set_quality("opus", 128);
+        let Ok(Some(fetch)) = downloads.start_next() else {
+            panic!("300 s of Opus 128 is under 5 MB");
+        };
+        assert_eq!(fetch.room, Some(BYTES_PER_GB - 500 * 1_048_576));
     }
 
     #[test]

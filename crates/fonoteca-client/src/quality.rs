@@ -48,10 +48,20 @@ pub fn within_lists(choice: StreamQuality) -> StreamQuality {
 /// What to ask the server for over `connection`: a format and the most
 /// kbit/s it may use, zero for no limit.
 pub fn request(prefs: &Prefs, connection: Connection) -> (&'static str, u32) {
-    let StreamQuality { format, bitrate } = within_lists(match connection {
+    ask_for(match connection {
         Connection::Wifi => prefs.wifi_quality,
         Connection::MobileData => prefs.mobile_quality,
-    });
+    })
+}
+
+/// What to ask the server for when downloading: the format and bitrate
+/// picked for downloads, whatever the connection.
+pub fn download_request(prefs: &Prefs) -> (&'static str, u32) {
+    ask_for(prefs.download_quality)
+}
+
+fn ask_for(choice: StreamQuality) -> (&'static str, u32) {
+    let StreamQuality { format, bitrate } = within_lists(choice);
     let format = FORMATS[format as usize];
     if format == FORMATS[0] {
         return (format, 0);
@@ -100,6 +110,19 @@ mod tests {
         assert_eq!(stream_start("opus", true, 61.5), Some(61.5));
         assert_eq!(stream_start("raw", true, 61.5), None);
         assert_eq!(stream_start("mp3", false, 61.5), None);
+    }
+
+    #[test]
+    fn downloads_take_their_own_choice_whatever_the_connection() {
+        let prefs = Prefs {
+            download_quality: StreamQuality {
+                format: 2,
+                bitrate: 4,
+            },
+            ..prefs((0, 0), (1, 1))
+        };
+        assert_eq!(download_request(&prefs), ("opus", 128));
+        assert_eq!(download_request(&Prefs::default()), ("raw", 0));
     }
 
     #[test]

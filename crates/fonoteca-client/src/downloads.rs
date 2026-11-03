@@ -1,9 +1,11 @@
 //! Fetches the songs the user asked to keep, one at a time, in the order
 //! they were asked for, into the downloads folder.
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
@@ -11,8 +13,8 @@ use std::time::Duration;
 use opensubsonic::Client;
 use slint::{ComponentHandle, Timer};
 
-use crate::offline::{Item, Work};
-use crate::{AppWindow, browse, offline, prefs};
+use crate::offline::{Fetch, Item, Work};
+use crate::{AppWindow, browse, offline, prefs, quality};
 
 /// How long to wait before the first, second and third new try of a song
 /// the server or the network failed on.
@@ -35,9 +37,33 @@ enum Failure {
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     ui.set_can_download(true);
     browse::load_downloads(browser);
-    let limit = prefs::load().download_limit;
-    ui.set_download_limit(limit);
-    browse::downloads(browser).set_limit(offline::limit_of(limit as usize));
+    let saved = prefs::load();
+    ui.set_download_limit(saved.download_limit);
+    browse::downloads(browser).set_limit(offline::limit_of(saved.download_limit as usize));
+    let chosen = quality::within_lists(saved.download_quality);
+    ui.set_download_format(chosen.format);
+    ui.set_download_bitrate(chosen.bitrate);
+    let (format, bit_rate) = quality::download_request(&saved);
+    browse::downloads(browser).set_quality(format, bit_rate);
+    ui.on_choose_download_quality({
+        let browser = browser.clone();
+        move |format, bitrate| {
+            let mut saved = prefs::load();
+            saved.download_quality = prefs::StreamQuality { format, bitrate };
+            prefs::save(&saved);
+            let (format, bit_rate) = quality::download_request(&saved);
+            browse::downloads(&browser).set_quality(format, bit_rate);
+        }
+    });
+    let pending: Rc<RefCell<Option<Item>>> = Rc::default();
+    ui.on_confirm_download({
+        let (weak, browser, pending) = (ui.as_weak(), browser.clone(), pending.clone());
+        move || {
+            if let Some(item) = pending.take() {
+                keep(&weak.unwrap(), &browser, item);
+            }
+        }
+    });
     ui.on_choose_download_limit({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| {
@@ -61,18 +87,18 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         }
     });
     ui.on_download_page({
-        let (weak, browser) = (ui.as_weak(), browser.clone());
+        let (weak, browser, pending) = (ui.as_weak(), browser.clone(), pending.clone());
         move || {
             if let Some(item) = browse::shown_item(&browser) {
-                keep(&weak.unwrap(), &browser, item);
+                ask(&weak.unwrap(), &pending, item);
             }
         }
     });
     ui.on_download_track({
-        let (weak, browser) = (ui.as_weak(), browser.clone());
+        let (weak, browser, pending) = (ui.as_weak(), browser.clone(), pending.clone());
         move |row| {
             if let Some(song) = browse::song_at(&browser, row as usize) {
-                keep(&weak.unwrap(), &browser, Item::Song(Box::new(song)));
+                ask(&weak.unwrap(), &pending, Item::Song(Box::new(song)));
             }
         }
     });
@@ -86,17 +112,17 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         }
     });
     ui.on_download_link({
-        let (weak, browser) = (ui.as_weak(), browser.clone());
+        let (weak, browser, pending) = (ui.as_weak(), browser.clone(), pending.clone());
         move |link| {
             let Some(client) = browse::client(&browser) else {
                 return;
             };
-            let (weak, browser) = (weak.clone(), browser.clone());
+            let (weak, browser, pending) = (weak.clone(), browser.clone(), pending.clone());
             slint::spawn_local(async move {
                 let item = item_at(&client, &link).await;
                 let Some(ui) = weak.upgrade() else { return };
                 match item {
-                    Ok(item) => keep(&ui, &browser, item),
+                    Ok(item) => ask(&ui, &pending, item),
                     Err(e) => {
                         browse::notify(&ui, &browser, format!("Not downloaded: {e}"));
                     }
@@ -117,6 +143,15 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             }
         }
     });
+}
+
+/// Asks whether to keep `item`, telling what that takes, and keeps it in
+/// `pending` for the answer.
+fn ask(ui: &AppWindow, pending: &RefCell<Option<Item>>, item: Item) {
+    let (format, bit_rate) = quality::download_request(&prefs::load());
+    let note = offline::estimate_note(item.songs(), format, bit_rate);
+    ui.invoke_ask_download(item.title().into(), note.into());
+    *pending.borrow_mut() = Some(item);
 }
 
 /// Asks for `item` to be kept and starts fetching it.
@@ -224,20 +259,13 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         Ok(None) => return,
         Err(reason) => return browse::notify(ui, browser, reason),
     };
-    let work = next.work;
-    let job = tokio::spawn(fetch(
-        client,
-        work.clone(),
-        next.partial,
-        next.path.clone(),
-        next.room,
-        next.cancel,
-    ));
+    let work = next.work.clone();
+    let job = tokio::spawn(fetch(client, next));
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
         let result = job.await.expect("the download task doesn't panic");
         let Some(ui) = weak.upgrade() else { return };
-        let delay = settle(&ui, &browser, &work, next.path, result);
+        let delay = settle(&ui, &browser, &work, result);
         browse::show_downloads(&ui, &browser);
         match delay {
             None => pump(&ui, &browser),
@@ -260,15 +288,19 @@ fn settle(
     ui: &AppWindow,
     browser: &browse::Shared,
     work: &Work,
-    path: PathBuf,
-    result: Result<(), Failure>,
+    result: Result<Arrived, Failure>,
 ) -> Option<Duration> {
     let downloads = browse::downloads(browser);
     let failure = match result {
-        Ok(()) => match downloads.finished(work, path) {
-            Ok(()) => return None,
-            Err(e) => Failure::Disk(e),
-        },
+        Ok(arrived) => {
+            if arrived.originals_only {
+                downloads.note_originals_only();
+            }
+            match downloads.finished(work, arrived.path, &arrived.tag) {
+                Ok(()) => return None,
+                Err(e) => Failure::Disk(e),
+            }
+        }
         Err(failure) => failure,
     };
     downloads.ended();
@@ -343,54 +375,90 @@ fn create(path: &Path, cancel: &AtomicBool) -> Result<File, Failure> {
     File::create(path).map_err(disk)
 }
 
-async fn fetch(
-    client: Arc<Client>,
-    work: Work,
-    partial: PathBuf,
-    path: PathBuf,
-    room: Option<u64>,
-    cancel: Arc<AtomicBool>,
-) -> Result<(), Failure> {
-    let arrived = receive(&client, &work, &partial, room, &cancel).await;
-    let moved = arrived.and_then(|()| std::fs::rename(&partial, &path).map_err(disk));
-    if moved.is_err() {
-        // A half-fetched file left behind is deleted at the next start.
-        let _ = std::fs::remove_file(&partial);
+async fn fetch(client: Arc<Client>, next: Fetch) -> Result<Arrived, Failure> {
+    let mut partial = None;
+    let arrived = receive(&client, &next, &mut partial).await;
+    match (partial, arrived) {
+        (Some(partial), Ok(arrived)) => match std::fs::rename(&partial, &arrived.path) {
+            Ok(()) => Ok(arrived),
+            Err(e) => {
+                let _ = std::fs::remove_file(&partial);
+                Err(disk(e))
+            }
+        },
+        (Some(partial), Err(failure)) => {
+            // A half-fetched file left behind is deleted at the next start.
+            let _ = std::fs::remove_file(&partial);
+            Err(failure)
+        }
+        (None, result) => result,
     }
-    moved
 }
 
-/// Writes `work` to `partial` as it arrives.
+/// Writes what `next` is for to a partial file as it arrives, the file it
+/// is in `partial` once there is one, and says where it goes once whole.
 async fn receive(
     client: &Client,
-    work: &Work,
-    partial: &Path,
-    room: Option<u64>,
-    cancel: &AtomicBool,
-) -> Result<(), Failure> {
-    let song = match work {
+    next: &Fetch,
+    partial: &mut Option<PathBuf>,
+) -> Result<Arrived, Failure> {
+    let song = match &next.work {
         Work::Cover(id) => {
             let cover = client.get_cover_art(id, Some(offline::COVER_SIZE));
             let bytes = cover.await.map_err(Failure::Server)?;
-            let mut file = create(partial, cancel)?;
-            return file.write_all(&bytes).map_err(disk);
+            let path = offline::cover_file(&next.folder, id);
+            let file = partial.insert(offline::partial_of(&path));
+            create(file, &next.cancel)?
+                .write_all(&bytes)
+                .map_err(disk)?;
+            return Ok(Arrived {
+                path,
+                tag: String::new(),
+                originals_only: false,
+            });
         }
         Work::Song(song) => song,
     };
-    let mut stream = client.download(&song.id).await.map_err(Failure::Server)?;
-    let mut file = create(partial, cancel)?;
+    let (format, bit_rate) = (next.asked.0.as_str(), next.asked.1);
+    let mut stream = if format == offline::RAW {
+        client.download(&song.id).await
+    } else {
+        client.stream(&song.id, format, bit_rate, None).await
+    }
+    .map_err(Failure::Server)?;
+    let converted = offline::sent_as_asked(format, stream.content_type().as_deref());
+    let tag = if converted {
+        offline::tag_of(format, bit_rate)
+    } else {
+        offline::ORIGINAL.to_owned()
+    };
+    let path = offline::song_file(&next.folder, song, &tag);
+    let mut file = create(partial.insert(offline::partial_of(&path)), &next.cancel)?;
     let mut written = 0;
     while let Some(bytes) = stream.chunk().await.map_err(Failure::Server)? {
-        if cancel.load(Relaxed) {
+        if next.cancel.load(Relaxed) {
             return Err(Failure::Stopped);
         }
         written += bytes.len() as u64;
-        if room.is_some_and(|room| written > room) {
+        if next.room.is_some_and(|room| written > room) {
             return Err(Failure::OverLimit);
         }
         file.write_all(&bytes).map_err(disk)?;
     }
-    Ok(())
+    Ok(Arrived {
+        path,
+        tag,
+        originals_only: !converted,
+    })
+}
+
+/// A song or cover whole in its partial file, and where it goes.
+struct Arrived {
+    path: PathBuf,
+    /// How a song was fetched, as `offline::tag_of` says.
+    tag: String,
+    /// Whether a conversion was asked for and the original came.
+    originals_only: bool,
 }
 
 #[cfg(test)]
@@ -461,14 +529,18 @@ mod tests {
         let client = Client::new(&serve_abc(), opensubsonic::Auth::None).unwrap();
         let folder = std::env::temp_dir().join(format!("cover-cancel-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        let partial = folder.join("c.partial");
-        let cover = Work::Cover("c".to_owned());
-        let cancelled = AtomicBool::new(true);
-        let result = runtime.block_on(receive(&client, &cover, &partial, None, &cancelled));
+        let partial = offline::partial_of(&offline::cover_file(&folder, "c"));
+        let fetch = |cancelled: bool| Fetch {
+            work: Work::Cover("c".to_owned()),
+            folder: folder.clone(),
+            asked: ("raw".to_owned(), 0),
+            room: None,
+            cancel: Arc::new(AtomicBool::new(cancelled)),
+        };
+        let result = runtime.block_on(receive(&client, &fetch(true), &mut None));
         assert!(matches!(result, Err(Failure::Stopped)));
         assert!(!partial.exists(), "a cancelled cover isn't written");
-        let going = AtomicBool::new(false);
-        let result = runtime.block_on(receive(&client, &cover, &partial, None, &going));
+        let result = runtime.block_on(receive(&client, &fetch(false), &mut None));
         assert!(result.is_ok());
         assert!(partial.exists());
         std::fs::remove_dir_all(&folder).unwrap();

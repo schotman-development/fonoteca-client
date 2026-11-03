@@ -323,6 +323,7 @@ fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
         b.client = Some(Arc::new(client));
         b.history.clear();
         b.offline = offline;
+        b.downloads.set_offline(offline);
     }
     load_prefs(ui, browser);
     ui.set_album_filter("".into());
@@ -354,6 +355,7 @@ pub fn reconnect(ui: &AppWindow, browser: &Shared, client: Client) {
         let mut b = browser.borrow_mut();
         b.client = Some(Arc::new(client));
         b.offline = false;
+        b.downloads.set_offline(false);
     }
     ui.set_roles("".into());
     ui.set_may_administer(true);

@@ -12,7 +12,7 @@ export enum Page { home, albums, artists, tracks, playlists, album, artist, play
 // new password for the account signed in; a new radio station, changes to
 // one, or whether to delete one; a new tag, a tag's new name, or whether to
 // delete it; and which tags songs have.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-eq-preset, import-eq, remove-download, remove-all-downloads }
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-eq-preset, import-eq, remove-download, remove-all-downloads, download }
 
 // A headphone found in OPRA's presets, and one of the presets it has. The
 // summary is its bands in words; the problem is why the EQ can't hold it,
@@ -966,6 +966,9 @@ export component AppWindow inherits Window {
     in property <string> download-space;
     in property <string> download-status;
     in-out property <int> download-limit;
+    // The format and bitrate downloads are fetched in, by the picker's entries.
+    in-out property <int> download-format;
+    in-out property <int> download-bitrate;
     in property <[StationRow]> station-rows;
     // The radio directory's shelves, each a genre's stations with the most
     // votes, and the stations saved on the server, for the home page.
@@ -1167,6 +1170,10 @@ export component AppWindow inherits Window {
     callback download-link(link: string);
     callback remove-link-download(link: string);
     callback choose-download-limit(index: int);
+    callback choose-download-quality(format: int, bitrate: int);
+    // The answer yes to the question what a download takes, asked with
+    // `ask-download`.
+    callback confirm-download();
     callback remove-all-downloads();
     // Plays the album's, playlist's or artist's tracks, or the songs of the
     // table on screen, from the `row`th.
@@ -1276,6 +1283,8 @@ export component AppWindow inherits Window {
 
     property <Asking> asking;
     property <string> asked-name;
+    // What a download would take, told in its question.
+    property <string> asked-note;
     property <string> asked-password;
     property <string> asked-repeat;
     property <string> asked-id;
@@ -1288,6 +1297,13 @@ export component AppWindow inherits Window {
     property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag || root.asking == Asking.save-eq-preset;
     property <bool> asks-password: root.asking == Asking.own-password;
     property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-station || root.asking == Asking.delete-tag || root.asking == Asking.remove-download || root.asking == Asking.remove-all-downloads;
+
+    // Asks whether to download `title`, saying `note` of what that takes.
+    public function ask-download(title: string, note: string) {
+        root.asked-name = title;
+        root.asked-note = note;
+        root.open-dialog(Asking.download);
+    }
 
     // Shows the dialog for `what`, the window behind out of the keys' reach.
     function open-dialog(what: Asking) {
@@ -1359,6 +1375,8 @@ export component AppWindow inherits Window {
             root.delete-station(root.asked-id, root.asked-name);
         } else if root.asking == Asking.remove-download {
             root.remove-page-download();
+        } else if root.asking == Asking.download {
+            root.confirm-download();
         } else if root.asking == Asking.remove-all-downloads {
             root.remove-all-downloads();
         } else if root.asking == Asking.save-eq-preset {
@@ -1388,6 +1406,7 @@ export component AppWindow inherits Window {
         if root.asking == Asking.import-eq { return "Paste AutoEQ settings"; }
         if root.asking == Asking.remove-download { return "Remove the download of “" + root.header-title + "”?"; }
         if root.asking == Asking.remove-all-downloads { return "Remove all downloads?"; }
+        if root.asking == Asking.download { return "Download “" + root.asked-name + "”?"; }
         return "Delete “" + root.asked-name + "”?";
     }
 
@@ -1398,6 +1417,7 @@ export component AppWindow inherits Window {
         if root.asking == Asking.tag-songs { return "Done"; }
         if root.asking == Asking.edit-station || root.asking == Asking.save-eq-preset { return "Save"; }
         if root.asking == Asking.import-eq { return "Use"; }
+        if root.asking == Asking.download { return "Download"; }
         if root.asking == Asking.own-password { return "Change"; }
         return "Create";
     }
@@ -2392,6 +2412,13 @@ export component AppWindow inherits Window {
                             font-size: Theme.body;
                             color: Theme.muted;
                             wrap: word-wrap;
+                        }
+                        QualityPicker {
+                            name: "Download format";
+                            format <=> root.download-format;
+                            bitrate <=> root.download-bitrate;
+                            enabled: !Input.modal;
+                            chosen(format, bitrate) => { root.choose-download-quality(format, bitrate); }
                         }
                         Text {
                             text: "Size limit";
@@ -3503,6 +3530,12 @@ export component AppWindow inherits Window {
                             font-size: Theme.heading;
                             font-weight: 600;
                             color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                        if root.asking == Asking.download: Text {
+                            text: root.asked-note;
+                            font-size: Theme.body;
+                            color: Theme.muted;
                             wrap: word-wrap;
                         }
                         if root.asks-name: LineEdit {

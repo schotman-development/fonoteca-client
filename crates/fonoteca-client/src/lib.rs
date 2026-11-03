@@ -888,6 +888,9 @@ mod tests {
     /// Whether Road Trip has been edited on the server since: changed later,
     /// and Rope and Anchor in place of Fugue.
     static ROAD_TRIP_EDITED: AtomicBool = AtomicBool::new(false);
+    /// Whether the server converts what `stream` asks for, or sends the
+    /// original (FLAC) as Fonoteca does.
+    static STREAM_CONVERTS: AtomicBool = AtomicBool::new(false);
 
     /// A request's method and its arguments but the credentials.
     fn write_of(request: &str) -> String {
@@ -1251,7 +1254,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(request.lines().next().unwrap_or_default().to_owned());
-            reply("200 OK", "audio/mpeg", b"abc")
+            let kind = if STREAM_CONVERTS.load(Relaxed) {
+                "audio/ogg"
+            } else {
+                "audio/flac"
+            };
+            reply("200 OK", kind, &tiny_wav())
         } else if request.contains("/rest/changePassword") {
             USER_WRITES.lock().unwrap().push(write_of(request));
             json(OK)
@@ -1582,6 +1590,27 @@ mod tests {
             .match_predicate(move |combo| combo.accessible_label().is_some_and(|l| l == label))
             .find_first()
             .is_some()
+    }
+
+    /// Presses the page header's Download and says yes to the question what
+    /// it takes.
+    fn download_page(ui: &AppWindow) {
+        click(ui, "Download");
+        confirm_download(ui);
+    }
+
+    /// Presses the question's Download, the last button of that name, since
+    /// the dialog is drawn over the page.
+    fn confirm_download(ui: &AppWindow) {
+        let ask = ui
+            .root_element()
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Button)
+            .match_predicate(|button| button.accessible_label().is_some_and(|l| l == "Download"))
+            .find_all();
+        ask.last()
+            .expect("the question is up")
+            .invoke_accessible_default_action();
     }
 
     fn click(ui: &AppWindow, label: &str) {
@@ -5619,7 +5648,7 @@ mod tests {
                 ui.get_tracks().iter().map(|track| track.downloaded).collect()
             };
             assert_eq!(marked(&ui), [false, false]);
-            click(&ui, "Download");
+            download_page(&ui);
             wait_for("both songs", || ui.get_download_state() == 2).await;
             assert_eq!(marked(&ui), [true, true]);
             let kept = crate::offline::folder().unwrap();
@@ -5649,8 +5678,20 @@ mod tests {
             assert_eq!(marked(&ui), [false, false]);
             assert_eq!(files(&kept.join("songs")), 0);
 
+            // A song that comes to more than the limit leaves room for stops
+            // there with a word, whatever size the server said it has.
+            play::testing::downloads().set_limit(Some(10));
+            download_page(&ui);
+            let stop = "Downloads stopped: the size limit is reached.";
+            wait_for("the stop", || ui.get_download_status() == stop).await;
+            assert_eq!(ui.get_download_state(), 1);
+            assert_eq!(files(&kept.join("songs")), 0, "no half-fetched file stays");
+            ui.invoke_choose_download_limit(0);
+            wait_for("the rest after the limit is lifted", || ui.get_download_state() == 2).await;
+            ui.invoke_remove_all_downloads();
+
             // The settings tell what they take and can remove them all.
-            click(&ui, "Download");
+            download_page(&ui);
             wait_for("both songs again", || ui.get_download_state() == 2).await;
             ui.invoke_open("setting:downloads".into());
             assert_eq!(ui.get_download_songs(), 2);
@@ -5672,7 +5713,7 @@ mod tests {
             ui.invoke_open("album:a1".into());
             wait_for("the album to race", || ui.get_tracks().row_count() == 2).await;
             SLOW_DOWNLOAD.store(true, Relaxed);
-            click(&ui, "Download");
+            download_page(&ui);
             idle(Duration::from_millis(150)).await;
             ui.invoke_remove_all_downloads();
             idle(Duration::from_millis(1500)).await;
@@ -5684,22 +5725,58 @@ mod tests {
             assert_eq!(ui.get_download_state(), 0);
             assert_eq!(marked(&ui), [false, false]);
 
+            // Downloads in another format: a server that converts sends it so,
+            // and one that doesn't sends the original, kept as such, which
+            // the settings say.
+            let names = || -> Vec<String> {
+                let songs = kept.join("songs").read_dir();
+                let names = songs.into_iter().flatten().flatten();
+                names.map(|file| file.file_name().to_string_lossy().into_owned()).collect()
+            };
+            ui.invoke_choose_download_quality(2, 4);
+            let chosen = crate::prefs::load().download_quality;
+            assert_eq!((chosen.format, chosen.bitrate), (2, 4));
+            ui.invoke_open("album:a1".into());
+            wait_for("the album to convert", || ui.get_tracks().row_count() == 2).await;
+            download_page(&ui);
+            wait_for("the originals", || ui.get_download_state() == 2).await;
+            assert!(names().iter().all(|name| name.contains(".original.")), "{:?}", names());
+            ui.invoke_open("setting:downloads".into());
+            assert!(ui.get_download_status().contains("This server sends original files only."));
+            ui.invoke_remove_all_downloads();
+            assert!(!ui.get_download_status().contains("original files only"));
+            STREAM_CONVERTS.store(true, Relaxed);
+            ui.invoke_open("album:a1".into());
+            wait_for("the album to convert", || ui.get_tracks().row_count() == 2).await;
+            download_page(&ui);
+            wait_for("the conversions", || ui.get_download_state() == 2).await;
+            assert!(names().iter().all(|name| name.ends_with(".opus-128.opus")), "{:?}", names());
+            ui.invoke_open("setting:downloads".into());
+            assert!(!ui.get_download_status().contains("original files only"));
+            STREAM_CONVERTS.store(false, Relaxed);
+            ui.invoke_choose_download_quality(0, 0);
+            ui.invoke_remove_all_downloads();
+
             // A playlist downloads from its page, a song from its row's menu
             // and an album from its tile's; a song several want stays until
             // the last of them is let go.
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
-            click(&ui, "Download");
+            download_page(&ui);
             wait_for("the playlist's songs", || ui.get_download_state() == 2).await;
             assert_eq!(marked(&ui), [true, true]);
             ui.invoke_open("album:a1".into());
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(marked(&ui), [true, false], "s1 is kept by the playlist");
             ui.invoke_download_track(1);
+            wait_for("the question", || find(&ui, "Cancel").is_some()).await;
+            confirm_download(&ui);
             wait_for("the song", || marked(&ui) == [true, true]).await;
             let alone = || -> Vec<bool> { ui.get_tracks().iter().map(|t| t.downloaded_alone).collect() };
             assert_eq!(alone(), [false, true]);
             ui.invoke_download_link("album:a1".into());
+            wait_for("the question", || find(&ui, "Cancel").is_some()).await;
+            confirm_download(&ui);
             wait_for("the album kept", || ui.get_download_state() == 2).await;
             ui.invoke_open("albums".into());
             wait_for("the album tile", || ui.get_tiles().iter().any(|t| t.link == "album:a1")).await;
@@ -5720,7 +5797,7 @@ mod tests {
             ui.invoke_remove_all_downloads();
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
-            click(&ui, "Download");
+            download_page(&ui);
             wait_for("the playlist kept", || ui.get_download_state() == 2).await;
             ROAD_TRIP_EDITED.store(true, Relaxed);
             ui.invoke_open("albums".into());
@@ -5733,7 +5810,7 @@ mod tests {
             ui.invoke_open("albums".into());
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist as it was", || ui.get_tracks().row_count() == 2 && ui.get_tracks().row_data(1).is_some_and(|t| t.title == "Fugue")).await;
-            click(&ui, "Download");
+            download_page(&ui);
             wait_for("kept as it was", || ui.get_download_state() == 2).await;
             ROAD_TRIP_EDITED.store(true, Relaxed);
             ui.invoke_open("playlists".into());
@@ -5749,7 +5826,7 @@ mod tests {
             ui.invoke_remove_all_downloads();
             ui.invoke_open("album:a1".into());
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;
-            click(&ui, "Download");
+            download_page(&ui);
             wait_for("the album kept again", || ui.get_download_state() == 2).await;
 
             // With the server down, a start finds the downloads under the
@@ -5788,7 +5865,7 @@ mod tests {
             assert_eq!(ui.get_sign_out_frees(), "", "nothing is kept");
             ui.invoke_open("album:a1".into());
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;
-            click(&ui, "Download");
+            download_page(&ui);
             wait_for("the album kept", || ui.get_download_state() == 2).await;
             ui.invoke_open("account".into());
             assert!(ui.get_sign_out_frees().ends_with(" MB"), "{}", ui.get_sign_out_frees());

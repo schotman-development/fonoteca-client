@@ -1246,13 +1246,13 @@ fn fetch(client: Arc<Client>, downloads: offline::Downloads) -> playback::Fetch 
     let runtime = tokio::runtime::Handle::current();
     let folder = cache();
     Box::new(move |track: &Track, seconds: f64| {
+        let (format, max_bit_rate) = quality::request(&prefs::load(), quality::connection());
         // A file that went missing since is streamed instead.
-        if let Some(path) = downloads.local(&track.id)
+        if let Some(path) = downloads.playable(&track.id, (format, max_bit_rate))
             && let Ok(download) = playback::open_file(&path)
         {
             return Ok(download);
         }
-        let (format, max_bit_rate) = quality::request(&prefs::load(), quality::connection());
         let start = quality::stream_start(format, client.supports(TRANSCODE_OFFSET), seconds);
         // A song played from its start is asked for as before, so its
         // conversion keeps what makes it gapless.
@@ -1357,6 +1357,11 @@ pub(crate) mod testing {
             p.queue.songs().map(|song| song.id.clone()).collect(),
             p.shown,
         )
+    }
+
+    /// What is kept on this device, as the first window has it.
+    pub(crate) fn downloads() -> offline::Downloads {
+        browse::downloads(&handles().0)
     }
 
     /// Fetches song `id` as the player would.
