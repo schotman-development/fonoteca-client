@@ -31,6 +31,9 @@ use serde::{Deserialize, Serialize};
 /// What the onboarding sets up, kept by [`store`].
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
+    /// Kept in an entry of its own, so that it outlives the login. Earlier
+    /// versions kept it here, and it is only read from there, to move it.
+    #[serde(default, skip_serializing)]
     server: String,
     login: Login,
     /// Where earlier versions kept the token. It is only read, to move it
@@ -102,7 +105,7 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
     slint::spawn_local(async move {
         let mut account = store::load().await;
         let migrated = match account.as_mut() {
-            Some(account) => move_listenbrainz_out_of(account).await,
+            Some(account) => split_legacy_account(account).await,
             None => Ok(()),
         };
         let listenbrainz = store::load_listenbrainz().await;
@@ -110,11 +113,12 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
         ui.set_listenbrainz_user(listenbrainz.map_or("".into(), |l| l.user.into()));
         if let Err(e) = migrated {
             ui.set_saved_note(
-                format!("Your ListenBrainz token is still kept with the account: {e}").into(),
+                format!("Your server and ListenBrainz token are still kept with the login: {e}")
+                    .into(),
             );
         }
         let Some(account) = account else {
-            ui.set_step(Step::Server);
+            ask_for_login(&ui, store::load_server().await);
             return;
         };
         show(&ui, &account);
@@ -178,15 +182,32 @@ async fn change_own_password(
     Ok((Some(fresh), note))
 }
 
-/// Moves the token that earlier versions kept in the account's entry to
-/// its own, unless that one is already there, and saves the account
-/// without it. The token goes first, so that a failure in between leaves
-/// it in both places and the next start tries again.
-async fn move_listenbrainz_out_of(account: &mut Account) -> Result<(), String> {
-    let Some(legacy) = account.legacy_listenbrainz.take() else {
-        return Ok(());
+/// With the server of a saved login, goes on to its sign-in step, which
+/// takes the login only; without one, asks for a server.
+fn ask_for_login(ui: &AppWindow, server: Option<String>) {
+    let Some(server) = server else {
+        ui.set_step(Step::Server);
+        return;
     };
-    if store::load_listenbrainz().await.is_none() {
+    ui.set_address(server.into());
+    ui.set_step(Step::Server);
+    ui.invoke_find_server();
+}
+
+/// Moves what earlier versions kept in the account's entry, the server and
+/// the ListenBrainz token, to entries of their own, unless the token's is
+/// already there, and saves the account without them. The token goes
+/// first, so that a failure in between leaves it in both places and the
+/// next start tries again.
+async fn split_legacy_account(account: &mut Account) -> Result<(), String> {
+    let legacy_token = account.legacy_listenbrainz.take();
+    let server_is_apart = store::load_server().await.is_some();
+    if legacy_token.is_none() && server_is_apart {
+        return Ok(());
+    }
+    if let Some(legacy) = legacy_token
+        && store::load_listenbrainz().await.is_none()
+    {
         store::save_listenbrainz(legacy).await?;
     }
     store::save(account.clone()).await
@@ -230,6 +251,15 @@ fn run<T: 'static>(
         }
     })
     .expect("the event loop is running");
+}
+
+/// Stops the library and clears what the screens know of the account.
+fn signed_out(ui: &AppWindow, browser: &browse::Shared) {
+    browse::stop(browser);
+    ui.set_offline("".into());
+    ui.set_server_name("".into());
+    ui.set_username("".into());
+    ui.set_saved_note("".into());
 }
 
 /// Shows the done screen for `account`, and clears the secrets from the
@@ -491,11 +521,29 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             }
             let browser = browser.clone();
             run(&ui, store::forget(), move |ui, ()| {
-                browse::stop(&browser);
-                ui.set_offline("".into());
-                ui.set_server_name("".into());
-                ui.set_username("".into());
-                ui.set_saved_note("".into());
+                signed_out(ui, &browser);
+                ask_for_login(ui, Some(ui.get_address().into()));
+            });
+        }
+    });
+
+    ui.on_change_server({
+        let weak = ui.as_weak();
+        let browser = browser.clone();
+        move || {
+            let ui = weak.unwrap();
+            // A disabled button still takes a screen reader's press.
+            if ui.get_busy() {
+                return;
+            }
+            let browser = browser.clone();
+            let task = async {
+                store::forget().await?;
+                store::forget_server().await
+            };
+            run(&ui, task, move |ui, ()| {
+                signed_out(ui, &browser);
+                ui.set_address("".into());
                 ui.set_step(Step::Server);
             });
         }
@@ -1756,17 +1804,30 @@ mod tests {
             let kept_by_account = |token: &str| {
                 let mut json = serde_json::to_value(&account).unwrap();
                 json["listenbrainz"] = serde_json::json!({ "token": token, "user": "old" });
+                json["server"] = account.server.clone().into();
                 serde_json::from_value::<Account>(json).unwrap()
             };
             let token = |listenbrainz: Option<ListenBrainz>| listenbrainz.map(|l| l.token);
             let mut old = kept_by_account("old token");
-            move_listenbrainz_out_of(&mut old).await.unwrap();
+            split_legacy_account(&mut old).await.unwrap();
             assert_eq!(token(store::load_listenbrainz().await), Some("old token".into()));
             let migrated = serde_json::to_value(store::load().await.unwrap()).unwrap();
             assert!(migrated.get("listenbrainz").is_none(), "the account lost it");
+            assert!(migrated.get("server").is_none(), "and its server");
+            assert_eq!(store::load_server().await, Some(account.server.clone()));
+            assert_eq!(store::load().await.unwrap().server, account.server);
             let mut other = kept_by_account("other token");
-            move_listenbrainz_out_of(&mut other).await.unwrap();
+            split_legacy_account(&mut other).await.unwrap();
             assert_eq!(token(store::load_listenbrainz().await), Some("old token".into()));
+            // One that kept no token has its server moved all the same.
+            store::forget_server().await.unwrap();
+            store::forget_listenbrainz().await.unwrap();
+            let mut json = serde_json::to_value(&account).unwrap();
+            json["server"] = account.server.clone().into();
+            let mut tokenless = serde_json::from_value::<Account>(json).unwrap();
+            split_legacy_account(&mut tokenless).await.unwrap();
+            assert_eq!(store::load_server().await, Some(account.server.clone()));
+            assert!(store::load_listenbrainz().await.is_none());
 
             // Removing it deletes the entry and leaves the account signed in.
             ui.set_listenbrainz_user("old".into());
@@ -4183,16 +4244,16 @@ mod tests {
             ui.set_listenbrainz_user("listener".into());
             click(&ui, "Account");
             click(&ui, "Sign out");
-            wait_for("the server step", || ui.get_step() == Step::Server).await;
+            // Signing out keeps the server, and asks for the login alone.
+            wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
             assert_eq!(ui.get_username(), "");
+            assert_eq!(ui.get_address(), server.as_str());
             assert!(store::load().await.is_none());
+            assert_eq!(store::load_server().await, Some(server.clone()));
             store::forget().await.expect("forgetting twice is fine");
-            // Signing out keeps the token, and so does signing in as someone
+            // It keeps the token too, and so does signing in as someone
             // else, which doesn't ask for one.
             assert_eq!(token(store::load_listenbrainz().await), Some(kept.token.clone()));
-            ui.set_address(server.as_str().into());
-            click(&ui, "Continue");
-            wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
             ui.set_username("eve".into());
             ui.set_password("pw".into());
             click(&ui, "Sign in");
@@ -4202,9 +4263,14 @@ mod tests {
             assert_eq!(token(store::load_listenbrainz().await), Some(kept.token));
             let signed_in_as = store::load().await.expect("saved").login;
             assert!(matches!(signed_in_as, Login::Password { ref username, .. } if username == "eve"));
+            // Only changing the server forgets it, and the token stays.
             click(&ui, "Account");
-            click(&ui, "Sign out");
+            click(&ui, "Change server");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
+            assert_eq!(ui.get_address(), "");
+            assert!(store::load().await.is_none());
+            assert!(store::load_server().await.is_none());
+            assert_eq!(token(store::load_listenbrainz().await), Some("kept token".into()));
             store::forget_listenbrainz().await.unwrap();
             ui.set_listenbrainz_user("".into());
 
@@ -4437,12 +4503,9 @@ mod tests {
             let waveforms_asked = WAVEFORMS_ASKED.load(Relaxed);
             click(&ui, "Account");
             click(&ui, "Sign out");
-            wait_for("the server step", || ui.get_step() == Step::Server).await;
+            wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
             NO_MOTION.store(true, Relaxed);
             NO_WAVEFORM.store(true, Relaxed);
-            ui.set_address(server.as_str().into());
-            click(&ui, "Continue");
-            wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
             ui.set_username("joe".into());
             ui.set_password("pw".into());
             click(&ui, "Sign in");
@@ -4658,7 +4721,7 @@ mod tests {
             wait_for("the tag's tracks again", || ui.get_track_lines().row_count() == 2).await;
             click(&ui, "Account");
             click(&ui, "Sign out");
-            wait_for("the server step again", || ui.get_step() == Step::Server).await;
+            wait_for("the sign-in step again", || ui.get_step() == Step::SignIn).await;
 
             slint::quit_event_loop().unwrap();
         })

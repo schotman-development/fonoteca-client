@@ -871,6 +871,7 @@ export component AppWindow inherits Window {
     callback skip-listenbrainz();
     callback remove-listenbrainz();
     callback sign-out();
+    callback change-server();
 
     in property <Page> page;
     in property <int> visit;
@@ -2084,6 +2085,14 @@ export component AppWindow inherits Window {
                                 text: "Change password";
                                 enabled: !root.busy && !Input.modal;
                                 clicked => { root.open-dialog(Asking.own-password); }
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Change server";
+                                enabled: !root.busy && !Input.modal;
+                                clicked => { root.change-server(); }
                             }
                         }
                     }

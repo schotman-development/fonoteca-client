@@ -1,10 +1,11 @@
-//! Keeps the [`Account`] and, in an entry of its own, the [`ListenBrainz`]
-//! token in the OS secret store: the Keychain on macOS, the
+//! Keeps the [`Account`]'s login, the account's server and the
+//! [`ListenBrainz`] token, each in an entry of its own, in the OS secret
+//! store: the Keychain on macOS, the
 //! Secret Service (GNOME Keyring, KWallet, KeePassXC) on Linux, and on Android
 //! the app's preferences, encrypted with a key in the Keystore. It is never
 //! written anywhere else, so without a secret store nothing is saved. The
-//! token is apart from the account so that signing out or in as someone else
-//! leaves it as it is.
+//! server and the token are apart from the login so that signing out or in
+//! as someone else leaves them as they are.
 //!
 //! The browser preview has no secret store and keeps both, unencrypted, in
 //! the page's localStorage, the account until sign out and the token until
@@ -32,6 +33,7 @@ mod native {
     pub const PLACE: &str = "your system's secret store";
 
     const ACCOUNT: &str = "account";
+    const SERVER: &str = "server";
     const LISTENBRAINZ: &str = "listenbrainz";
 
     fn entry(name: &str) -> Result<Entry, String> {
@@ -56,15 +58,33 @@ mod native {
 
     /// The saved account, if there is one and the store hands it out.
     pub async fn load() -> Option<Account> {
-        read(ACCOUNT).await
+        let mut account: Account = read(ACCOUNT).await?;
+        if account.server.is_empty() {
+            account.server = load_server().await?;
+        }
+        Some(account)
     }
 
     pub async fn save(account: Account) -> Result<(), String> {
+        save_server(account.server.clone()).await?;
         write(ACCOUNT, account).await
     }
 
+    /// Forgets the login only; the server stays.
     pub async fn forget() -> Result<(), String> {
         remove(ACCOUNT).await
+    }
+
+    pub async fn load_server() -> Option<String> {
+        read(SERVER).await
+    }
+
+    pub async fn save_server(server: String) -> Result<(), String> {
+        write(SERVER, server).await
+    }
+
+    pub async fn forget_server() -> Result<(), String> {
+        remove(SERVER).await
     }
 
     /// The saved token, if there is one and the store hands it out.
@@ -129,6 +149,7 @@ mod browser {
     pub const PLACE: &str = "this browser";
 
     const ACCOUNT: &str = "fonoteca-client.account";
+    const SERVER: &str = "fonoteca-client.server";
     const LISTENBRAINZ: &str = "fonoteca-client.listenbrainz";
 
     fn storage() -> Result<Storage, String> {
@@ -138,15 +159,33 @@ mod browser {
     }
 
     pub async fn load() -> Option<Account> {
-        read(ACCOUNT)
+        let mut account: Account = read(ACCOUNT)?;
+        if account.server.is_empty() {
+            account.server = load_server().await?;
+        }
+        Some(account)
     }
 
     pub async fn save(account: Account) -> Result<(), String> {
+        save_server(account.server.clone()).await?;
         write(ACCOUNT, &account)
     }
 
+    /// Forgets the login only; the server stays.
     pub async fn forget() -> Result<(), String> {
         remove(ACCOUNT)
+    }
+
+    pub async fn load_server() -> Option<String> {
+        read(SERVER)
+    }
+
+    pub async fn save_server(server: String) -> Result<(), String> {
+        write(SERVER, &server)
+    }
+
+    pub async fn forget_server() -> Result<(), String> {
+        remove(SERVER)
     }
 
     pub async fn load_listenbrainz() -> Option<ListenBrainz> {
