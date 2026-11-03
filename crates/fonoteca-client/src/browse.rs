@@ -107,9 +107,9 @@ const COVERS_AT_ONCE: usize = 6;
 /// but the narrowest windows, where the grid keeps two columns and a tile is
 /// under half the window wide (see `tile_pixels`); page headers are 220.
 const TILE_SIZE: f32 = 300.0;
-/// The widest a genre's tile gets, by GenreGrid's `min-size`: with two to a
-/// row, under 932 points of page.
-const GENRE_SIZE: f32 = 460.0;
+/// The widest a genre's tile gets: two to a row across the page's most width,
+/// 1600 points, less its padding and the gap.
+const GENRE_SIZE: f32 = 800.0;
 const HEADER_SIZE: f32 = 220.0;
 /// The size of a cover in a row of the tracks table.
 const LINE_COVER_SIZE: f32 = 42.0;
@@ -125,6 +125,8 @@ const FOLDERS: &str = "playlistFolders";
 const TAGS: &str = "fonotecaTags";
 /// Fonoteca's extension for the genres each genre sits under.
 const GENRE_TREE: &str = "fonotecaGenres";
+/// Fonoteca's extension for artists' banners.
+const ARTIST_BANNER: &str = "fonotecaArtistBanner";
 /// How many of an artist's top songs their page shows.
 const TOP_SONGS: u32 = 5;
 /// About how long the start of a biography or notes is, before More.
@@ -5691,29 +5693,20 @@ fn artist_pictures(b: &Browser) -> HashMap<&str, &String> {
 }
 
 /// Each genre's tile, opening its page, with how many albums carry it and,
-/// once the library and its artists are in, the picture of the artist known
-/// for it best among `genres`, one no other of them shows where there is one.
+/// once the library and its artists are in, the banner of the artist known
+/// for it best among `genres` that has one no tile before it shows.
 fn genre_tiles(b: &Browser, genres: &[Genre]) -> Vec<(AlbumTile, Option<String>)> {
     let siblings: HashSet<&str> = genres.iter().map(|genre| genre.value.as_str()).collect();
-    let pictures = artist_pictures(b);
-    let mut shown: HashSet<&String> = HashSet::new();
-    (genres.iter())
-        .map(|genre| {
-            let known: Vec<&String> = if b.library_loaded && b.artists_loaded {
-                (known_for(&b.library, &b.artists, &genre.value, &siblings).into_iter())
-                    .filter_map(|(name, _)| {
-                        let id = name.link.strip_prefix("artist:")?;
-                        pictures.get(id).copied()
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let picture = (known.iter())
-                .find(|picture| !shown.contains(*picture))
-                .or(known.first())
-                .copied();
-            shown.extend(picture);
+    let banners = artist_banners(&b.artists, offers(b, ARTIST_BANNER));
+    let banners = if b.library_loaded && b.artists_loaded {
+        let known =
+            (genres.iter()).map(|genre| known_for(&b.library, &b.artists, &genre.value, &siblings));
+        distinct_banners(known, &banners)
+    } else {
+        vec![None; genres.len()]
+    };
+    (genres.iter().zip(banners))
+        .map(|(genre, banner)| {
             let albums = usize::try_from(genre.album_count).unwrap_or_default();
             let tile = AlbumTile {
                 title: genre.value.as_str().into(),
@@ -5721,7 +5714,54 @@ fn genre_tiles(b: &Browser, genres: &[Genre]) -> Vec<(AlbumTile, Option<String>)
                 link: format!("genre:{}", genre.value).into(),
                 ..AlbumTile::default()
             };
-            (tile, picture.cloned())
+            (tile, banner)
+        })
+        .collect()
+}
+
+/// The banners of the artists by id, those that have one, on servers with
+/// Fonoteca's (`offered`).
+fn artist_banners(artists: &[ArtistID3], offered: bool) -> HashMap<&str, &String> {
+    if !offered {
+        return HashMap::new();
+    }
+    (artists.iter())
+        .filter_map(|artist| {
+            let banner = artist.banner_art.as_ref()?;
+            (!banner.is_empty()).then_some((artist.id.as_str(), banner))
+        })
+        .collect()
+}
+
+/// The banner of the artist known for a genre best that has one not in
+/// `taken`: the next best-known artist's where the best-known has none.
+fn banner_of(
+    known: &[(Name, usize)],
+    banners: &HashMap<&str, &String>,
+    taken: &HashSet<String>,
+) -> Option<String> {
+    known.iter().find_map(|(name, _)| {
+        let id = name.link.strip_prefix("artist:")?;
+        banners
+            .get(id)
+            .filter(|banner| !taken.contains(**banner))
+            .map(|banner| (*banner).clone())
+    })
+}
+
+/// Each genre's banner, those first in line choosing first: none shows a
+/// banner an earlier genre has. `known` is each genre's artists, best known
+/// first.
+fn distinct_banners(
+    known: impl Iterator<Item = Vec<(Name, usize)>>,
+    banners: &HashMap<&str, &String>,
+) -> Vec<Option<String>> {
+    let mut taken = HashSet::new();
+    known
+        .map(|known| {
+            let banner = banner_of(&known, banners, &taken);
+            taken.extend(banner.clone());
+            banner
         })
         .collect()
 }
@@ -6769,6 +6809,72 @@ mod tests {
     }
 
     #[test]
+    fn a_genre_takes_the_banner_of_the_best_known_artist_that_has_one() {
+        let name = |id: &str| Name {
+            label: id.into(),
+            link: format!("artist:{id}").into(),
+        };
+        let known = [(name("r1"), 3), (name("r2"), 2), (name("r3"), 1)];
+        let (second, third) = ("banner-r2".to_owned(), "banner-r3".to_owned());
+        let banners = HashMap::from([("r2", &second), ("r3", &third)]);
+        let none = HashSet::new();
+        assert_eq!(
+            banner_of(&known, &banners, &none),
+            Some("banner-r2".to_owned())
+        );
+        assert_eq!(
+            banner_of(&known[2..], &banners, &none),
+            Some("banner-r3".to_owned())
+        );
+        assert_eq!(banner_of(&known[..1], &banners, &none), None);
+        assert_eq!(banner_of(&known, &HashMap::new(), &none), None);
+        let taken = HashSet::from(["banner-r2".to_owned()]);
+        assert_eq!(
+            banner_of(&known, &banners, &taken),
+            Some("banner-r3".to_owned())
+        );
+    }
+
+    #[test]
+    fn no_two_tiles_show_the_same_banner() {
+        let name = |id: &str| Name {
+            label: id.into(),
+            link: format!("artist:{id}").into(),
+        };
+        let (b1, b2) = ("banner-r1".to_owned(), "banner-r2".to_owned());
+        let banners = HashMap::from([("r1", &b1), ("r2", &b2)]);
+        // Three genres whose best known is r1, the second and third also
+        // know r2, and the fourth only the one before; the most albums choose
+        // first, so the later ones take what is left, else plain.
+        let known = vec![
+            vec![(name("r1"), 3)],
+            vec![(name("r1"), 3), (name("r2"), 1)],
+            vec![(name("r1"), 3), (name("r2"), 1)],
+            vec![(name("r3"), 1)],
+        ];
+        assert_eq!(
+            distinct_banners(known.into_iter(), &banners),
+            [Some(b1), Some(b2), None, None]
+        );
+    }
+
+    #[test]
+    fn only_servers_with_banners_and_artists_that_have_one_give_banners() {
+        let artists: Vec<ArtistID3> = serde_json::from_str(
+            r#"[{"id":"r1","name":"Has","bannerArt":"ab-r1"},
+                {"id":"r2","name":"Empty","bannerArt":""},
+                {"id":"r3","name":"None"}]"#,
+        )
+        .unwrap();
+        let banner = "ab-r1".to_owned();
+        assert_eq!(
+            artist_banners(&artists, true),
+            HashMap::from([("r1", &banner)])
+        );
+        assert!(artist_banners(&artists, false).is_empty());
+    }
+
+    #[test]
     fn genres_by_the_librarys_albums() {
         let genre = |value: &str, album_count| Genre {
             value: value.into(),
@@ -7183,17 +7289,13 @@ mod tests {
         // Its albums by those artists, one of each in turn.
         assert_eq!(genre_albums(&b, "Blues"), [1, 0, 5, 2]);
 
-        // Each tile the picture of the artist known for it best, one no other
-        // tile shows where there is one.
+        // A server without Fonoteca's banners has none, whatever the artists
+        // say.
         (b.library_loaded, b.artists_loaded) = (true, true);
-        let pictures: Vec<Option<String>> = genre_tiles(&b, &genres)
-            .into_iter()
-            .map(|(_, picture)| picture)
-            .collect();
-        let picture = |id: &str| Some(id.to_owned());
-        assert_eq!(
-            pictures,
-            [picture("ar-r2"), picture("ar-r1"), picture("ar-r1"), None]
+        assert!(
+            genre_tiles(&b, &genres)
+                .iter()
+                .all(|(_, banner)| banner.is_none())
         );
 
         // A picture seen untinted, as on the artists page, is fetched again

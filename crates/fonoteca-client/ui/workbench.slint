@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -48,6 +48,7 @@ export component Workbench inherits Window {
         "EQ band",
         "Now playing",
         "Quality picker",
+        "Genre tiles and banner",
     ];
     property <int> current;
     property <bool> long-text;
@@ -148,6 +149,13 @@ export component Workbench inherits Window {
         root.albums[0], root.albums[1], root.albums[2], root.albums[3],
         root.albums[2], root.albums[0], root.albums[3], root.albums[1],
         root.albums[3], root.albums[2], root.albums[1], root.albums[0],
+    ];
+    property <[AlbumTile]> genres: [
+        { title: root.long-text ? root.long-title : "Jazz", names: [{ label: "42 albums", link: "" }], cover: root.no-art ? root.none : @image-url("samples/banner-1.svg"), link: "genre:Jazz" },
+        { title: "Classical", names: [{ label: "120 albums", link: "" }], cover: root.no-art ? root.none : @image-url("samples/banner-2.svg"), link: "genre:Classical" },
+        { title: "Folk", names: [{ label: "1 album", link: "" }], link: "genre:Folk" },
+        { title: "Hip-hop", names: [{ label: "3 albums", link: "" }], cover: root.no-art ? root.none : @image-url("samples/banner-2.svg"), link: "genre:Hip-hop" },
+        { title: "Blues", names: [{ label: "9 albums", link: "" }], cover: root.no-art ? root.none : @image-url("samples/banner-1.svg"), link: "genre:Blues" },
     ];
     property <image> photo-1: root.no-art ? root.none : @image-url("samples/photo-1.svg");
     property <image> photo-2: root.no-art ? root.none : @image-url("samples/photo-2.svg");
@@ -862,6 +870,20 @@ export component Workbench inherits Window {
                         QualityPicker {
                             name: "Not available";
                             enabled: false;
+                        }
+                    }
+
+                    if root.current == 18: Example {
+                        caption: "A genre page's banner with its title over it, then the genres' wide tiles: a tile without a banner is plain text on the dark tint; resize the window to change the columns";
+                        GenreBanner {
+                            height: 200px;
+                            picture: root.genres[0].cover;
+                            name: root.genres[0].title;
+                            name-size: 40px;
+                        }
+                        GenreGrid {
+                            tiles: root.genres;
+                            open(link) => { root.event = "open " + link; }
                         }
                     }
                 }

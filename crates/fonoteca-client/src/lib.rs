@@ -907,7 +907,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}{offset}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}},{{"name":"fonotecaArtistBanner","versions":[1]}}{by_id}{organized}{offset}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1044,7 +1044,7 @@ mod tests {
                 })
                 .collect();
             ok(&format!(
-                r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
+                r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","bannerArt":"ba-r1","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
                 others.join(",")
             ))
         } else if request.contains("/rest/getArtist") {
@@ -2181,10 +2181,10 @@ mod tests {
 
             // The genres page has the server's genres, those most albums
             // carry first, each with a picture of the artist known for it
-            // best in the genres' tint. A genre's page has the library's
-            // albums carrying it and their artists, all of each behind See
-            // all. With Fonoteca's genres, those under none, and on a genre's
-            // page those under it, which link back.
+            // best, a banner, in the genres' tint. A genre's page has the
+            // library's albums carrying it and their artists, all of each
+            // behind See all. With Fonoteca's genres, those under none, and on
+            // a genre's page those under it, which link back.
             click(&ui, "Genres");
             assert_eq!(ui.get_page(), Page::Genres);
             wait_for("the genres", || ui.get_genre_tiles().row_count() == 2).await;
@@ -2198,6 +2198,7 @@ mod tests {
             wait_for("Folk's picture", || genre(1).cover.size().width > 0).await;
             let pixel = genre(1).cover.to_rgba8().unwrap().as_slice()[0];
             assert!(pixel.b > pixel.r);
+            assert_eq!(genre(0).cover.size().width, 0, "no artist known for Jazz has a banner");
             ui.invoke_open("genre:Jazz".into());
             wait_for("Jazz's subgenres", || ui.get_genre_tiles().row_count() == 1).await;
             assert_eq!(genre(0).link, "genre:hip-hop");

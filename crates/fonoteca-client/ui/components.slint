@@ -1682,8 +1682,45 @@ export component Shelf {
     }
 }
 
-// A genre: the picture of an artist known for it, in the tint every genre's
-// picture shares, with its name over it.
+// A genre's banner: the wide picture of an artist known for it, in the tint
+// every genre's picture shares, with the genre's name over it.
+export component GenreBanner inherits Rectangle {
+    in property <image> picture;
+    in property <string> name;
+    in property <length> name-size: 28px;
+    in property <bool> hovered;
+
+    border-radius: Theme.radius;
+    clip: true;
+    // The tint's dark end, while the picture is on its way or where there is
+    // none.
+    background: #1c1c2c;
+    Image {
+        width: 100%;
+        height: 100%;
+        source: root.picture;
+        image-fit: cover;
+    }
+    Rectangle {
+        background: root.hovered ? #00000026 : transparent;
+    }
+    // So the name reads on a bright picture too.
+    Rectangle { background: @linear-gradient(0deg, #00000066 0%, #00000000 60%); }
+    VerticalLayout {
+        alignment: center;
+        padding: 12px;
+        Text {
+            text: root.name;
+            color: white;
+            font-size: root.name-size;
+            font-weight: 600;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// A genre in a grid, opening its page.
 export component GenreTile inherits Pressable {
     in property <image> picture;
     in property <string> name;
@@ -1691,56 +1728,32 @@ export component GenreTile inherits Pressable {
     in property <length> name-size: 28px;
     label: self.albums == "" ? self.name : self.name + ", " + self.albums;
 
-    Rectangle {
-        border-radius: Theme.radius;
-        clip: true;
-        // The tint's dark end, while the picture is on its way or where there
-        // is none.
-        background: #1c1c2c;
-        Image {
-            width: 100%;
-            height: 100%;
-            source: root.picture;
-            image-fit: cover;
-        }
-        Rectangle {
-            background: root.hovered ? #00000026 : transparent;
-        }
-        // So the name reads on a bright picture too.
-        Rectangle { background: @linear-gradient(0deg, #00000066 0%, #00000000 60%); }
-        VerticalLayout {
-            alignment: end;
-            padding: 12px;
-            padding-bottom: root.height * 0.2;
-            Text {
-                text: root.name;
-                color: white;
-                font-size: root.name-size;
-                font-weight: 600;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
-        }
+    GenreBanner {
+        picture: root.picture;
+        name: root.name;
+        name-size: root.name-size;
+        hovered: root.hovered;
     }
 }
 
-// Genres in rows of square pictures across the width, each at least
-// `min-size` wide and widening to fill its row.
+// Genres in rows of two pictures across the width, each as wide as a banner
+// is: 16 to 9.
 export component GenreGrid {
     in property <[AlbumTile]> tiles;
-    in property <length> min-size: 300px;
     callback open(link: string);
 
+    property <float> tile-ratio: 9 / 16;
     property <length> gap: Theme.gap;
-    property <int> columns: max(2, floor((self.width + self.gap) / (self.min-size + self.gap)));
+    property <int> columns: 2;
     property <length> size: (self.width - (self.columns - 1) * self.gap) / self.columns;
-    height: self.tiles.length == 0 ? 0 : ceil(self.tiles.length / self.columns) * (self.size + self.gap) - self.gap;
+    property <length> tile-height: self.size * self.tile-ratio;
+    height: self.tiles.length == 0 ? 0 : ceil(self.tiles.length / self.columns) * (self.tile-height + self.gap) - self.gap;
 
     for tile[i] in root.tiles: GenreTile {
         x: mod(i, root.columns) * (root.size + root.gap);
-        y: floor(i / root.columns) * (root.size + root.gap);
+        y: floor(i / root.columns) * (root.tile-height + root.gap);
         width: root.size;
-        height: root.size;
+        height: root.tile-height;
         picture: tile.cover;
         name: tile.title;
         albums: tile.names.length > 0 ? tile.names[0].label : "";

@@ -147,6 +147,10 @@ pub struct ArtistID3 {
     pub name: String,
     /// A covertArt id.
     pub cover_art: Option<String>,
+    /// Not in the spec: a getCoverArt id of the artist's banner, a wide
+    /// picture, present only when they have one, from Fonoteca's
+    /// `fonotecaArtistBanner` extension.
+    pub banner_art: Option<String>,
     /// An url to an external image source.
     pub artist_image_url: Option<String>,
     /// Artist album count.
