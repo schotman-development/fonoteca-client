@@ -3102,7 +3102,10 @@ export component NowPlaying inherits VerticalLayout {
                 source: root.cover;
             }
         }
+        // Measured at its preferred width, the words would count as one line
+        // each, and what follows would be placed over the wrapped ones.
         NowPlayingDetails {
+            preferred-width: root.available;
             title: root.title;
             names: root.names;
             album: root.album;

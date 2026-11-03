@@ -2609,6 +2609,90 @@ mod tests {
                 assert!(queue_heading().is_some(), "the queue follows when scrolled to");
                 ui.set_queue_lines(queue_lines);
 
+                // The seek bar has a row of its own: no title, artist, album
+                // or time runs under or over it, whatever the width.
+                let long = |what: &str| format!("{what} that keeps going and going until it has to wrap");
+                let long_names = [long("An artist"), long("Another artist"), long("A third artist")];
+                ui.set_playing_title(long("A song title").into());
+                ui.set_playing_names(slint::ModelRc::new(slint::VecModel::from(
+                    long_names
+                        .iter()
+                        .map(|label| Name {
+                            label: label.into(),
+                            link: "artists".into(),
+                        })
+                        .collect::<Vec<_>>(),
+                )));
+                ui.set_playing_album(Name {
+                    label: long("An album").into(),
+                    link: "albums".into(),
+                });
+                ui.set_playing_position(65.0);
+                ui.set_playing_duration(271.0);
+                let labels = [
+                    long("A song title"),
+                    long_names[0].clone(),
+                    long_names[1].clone(),
+                    long_names[2].clone(),
+                    long("An album"),
+                    "Position".to_owned(),
+                    "1:05".to_owned(),
+                    "4:31".to_owned(),
+                ];
+                for (width, height) in [(412.0, 915.0), (600.0, 760.0), (1100.0, 760.0)] {
+                    ui.window().set_size(slint::LogicalSize::new(width, height));
+                    idle(Duration::from_millis(400)).await;
+                    let boxes: Vec<_> = labels
+                        .iter()
+                        .map(|label| {
+                            let element = ui
+                                .root_element()
+                                .query_descendants()
+                                .match_predicate({
+                                    let label = label.clone();
+                                    move |e| e.accessible_label().is_some_and(|l| l == label)
+                                })
+                                .find_first()
+                                .unwrap_or_else(|| panic!("no {label} at {width}"));
+                            (label, element.absolute_position(), element.size())
+                        })
+                        .collect();
+                    for (i, (one, at, size)) in boxes.iter().enumerate() {
+                        for (other, other_at, other_size) in &boxes[i + 1..] {
+                            let apart = at.x + size.width <= other_at.x
+                                || other_at.x + other_size.width <= at.x
+                                || at.y + size.height <= other_at.y
+                                || other_at.y + other_size.height <= at.y;
+                            assert!(apart, "at {width}x{height}, {one} ({at:?} {size:?}) overlaps {other} ({other_at:?} {other_size:?})");
+                        }
+                    }
+                }
+                // The queue starts under the controls, however far the words
+                // reach down the sheet.
+                let queued = ui.get_queue_lines();
+                ui.set_queue_lines(slint::ModelRc::new(slint::VecModel::from(vec![
+                    QueueLine::default(),
+                    QueueLine::default(),
+                ])));
+                ui.window().set_size(slint::LogicalSize::new(412.0, 1000.0));
+                idle(Duration::from_millis(400)).await;
+                press(&ui, slint::platform::Key::End);
+                idle(Duration::from_millis(400)).await;
+                let next = button(&ui, "Next");
+                let queue = ui
+                    .root_element()
+                    .query_descendants()
+                    .match_predicate(|e| e.accessible_label().is_some_and(|l| l == "Queue"))
+                    .find_first()
+                    .expect("no Queue heading");
+                assert!(
+                    queue.absolute_position().y >= next.absolute_position().y + next.size().height,
+                    "the queue starts under the controls"
+                );
+                ui.set_queue_lines(queued);
+                ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+                idle(Duration::from_millis(400)).await;
+
                 // The sheet closes when the page changes under it, and when
                 // playback ends.
                 let visit = ui.get_visit();
