@@ -6,8 +6,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+use cpal::{
+    DeviceDescriptionBuilder, ErrorKind, SampleFormat, SupportedBufferSize,
+    SupportedStreamConfigRange,
+};
 
+use crate::outputs::{self, Found, OutputDevice};
 use crate::{Format, Step};
 
 /// One track's decoded audio, in the device's format.
@@ -375,15 +379,25 @@ fn exclusive(id: &str) -> bool {
         .is_some_and(|(_, pcm)| pcm.starts_with("hw:"))
 }
 
-/// The devices to choose from, as cpal ids and names.
-pub fn devices() -> Vec<(String, String)> {
+/// The devices to choose from, each output once.
+pub fn devices() -> Vec<OutputDevice> {
     let host = cpal::default_host();
     let Ok(devices) = host.output_devices() else {
         return Vec::new();
     };
-    devices
-        .filter_map(|device| Some((device.id().ok()?.to_string(), name(&device))))
-        .collect()
+    outputs::list(devices.filter_map(|device| found(&device)).collect())
+}
+
+fn found(device: &cpal::Device) -> Option<Found> {
+    let name = name(device);
+    Some(Found {
+        id: device.id().ok()?.to_string(),
+        description: device
+            .description()
+            .unwrap_or_else(|_| DeviceDescriptionBuilder::new(&name).build()),
+        name,
+        safe_speaker: format!("{device:?}").contains("BuiltinSpeakerSafe"),
+    })
 }
 
 fn open_stream(

@@ -2812,8 +2812,18 @@ mod tests {
                 // the settings once kept it, and opening the menu lists the
                 // devices again.
                 let dac = "alsa:hw:CARD=DAC,DEV=0";
+                let merged_away = "alsa:plughw:CARD=DAC,DEV=0";
                 let fake_devices = || {
-                    play::testing::show_devices(&ui, vec![(dac.into(), "USB DAC".into())]);
+                    play::testing::show_devices(
+                        &ui,
+                        vec![playback::OutputDevice {
+                            id: dac.into(),
+                            name: "USB DAC".into(),
+                            detail: "hw:CARD=DAC,DEV=0".into(),
+                            title: "USB DAC (hw:CARD=DAC,DEV=0)".into(),
+                            same_as: vec![merged_away.into()],
+                        }],
+                    );
                 };
                 let icons = ui.global::<Icons>();
                 let marked = || -> Vec<bool> {
@@ -2830,12 +2840,36 @@ mod tests {
                     idle(Duration::from_millis(400)).await;
                     fake_devices();
                     assert_eq!(marked(), [true, false]);
+                    assert_eq!(ui.get_output_name(), "System default", "{width}px");
+                    if width == 1100.0 {
+                        let picker = button(&ui, "Sound device");
+                        let (position, size) = (picker.absolute_position(), picker.size());
+                        // The sheet ends above the player bar, and what plays
+                        // fills its first screen down to the stage's padding.
+                        let (player_bar, stage_padding) = (80.0, 24.0);
+                        let bottom = position.y + size.height;
+                        assert!(
+                            (bottom - (height - player_bar - stage_padding)).abs() <= 1.0,
+                            "at the bottom of the sheet, not at {bottom}"
+                        );
+                        // Button and name are centred together in what the
+                        // docked sidebar leaves, so the button sits left of
+                        // its middle by half the name and the gap.
+                        let (sidebar, name_and_gap) = (240.0, 240.0);
+                        let middle = sidebar + (width - sidebar) / 2.0;
+                        let centre = position.x + size.width / 2.0;
+                        assert!(
+                            (middle - name_and_gap..=middle).contains(&centre),
+                            "centred, not at {centre}"
+                        );
+                    }
                     click(&ui, "Sound device");
                     wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
                     fake_devices();
                     click(&ui, "USB DAC, hw:CARD=DAC,DEV=0");
                     assert_eq!(crate::prefs::load().output_device.as_deref(), Some(dac), "{width}px");
                     assert_eq!(marked(), [false, true], "{width}px");
+                    assert_eq!(ui.get_output_name(), "USB DAC (hw:CARD=DAC,DEV=0)", "{width}px");
                     // Listed again at start-up or on opening, the one saved is the one marked.
                     fake_devices();
                     assert_eq!(marked(), [false, true], "{width}px");
@@ -2845,6 +2879,16 @@ mod tests {
                     assert_eq!(marked().first(), Some(&true), "{width}px");
                     wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
                 }
+                // A choice saved as a route that was folded into another is
+                // that other.
+                let mut saved = crate::prefs::load();
+                saved.output_device = Some(merged_away.into());
+                crate::prefs::save(&saved);
+                fake_devices();
+                assert_eq!(marked(), [false, true]);
+                assert_eq!(ui.get_output_name(), "USB DAC (hw:CARD=DAC,DEV=0)");
+                saved.output_device = None;
+                crate::prefs::save(&saved);
                 ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
                 idle(Duration::from_millis(400)).await;
                 click(&ui, "Aurora");

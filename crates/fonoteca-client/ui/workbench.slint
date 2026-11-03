@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -745,7 +745,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 16: Example {
-                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. The sound device menu opens beside the light, with the long list of an ALSA host under the Long text switch. A phone's controls follow, then the queue's rows, the one playing coloured; a work queued whole is one row that opens to its movements";
+                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. The sound device menu opens from the button at the bottom, named beside it, with the long list of an ALSA host under the Long text switch. A phone's controls follow, then the queue's rows, the one playing coloured; a work queued whole is one row that opens to its movements";
                         NowPlaying {
                             available: root.long-text ? 400px : 900px;
                             cover: root.albums[0].cover;
@@ -759,9 +759,6 @@ export component Workbench inherits Window {
                                 { text: "Resampled 96 kHz to 48 kHz", quality: 1 },
                                 { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
                             ];
-                            output-devices: root.long-text ? root.many-devices : root.output-devices;
-                            list-devices => { root.event = "list devices"; }
-                            choose-output(index) => { root.output-device = index; }
                             open(link) => { root.event = "open " + link; }
                         }
                         PlayerControls {
@@ -777,6 +774,12 @@ export component Workbench inherits Window {
                             seek(seconds) => { root.player-position = seconds; }
                             toggle-shuffle => { root.player-shuffled = !root.player-shuffled; }
                             cycle-repeat => { root.player-repeat = mod(root.player-repeat + 1, 3); }
+                        }
+                        OutputPicker {
+                            output-devices: root.long-text ? root.many-devices : root.output-devices;
+                            output-name: root.long-text ? "HDA Intel PCH, ALC3246 Analog (hw:CARD=PCH,DEV=0)" : "System default";
+                            list-devices => { root.event = "list devices"; }
+                            choose-output(index) => { root.output-device = index; }
                         }
                         VerticalLayout {
                             ListRow {

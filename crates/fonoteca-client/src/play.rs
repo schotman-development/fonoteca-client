@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use opensubsonic::{Child, Client};
-use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
+use playback::{Gain, Leveling, OutputDevice, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
@@ -65,6 +65,8 @@ struct Playing {
     queue_refused: bool,
     /// The sound devices by cpal id, none for the default.
     devices: Vec<Option<String>>,
+    /// What names each of `devices` beside the button that opens their menu.
+    device_titles: Vec<SharedString>,
     tick: Timer,
 }
 
@@ -184,7 +186,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         move |index| {
             let p = playing.borrow();
             let device = p.devices.get(index as usize).cloned().flatten();
-            mark_device(&weak.unwrap(), index as usize);
+            mark_device(&weak.unwrap(), &p, index as usize);
             let mut saved = prefs::load();
             saved.output_device = device.clone();
             prefs::save(&saved);
@@ -377,21 +379,28 @@ fn list_devices(ui: &AppWindow, playing: &Shared) {
     .expect("the event loop is running");
 }
 
-/// The `found` devices by cpal id and name, after the system's default.
-fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<(String, String)>) {
-    let mut names = vec![(SharedString::from("System default"), SharedString::new())];
+/// The `found` devices after the system's default, with the one chosen
+/// marked; a choice saved as a route that was folded into another is that
+/// other.
+fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<OutputDevice>) {
+    let saved = prefs::load().output_device;
     let mut devices = vec![None];
-    for (id, name) in found {
-        let pcm = id.strip_prefix("alsa:").unwrap_or(&id);
-        names.push((SharedString::from(name), SharedString::from(pcm)));
-        devices.push(Some(id));
+    let mut titles = vec![SharedString::from("System default")];
+    let mut entries = vec![(SharedString::from("System default"), SharedString::new())];
+    let mut chosen = 0;
+    for device in found {
+        let is_saved = saved
+            .as_ref()
+            .is_some_and(|id| *id == device.id || device.same_as.contains(id));
+        if is_saved {
+            chosen = entries.len();
+        }
+        entries.push((device.name.into(), device.detail.into()));
+        titles.push(device.title.into());
+        devices.push(Some(device.id));
     }
-    let chosen = devices
-        .iter()
-        .position(|id| *id == prefs::load().output_device)
-        .unwrap_or(0);
     let icons = ui.global::<Icons>();
-    let entries: Vec<MenuEntry> = names
+    let menu: Vec<MenuEntry> = entries
         .into_iter()
         .enumerate()
         .map(|(index, (label, detail))| MenuEntry {
@@ -402,17 +411,24 @@ fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<(String, String)>) 
             ..Default::default()
         })
         .collect();
-    ui.set_output_devices(ModelRc::new(VecModel::from(entries)));
-    playing.borrow_mut().devices = devices;
+    ui.set_output_devices(ModelRc::new(VecModel::from(menu)));
+    ui.set_output_name(titles[chosen].clone());
+    let mut p = playing.borrow_mut();
+    p.devices = devices;
+    p.device_titles = titles;
 }
 
-/// Moves the menu's mark to the device `chosen`.
-fn mark_device(ui: &AppWindow, chosen: usize) {
+/// Moves the menu's mark, and the name beside the button, to the device
+/// `chosen`.
+fn mark_device(ui: &AppWindow, playing: &Playing, chosen: usize) {
     let icons = ui.global::<Icons>();
     let entries = ui.get_output_devices();
     for (index, mut entry) in entries.iter().enumerate() {
         entry.icon = device_icon(&icons, index == chosen);
         entries.set_row_data(index, entry);
+    }
+    if let Some(title) = playing.device_titles.get(chosen) {
+        ui.set_output_name(title.clone());
     }
 }
 
@@ -1185,7 +1201,7 @@ pub(crate) mod testing {
     }
 
     /// Lists `found` as the sound devices there are.
-    pub(crate) fn show_devices(ui: &AppWindow, found: Vec<(String, String)>) {
+    pub(crate) fn show_devices(ui: &AppWindow, found: Vec<OutputDevice>) {
         let (_, playing) = handles();
         super::show_devices(ui, &playing, found);
     }

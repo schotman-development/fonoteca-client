@@ -3095,9 +3095,6 @@ component NowPlayingDetails inherits VerticalLayout {
     in property <string> quality;
     in property <int> level;
     in property <[PathStep]> path;
-    in property <[MenuEntry]> output-devices;
-    callback list-devices();
-    callback choose-output(index: int);
     callback open(link: string);
     spacing: 8px;
     alignment: start;
@@ -3118,27 +3115,45 @@ component NowPlayingDetails inherits VerticalLayout {
         text: root.album.label;
         clicked => { root.open(root.album.link); }
     }
-    HorizontalLayout {
+    if root.level >= 0: HorizontalLayout {
         padding-top: 16px;
         alignment: start;
-        spacing: 8px;
-        if root.level >= 0: SignalPathLight {
-            cross-axis-self-alignment: center;
+        SignalPathLight {
             quality: root.quality;
             level: root.level;
             path: root.path;
             opens-upward: false;
         }
-        MoreMenu {
-            cross-axis-self-alignment: center;
-            label: "Sound device";
-            icon: Icons.speaker;
-            two-line: true;
-            panel: 320px;
-            entries: root.output-devices;
-            opening => { root.list-devices(); }
-            activated(id) => { root.choose-output(Math.floor(id.to-float())); }
-        }
+    }
+}
+
+// The sound device in use, named beside the button that opens the menu of the
+// outputs to play on.
+export component OutputPicker inherits HorizontalLayout {
+    in property <[MenuEntry]> output-devices;
+    in property <string> output-name;
+    callback list-devices();
+    callback choose-output(index: int);
+    alignment: center;
+    spacing: 8px;
+
+    MoreMenu {
+        cross-axis-self-alignment: center;
+        label: "Sound device";
+        icon: Icons.speaker;
+        two-line: true;
+        panel: 320px;
+        entries: root.output-devices;
+        opening => { root.list-devices(); }
+        activated(id) => { root.choose-output(Math.floor(id.to-float())); }
+    }
+    Text {
+        cross-axis-self-alignment: center;
+        max-width: 240px;
+        text: root.output-name;
+        font-size: Theme.small;
+        color: Theme.muted;
+        overflow: elide;
     }
 }
 
@@ -3155,9 +3170,6 @@ export component NowPlaying inherits VerticalLayout {
     in property <string> quality;
     in property <int> level: -1;
     in property <[PathStep]> path;
-    in property <[MenuEntry]> output-devices;
-    callback list-devices();
-    callback choose-output(index: int);
     callback open(link: string);
     property <bool> narrow: root.available < 720px;
 
@@ -3180,9 +3192,6 @@ export component NowPlaying inherits VerticalLayout {
             quality: root.quality;
             level: root.level;
             path: root.path;
-            output-devices: root.output-devices;
-            list-devices => { root.list-devices(); }
-            choose-output(index) => { root.choose-output(index); }
             open(link) => { root.open(link); }
         }
     }
@@ -3202,9 +3211,6 @@ export component NowPlaying inherits VerticalLayout {
             quality: root.quality;
             level: root.level;
             path: root.path;
-            output-devices: root.output-devices;
-            list-devices => { root.list-devices(); }
-            choose-output(index) => { root.choose-output(index); }
             open(link) => { root.open(link); }
         }
     }

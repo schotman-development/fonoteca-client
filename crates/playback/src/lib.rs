@@ -13,6 +13,7 @@ mod decode;
 mod download;
 mod dsp;
 mod output;
+mod outputs;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -25,6 +26,7 @@ pub use cpal::SampleFormat;
 pub use download::{Download, Fill, new as download};
 pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
 pub use output::{SystemMixer, devices};
+pub use outputs::OutputDevice;
 
 use decode::{Decoding, Stop};
 use output::{Route, Segment, Shared};
