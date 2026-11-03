@@ -869,6 +869,7 @@ export component AppWindow inherits Window {
     callback sign-in();
     callback connect-listenbrainz();
     callback skip-listenbrainz();
+    callback remove-listenbrainz();
     callback sign-out();
 
     in property <Page> page;
@@ -2098,6 +2099,12 @@ export component AppWindow inherits Window {
                             summary: "Have the server scan its libraries";
                             clicked => { root.open("setting:library"); }
                         }
+                        SettingsRow {
+                            icon: Icons.key;
+                            title: "ListenBrainz";
+                            summary: "The token that connects your ListenBrainz account";
+                            clicked => { root.open("setting:listenbrainz"); }
+                        }
                         if root.can-play: SettingsRow {
                             icon: Icons.play;
                             title: "Playback";
@@ -2109,6 +2116,42 @@ export component AppWindow inherits Window {
                             title: "Sound processing";
                             summary: "Headroom, crossfeed, upsampling and EQ";
                             clicked => { root.open("setting:sound"); }
+                        }
+                    }
+                    if root.page == Page.setting && root.shown-id == "listenbrainz": VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        Heading { text: "ListenBrainz"; }
+                        Text {
+                            text: root.listenbrainz-user == "" ? "No token is set." : "A token is set, for " + root.listenbrainz-user + ". It stays when you sign out.";
+                            wrap: word-wrap;
+                            font-size: Theme.body;
+                        }
+                        LineEdit {
+                            placeholder-text: "User token";
+                            accessible-label: "ListenBrainz user token";
+                            input-type: InputType.password;
+                            text <=> root.listenbrainz-token;
+                            enabled: !root.busy && !Input.modal;
+                            accepted => { root.connect-listenbrainz(); }
+                        }
+                        if root.problem != "": Problem {
+                            text: root.problem;
+                            font-size: Theme.body;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 8px;
+                            Button {
+                                text: root.listenbrainz-user == "" ? "Set token" : "Replace token";
+                                enabled: !root.busy && !Input.modal && root.listenbrainz-token != "";
+                                clicked => { root.connect-listenbrainz(); }
+                            }
+                            Button {
+                                text: "Remove token";
+                                enabled: !root.busy && !Input.modal && root.listenbrainz-user != "";
+                                clicked => { root.remove-listenbrainz(); }
+                            }
                         }
                     }
                     if root.page == Page.setting && root.shown-id == "library": VerticalLayout {

@@ -29,11 +29,14 @@ use opensubsonic::{Auth, Client};
 use serde::{Deserialize, Serialize};
 
 /// What the onboarding sets up, kept by [`store`].
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
     server: String,
     login: Login,
-    listenbrainz: Option<ListenBrainz>,
+    /// Where earlier versions kept the token. It is only read, to move it
+    /// to its own entry, and never written back.
+    #[serde(default, rename = "listenbrainz", skip_serializing)]
+    legacy_listenbrainz: Option<ListenBrainz>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -42,7 +45,8 @@ enum Login {
     Password { username: String, password: String },
 }
 
-#[derive(Serialize, Deserialize)]
+/// The user's ListenBrainz token, kept by [`store`] apart from the account.
+#[derive(Clone, Serialize, Deserialize)]
 struct ListenBrainz {
     token: String,
     user: String,
@@ -96,8 +100,19 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
     ui.set_offline("".into());
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let account = store::load().await;
+        let mut account = store::load().await;
+        let migrated = match account.as_mut() {
+            Some(account) => move_listenbrainz_out_of(account).await,
+            None => Ok(()),
+        };
+        let listenbrainz = store::load_listenbrainz().await;
         let Some(ui) = weak.upgrade() else { return };
+        ui.set_listenbrainz_user(listenbrainz.map_or("".into(), |l| l.user.into()));
+        if let Err(e) = migrated {
+            ui.set_saved_note(
+                format!("Your ListenBrainz token is still kept with the account: {e}").into(),
+            );
+        }
         let Some(account) = account else {
             ui.set_step(Step::Server);
             return;
@@ -163,12 +178,36 @@ async fn change_own_password(
     Ok((Some(fresh), note))
 }
 
+/// Moves the token that earlier versions kept in the account's entry to
+/// its own, unless that one is already there, and saves the account
+/// without it. The token goes first, so that a failure in between leaves
+/// it in both places and the next start tries again.
+async fn move_listenbrainz_out_of(account: &mut Account) -> Result<(), String> {
+    let Some(legacy) = account.legacy_listenbrainz.take() else {
+        return Ok(());
+    };
+    if store::load_listenbrainz().await.is_none() {
+        store::save_listenbrainz(legacy).await?;
+    }
+    store::save(account.clone()).await
+}
+
+/// Asks ListenBrainz whether it accepts `token` and, when it does, keeps it.
 async fn connect_listenbrainz(token: String) -> Result<ListenBrainz, String> {
     let client = listenbrainz::Client::new(token.clone()).map_err(|e| e.to_string())?;
-    match client.validate_token().await.map_err(|e| e.to_string())? {
-        Some(user) => Ok(ListenBrainz { token, user }),
-        None => Err("ListenBrainz doesn't accept this token.".into()),
-    }
+    let Some(user) = client.validate_token().await.map_err(|e| e.to_string())? else {
+        return Err("ListenBrainz doesn't accept this token.".into());
+    };
+    let listenbrainz = ListenBrainz { token, user };
+    store::save_listenbrainz(listenbrainz.clone())
+        .await
+        .map_err(|e| {
+            format!(
+                "ListenBrainz accepts this token, but it couldn't be saved in {}: {e}",
+                store::PLACE
+            )
+        })?;
+    Ok(listenbrainz)
 }
 
 /// Runs `task` while the screen shows it is busy, then hands its result to
@@ -204,11 +243,6 @@ fn show(ui: &AppWindow, account: &Account) {
     ui.set_signed_in(signed_in.into());
     // The home page's welcome names them.
     ui.set_username(username.into());
-    let user = account
-        .listenbrainz
-        .as_ref()
-        .map_or("", |l| l.user.as_str());
-    ui.set_listenbrainz_user(user.into());
     ui.set_api_key("".into());
     ui.set_password("".into());
     ui.set_listenbrainz_token("".into());
@@ -367,6 +401,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     ui.on_sign_in({
         let weak = ui.as_weak();
         let pending = pending.clone();
+        let browser = browser.clone();
         move || {
             let ui = weak.unwrap();
             let server = ui.get_address().trim().to_owned();
@@ -378,18 +413,23 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
                     password: ui.get_password().into(),
                 }
             };
-            let pending = pending.clone();
+            let (pending, browser) = (pending.clone(), browser.clone());
             let task = async move {
                 let (name, client) = sign_in(&server, &login).await?;
                 let account = Account {
                     server,
                     login,
-                    listenbrainz: None,
+                    legacy_listenbrainz: None,
                 };
                 Ok((name, account, client))
             };
             run(&ui, task, move |ui, (name, account, client)| {
                 ui.set_server_name(name.into());
+                // The token outlives the account it was entered for.
+                if ui.get_listenbrainz_user() != "" {
+                    finish(ui, &browser, account, client);
+                    return;
+                }
                 *pending.borrow_mut() = Some((account, client));
                 ui.set_step(Step::Listenbrainz);
             });
@@ -405,10 +445,26 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             let token = ui.get_listenbrainz_token().trim().to_owned();
             let (pending, browser) = (pending.clone(), browser.clone());
             run(&ui, connect_listenbrainz(token), move |ui, listenbrainz| {
-                if let Some((mut account, client)) = pending.take() {
-                    account.listenbrainz = Some(listenbrainz);
+                ui.set_listenbrainz_user(listenbrainz.user.into());
+                ui.set_listenbrainz_token("".into());
+                if let Some((account, client)) = pending.take() {
                     finish(ui, &browser, account, client);
                 }
+            });
+        }
+    });
+
+    ui.on_remove_listenbrainz({
+        let weak = ui.as_weak();
+        move || {
+            let ui = weak.unwrap();
+            // A disabled button still takes a screen reader's press.
+            if ui.get_busy() {
+                return;
+            }
+            run(&ui, store::forget_listenbrainz(), |ui, ()| {
+                ui.set_listenbrainz_user("".into());
+                ui.set_listenbrainz_token("".into());
             });
         }
     });
@@ -798,7 +854,10 @@ mod tests {
             ok(&format!(
                 r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}]"#
             ))
-        } else if !request.contains("u=joe&") {
+        } else if !["u=joe&", "u=eve&"]
+            .iter()
+            .any(|user| request.contains(user))
+        {
             json(WRONG_PASSWORD)
         } else if request.contains("/rest/getPlaylistFolders?") {
             ok(
@@ -1398,7 +1457,7 @@ mod tests {
             assert!(
                 matches!(saved.login, Login::Password { ref username, .. } if username == "joe")
             );
-            assert!(saved.listenbrainz.is_none());
+            assert!(store::load_listenbrainz().await.is_none());
 
             // Showing the albums asks again, and Try again once more.
             click(&ui, "Albums");
@@ -1690,6 +1749,36 @@ mod tests {
             play::testing::show_saved_stream_quality(&ui);
             assert_eq!((ui.get_wifi_format(), ui.get_wifi_bitrate()), (3, 6));
             assert_eq!((ui.get_mobile_format(), ui.get_mobile_bitrate()), (1, 2));
+            ui.invoke_back();
+            // The ListenBrainz token has its own entry. An earlier version's
+            // moves out of the account's, but never over one already there.
+            let account = store::load().await.expect("saved");
+            let kept_by_account = |token: &str| {
+                let mut json = serde_json::to_value(&account).unwrap();
+                json["listenbrainz"] = serde_json::json!({ "token": token, "user": "old" });
+                serde_json::from_value::<Account>(json).unwrap()
+            };
+            let token = |listenbrainz: Option<ListenBrainz>| listenbrainz.map(|l| l.token);
+            let mut old = kept_by_account("old token");
+            move_listenbrainz_out_of(&mut old).await.unwrap();
+            assert_eq!(token(store::load_listenbrainz().await), Some("old token".into()));
+            let migrated = serde_json::to_value(store::load().await.unwrap()).unwrap();
+            assert!(migrated.get("listenbrainz").is_none(), "the account lost it");
+            let mut other = kept_by_account("other token");
+            move_listenbrainz_out_of(&mut other).await.unwrap();
+            assert_eq!(token(store::load_listenbrainz().await), Some("old token".into()));
+
+            // Removing it deletes the entry and leaves the account signed in.
+            ui.set_listenbrainz_user("old".into());
+            click(&ui, "ListenBrainz");
+            assert_eq!(ui.get_page(), Page::Setting);
+            assert!(find(&ui, "Replace token").is_some());
+            click(&ui, "Remove token");
+            wait_for("the token removed", || ui.get_listenbrainz_user() == "").await;
+            assert!(store::load_listenbrainz().await.is_none());
+            assert!(store::load().await.is_some());
+            assert_eq!(ui.get_step(), Step::Done);
+            assert!(find(&ui, "Set token").is_some());
             ui.invoke_back();
             click(&ui, "Library");
             assert_eq!(ui.get_page(), Page::Setting);
@@ -4086,12 +4175,38 @@ mod tests {
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
             assert!(find(&ui, "Menu").is_none());
 
+            let kept = ListenBrainz {
+                token: "kept token".into(),
+                user: "listener".into(),
+            };
+            store::save_listenbrainz(kept.clone()).await.unwrap();
+            ui.set_listenbrainz_user("listener".into());
             click(&ui, "Account");
             click(&ui, "Sign out");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
             assert_eq!(ui.get_username(), "");
             assert!(store::load().await.is_none());
             store::forget().await.expect("forgetting twice is fine");
+            // Signing out keeps the token, and so does signing in as someone
+            // else, which doesn't ask for one.
+            assert_eq!(token(store::load_listenbrainz().await), Some(kept.token.clone()));
+            ui.set_address(server.as_str().into());
+            click(&ui, "Continue");
+            wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
+            ui.set_username("eve".into());
+            ui.set_password("pw".into());
+            click(&ui, "Sign in");
+            wait_for("the done step", || ui.get_step() == Step::Done).await;
+            wait_for("the account saved", || !ui.get_busy()).await;
+            assert_eq!(ui.get_listenbrainz_user(), "listener");
+            assert_eq!(token(store::load_listenbrainz().await), Some(kept.token));
+            let signed_in_as = store::load().await.expect("saved").login;
+            assert!(matches!(signed_in_as, Login::Password { ref username, .. } if username == "eve"));
+            click(&ui, "Account");
+            click(&ui, "Sign out");
+            wait_for("the server step", || ui.get_step() == Step::Server).await;
+            store::forget_listenbrainz().await.unwrap();
+            ui.set_listenbrainz_user("".into());
 
             // A server that takes only an artist's name for their top songs,
             // as Fonoteca does, is asked by name.
