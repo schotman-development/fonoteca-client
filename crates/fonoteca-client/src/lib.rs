@@ -737,6 +737,8 @@ mod tests {
     static SLOW_MOTION: AtomicBool = AtomicBool::new(false);
     static MOTIONS_ASKED: AtomicUsize = AtomicUsize::new(0);
     static NO_WAVEFORM: AtomicBool = AtomicBool::new(false);
+    /// While set, the server converts a song from part way in.
+    static TRANSCODE_OFFSET: AtomicBool = AtomicBool::new(false);
     static SLOW_WAVEFORM: AtomicBool = AtomicBool::new(false);
     static WAVEFORMS_ASKED: AtomicUsize = AtomicUsize::new(0);
     /// How many scans were asked for; the server refuses the first. Whether
@@ -899,8 +901,13 @@ mod tests {
             } else {
                 r#"{"name":"fonotecaWaveform","versions":[1]},"#
             };
+            let offset = if TRANSCODE_OFFSET.load(Relaxed) {
+                r#",{"name":"transcodeOffset","versions":[1]}"#
+            } else {
+                ""
+            };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}}{by_id}{organized}{offset}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1769,17 +1776,23 @@ mod tests {
             // a device without mobile data has only the one choice.
             click(&ui, "Playback");
             assert!(!find_combo(&ui, "Streaming on mobile data format"));
-            let streamed_with = |format: i32, bitrate: i32| {
+            let streamed_with = |format: i32, bitrate: i32, seconds: f64| {
                 ui.invoke_choose_stream_quality(false, format, bitrate);
-                play::testing::fetch_song("tr-1");
-                STREAMS.lock().unwrap().last().cloned().unwrap_or_default()
+                let begins_at = play::testing::fetch_song("tr-1", seconds);
+                let request = STREAMS.lock().unwrap().last().cloned();
+                (request.unwrap_or_default(), begins_at)
             };
-            let request = streamed_with(2, 5);
+            let (request, _) = streamed_with(2, 5, 0.0);
             assert!(
                 request.contains("format=opus") && request.contains("maxBitRate=96"),
                 "{request}"
             );
-            let request = streamed_with(0, 5);
+            // Without transcodeOffset the whole conversion comes, from its
+            // start, for the player to seek in.
+            let (request, begins_at) = streamed_with(2, 5, 61.5);
+            assert!(!request.contains("timeOffset"), "{request}");
+            assert_eq!(begins_at, None);
+            let (request, _) = streamed_with(0, 5, 0.0);
             assert!(request.contains("format=raw"), "{request}");
             assert!(!request.contains("maxBitRate"), "{request}");
             // What is saved shows in the settings at the start, held to the
@@ -4277,6 +4290,7 @@ mod tests {
             // A server that takes only an artist's name for their top songs,
             // as Fonoteca does, is asked by name.
             NAMES_ONLY.store(true, Relaxed);
+            TRANSCODE_OFFSET.store(true, Relaxed);
             ORGANIZED.store(true, Relaxed);
             TAGS_DOWN.store(true, Relaxed);
             QUEUED.store(true, Relaxed);
@@ -4295,6 +4309,25 @@ mod tests {
             ui.invoke_open("artist:r1".into());
             wait_for("her top songs by name", || ui.get_tracks().row_count() == 2).await;
             wait_for("the account saved", || !ui.get_busy()).await;
+
+            // Fonoteca converts a song from part way in, so a conversion
+            // played from there is asked for from there; the original still
+            // comes whole.
+            let streamed_from = |format: i32, seconds: f64| {
+                ui.invoke_choose_stream_quality(false, format, 5);
+                let begins_at = play::testing::fetch_song("tr-1", seconds);
+                let request = STREAMS.lock().unwrap().last().cloned();
+                (request.unwrap_or_default(), begins_at)
+            };
+            let (request, begins_at) = streamed_from(2, 61.5);
+            assert!(request.contains("timeOffset=61.5"), "{request}");
+            assert_eq!(begins_at, Some(61.5));
+            let (request, begins_at) = streamed_from(2, 0.0);
+            assert!(!request.contains("timeOffset"), "{request}");
+            assert_eq!(begins_at, Some(0.0), "a conversion from its start begins anywhere too");
+            let (request, begins_at) = streamed_from(0, 61.5);
+            assert!(!request.contains("timeOffset"), "{request}");
+            assert_eq!(begins_at, None);
 
             // The album of the saved queue's song has its motion cover come
             // to the now playing sheet, whose still cover stood in until then.

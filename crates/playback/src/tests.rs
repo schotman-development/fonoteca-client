@@ -768,7 +768,7 @@ fn nothing_is_fetched_without_a_device() {
         system: None,
         fetch: Box::new({
             let fetched = fetched.clone();
-            move |_: &Track| {
+            move |_: &Track, _: f64| {
                 fetched.fetch_add(1, Relaxed);
                 Err("Not here.".into())
             }
@@ -864,7 +864,7 @@ fn a_player_asks_its_system_what_it_offers() {
     let silence = vec![0; 882];
     let player = Player::with_system(
         None,
-        Box::new(move |_| Ok(wav(44_100, 2, 16, &silence))),
+        Box::new(move |_, _| Ok(wav(44_100, 2, 16, &silence))),
         system.clone(),
     );
     // Let the output thread find its device before putting one in its place.
@@ -899,7 +899,7 @@ fn the_output_is_given_back_when_the_player_quits() {
     let system = Arc::new(FakeMixer::default());
     drop(Player::with_system(
         None,
-        Box::new(|_| Err(String::new())),
+        Box::new(|_, _| Err(String::new())),
         system.clone(),
     ));
     assert!(system.released.load(Relaxed) >= 1);
@@ -950,7 +950,7 @@ fn decoder_of(ids: &[&str]) -> (Decoder, Arc<Shared>, Arc<std::sync::Mutex<Vec<S
         system: None,
         fetch: Box::new({
             let fetched = fetched.clone();
-            move |track: &Track| {
+            move |track: &Track, _: f64| {
                 fetched.lock().unwrap().push(track.id.clone());
                 Ok(wav(44_100, 2, 16, &samples))
             }
@@ -1055,7 +1055,7 @@ fn a_repeating_queue_whose_tracks_all_fail_stops() {
     let tries = Arc::new(AtomicUsize::new(0));
     decoder.fetch = Box::new({
         let tries = tries.clone();
-        move |_: &Track| {
+        move |_: &Track, _: f64| {
             tries.fetch_add(1, Relaxed);
             Err("Gone.".into())
         }
@@ -1064,6 +1064,119 @@ fn a_repeating_queue_whose_tracks_all_fail_stops() {
     decoder.open(1, 0.0, None);
     assert_eq!(tries.load(Relaxed), 3);
     assert!(shared.ring.lock().unwrap().idle);
+}
+
+#[test]
+fn a_track_begun_part_way_is_read_on_once_in_and_fetched_again_from_before_it() {
+    let (mut decoder, _, fetched) = decoder_of(&["a"]);
+    decoder.open(0, 0.0, None);
+    decoder.start(0, 0.05);
+    assert_eq!(
+        *fetched.lock().unwrap(),
+        ["a"],
+        "a whole file is read again"
+    );
+
+    let (mut decoder, shared, _) = decoder_of(&["a", "b"]);
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let samples = ramp(4_410, 2, 16);
+    decoder.fetch = Box::new({
+        let (asked, samples) = (asked.clone(), samples.clone());
+        move |track: &Track, seconds: f64| {
+            asked
+                .lock()
+                .unwrap()
+                .push(format!("{}@{seconds}", track.id));
+            Ok(wav(44_100, 2, 16, &samples).starting_at(seconds))
+        }
+    });
+    decoder.open(0, 0.02, None);
+    // a has all arrived, so b is fetched ahead.
+    decoder.step();
+    decoder.start(0, 0.05);
+    while shared.ring.lock().unwrap().segments[0].data.is_empty() {
+        decoder.step();
+    }
+    {
+        let ring = shared.ring.lock().unwrap();
+        assert_eq!(ring.segments[0].start, 2_205);
+        // 0.05 s into the track is 0.03 s into a download that began at 0.02.
+        let bytes: Vec<u8> = ring.segments[0].data.iter().copied().collect();
+        let heard = ints(&bytes, 2);
+        assert_eq!(heard, samples[1_323 * 2..][..heard.len()]);
+    }
+    decoder.start(0, 0.01);
+    assert_eq!(decode_until(&mut decoder, &shared, 2), ["a", "b"]);
+    assert_eq!(*asked.lock().unwrap(), ["a@0.02", "b@0", "a@0.01"]);
+}
+
+#[test]
+fn a_track_begun_part_way_is_fetched_again_to_repeat_it_from_its_start() {
+    let (mut decoder, shared, _) = decoder_of(&["a"]);
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let samples = ramp(4_410, 2, 16);
+    decoder.fetch = Box::new({
+        let asked = asked.clone();
+        move |_: &Track, seconds: f64| {
+            asked.lock().unwrap().push(seconds);
+            Ok(wav(44_100, 2, 16, &samples).starting_at(seconds))
+        }
+    });
+    decoder.repeat = Repeat::One;
+    decoder.open(0, 0.05, None);
+    decode_until(&mut decoder, &shared, 2);
+    assert_eq!(*asked.lock().unwrap(), [0.05, 0.0]);
+    assert_eq!(shared.ring.lock().unwrap().segments[1].start, 0);
+}
+
+#[test]
+fn a_seek_into_a_download_of_unknown_length_does_not_wait_for_the_rest() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    let (mut decoder, shared, _) = decoder_of(&["a"]);
+    let sought = Arc::new(AtomicBool::new(false));
+    let waited_in_vain = Arc::new(AtomicBool::new(false));
+    decoder.fetch = Box::new({
+        let (sought, waited_in_vain) = (sought.clone(), waited_in_vain.clone());
+        move |_: &Track, seconds: f64| {
+            let whole = silent_mp3(400);
+            let (download, mut fill) =
+                download::new(&std::env::temp_dir().join("playback-tests"), None).unwrap();
+            if seconds > 0.0 {
+                fill.append(&whole);
+                fill.finish();
+                return Ok(download.starting_at(seconds));
+            }
+            let (sought, waited_in_vain) = (sought.clone(), waited_in_vain.clone());
+            std::thread::spawn(move || {
+                let (first, rest) = whole.split_at(whole.len() * 3 / 4);
+                fill.append(first);
+                let patience = std::time::Instant::now();
+                while !sought.load(SeqCst) {
+                    if patience.elapsed() > std::time::Duration::from_secs(10) {
+                        waited_in_vain.store(true, SeqCst);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                fill.append(rest);
+                fill.finish();
+            });
+            Ok(download.starting_at(0.0))
+        }
+    });
+    decoder.open(0, 0.0, None);
+    decoder.handle(Command::Seek(5.0));
+    sought.store(true, SeqCst);
+    assert!(
+        !waited_in_vain.load(SeqCst),
+        "the seek waited for the whole download"
+    );
+    let ring = shared.ring.lock().unwrap();
+    assert_eq!(
+        ring.segments[0].start,
+        5 * 44_100,
+        "the track's own position"
+    );
 }
 
 /// The loopback card, which one test at a time plays on.
@@ -1112,7 +1225,7 @@ fn plays_bit_perfect_and_gapless_through_alsa_loopback() {
         .expect("capture opens at 96 kHz 32-bit");
     capture.play().unwrap();
 
-    let fetch: Fetch = Box::new(move |track: &Track| {
+    let fetch: Fetch = Box::new(move |track: &Track, _: f64| {
         let index: usize = track.id.parse().unwrap();
         Ok(wav(96_000, 2, 24, &tracks[index]))
     });
@@ -1181,7 +1294,7 @@ fn plays_bit_perfect_and_gapless_through_alsa_loopback() {
 fn opens_the_device_in_each_tracks_own_rate() {
     let _card = LOOPBACK.lock().unwrap_or_else(|e| e.into_inner());
     let rates = [96_000, 44_100];
-    let fetch: Fetch = Box::new(move |track: &Track| {
+    let fetch: Fetch = Box::new(move |track: &Track, _: f64| {
         let rate = rates[track.id.parse::<usize>().unwrap()];
         Ok(wav(rate, 2, 16, &ramp(rate as usize / 4, 2, 16)))
     });

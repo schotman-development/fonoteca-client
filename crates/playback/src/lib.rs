@@ -164,8 +164,11 @@ pub struct Status {
     pub requeues: u64,
 }
 
-/// Fetches a track: starts its download and hands back the reading side.
-pub type Fetch = Box<dyn FnMut(&Track) -> Result<Download, String> + Send>;
+/// Fetches a track from the given seconds into it: starts its download and
+/// hands back the reading side. A source that begins a track anywhere marks
+/// the download [`Download::starting_at`] there; any other hands back the
+/// whole file, which the player reads on to that point.
+pub type Fetch = Box<dyn FnMut(&Track, f64) -> Result<Download, String> + Send>;
 
 enum Command {
     Play(Vec<Track>, usize, f64),
@@ -632,7 +635,8 @@ impl Decoder {
     /// Plays the `index`th track from `seconds` into it, in place of
     /// whatever was playing. A track still being decoded opens again from
     /// what has been downloaded, with the leveling, processing and device as
-    /// they are now.
+    /// they are now; one whose download can't play from `seconds` is
+    /// fetched again from there.
     fn start(&mut self, index: usize, seconds: f64) {
         // A track asked for counts the failures afresh.
         self.failures = 0;
@@ -646,7 +650,7 @@ impl Decoder {
         let again = self
             .current
             .take()
-            .filter(|current| current.index == index)
+            .filter(|current| current.index == index && plays_from(&current.download, seconds))
             .and_then(|current| current.download.reader().ok());
         self.open(index, seconds, again);
     }
@@ -681,10 +685,23 @@ impl Decoder {
                 self.next = next;
                 Ok(download)
             }
-            (None, Some((next, download))) if next == index => download,
-            _ => (self.fetch)(&track),
+            (None, Some((next, download)))
+                if next == index
+                    && download
+                        .as_ref()
+                        .map_or(true, |fetched| plays_from(fetched, seconds)) =>
+            {
+                download
+            }
+            (None, next) => {
+                // A track fetched again from elsewhere in it is still
+                // followed by the one fetched ahead.
+                self.next = next.filter(|(next, _)| self.after(index) == Some(*next));
+                (self.fetch)(&track, seconds)
+            }
         };
         let opened = download.map_err(Stop::Failed).and_then(|download| {
+            let into_download = seconds - download.starts_at().unwrap_or(0.0);
             let spare = download
                 .reader()
                 .map_err(|e| Stop::Failed(format!("The track couldn't be read back: {e}")))?;
@@ -698,8 +715,8 @@ impl Decoder {
                 &bit_perfect_formats,
                 move || pending.load(Relaxed) > 0,
             )?;
-            if seconds > 0.0 {
-                decoding.seek(seconds)?;
+            if into_download > 0.0 {
+                decoding.seek(into_download)?;
             }
             Ok((decoding, spare))
         });
@@ -788,7 +805,7 @@ impl Decoder {
                 let again = self
                     .current
                     .take()
-                    .filter(|_| next == Some(index))
+                    .filter(|current| next == Some(index) && plays_from(&current.download, 0.0))
                     .and_then(|current| current.download.reader().ok());
                 self.open(next.unwrap_or(self.queue.len()), 0.0, again);
             }
@@ -814,9 +831,20 @@ impl Decoder {
             });
         // Tried once: a failure shows when the track's turn comes.
         if let Some(next) = ahead {
-            self.next = Some((next, (self.fetch)(&self.queue[next])));
+            self.next = Some((next, (self.fetch)(&self.queue[next], 0.0)));
         }
     }
+}
+
+/// Whether `download` plays its track from `seconds`: a whole file does, read
+/// on to there. One whose source began it part way does from where it began,
+/// and once all of it has arrived from any later point too: a seek in it then
+/// leaves no gap, where fetching it again from there leaves one of 50 to
+/// 100 ms.
+fn plays_from(download: &Download, seconds: f64) -> bool {
+    download
+        .starts_at()
+        .is_none_or(|start| start == seconds || (start < seconds && download.complete()))
 }
 
 fn segment(track: usize, decoding: &Decoding, seconds: f64) -> Segment {

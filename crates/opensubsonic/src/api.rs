@@ -718,16 +718,25 @@ impl Client {
     /// A song's audio to read as it arrives: as the server keeps it for
     /// `format` "raw", else converted to `format` at no more than
     /// `max_bit_rate` kbit/s (none for zero), if the server converts. A
-    /// server that doesn't sends the file as it keeps it. Not in the
-    /// browser build, whose fetch can't hand a body over in pieces here.
+    /// server that doesn't sends the file as it keeps it. `time_offset`
+    /// starts a converted song that many seconds in, where the client
+    /// [`supports`](Client::supports) `transcodeOffset`. Not in the browser
+    /// build, whose fetch can't hand a body over in pieces here.
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/stream/>
     #[cfg(not(target_family = "wasm"))]
-    pub async fn stream(&self, id: &str, format: &str, max_bit_rate: u32) -> Result<Stream> {
+    pub async fn stream(
+        &self,
+        id: &str,
+        format: &str,
+        max_bit_rate: u32,
+        time_offset: Option<f64>,
+    ) -> Result<Stream> {
         let params = Params::new()
             .req("id", id)
             .req("format", format)
-            .opt("maxBitRate", (max_bit_rate > 0).then_some(max_bit_rate));
+            .opt("maxBitRate", (max_bit_rate > 0).then_some(max_bit_rate))
+            .opt("timeOffset", time_offset);
         self.data("stream", params).await.map(Stream)
     }
 

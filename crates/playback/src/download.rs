@@ -32,6 +32,9 @@ struct Inner {
 pub struct Download {
     file: File,
     position: u64,
+    /// Where in the track the download begins, in seconds, when its source
+    /// can begin a track anywhere; none for a whole file.
+    starts_at: Option<f64>,
     inner: Arc<Inner>,
 }
 
@@ -87,6 +90,7 @@ pub fn new(folder: &Path, total: Option<u64>) -> io::Result<(Download, Fill)> {
     let download = Download {
         file: read,
         position: 0,
+        starts_at: None,
         inner: inner.clone(),
     };
     Ok((download, Fill { file: write, inner }))
@@ -128,6 +132,20 @@ impl Fill {
 }
 
 impl Download {
+    /// Marks a download whose source begins a track wherever it is asked
+    /// to, as this one does `seconds` into it. Until all of it has arrived,
+    /// a seek then fetches the track again from there instead of reading on
+    /// to it, which in a download of unknown length waits until then.
+    pub fn starting_at(mut self, seconds: f64) -> Self {
+        self.starts_at = Some(seconds);
+        self
+    }
+
+    /// Where in the track it begins, when its source begins a track anywhere.
+    pub fn starts_at(&self) -> Option<f64> {
+        self.starts_at
+    }
+
     /// Whether every byte has arrived.
     pub fn complete(&self) -> bool {
         self.inner.state.lock().unwrap().done
@@ -155,6 +173,7 @@ impl Download {
         Ok(Download {
             file,
             position: 0,
+            starts_at: self.starts_at,
             inner: self.inner.clone(),
         })
     }

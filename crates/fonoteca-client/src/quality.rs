@@ -59,6 +59,13 @@ pub fn request(prefs: &Prefs, connection: Connection) -> (&'static str, u32) {
     (format, BITRATES[bitrate as usize])
 }
 
+/// Where in the song a stream in `format` asked for from `seconds` begins:
+/// there, for a conversion by a server that converts from anywhere; none
+/// for the whole file, which the player reads on to that point.
+pub fn stream_start(format: &str, converts_from_anywhere: bool, seconds: f64) -> Option<f64> {
+    (format != FORMATS[0] && converts_from_anywhere).then_some(seconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +93,13 @@ mod tests {
         let prefs = prefs((0, 3), (2, 5));
         assert_eq!(request(&prefs, Connection::Wifi), ("raw", 0));
         assert_eq!(request(&prefs, Connection::MobileData), ("opus", 96));
+    }
+
+    #[test]
+    fn only_a_conversion_on_a_server_that_offsets_it_begins_part_way() {
+        assert_eq!(stream_start("opus", true, 61.5), Some(61.5));
+        assert_eq!(stream_start("raw", true, 61.5), None);
+        assert_eq!(stream_start("mp3", false, 61.5), None);
     }
 
     #[test]

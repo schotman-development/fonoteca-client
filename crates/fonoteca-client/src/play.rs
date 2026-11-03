@@ -1100,18 +1100,28 @@ fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
     Player::new(device, fetch)
 }
 
+/// The OpenSubsonic extension with which a server converts a song from
+/// part way in.
+const TRANSCODE_OFFSET: &str = "transcodeOffset";
+
 /// Fetches tracks from `client` in the format the settings pick for the
 /// connection in use when each is fetched, into files in the cache folder
 /// that are gone once played. A track fetched ahead keeps the quality it was
-/// fetched in if the connection changes before its turn. Runs on the
-/// player's thread.
+/// fetched in if the connection changes before its turn. A conversion
+/// arrives only as fast as the server makes it, so on a server that can, one
+/// played from part way in is converted from there. Runs on the player's
+/// thread.
 fn fetch(client: Arc<Client>) -> playback::Fetch {
     let runtime = tokio::runtime::Handle::current();
     let folder = cache();
-    Box::new(move |track: &Track| {
+    Box::new(move |track: &Track, seconds: f64| {
         let (format, max_bit_rate) = quality::request(&prefs::load(), quality::connection());
+        let start = quality::stream_start(format, client.supports(TRANSCODE_OFFSET), seconds);
+        // A song played from its start is asked for as before, so its
+        // conversion keeps what makes it gapless.
+        let time_offset = start.filter(|&start| start > 0.0);
         let mut stream = runtime
-            .block_on(client.stream(&track.id, format, max_bit_rate))
+            .block_on(client.stream(&track.id, format, max_bit_rate, time_offset))
             .map_err(|e| format!("The track couldn't be fetched: {e}"))?;
         let (download, mut fill) = playback::download(&folder, stream.size())
             .map_err(|e| format!("The track couldn't be saved to disk: {e}"))?;
@@ -1125,7 +1135,10 @@ fn fetch(client: Arc<Client>) -> playback::Fetch {
                 }
             }
         });
-        Ok(download)
+        Ok(match start {
+            Some(start) => download.starting_at(start),
+            None => download,
+        })
     })
 }
 
@@ -1211,8 +1224,10 @@ pub(crate) mod testing {
         super::restore(ui, &browser, &playing);
     }
 
-    /// Fetches the song `id` as the player does, once the server has answered.
-    pub(crate) fn fetch_song(id: &str) {
+    /// Fetches the song `id` from `seconds` into it as the player does, once
+    /// the server has answered, and says where in the song the download
+    /// begins when it begins part way.
+    pub(crate) fn fetch_song(id: &str, seconds: f64) -> Option<f64> {
         let (browser, _) = handles();
         let client = browse::client(&browser).expect("signed in");
         let mut fetch = super::fetch(client);
@@ -1220,10 +1235,10 @@ pub(crate) mod testing {
             id: id.into(),
             gain: Gain::default(),
         };
-        std::thread::spawn(move || fetch(&track).map(drop))
+        std::thread::spawn(move || fetch(&track, seconds).map(|download| download.starts_at()))
             .join()
             .unwrap()
-            .expect("fetched");
+            .expect("fetched")
     }
 
     /// Shows the streaming quality saved, as at the start.
