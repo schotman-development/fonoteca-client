@@ -370,6 +370,10 @@ pub fn show_downloads(ui: &AppWindow, browser: &Shared) {
     };
     ui.set_download_state(state);
     ui.set_download_progress(text.into());
+    let summary = b.downloads.summary();
+    ui.set_download_songs(summary.songs as i32);
+    ui.set_download_space(summary.space().into());
+    ui.set_download_status(summary.status().into());
     for (row, song) in b.songs.iter().enumerate() {
         let downloaded = b.downloads.local(&song.id).is_some();
         if let Some(mut track) = b.tracks.row_data(row)
@@ -1126,6 +1130,9 @@ fn show(ui: &AppWindow, browser: &Shared) {
         "setting" => {
             ui.set_page(Page::Setting);
             ui.set_shown_id(id.as_str().into());
+            if id == "downloads" {
+                show_downloads(ui, browser);
+            }
             if id == "library" {
                 scan_status(ui, browser);
                 // Whether it offers the scan follows the roles the server gives now.

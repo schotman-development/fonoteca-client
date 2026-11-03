@@ -803,6 +803,8 @@ mod tests {
     static ORGANIZE_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// While set, the server refuses to give the tags.
     static TAGS_DOWN: AtomicBool = AtomicBool::new(false);
+    /// Whether the server takes its time over a song's download.
+    static SLOW_DOWNLOAD: AtomicBool = AtomicBool::new(false);
 
     /// A request's method and its arguments but the credentials.
     fn write_of(request: &str) -> String {
@@ -1065,6 +1067,9 @@ mod tests {
                 r#""topSongs":{"song":[{"id":"s2","isDir":false,"title":"Rope and Anchor","album":"Night Harbour","albumId":"a1","duration":218,"artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z"}]}"#,
             )
         } else if request.contains("/rest/download?") {
+            if SLOW_DOWNLOAD.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(600));
+            }
             reply("200 OK", "audio/wav", &tiny_wav())
         } else if request.contains("/rest/getAlbum") && id == Some("a2") {
             ok(&format!(r#""album":{{{CLASSICAL}}}"#))
@@ -5545,7 +5550,41 @@ mod tests {
             assert_eq!(ui.get_download_state(), 0);
             assert_eq!(marked(&ui), [false, false]);
             assert_eq!(files(&kept.join("songs")), 0);
-            std::fs::remove_dir_all(&kept).unwrap();
+
+            // The settings tell what they take and can remove them all.
+            click(&ui, "Download");
+            wait_for("both songs again", || ui.get_download_state() == 2).await;
+            ui.invoke_open("setting:downloads".into());
+            assert_eq!(ui.get_download_songs(), 2);
+            assert!(ui.get_download_space().ends_with(" used by 2 songs."), "{}", ui.get_download_space());
+            assert_eq!(ui.get_download_status(), "");
+            ui.invoke_choose_download_limit(2);
+            assert_eq!(crate::prefs::load().download_limit, 2);
+            click(&ui, "Remove all downloads");
+            click(&ui, "Cancel");
+            assert_eq!(ui.get_download_songs(), 2);
+            click(&ui, "Remove all downloads");
+            click(&ui, "Remove");
+            assert_eq!(ui.get_download_songs(), 0);
+            assert_eq!(ui.get_download_space(), "Nothing is downloaded.");
+            assert!(!kept.exists());
+
+            // Everything removed while a song's answer is still on its way
+            // stops it quietly and leaves the folder gone.
+            ui.invoke_open("album:a1".into());
+            wait_for("the album to race", || ui.get_tracks().row_count() == 2).await;
+            SLOW_DOWNLOAD.store(true, Relaxed);
+            click(&ui, "Download");
+            idle(Duration::from_millis(150)).await;
+            ui.invoke_remove_all_downloads();
+            idle(Duration::from_millis(1500)).await;
+            SLOW_DOWNLOAD.store(false, Relaxed);
+            assert_eq!(ui.get_download_status(), "", "no stop is told");
+            assert!(!kept.exists(), "nothing came back");
+            ui.invoke_open("album:a1".into());
+            wait_for("the album after all", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_download_state(), 0);
+            assert_eq!(marked(&ui), [false, false]);
 
             click(&ui, "Account");
             click(&ui, "Sign out");

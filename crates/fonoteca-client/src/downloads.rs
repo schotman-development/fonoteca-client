@@ -11,7 +11,7 @@ use std::time::Duration;
 use opensubsonic::Client;
 use slint::{ComponentHandle, Timer};
 
-use crate::{AppWindow, browse};
+use crate::{AppWindow, browse, offline, prefs};
 
 /// How long to wait before the first, second and third new try of a song
 /// the server or the network failed on.
@@ -25,6 +25,8 @@ const RETRY_DELAYS: [Duration; 3] = [
 enum Failure {
     /// It isn't wanted any more.
     Stopped,
+    /// More arrived than the size limit leaves room for.
+    OverLimit,
     Disk(io::Error),
     Server(opensubsonic::Error),
 }
@@ -32,6 +34,31 @@ enum Failure {
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     ui.set_can_download(true);
     browse::load_downloads(browser);
+    let limit = prefs::load().download_limit;
+    ui.set_download_limit(limit);
+    browse::downloads(browser).set_limit(offline::limit_of(limit as usize));
+    ui.on_choose_download_limit({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |index| {
+            let mut saved = prefs::load();
+            saved.download_limit = index;
+            prefs::save(&saved);
+            browse::downloads(&browser).set_limit(offline::limit_of(index as usize));
+            let ui = weak.unwrap();
+            browse::show_downloads(&ui, &browser);
+            pump(&ui, &browser);
+        }
+    });
+    ui.on_remove_all_downloads({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || {
+            let ui = weak.unwrap();
+            if let Err(e) = browse::downloads(&browser).remove_all() {
+                browse::notify(&ui, &browser, format!("Not all of it was removed: {e}"));
+            }
+            browse::show_downloads(&ui, &browser);
+        }
+    });
     ui.on_download_page({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || {
@@ -79,8 +106,10 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         return;
     };
     let downloads = browse::downloads(browser);
-    let Some(next) = downloads.start_next() else {
-        return;
+    let next = match downloads.start_next() {
+        Ok(Some(next)) => next,
+        Ok(None) => return,
+        Err(reason) => return browse::notify(ui, browser, reason),
     };
     let id = next.song.id.clone();
     let job = tokio::spawn(fetch(
@@ -88,6 +117,7 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         id.clone(),
         next.partial,
         next.path.clone(),
+        next.room,
         next.cancel,
     ));
     let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -131,8 +161,13 @@ fn settle(
     downloads.ended();
     match failure {
         Failure::Stopped => None,
+        Failure::OverLimit => {
+            downloads.halt(offline::LIMIT_REACHED.to_owned());
+            browse::notify(ui, browser, offline::LIMIT_REACHED.to_owned());
+            None
+        }
         Failure::Disk(e) => {
-            let reason = format!("Downloads stopped: {e}");
+            let reason = stop_reason(&e);
             downloads.halt(reason.clone());
             browse::notify(ui, browser, reason);
             None
@@ -145,6 +180,14 @@ fn settle(
             }
             delay
         }
+    }
+}
+
+fn stop_reason(error: &io::Error) -> String {
+    if error.kind() == io::ErrorKind::StorageFull {
+        "Downloads stopped: the disk is full.".to_owned()
+    } else {
+        format!("Downloads stopped: {error}")
     }
 }
 
@@ -192,14 +235,20 @@ async fn fetch(
     id: String,
     partial: PathBuf,
     path: PathBuf,
+    room: Option<u64>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), Failure> {
     let mut stream = client.download(&id).await.map_err(Failure::Server)?;
     let mut file = create(&partial, &cancel)?;
     let arrived = async {
+        let mut written = 0;
         while let Some(bytes) = stream.chunk().await.map_err(Failure::Server)? {
             if cancel.load(Relaxed) {
                 return Err(Failure::Stopped);
+            }
+            written += bytes.len() as u64;
+            if room.is_some_and(|room| written > room) {
+                return Err(Failure::OverLimit);
             }
             file.write_all(&bytes).map_err(disk)?;
         }
@@ -252,6 +301,14 @@ mod tests {
         assert!(create(&path, &AtomicBool::new(false)).is_ok());
         assert!(path.exists());
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_full_disk_is_said_plainly() {
+        let full = io::Error::from(io::ErrorKind::StorageFull);
+        assert_eq!(stop_reason(&full), "Downloads stopped: the disk is full.");
+        let other = io::Error::other("no good");
+        assert_eq!(stop_reason(&other), "Downloads stopped: no good");
     }
 
     #[test]

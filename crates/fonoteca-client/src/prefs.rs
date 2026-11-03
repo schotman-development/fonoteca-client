@@ -54,6 +54,8 @@ pub struct Prefs {
     /// sheet lists open, by the ids of their first songs: the server keeps
     /// only the songs.
     pub expanded_works: Vec<String>,
+    /// The settings' entry for the most the downloads may take.
+    pub download_limit: i32,
 }
 
 /// A streaming format's entry in the settings, and its bitrate's; the first

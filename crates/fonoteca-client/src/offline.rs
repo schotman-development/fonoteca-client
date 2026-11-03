@@ -28,6 +28,13 @@ pub const ORIGINAL: &str = "original";
 const PARTIAL: &str = "partial";
 /// For a song whose file name gives no extension.
 const UNKNOWN_EXTENSION: &str = "audio";
+/// Why downloading stopped when the size limit is reached.
+pub const LIMIT_REACHED: &str = "Downloads stopped: the size limit is reached.";
+/// The size limits the settings offer, in GB, in the order of its list; 0
+/// is none.
+pub const LIMITS_GB: [u64; 8] = [0, 1, 5, 10, 25, 50, 100, 250];
+const BYTES_PER_MB: f64 = 1_048_576.0;
+const BYTES_PER_GB: u64 = 1_073_741_824;
 
 /// Something the user asked to keep, with what it was made of when asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,6 +80,8 @@ struct State {
     /// the next thing is asked for.
     failed: HashMap<String, String>,
     halted: Option<String>,
+    /// The most the songs may take, if the user set one.
+    limit: Option<u64>,
     /// The song being fetched and the flag that stops it.
     running: Option<(String, Arc<AtomicBool>)>,
     attempt: usize,
@@ -146,6 +155,59 @@ fn extension_of(song: &Child) -> String {
         .unwrap_or_else(|| UNKNOWN_EXTENSION.to_owned())
 }
 
+/// The size limit the settings' `index`th entry stands for.
+pub fn limit_of(index: usize) -> Option<u64> {
+    LIMITS_GB
+        .get(index)
+        .filter(|&&gigabytes| gigabytes > 0)
+        .map(|gigabytes| gigabytes * BYTES_PER_GB)
+}
+
+/// Whether a song of `size` bytes, when the server says, still fits in
+/// `limit` with `used` already kept.
+fn fits(used: u64, size: Option<i64>, limit: Option<u64>) -> bool {
+    let size = u64::try_from(size.unwrap_or(0)).unwrap_or(0);
+    limit.is_none_or(|limit| used + size <= limit)
+}
+
+/// `bytes` in the units of the tracks table's Size column.
+fn bytes_text(bytes: u64) -> String {
+    let megabytes = bytes as f64 / BYTES_PER_MB;
+    if megabytes < 1024.0 {
+        format!("{megabytes:.1} MB")
+    } else {
+        format!("{:.1} GB", megabytes / 1024.0)
+    }
+}
+
+/// What the downloads' settings say about them.
+pub struct Summary {
+    pub used: u64,
+    pub songs: usize,
+    /// How many songs asked for have yet to arrive.
+    pub missing: usize,
+    /// Why nothing is arriving, when something should.
+    pub halted: Option<String>,
+}
+
+impl Summary {
+    pub fn space(&self) -> String {
+        match self.songs {
+            0 => "Nothing is downloaded.".to_owned(),
+            1 => format!("{} used by 1 song.", bytes_text(self.used)),
+            songs => format!("{} used by {songs} songs.", bytes_text(self.used)),
+        }
+    }
+
+    pub fn status(&self) -> String {
+        match (&self.halted, self.missing) {
+            (Some(reason), _) => reason.clone(),
+            (None, 0) => String::new(),
+            (None, missing) => format!("{missing} to go."),
+        }
+    }
+}
+
 /// The songs of `items` without a finished file, in the order they were
 /// asked for, each once.
 fn missing<'a>(items: &'a [Item], present: &HashMap<String, Saved>) -> Vec<&'a Child> {
@@ -169,6 +231,11 @@ fn orphans(items: &[Item], present: &HashMap<String, Saved>) -> Vec<String> {
         .filter(|id| !wanted.contains(id.as_str()))
         .cloned()
         .collect()
+}
+
+/// How many bytes the finished files take.
+fn used(present: &HashMap<String, Saved>) -> u64 {
+    present.values().map(|saved| saved.size).sum()
 }
 
 /// How many of `songs` have a finished file, and how many there are.
@@ -282,26 +349,73 @@ impl Downloads {
 
     /// The next song to fetch, and where its file goes while it arrives and
     /// when it is whole, with the flag that stops the fetch. None while a
-    /// song is being fetched, or after a stop, or with none left.
-    pub fn start_next(&self) -> Option<Fetch> {
+    /// song is being fetched, or after a stop, or with none left. The reason
+    /// when the size limit stops it, once.
+    pub fn start_next(&self) -> Result<Option<Fetch>, String> {
         let mut state = self.state();
         if state.running.is_some() || state.halted.is_some() {
-            return None;
+            return Ok(None);
         }
-        let folder = state.folder.clone()?.join(SONGS);
-        let song = missing(&state.manifest.items, &state.present)
+        let Some(folder) = state.folder.clone().map(|folder| folder.join(SONGS)) else {
+            return Ok(None);
+        };
+        let Some(song) = missing(&state.manifest.items, &state.present)
             .into_iter()
-            .find(|song| !state.failed.contains_key(&song.id))?
-            .clone();
+            .find(|song| !state.failed.contains_key(&song.id))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let used = used(&state.present);
+        if !fits(used, song.size, state.limit) {
+            state.halted = Some(LIMIT_REACHED.to_owned());
+            return Err(LIMIT_REACHED.to_owned());
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         state.running = Some((song.id.clone(), cancel.clone()));
         let name = file_name(&song.id, ORIGINAL, &extension_of(&song));
-        Some(Fetch {
+        Ok(Some(Fetch {
             partial: folder.join(format!("{name}.{PARTIAL}")),
             path: folder.join(name),
+            room: state.limit.map(|limit| limit.saturating_sub(used)),
             song,
             cancel,
-        })
+        }))
+    }
+
+    /// Sets the most the songs may take; songs that stopped for the old
+    /// one are fetched again.
+    pub fn set_limit(&self, limit: Option<u64>) {
+        let mut state = self.state();
+        state.limit = limit;
+        state.halted = None;
+    }
+
+    pub fn summary(&self) -> Summary {
+        let state = self.state();
+        Summary {
+            used: used(&state.present),
+            songs: state.present.len(),
+            missing: missing(&state.manifest.items, &state.present).len(),
+            halted: state.halted.clone(),
+        }
+    }
+
+    /// Lets go of everything and deletes the folder.
+    pub fn remove_all(&self) -> io::Result<()> {
+        let mut state = self.state();
+        state.manifest.items.clear();
+        state.present.clear();
+        if let Some((_, cancel)) = &state.running {
+            cancel.store(true, Relaxed);
+        }
+        let Some(folder) = &state.folder else {
+            return Ok(());
+        };
+        match std::fs::remove_dir_all(folder) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// The fetch of song `id` ended with its whole file at `path`.
@@ -379,6 +493,9 @@ pub struct Fetch {
     pub song: Child,
     pub partial: PathBuf,
     pub path: PathBuf,
+    /// How many bytes may arrive before the size limit is passed, whatever
+    /// size the server said the song has.
+    pub room: Option<u64>,
     pub cancel: Arc<AtomicBool>,
 }
 
@@ -440,13 +557,17 @@ mod tests {
     }
 
     fn album(id: &str, songs: &[&str]) -> Item {
+        Item::Album(album_with_songs(id, songs))
+    }
+
+    fn album_with_songs(id: &str, songs: &[&str]) -> AlbumID3WithSongs {
         let mut album: AlbumID3WithSongs = serde_json::from_value(serde_json::json!({
             "id": id, "name": id, "songCount": songs.len(), "duration": 0,
             "created": "2020-01-01T00:00:00Z",
         }))
         .unwrap();
         album.song = songs.iter().map(|id| song(id, Some("flac"))).collect();
-        Item::Album(album)
+        album
     }
 
     fn saved(ids: &[&str]) -> HashMap<String, Saved> {
@@ -519,6 +640,59 @@ mod tests {
             "the next song can start"
         );
         assert!(downloads.local("a").is_none());
+    }
+
+    #[test]
+    fn a_song_fits_until_it_would_pass_the_limit() {
+        let gigabyte = i64::try_from(BYTES_PER_GB).unwrap();
+        assert!(fits(u64::MAX / 2, Some(gigabyte), None));
+        assert!(fits(0, None, Some(BYTES_PER_GB)));
+        assert!(fits(BYTES_PER_GB - 10, Some(10), Some(BYTES_PER_GB)));
+        assert!(!fits(BYTES_PER_GB - 10, Some(11), Some(BYTES_PER_GB)));
+        assert_eq!(limit_of(0), None);
+        assert_eq!(limit_of(2), Some(5 * BYTES_PER_GB));
+        assert_eq!(limit_of(LIMITS_GB.len()), None);
+    }
+
+    #[test]
+    fn sizes_are_told_in_the_units_of_the_size_column() {
+        assert_eq!(bytes_text(0), "0.0 MB");
+        assert_eq!(bytes_text(1_572_864), "1.5 MB");
+        assert_eq!(bytes_text(BYTES_PER_GB), "1.0 GB");
+        let summary = |songs, missing, halted: Option<&str>| Summary {
+            used: 3 * BYTES_PER_GB,
+            songs,
+            missing,
+            halted: halted.map(str::to_owned),
+        };
+        assert_eq!(summary(0, 0, None).space(), "Nothing is downloaded.");
+        assert_eq!(summary(1, 0, None).space(), "3.0 GB used by 1 song.");
+        assert_eq!(summary(14, 0, None).space(), "3.0 GB used by 14 songs.");
+        assert_eq!(summary(14, 0, None).status(), "");
+        assert_eq!(summary(14, 3, None).status(), "3 to go.");
+        assert_eq!(summary(14, 3, Some("Full")).status(), "Full");
+    }
+
+    #[test]
+    fn the_limit_stops_the_next_song_once_and_lifting_it_goes_on() {
+        let folder = std::env::temp_dir().join(format!("limit-test-{}", std::process::id()));
+        let mut big = album_with_songs("one", &["a"]);
+        big.song[0].size = Some(2 * BYTES_PER_GB as i64);
+        let downloads = Downloads::default();
+        {
+            let mut state = downloads.state();
+            state.folder = Some(folder);
+            state.manifest.items.push(Item::Album(big));
+            state.limit = limit_of(1);
+        }
+        assert!(downloads.start_next().is_err());
+        assert!(matches!(downloads.start_next(), Ok(None)), "said once");
+        assert_eq!(downloads.summary().missing, 1);
+        downloads.set_limit(limit_of(2));
+        let Ok(Some(fetch)) = downloads.start_next() else {
+            panic!("the song is let go on");
+        };
+        assert_eq!(fetch.room, Some(5 * BYTES_PER_GB), "what may arrive");
     }
 
     #[test]
