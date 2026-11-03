@@ -311,7 +311,8 @@ enum Body {
     Binary(reqwest::Response),
 }
 
-/// A song's file as it arrives, from [`Client::stream`].
+/// A song's file as it arrives, from [`Client::stream`] or
+/// [`Client::download`].
 #[cfg(not(target_family = "wasm"))]
 pub struct Stream(reqwest::Response);
 
@@ -320,6 +321,13 @@ impl Stream {
     /// The file's size in bytes, when the server says.
     pub fn size(&self) -> Option<u64> {
         self.0.content_length()
+    }
+
+    /// The media type the server named for the file, without parameters.
+    pub fn content_type(&self) -> Option<String> {
+        let value = self.0.headers().get(CONTENT_TYPE)?.to_str().ok()?;
+        let media_type = value.split(';').next()?.trim();
+        (!media_type.is_empty()).then(|| media_type.to_ascii_lowercase())
     }
 
     /// The next bytes, or none once all have come.
@@ -732,6 +740,41 @@ mod tests {
             "{}",
             log[2]
         );
+    }
+
+    #[tokio::test]
+    async fn a_song_downloads_as_the_original_and_says_its_type() {
+        let (server, log) = serve(|request| {
+            if request.contains("id=gone") {
+                reply("403 Forbidden", "", "")
+            } else {
+                reply(
+                    "200 OK",
+                    "Content-Type: Audio/FLAC; charset=binary\r\n",
+                    "fLaC and the rest",
+                )
+            }
+        });
+        let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
+        let mut stream = client.download("tr-1").await.unwrap();
+        assert_eq!(stream.content_type().as_deref(), Some("audio/flac"));
+        assert_eq!(stream.size(), Some(17));
+        let mut all = Vec::new();
+        while let Some(chunk) = stream.chunk().await.unwrap() {
+            all.extend(chunk);
+        }
+        assert_eq!(all, b"fLaC and the rest");
+        assert!(matches!(
+            client.download("gone").await,
+            Err(Error::Status(403))
+        ));
+        let log = log.lock().unwrap();
+        assert!(
+            log[0].contains("/rest/download?") && log[0].contains("id=tr-1"),
+            "{}",
+            log[0]
+        );
+        assert!(!log[0].contains("format="), "{}", log[0]);
     }
 
     #[tokio::test]

@@ -740,6 +740,18 @@ impl Client {
         self.data("stream", params).await.map(Stream)
     }
 
+    /// A song's original file, never transcoded, to read as it arrives.
+    /// Servers refuse it to users without the download role. Not in the
+    /// browser build, for the reason `stream` isn't.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/download/>
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn download(&self, id: &str) -> Result<Stream> {
+        self.data("download", Params::new().req("id", id))
+            .await
+            .map(Stream)
+    }
+
     /// A cover art image, scaled to `size` pixels when given. `id` is the
     /// `coverArt` field of a song, album, artist or playlist.
     ///
