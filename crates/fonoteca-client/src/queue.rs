@@ -94,7 +94,10 @@ impl Queue {
     /// movements in a row, they are a unit; a play from the middle of a work
     /// (`start` past its first movement) leaves its movements as songs.
     fn page_entries(&mut self, songs: Vec<Child>, start: usize) -> Vec<Entry> {
-        let lengths: Vec<usize> = songs.chunk_by(same_work).map(<[Child]>::len).collect();
+        let lengths: Vec<usize> = browse::whole_works(&songs)
+            .iter()
+            .map(|run| run.len())
+            .collect();
         let mut songs = songs.into_iter();
         let mut first = 0;
         let mut entries = Vec::new();
@@ -320,12 +323,6 @@ impl Queue {
             .collect();
         before.iter().map(|key| after.get(key).copied()).collect()
     }
-}
-
-/// Whether two neighbouring songs are movements of one work on one album: a
-/// run of them in a page is a work queued whole.
-fn same_work(one: &Child, next: &Child) -> bool {
-    browse::same_work(one, next) && one.album_id == next.album_id
 }
 
 /// Puts the unit of the `first`th entry first and the other units after it

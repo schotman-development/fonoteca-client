@@ -4280,6 +4280,16 @@ mod tests {
                 ]
             );
 
+            // Two movements of a work that has four are songs.
+            let counted = |id: &str, number: i64| -> opensubsonic::Child {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"{id}","isDir":false,"title":"{id}","albumId":"a2","works":[{{"name":"Sonata"}}],"movements":[{{"name":"{id}","number":{number},"count":4}}]}}"#
+                ))
+                .unwrap()
+            };
+            play::testing::play_page(&ui, vec![counted("II", 2), counted("III", 3)], 0);
+            assert_eq!(rows(), [row("II", false, false), row("III", false, false)]);
+
             // So does the queue loaded anew, as on a sign in.
             let asked = MOTIONS_ASKED.load(Relaxed);
             play::testing::restore(&ui);
