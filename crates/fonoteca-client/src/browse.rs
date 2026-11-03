@@ -6638,6 +6638,61 @@ fn track_title(run: &[Child], i: usize) -> String {
         .to_owned()
 }
 
+/// What now playing shows of a song that is part of a classical work: the
+/// work as the title, and which movement plays.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug, PartialEq)]
+pub(crate) struct WorkLine {
+    pub work: String,
+    pub movement: String,
+    /// "2 of 3", empty where the server sends no number or no count, as
+    /// where Fonoteca could not tell which movement a recording is.
+    pub place: String,
+}
+
+/// The work line of the `index`th song of a queue, which `song_at` reads, or
+/// none where the song is no part of a work. Its neighbours of the same work
+/// and album tell its movement's name apart from theirs, as on the album page.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn work_line<'a>(
+    song_at: impl Fn(usize) -> Option<&'a Child>,
+    index: usize,
+) -> Option<WorkLine> {
+    let song = song_at(index)?;
+    let work = song.works.first()?;
+    let neighbours = |one: usize, next: usize| match (song_at(one), song_at(next)) {
+        (Some(one), Some(next)) => same_work(one, next) && one.album_id == next.album_id,
+        _ => false,
+    };
+    let mut start = index;
+    while start > 0 && neighbours(start - 1, start) {
+        start -= 1;
+    }
+    let mut end = index + 1;
+    while neighbours(end - 1, end) {
+        end += 1;
+    }
+    let run: Vec<Child> = (start..end).filter_map(&song_at).cloned().collect();
+    let movement = track_title(&run, index - start);
+    let place = match song.movements.first() {
+        Some(Movement {
+            number: Some(number),
+            count: Some(count),
+            ..
+        }) => format!("{number} of {count}"),
+        _ => String::new(),
+    };
+    Some(WorkLine {
+        movement: if movement == work.name {
+            String::new()
+        } else {
+            movement
+        },
+        work: work.name.clone(),
+        place,
+    })
+}
+
 /// "1804 – 1805", the years a song's work was written.
 fn composed(song: &Child) -> String {
     years(song.works.first().and_then(|work| work.composed.as_ref()))
@@ -6803,6 +6858,100 @@ mod tests {
             .map(|movement| ("a", "W", movement.as_str()))
             .collect();
         runs(&songs)
+    }
+
+    /// Songs of one work and album, each given as its title, and its
+    /// movement's name and numbers as the server sends them.
+    fn work_songs(songs: &[(&str, &str)]) -> Vec<Child> {
+        songs
+            .iter()
+            .map(|&(title, movement)| {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"s","isDir":false,"title":"{title}","albumId":"a","works":[{{"name":"Symphony no. 8"}}],"movements":[{{{movement}}}]}}"#
+                ))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_movement_of_a_work_plays_under_the_work() {
+        let queue = work_songs(&[
+            ("Symphony no. 8: I", r#""name":"I","number":1,"count":3"#),
+            ("Symphony no. 8: II", r#""name":"II","number":2,"count":3"#),
+        ]);
+        assert_eq!(
+            work_line(|i| queue.get(i), 1),
+            Some(WorkLine {
+                work: "Symphony no. 8".into(),
+                movement: "II".into(),
+                place: "2 of 3".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_movement_without_a_number_or_a_count_shows_no_place() {
+        let queue = work_songs(&[
+            ("a", r#""name":"I","count":3"#),
+            ("b", r#""name":"II","number":2"#),
+            ("c", r#""name":"III""#),
+        ]);
+        for index in 0..3 {
+            assert_eq!(work_line(|i| queue.get(i), index).unwrap().place, "");
+        }
+    }
+
+    #[test]
+    fn a_song_without_a_work_has_no_work_line() {
+        let song: Child = serde_json::from_str(r#"{"id":"s","isDir":false,"title":"t"}"#).unwrap();
+        assert_eq!(work_line(|i| (i == 0).then_some(&song), 0), None);
+    }
+
+    #[test]
+    fn a_track_that_is_the_whole_work_names_no_movement() {
+        let queue = work_songs(&[("Symphony no. 8", r#""name":"Symphony no. 8""#)]);
+        assert_eq!(work_line(|i| queue.get(i), 0).unwrap().movement, "");
+    }
+
+    /// A track of a symphony's first movement, on `album`.
+    fn first_movement_track(album: &str, title: &str) -> Child {
+        serde_json::from_str(&format!(
+            r#"{{"id":"s","isDir":false,"title":"{title}","albumId":"{album}","works":[{{"name":"Symphony no. 8"}}],"movements":[{{"name":"I. Allegro"}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn tracks_of_one_movement_keep_their_own_titles() {
+        let queue = [
+            first_movement_track("a", "Symphony no. 8: I. Allegro, Pt. 1"),
+            first_movement_track("a", "Symphony no. 8: I. Allegro, Pt. 2"),
+            first_movement_track("a", "Symphony no. 8: I. Allegro, Pt. 3"),
+        ];
+        let movements: Vec<String> = (0..queue.len())
+            .map(|index| work_line(|i| queue.get(i), index).unwrap().movement)
+            .collect();
+        assert_eq!(
+            movements,
+            [
+                "I. Allegro, Pt. 1",
+                "I. Allegro, Pt. 2",
+                "I. Allegro, Pt. 3"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_neighbour_on_another_album_does_not_share_the_movement() {
+        let queue = [
+            first_movement_track("b", "Symphony no. 8: I. Allegro, Pt. 1"),
+            first_movement_track("a", "Symphony no. 8: I. Allegro, Pt. 2"),
+        ];
+        assert_eq!(
+            work_line(|i| queue.get(i), 1).unwrap().movement,
+            "I. Allegro"
+        );
     }
 
     #[test]

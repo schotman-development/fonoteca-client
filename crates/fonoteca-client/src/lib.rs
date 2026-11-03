@@ -4816,6 +4816,24 @@ mod tests {
             assert_eq!(art_looks(&ui), "still");
             SLOW_MOTION.store(false, Relaxed);
 
+            // A movement of a work plays under the work, with its place in
+            // it; a song of no work shows as itself.
+            let movement = |id: &str, number: i64| -> opensubsonic::Child {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"{id}","isDir":false,"title":"Symphony no. 8: {id}","albumId":"a2","works":[{{"name":"Symphony no. 8"}}],"movements":[{{"name":"{id}","number":{number},"count":2}}]}}"#
+                ))
+                .unwrap()
+            };
+            let symphony = vec![movement("Allegro", 1), movement("Adagio", 2), song("pop", "a2")];
+            play::testing::show_song(&ui, symphony.clone(), 1);
+            assert_eq!(ui.get_playing_title(), "Symphony no. 8");
+            assert_eq!(ui.get_playing_movement(), "Adagio");
+            assert_eq!(ui.get_playing_movement_place(), "2 of 2");
+            play::testing::show_song(&ui, symphony, 2);
+            assert_eq!(ui.get_playing_title(), "pop");
+            assert_eq!(ui.get_playing_movement(), "");
+            assert_eq!(ui.get_playing_movement_place(), "");
+
             // With the queue gone, the same album asks again and plays.
             play::testing::show_song(&ui, queue(), 0);
             wait_for("its motion again", || ["red", "blue"].contains(&art_looks(&ui))).await;

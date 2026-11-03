@@ -781,7 +781,25 @@ fn show_song(
     let Some(song) = p.queue.get(index) else {
         return;
     };
-    ui.set_playing_title(song.title.as_str().into());
+    let work_line = browse::work_line(|at| p.queue.get(at), index);
+    ui.set_playing_title(
+        work_line
+            .as_ref()
+            .map_or(song.title.as_str(), |line| line.work.as_str())
+            .into(),
+    );
+    ui.set_playing_movement(
+        work_line
+            .as_ref()
+            .map_or("", |line| line.movement.as_str())
+            .into(),
+    );
+    ui.set_playing_movement_place(
+        work_line
+            .as_ref()
+            .map_or("", |line| line.place.as_str())
+            .into(),
+    );
     let names = browse::song_names(song);
     ui.set_playing_names(ModelRc::new(VecModel::from(names)));
     ui.set_playing_album(Name {

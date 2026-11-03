@@ -3458,6 +3458,8 @@ component SignalPathLight inherits Pressable {
 // path, whose steps open from it.
 component NowPlayingDetails inherits VerticalLayout {
     in property <string> title;
+    in property <string> movement;
+    in property <string> movement-place;
     in property <[Name]> names;
     in property <Name> album;
     in property <string> quality;
@@ -3472,6 +3474,12 @@ component NowPlayingDetails inherits VerticalLayout {
         font-size: Theme.title;
         font-weight: 700;
         color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.movement != "" || root.movement-place != "": Text {
+        text: root.movement != "" && root.movement-place != "" ? root.movement + " · " + root.movement-place : root.movement + root.movement-place;
+        font-size: Theme.heading;
+        color: Theme.muted;
         wrap: word-wrap;
     }
     if root.names.length > 0: Links {
@@ -3533,6 +3541,8 @@ export component NowPlaying inherits VerticalLayout {
     in property <length> available;
     in property <image> cover;
     in property <string> title;
+    in property <string> movement;
+    in property <string> movement-place;
     in property <[Name]> names;
     in property <Name> album;
     in property <string> quality;
@@ -3555,6 +3565,8 @@ export component NowPlaying inherits VerticalLayout {
         NowPlayingDetails {
             preferred-width: root.available;
             title: root.title;
+            movement: root.movement;
+            movement-place: root.movement-place;
             names: root.names;
             album: root.album;
             quality: root.quality;
@@ -3574,6 +3586,8 @@ export component NowPlaying inherits VerticalLayout {
         NowPlayingDetails {
             preferred-width: 480px;
             title: root.title;
+            movement: root.movement;
+            movement-place: root.movement-place;
             names: root.names;
             album: root.album;
             quality: root.quality;

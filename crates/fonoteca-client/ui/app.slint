@@ -966,6 +966,9 @@ export component AppWindow inherits Window {
     in property <bool> playing;
     in property <image> playing-cover;
     in property <string> playing-title;
+    // Which movement of the work in the title plays, and its place in it.
+    in property <string> playing-movement;
+    in property <string> playing-movement-place;
     in property <[Name]> playing-names;
     in property <bool> playing-paused;
     in property <float> playing-position;
@@ -2922,6 +2925,8 @@ export component AppWindow inherits Window {
                                         available: min(sheet-scroll.visible-width, 1600px) - 48px;
                                         cover: root.playing-art;
                                         title: root.playing-title;
+                                        movement: root.playing-movement;
+                                        movement-place: root.playing-movement-place;
                                         names: root.playing-names;
                                         album: root.playing-album;
                                         quality: root.playing-quality;
