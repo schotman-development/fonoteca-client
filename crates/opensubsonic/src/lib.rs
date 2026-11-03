@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 use md5::{Digest, Md5};
 use reqwest::Url;
 use reqwest::header::CONTENT_TYPE;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// The Subsonic API version this client implements.
@@ -66,7 +66,7 @@ const HEX: u8 = 1;
 const PLAIN: u8 = 2;
 
 /// What every response says about the server, returned by [`Client::ping`].
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
     /// The Subsonic API version the server supports.

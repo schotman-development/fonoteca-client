@@ -15,24 +15,41 @@
 use std::fs;
 use std::path::Path;
 
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::*;
 
+/// Writes `value` out and reads it back, as the app does with what it saves
+/// for use without a connection.
+fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(
+    value: T,
+) -> Result<()> {
+    let saved = serde_json::to_vec(&value)?;
+    let loaded: T = serde_json::from_slice(&saved)?;
+    if loaded == value {
+        Ok(())
+    } else {
+        Err(Error::Unexpected(format!(
+            "{value:?} came back as {loaded:?}"
+        )))
+    }
+}
+
 fn endpoint(name: &str, body: &[u8]) -> Result<()> {
     let response = envelope(body)?;
-    fn check<T: DeserializeOwned>(
+    fn check<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(
         response: Map<String, Value>,
         name: &str,
         key: &str,
     ) -> Result<()> {
-        take::<T>(response, name, key).map(drop)
+        round_trip(take::<T>(response, name, key)?)
     }
     match name {
-        "ping" => serde_json::from_value::<ServerInfo>(Value::Object(response))
-            .map(drop)
-            .map_err(Into::into),
+        "ping" => round_trip(serde_json::from_value::<ServerInfo>(Value::Object(
+            response,
+        ))?),
         "getLicense" => check::<License>(response, name, "license"),
         "getOpenSubsonicExtensions" => {
             check::<Vec<OpenSubsonicExtension>>(response, name, "openSubsonicExtensions")
@@ -92,13 +109,14 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
 }
 
 fn response(name: &str, json: &[u8]) -> Result<()> {
-    fn parse<T: DeserializeOwned>(json: &[u8]) -> Result<()> {
-        let result = if json.trim_ascii_start().starts_with(b"[") {
-            serde_json::from_slice::<Vec<T>>(json).map(drop)
+    fn parse<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(
+        json: &[u8],
+    ) -> Result<()> {
+        if json.trim_ascii_start().starts_with(b"[") {
+            round_trip(serde_json::from_slice::<Vec<T>>(json)?)
         } else {
-            serde_json::from_slice::<T>(json).map(drop)
-        };
-        result.map_err(Into::into)
+            round_trip(serde_json::from_slice::<T>(json)?)
+        }
     }
     match name {
         "Agent" => parse::<Agent>(json),

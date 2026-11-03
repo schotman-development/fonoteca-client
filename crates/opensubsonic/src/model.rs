@@ -1,9 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Playlist.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/playlist/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Playlist {
     /// Id of the playlist
@@ -43,7 +43,7 @@ pub struct Playlist {
 /// extension.
 ///
 /// <https://github.com/opensubsonic/open-subsonic-api/pull/255>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistFolder {
     pub id: String,
@@ -56,7 +56,7 @@ pub struct PlaylistFolder {
 }
 
 /// All folders of a user's playlists, as a flat list.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistFolders {
     #[serde(default)]
@@ -65,7 +65,7 @@ pub struct PlaylistFolders {
 
 /// Not in the spec: one of the user's own tags, from Fonoteca's
 /// `fonotecaTags` extension. A tag can sit under another, at any depth.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tag {
     pub id: String,
@@ -78,7 +78,7 @@ pub struct Tag {
 }
 
 /// Not in the spec: every tag of the user, as a flat list.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tags {
     #[serde(default)]
@@ -86,7 +86,7 @@ pub struct Tags {
 }
 
 /// Not in the spec: a tag with its songs and those of the tags under it.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TagWithSongs {
     #[serde(flatten)]
@@ -96,7 +96,7 @@ pub struct TagWithSongs {
 }
 
 /// The generic type of media [music/podcast/audiobook/video]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GenericMediaType {
     #[serde(rename = "music")]
     Music,
@@ -112,7 +112,7 @@ pub enum GenericMediaType {
 }
 
 /// Note: If you support `musicBrainzId` you must support this field to ensure clients knows what the ID refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaType {
     #[serde(rename = "song")]
     Song,
@@ -128,7 +128,7 @@ pub enum MediaType {
 /// A genre returned in list of genres for an item.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/itemgenre/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemGenre {
     /// Genre name
@@ -138,7 +138,7 @@ pub struct ItemGenre {
 /// An artist from ID3 tags.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/artistid3/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtistID3 {
     /// The id of the artist
@@ -171,7 +171,7 @@ pub struct ArtistID3 {
 /// A contributor artist for a song or an album
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/contributor/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Contributor {
     /// The contributor role.
@@ -184,7 +184,7 @@ pub struct Contributor {
 /// The replay gain data of a song. Note: If the data is not present the field must be ommited in the answer. (But the replayGain field on Child must always be present)
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/replaygain/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplayGain {
     /// The track replay gain value. (In Db)
@@ -202,7 +202,7 @@ pub struct ReplayGain {
 }
 
 /// Returns “explicit”, “clean” or “”. (For songs extracted from tags “ITUNESADVISORY”: 1 = explicit, 2 = clean, MP4 “rtng”: 1 or 4 = explicit, 2 = clean. See `albumID3` for albums)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExplicitStatus {
     #[serde(rename = "clean")]
     Clean,
@@ -218,7 +218,7 @@ pub enum ExplicitStatus {
 /// A work associated with a song.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/work/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Work {
     /// The work name.
@@ -233,7 +233,7 @@ pub struct Work {
 /// A movement associated with a song.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/movement/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Movement {
     /// The movement name.
@@ -247,7 +247,7 @@ pub struct Movement {
 /// A media.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/child/>
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Child {
     /// The id of the media.
@@ -373,7 +373,7 @@ pub struct Child {
     pub tag_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistWithSongs {
     #[serde(flatten)]
@@ -384,7 +384,7 @@ pub struct PlaylistWithSongs {
 }
 
 /// A sonic match entry, containing a Child entry object and a normalized similarity score.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SonicMatch {
     pub entry: Child,
@@ -395,7 +395,7 @@ pub struct SonicMatch {
 /// A record label for an album.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/recordlabel/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordLabel {
     pub name: String,
@@ -404,7 +404,7 @@ pub struct RecordLabel {
 /// A date for a media item that may be just a year, or year-month, or full date.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/itemdate/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemDate {
     /// The year
@@ -417,7 +417,7 @@ pub struct ItemDate {
 
 /// Not in the spec: a stretch of time from Fonoteca's `fonotecaPerformance`
 /// extension, each end as precise as it is known.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Span {
     pub from: Option<ItemDate>,
@@ -426,7 +426,7 @@ pub struct Span {
 
 /// Not in the spec: when and where a song was recorded, from Fonoteca's
 /// `fonotecaPerformance` extension.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recorded {
     pub from: Option<ItemDate>,
@@ -438,7 +438,7 @@ pub struct Recorded {
 
 /// Not in the spec: a song's level over time, from Fonoteca's
 /// `fonotecaWaveform` extension.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Waveform {
     /// At most 500 RMS amplitudes against full scale, 0 to 1, evenly spaced
     /// over the song, not normalised to it.
@@ -448,7 +448,7 @@ pub struct Waveform {
 
 /// Not in the spec: the composers of classical pieces, indexed by letter, from
 /// Fonoteca's `fonotecaCompositions` extension.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Composers {
     #[serde(default)]
@@ -457,7 +457,7 @@ pub struct Composers {
 
 /// Not in the spec: the composers under one letter, from Fonoteca's
 /// `fonotecaCompositions` extension.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerIndex {
     pub name: String,
@@ -467,7 +467,7 @@ pub struct ComposerIndex {
 
 /// Not in the spec: a composer, from Fonoteca's `fonotecaCompositions`
 /// extension. A composition names its composers by id and name only.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Composer {
     /// The composer's artist id.
@@ -481,7 +481,7 @@ pub struct Composer {
 
 /// Not in the spec: classical pieces, from Fonoteca's `fonotecaCompositions`
 /// extension.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Compositions {
     #[serde(default)]
@@ -491,7 +491,7 @@ pub struct Compositions {
 /// Not in the spec: a classical piece, the work rather than a performance of
 /// it, from Fonoteca's `fonotecaCompositions` extension. Its movements and
 /// recordings come only when it is asked for by id.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Composition {
     pub id: String,
@@ -534,7 +534,7 @@ pub struct Composition {
 /// A disc title for an album with an optional cover art
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/disctitle/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscTitle {
     /// The disc number.
@@ -548,7 +548,7 @@ pub struct DiscTitle {
 /// Album with songs.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/albumid3/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumID3 {
     /// The id of the album
@@ -617,7 +617,7 @@ pub struct AlbumID3 {
 /// An album with its songs.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/albumid3withsongs/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumID3WithSongs {
     #[serde(flatten)]
@@ -630,7 +630,7 @@ pub struct AlbumID3WithSongs {
 /// Album info.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/albuminfo/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumInfo {
     /// Album notes
@@ -650,7 +650,7 @@ pub struct AlbumInfo {
 /// Album list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/albumlist/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumList {
     /// Artist albums
@@ -658,7 +658,7 @@ pub struct AlbumList {
     pub album: Vec<Child>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumList2 {
     /// Artist albums
@@ -666,7 +666,7 @@ pub struct AlbumList2 {
     pub album: Vec<AlbumID3>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtistWithAlbumsID3 {
     #[serde(flatten)]
@@ -679,7 +679,7 @@ pub struct ArtistWithAlbumsID3 {
 /// Artist details.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/artist/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artist {
     /// Artist id
@@ -699,7 +699,7 @@ pub struct Artist {
 /// Artist info.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/artistinfo/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtistInfo {
     /// Artist biography
@@ -722,7 +722,7 @@ pub struct ArtistInfo {
 /// Artist info.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/artistinfo2/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtistInfo2 {
     /// Artist biography
@@ -745,7 +745,7 @@ pub struct ArtistInfo2 {
 /// An indexed artist list by ID3 tags.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/indexid3/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexID3 {
     /// Index name
@@ -758,7 +758,7 @@ pub struct IndexID3 {
 /// A list of indexed Artists.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/artistsid3/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtistsID3 {
     /// List of ignored articles space separated
@@ -771,7 +771,7 @@ pub struct ArtistsID3 {
 /// A genre.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/genre/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Genre {
     /// Genre name
@@ -794,7 +794,7 @@ pub struct Genre {
 /// Genres list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/genres/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Genres {
     /// List of genre
@@ -805,7 +805,7 @@ pub struct Genres {
 /// An indexed artist list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/index_/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Index {
     /// Index name
@@ -818,7 +818,7 @@ pub struct Index {
 /// Artist list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/indexes/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Indexes {
     /// The ignored articles
@@ -839,7 +839,7 @@ pub struct Indexes {
 /// getLicense result.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/license/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct License {
     /// The status of the license
@@ -855,7 +855,7 @@ pub struct License {
 /// Lyrics.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/lyrics/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lyrics {
     /// The lyrics
@@ -869,7 +869,7 @@ pub struct Lyrics {
 /// One line of a song lyric
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/line/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Line {
     /// The actual text of this line
@@ -879,7 +879,7 @@ pub struct Line {
 }
 
 /// The primary lyric-layer classification for this structuredLyrics entry. One of: main (primary vocals for this entry, default if omitted), translation (a translation of another lyric layer into another language), pronunciation (a phonetic/romanized rendering, e.g. romaji for Japanese, pinyin for Chinese). Tracks are independent across kind values; clients should not assume 1:1 line or cue alignment between entries. Only returned when enhanced=true
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LyricsKind {
     #[serde(rename = "main")]
     Main,
@@ -893,7 +893,7 @@ pub enum LyricsKind {
 }
 
 /// Semantic vocal-layer classification for cueLines that reference this agent. One of: main (lead/default vocal layer), voice (additional explicit individual voice part), bg (background vocals), group (group/chorus vocals). When a structuredLyrics entry uses agents for cue-attributed lyrics, it must define exactly one main agent
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentRole {
     #[serde(rename = "main")]
     Main,
@@ -911,7 +911,7 @@ pub enum AgentRole {
 /// Reusable metadata for a vocal agent within a structuredLyrics entry
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/agent/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
     /// Opaque identifier for this agent. The value is only meaningful within the parent structuredLyrics entry and must be unique within that entry
@@ -925,7 +925,7 @@ pub struct Agent {
 /// A word or syllable cue within a cueLine
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/cue/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cue {
     /// Start time in milliseconds
@@ -943,7 +943,7 @@ pub struct Cue {
 /// Word/syllable-level timing data for a lyrics line or agent layer
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/cueline/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CueLine {
     /// Zero-based index into the parent line array this cueLine corresponds to
@@ -964,7 +964,7 @@ pub struct CueLine {
 /// Structured lyrics
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/structuredlyrics/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructuredLyrics {
     /// The lyrics language (ideally ISO 639). If the language is unknown (e.g. lrc file), the server must return `und` (ISO standard) or `xxx` (common value for taggers). Ideally, the server will return lang as an ISO 639 (2/3) code. However, tagged files and external lyrics can come with any value as a potential language code, so clients should take care when displaying lang.
@@ -995,7 +995,7 @@ pub struct StructuredLyrics {
 /// List of structured lyrics
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/lyricslist/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LyricsList {
     /// Structured lyrics. There can be multiple lyrics of the same type with the same language
@@ -1006,7 +1006,7 @@ pub struct LyricsList {
 /// Directory.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/directory/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Directory {
     /// The id
@@ -1031,7 +1031,7 @@ pub struct Directory {
 /// MusicFolder.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/musicfolder/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicFolder {
     /// The id
@@ -1043,7 +1043,7 @@ pub struct MusicFolder {
 /// MusicFolders.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/musicfolders/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicFolders {
     /// The folders
@@ -1052,7 +1052,7 @@ pub struct MusicFolders {
 }
 
 /// Playback state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlaybackState {
     #[serde(rename = "starting")]
     Starting,
@@ -1068,7 +1068,7 @@ pub enum PlaybackState {
 }
 
 /// NowPlayingEntry.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NowPlayingEntry {
     #[serde(flatten)]
@@ -1092,7 +1092,7 @@ pub struct NowPlayingEntry {
 /// nowPlaying.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/nowplaying/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NowPlaying {
     /// The now playing entries
@@ -1103,7 +1103,7 @@ pub struct NowPlaying {
 /// A supported OpenSubsonic API extension.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/opensubsonicextension/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSubsonicExtension {
     /// The name of the extension.
@@ -1116,7 +1116,7 @@ pub struct OpenSubsonicExtension {
 /// Playlists.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/playlists/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Playlists {
     /// The playlists
@@ -1127,7 +1127,7 @@ pub struct Playlists {
 /// Songs list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/songs/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Songs {
     /// List of songs
@@ -1138,7 +1138,7 @@ pub struct Songs {
 /// SimilarSongs list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/similarsongs/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimilarSongs {
     /// List of songs
@@ -1149,7 +1149,7 @@ pub struct SimilarSongs {
 /// SimilarSongs2 list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/similarsongs2/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimilarSongs2 {
     /// List of songs
@@ -1160,7 +1160,7 @@ pub struct SimilarSongs2 {
 /// starred.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/starred/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Starred {
     /// Starred artists
@@ -1177,7 +1177,7 @@ pub struct Starred {
 /// Starred2.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/starred2/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Starred2 {
     /// Starred artists
@@ -1194,7 +1194,7 @@ pub struct Starred2 {
 /// TopSongs list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/topsongs/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TopSongs {
     /// List of songs
@@ -1205,7 +1205,7 @@ pub struct TopSongs {
 /// searchResult2
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/searchresult2/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult2 {
     /// Starred artists
@@ -1222,7 +1222,7 @@ pub struct SearchResult2 {
 /// searchResult3
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/searchresult3/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult3 {
     /// Matching artists
@@ -1239,7 +1239,7 @@ pub struct SearchResult3 {
 /// Scan status information.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/scanstatus/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanStatus {
     /// The status of the scan
@@ -1251,7 +1251,7 @@ pub struct ScanStatus {
 /// Information about an API key
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/tokeninfo/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenInfo {
     /// Username associated with token
@@ -1261,7 +1261,7 @@ pub struct TokenInfo {
 /// An internet radio station.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/internetradiostation/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternetRadioStation {
     /// The Id
@@ -1280,7 +1280,7 @@ pub struct InternetRadioStation {
 /// carry on with.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/playqueue/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayQueue {
     /// ID of currently playing track
@@ -1301,7 +1301,7 @@ pub struct PlayQueue {
 /// Internet radio stations.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/internetradiostations/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternetRadioStations {
     /// A list of internetRadioStation
@@ -1312,7 +1312,7 @@ pub struct InternetRadioStations {
 /// A user, with what it may do.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/user/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
     /// Username
@@ -1356,7 +1356,7 @@ pub struct User {
 /// Users.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/users/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Users {
     /// Array of users
@@ -1367,7 +1367,7 @@ pub struct Users {
 /// The error element of a failed response.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/error/>
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiError {
     /// The error code: 0 generic, 10 missing parameter, 20 client too old,
