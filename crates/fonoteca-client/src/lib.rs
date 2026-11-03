@@ -75,6 +75,12 @@ impl Login {
     }
 }
 
+/// How long to wait before asking a server that didn't answer again.
+#[cfg(not(test))]
+const RECONNECT_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+const RECONNECT_EVERY: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// Whether a Subsonic server answers at `server`, and if it offers API keys.
 async fn find_server(server: &str) -> Result<bool, String> {
     let client = Client::new(server, Auth::None).map_err(|e| e.to_string())?;
@@ -110,8 +116,16 @@ async fn sign_in(server: &str, login: &Login) -> Result<(String, Client), String
 /// Opens the library with the saved account, or asks for a server when
 /// there is none. Runs at start, and again on "Try again" after the server
 /// didn't answer.
+///
+/// With the server not answering and music downloaded from it, opens the
+/// downloads under the note that it didn't answer, and asks it again every
+/// so often until it does.
 fn resume(ui: &AppWindow, browser: &browse::Shared) {
-    ui.set_offline("".into());
+    // The note stays up while the downloads are shown.
+    let showing_downloads = browse::is_offline(browser);
+    if !showing_downloads {
+        ui.set_offline("".into());
+    }
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
         let mut account = store::load().await;
@@ -133,7 +147,7 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
             return;
         };
         show(&ui, &account);
-        ui.set_loading(true);
+        ui.set_loading(!showing_downloads);
         let signed_in = sign_in(&account.server, &account.login).await;
         // Signed out while this was under way, and maybe in again since.
         if ui.get_step() != Step::Done || browse::started(&browser) {
@@ -143,12 +157,50 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
         match signed_in {
             Ok((name, client)) => {
                 ui.set_server_name(name.into());
-                browse::start(&ui, &browser, client);
+                ui.set_offline("".into());
+                if showing_downloads {
+                    browse::reconnect(&ui, &browser, client);
+                } else {
+                    browse::start(&ui, &browser, client);
+                }
             }
-            Err(e) => ui.set_offline(format!("Your server didn't answer: {e}").into()),
+            Err(e) => {
+                ui.set_offline(format!("Your server didn't answer: {e}").into());
+                if !browse::downloads(&browser).has_songs_from(&account.server) {
+                    return;
+                }
+                if !showing_downloads
+                    && let Ok(client) = Client::new(&account.server, account.login.auth())
+                {
+                    browse::start_offline(&ui, &browser, client);
+                }
+                ask_again_later(&ui, &browser);
+            }
         }
     })
     .expect("the event loop is running");
+}
+
+/// Asks the server again after a while, if the app is still showing what is
+/// kept on this device.
+fn ask_again_later(ui: &AppWindow, browser: &browse::Shared) {
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    // One timer for the whole app, so each "Try again" restarts the wait
+    // instead of starting another chain of asks.
+    RECONNECT.with(|timer| {
+        timer.start(slint::TimerMode::SingleShot, RECONNECT_EVERY, move || {
+            if let Some(ui) = weak.upgrade()
+                && browse::is_offline(&browser)
+            {
+                resume(&ui, &browser);
+            }
+        });
+    });
+}
+
+thread_local! {
+    /// Waits to ask a server that didn't answer again.
+    static RECONNECT: slint::Timer = slint::Timer::default();
 }
 
 /// Changes the password of the account signed in at `server`, as
@@ -5615,7 +5667,36 @@ mod tests {
             assert_eq!(ui.get_download_state(), 0);
             assert_eq!(marked(&ui), [true, false], "s9 went, s1 is the album's");
             assert_eq!(files(&kept.join("songs")), 2);
+
+            // With the server down, a start finds the downloads under the
+            // note that it didn't answer, opens their albums without asking
+            // it, and takes up the server again by itself, on the page it is.
+            wait_for("the covers", || kept.join("covers").read_dir().is_ok_and(|d| d.count() == 1)).await;
+            DOWN.store(true, Relaxed);
+            let offline = crate::start().unwrap();
+            offline
+                .window()
+                .set_size(slint::LogicalSize::new(1100.0, 760.0));
+            wait_for("the offline note", || offline.get_offline() != "").await;
+            wait_for("the downloads page", || offline.get_page() == Page::Downloads).await;
+            wait_for("the downloaded album", || offline.get_tiles().row_count() == 1).await;
+            assert_eq!(offline.get_tiles().row_data(0).unwrap().link, "album:a1");
+            assert!(offline.get_tiles().row_data(0).unwrap().downloaded);
+            assert_eq!(lit(&offline), "Downloads");
+            offline.invoke_open("album:a1".into());
+            wait_for("the saved album", || offline.get_tracks().row_count() == 2).await;
+            assert_eq!(offline.get_download_state(), 2);
+            assert_eq!(offline.get_page_problem(), "");
+            assert_ne!(offline.get_offline(), "", "the note stays on the album");
+            DOWN.store(false, Relaxed);
+            wait_for("the server taken up again", || offline.get_offline() == "").await;
+            assert_eq!(offline.get_page(), Page::Album, "no leaving the page");
+            wait_for("the album from the server", || offline.get_tracks().row_count() == 2).await;
+            assert_eq!(offline.get_username(), "joe");
+            let listed = |ui: &AppWindow| ui.get_sections().iter().any(|section| section == "Downloads");
+            assert!(listed(&ui));
             ui.invoke_remove_all_downloads();
+            assert!(!listed(&ui), "the sidebar's entry goes with the downloads");
 
             click(&ui, "Account");
             click(&ui, "Sign out");

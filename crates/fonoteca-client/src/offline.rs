@@ -8,7 +8,7 @@
 // The browser keeps nothing, so there only the empty handle is used.
 #![cfg_attr(target_family = "wasm", allow(dead_code))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -19,6 +19,10 @@ use serde::{Deserialize, Serialize};
 
 const MANIFEST: &str = "index.json";
 const SONGS: &str = "songs";
+const COVERS: &str = "covers";
+/// How wide a cover is kept, in pixels; one size serves every tile and
+/// header.
+pub const COVER_SIZE: u32 = 1000;
 /// Tells backup tools that what is in the folder can be fetched again.
 const CACHEDIR_TAG: &str = "CACHEDIR.TAG";
 const CACHEDIR_TAG_CONTENT: &str = "Signature: 8a477f597d28d172789f06886806bc55\n# Songs downloaded from the server; they can be fetched again.\n";
@@ -58,6 +62,16 @@ impl Item {
         }
     }
 
+    /// The id of its cover art.
+    fn cover_art(&self) -> Option<&str> {
+        match self {
+            Item::Album(album) => album.album.cover_art.as_deref(),
+            Item::Playlist(playlist) => playlist.playlist.cover_art.as_deref(),
+            Item::Song(song) => song.cover_art.as_deref(),
+        }
+        .filter(|id| !id.is_empty())
+    }
+
     pub fn songs(&self) -> &[Child] {
         match self {
             Item::Album(album) => &album.song,
@@ -86,6 +100,8 @@ struct State {
     folder: Option<PathBuf>,
     manifest: Manifest,
     present: HashMap<String, Saved>,
+    /// The ids of the covers whose files are there.
+    covers: HashSet<String>,
     /// Songs the server refused, with why, and why everything stopped, until
     /// the next thing is asked for.
     failed: HashMap<String, String>,
@@ -134,25 +150,46 @@ pub fn folder() -> Option<PathBuf> {
     Some(std::env::temp_dir().join(format!("fonoteca-downloads-{}", std::process::id())))
 }
 
-/// `id`'s file name: the id as hex, since ids can hold anything, the tag
-/// for how it was fetched and the extension.
-fn file_name(id: &str, tag: &str, extension: &str) -> String {
-    let hex: String = id.bytes().map(|byte| format!("{byte:02x}")).collect();
-    format!("{hex}.{tag}.{extension}")
+/// `id` as hex, to name a file by it, since ids can hold anything.
+fn hex(id: &str) -> String {
+    id.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The song id and tag a finished file's name stands for.
-fn parse_name(name: &str) -> Option<(String, &str)> {
-    let mut parts = name.split('.');
-    let (hex, tag, extension) = (parts.next()?, parts.next()?, parts.next()?);
-    if parts.next().is_some() || extension == PARTIAL || !hex.len().is_multiple_of(2) {
+fn unhex(hex: &str) -> Option<String> {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let bytes: Option<Vec<u8>> = (0..hex.len())
         .step_by(2)
         .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
         .collect();
-    Some((String::from_utf8(bytes?).ok()?, tag))
+    String::from_utf8(bytes?).ok()
+}
+
+/// A song's file name: its id, the tag for how it was fetched and the
+/// extension.
+fn file_name(id: &str, tag: &str, extension: &str) -> String {
+    format!("{}.{tag}.{extension}", hex(id))
+}
+
+/// The song id and tag a finished file's name stands for.
+fn parse_name(name: &str) -> Option<(String, &str)> {
+    let mut parts = name.split('.');
+    let (hex, tag, extension) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || extension == PARTIAL {
+        return None;
+    }
+    Some((unhex(hex)?, tag))
+}
+
+/// The ids of the covers `items` show, each once, in order.
+fn wanted_covers(items: &[Item]) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    items
+        .iter()
+        .filter_map(Item::cover_art)
+        .filter(|id| seen.insert(*id))
+        .collect()
 }
 
 /// The extension a song's file gets: the song's own suffix, kept to
@@ -281,6 +318,7 @@ impl Downloads {
                 }
             }
             state.present = scan(&folder.join(SONGS));
+            state.covers = scan_covers(&folder.join(COVERS));
             state.folder = Some(folder);
         }
         downloads
@@ -363,7 +401,24 @@ impl Downloads {
         {
             cancel.store(true, Relaxed);
         }
+        let unwanted: Vec<String> = {
+            let wanted = wanted_covers(&state.manifest.items);
+            let mut unwanted: Vec<String> = state
+                .covers
+                .iter()
+                .filter(|id| !wanted.contains(&id.as_str()))
+                .cloned()
+                .collect();
+            unwanted.sort();
+            unwanted
+        };
         if let Some(folder) = state.folder.clone() {
+            for id in unwanted {
+                state.covers.remove(&id);
+                if let Err(e) = std::fs::remove_file(folder.join(COVERS).join(hex(&id))) {
+                    problem = Some(e);
+                }
+            }
             write_manifest(&folder, &state.manifest)?;
         }
         problem.map_or(Ok(()), Err)
@@ -378,9 +433,27 @@ impl Downloads {
         if state.running.is_some() || state.halted.is_some() {
             return Ok(None);
         }
-        let Some(folder) = state.folder.clone().map(|folder| folder.join(SONGS)) else {
+        let Some(folder) = state.folder.clone() else {
             return Ok(None);
         };
+        // The covers first: they are small, and the pages need them at once.
+        let cover = wanted_covers(&state.manifest.items)
+            .into_iter()
+            .find(|id| !state.covers.contains(*id) && !state.failed.contains_key(&cover_key(id)))
+            .map(str::to_owned);
+        if let Some(id) = cover {
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.running = Some((cover_key(&id), cancel.clone()));
+            let path = folder.join(COVERS).join(hex(&id));
+            return Ok(Some(Fetch {
+                partial: path.with_extension(PARTIAL),
+                path,
+                work: Work::Cover(id),
+                room: None,
+                cancel,
+            }));
+        }
+        let folder = folder.join(SONGS);
         let Some(song) = missing(&state.manifest.items, &state.present)
             .into_iter()
             .find(|song| !state.failed.contains_key(&song.id))
@@ -400,7 +473,7 @@ impl Downloads {
             partial: folder.join(format!("{name}.{PARTIAL}")),
             path: folder.join(name),
             room: state.limit.map(|limit| limit.saturating_sub(used)),
-            song,
+            work: Work::Song(Box::new(song)),
             cancel,
         }))
     }
@@ -428,6 +501,7 @@ impl Downloads {
         let mut state = self.state();
         state.manifest.items.clear();
         state.present.clear();
+        state.covers.clear();
         if let Some((_, cancel)) = &state.running {
             cancel.store(true, Relaxed);
         }
@@ -440,28 +514,36 @@ impl Downloads {
         }
     }
 
-    /// The fetch of song `id` ended with its whole file at `path`.
-    pub fn finished(&self, id: &str, path: PathBuf) -> io::Result<()> {
+    /// The fetch of `work` ended with its whole file at `path`.
+    pub fn finished(&self, work: &Work, path: PathBuf) -> io::Result<()> {
         let mut state = self.state();
         state.running = None;
         state.attempt = 0;
         let size = match std::fs::metadata(&path) {
             Ok(metadata) => metadata.len(),
-            // Everything was removed while the song arrived: nobody wants it.
+            // Everything was removed while it arrived: nobody wants it.
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
         };
-        let wanted = state
-            .manifest
-            .items
-            .iter()
-            .flat_map(Item::songs)
-            .any(|song| song.id == id);
-        if wanted {
-            state.present.insert(id.to_owned(), Saved { path, size });
-            return Ok(());
+        let wanted = match work {
+            Work::Song(song) => {
+                let mut songs = state.manifest.items.iter().flat_map(Item::songs);
+                songs.any(|wanted| wanted.id == song.id)
+            }
+            Work::Cover(id) => wanted_covers(&state.manifest.items).contains(&id.as_str()),
+        };
+        if !wanted {
+            return std::fs::remove_file(path);
         }
-        std::fs::remove_file(path)
+        match work {
+            Work::Song(song) => {
+                state.present.insert(song.id.clone(), Saved { path, size });
+            }
+            Work::Cover(id) => {
+                state.covers.insert(id.clone());
+            }
+        }
+        Ok(())
     }
 
     /// The fetch ended without the song: stopped because it isn't wanted
@@ -478,10 +560,10 @@ impl Downloads {
         state.attempt
     }
 
-    /// Leaves out song `id`, which the server won't give, until something
-    /// else is asked for.
-    pub fn give_up(&self, id: &str, reason: String) {
-        self.state().failed.insert(id.to_owned(), reason);
+    /// Leaves out `work`, which the server won't give, until something else
+    /// is asked for.
+    pub fn give_up(&self, work: &Work, reason: String) {
+        self.state().failed.insert(work.key(), reason);
     }
 
     /// Stops fetching for `reason`, until something else is asked for.
@@ -494,25 +576,100 @@ impl Downloads {
         let Some(folder) = self.state().folder.clone() else {
             return;
         };
-        for entry in std::fs::read_dir(folder.join(SONGS))
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            if entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == PARTIAL)
-            {
-                let _ = std::fs::remove_file(entry.path());
+        for folder in [folder.join(SONGS), folder.join(COVERS)] {
+            for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+                if entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == PARTIAL)
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
             }
+        }
+    }
+
+    /// The album kept at `id`, as the server had it.
+    pub fn album(&self, id: &str) -> Option<AlbumID3WithSongs> {
+        self.state()
+            .manifest
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Album(album) if album.album.id == id => Some(album.clone()),
+                _ => None,
+            })
+    }
+
+    pub fn playlist(&self, id: &str) -> Option<PlaylistWithSongs> {
+        self.state()
+            .manifest
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Playlist(playlist) if playlist.playlist.id == id => Some(playlist.clone()),
+                _ => None,
+            })
+    }
+
+    /// A song in any item kept, as the server had it.
+    pub fn song(&self, id: &str) -> Option<Child> {
+        let state = self.state();
+        let mut songs = state.manifest.items.iter().flat_map(Item::songs);
+        songs.find(|song| song.id == id).cloned()
+    }
+
+    /// The albums, playlists and songs kept, in the order they were asked
+    /// for.
+    pub fn items(&self) -> Vec<Item> {
+        self.state().manifest.items.clone()
+    }
+
+    /// Whether something from `server` is kept.
+    pub fn has_songs_from(&self, server: &str) -> bool {
+        let state = self.state();
+        state.manifest.server == server && !state.manifest.items.is_empty()
+    }
+
+    /// Whether anything is kept.
+    pub fn any(&self) -> bool {
+        !self.state().manifest.items.is_empty()
+    }
+
+    /// The cover kept for the cover art `id`.
+    pub fn cover(&self, id: &str) -> Option<Vec<u8>> {
+        let state = self.state();
+        if !state.covers.contains(id) {
+            return None;
+        }
+        std::fs::read(state.folder.as_ref()?.join(COVERS).join(hex(id))).ok()
+    }
+}
+
+fn cover_key(id: &str) -> String {
+    format!("cover:{id}")
+}
+
+/// What there is to fetch.
+#[derive(Clone)]
+pub enum Work {
+    Song(Box<Child>),
+    /// The cover art with this id.
+    Cover(String),
+}
+
+impl Work {
+    fn key(&self) -> String {
+        match self {
+            Work::Song(song) => song.id.clone(),
+            Work::Cover(id) => cover_key(id),
         }
     }
 }
 
-/// What the job needs to fetch one song.
+/// What the job needs to fetch one thing.
 pub struct Fetch {
-    pub song: Child,
+    pub work: Work,
     pub partial: PathBuf,
     pub path: PathBuf,
     /// How many bytes may arrive before the size limit is passed, whatever
@@ -523,6 +680,7 @@ pub struct Fetch {
 
 fn prepare(folder: &Path) -> io::Result<()> {
     std::fs::create_dir_all(folder.join(SONGS))?;
+    std::fs::create_dir_all(folder.join(COVERS))?;
     let tag = folder.join(CACHEDIR_TAG);
     if !tag.exists() {
         std::fs::write(tag, CACHEDIR_TAG_CONTENT)?;
@@ -544,6 +702,16 @@ fn write_manifest(folder: &Path, manifest: &Manifest) -> io::Result<()> {
     let partial = folder.join(format!("{MANIFEST}.{PARTIAL}"));
     std::fs::write(&partial, serde_json::to_vec(manifest)?)?;
     std::fs::rename(partial, folder.join(MANIFEST))
+}
+
+/// The ids of the finished covers in `folder`.
+fn scan_covers(folder: &Path) -> HashSet<String> {
+    std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| unhex(entry.file_name().to_str()?))
+        .collect()
 }
 
 /// The finished songs in `folder`, by song id.
@@ -656,7 +824,8 @@ mod tests {
         let downloads = Downloads::default();
         downloads.state().running = Some(("a".to_owned(), Arc::default()));
         let gone = std::env::temp_dir().join("offline-test-never-there/a.original.flac");
-        assert!(downloads.finished("a", gone).is_ok());
+        let work = Work::Song(Box::new(song("a", None)));
+        assert!(downloads.finished(&work, gone).is_ok());
         assert!(
             downloads.state().running.is_none(),
             "the next song can start"
@@ -687,6 +856,60 @@ mod tests {
         assert!(orphans(&items, &present).is_empty());
         assert_eq!(orphans(&items[1..], &present), ["b"]);
         assert!(orphans(&items[2..], &present).contains(&"b".to_owned()));
+    }
+
+    #[test]
+    fn letting_go_deletes_the_songs_and_covers_nobody_else_wants() {
+        let folder = std::env::temp_dir().join(format!("let-go-test-{}", std::process::id()));
+        prepare(&folder).unwrap();
+        let with_cover = |id: &str, songs: &[&str], cover: &str| {
+            let mut album = album_with_songs(id, songs);
+            album.album.cover_art = Some(cover.to_owned());
+            Item::Album(album)
+        };
+        let (one, two) = (
+            with_cover("one", &["a", "b"], "c1"),
+            with_cover("two", &["b", "c"], "c2"),
+        );
+        assert_eq!(wanted_covers(&[one.clone(), one.clone()]), ["c1"]);
+        for id in ["a", "b", "c"] {
+            std::fs::write(
+                folder.join(SONGS).join(file_name(id, ORIGINAL, "flac")),
+                b"x",
+            )
+            .unwrap();
+        }
+        for id in ["c1", "c2"] {
+            std::fs::write(folder.join(COVERS).join(hex(id)), b"x").unwrap();
+        }
+        let downloads = Downloads::default();
+        {
+            let mut state = downloads.state();
+            state.manifest.items = vec![one, two.clone()];
+            state.present = scan(&folder.join(SONGS));
+            state.covers = scan_covers(&folder.join(COVERS));
+            state.folder = Some(folder.clone());
+        }
+        assert_eq!(downloads.cover("c1"), Some(b"x".to_vec()));
+        downloads.remove("album:one").unwrap();
+        let mut left: Vec<String> = downloads.state().present.keys().cloned().collect();
+        left.sort();
+        assert_eq!(left, ["b", "c"]);
+        assert_eq!(downloads.cover("c1"), None);
+        assert_eq!(downloads.cover("c2"), Some(b"x".to_vec()));
+        assert_eq!(scan(&folder.join(SONGS)).len(), 2);
+        assert_eq!(
+            scan_covers(&folder.join(COVERS)),
+            HashSet::from(["c2".to_owned()])
+        );
+        assert_eq!(read_manifest(&folder).unwrap().items, [two]);
+        assert!(downloads.album("two").is_some() && downloads.album("one").is_none());
+        assert_eq!(
+            downloads.song("c").map(|song| song.id),
+            Some("c".to_owned())
+        );
+        downloads.remove_all().unwrap();
+        assert!(!folder.exists());
     }
 
     #[test]

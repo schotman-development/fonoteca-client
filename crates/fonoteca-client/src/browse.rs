@@ -166,8 +166,13 @@ pub struct Browser {
     /// The album or playlist on screen, when one is, for downloading it.
     album: Option<AlbumID3>,
     playlist: Option<Playlist>,
-    /// What is kept on this device for use without a connection.
+    /// What is kept on this device for use without a connection, whether the
+    /// sidebar lists it, and whether the server didn't answer at start, so
+    /// the pages show what is kept without asking it.
     downloads: offline::Downloads,
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    downloads_listed: bool,
+    offline: bool,
     /// The links of an artist's own albums, in the order their page shows.
     own_albums: Vec<String>,
     /// Tile or tracks table rows whose covers are still to fetch, the rows on
@@ -302,10 +307,22 @@ pub type Shared = Rc<RefCell<Browser>>;
 
 /// Opens the home page with a signed-in client.
 pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
+    start_as(ui, browser, client, false);
+}
+
+/// Opens the downloads page with a client for a server that didn't answer:
+/// the pages show what is kept on this device and ask the server for
+/// nothing, until `reconnect`.
+pub fn start_offline(ui: &AppWindow, browser: &Shared, client: Client) {
+    start_as(ui, browser, client, true);
+}
+
+fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
     {
         let mut b = browser.borrow_mut();
         b.client = Some(Arc::new(client));
         b.history.clear();
+        b.offline = offline;
     }
     load_prefs(ui, browser);
     ui.set_album_filter("".into());
@@ -318,6 +335,9 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_may_administer(true);
     ui.set_may_download(true);
     sidebar(ui, browser);
+    if offline {
+        return open(ui, browser, "downloads".into());
+    }
     load_playlists(ui, browser);
     load_tags(ui, browser);
     load_me(ui, browser);
@@ -325,6 +345,61 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.invoke_library_started();
     #[cfg(not(target_family = "wasm"))]
     crate::downloads::resume(ui, browser);
+}
+
+/// Goes on with `client`, signed in at last after an offline start, on the
+/// page on screen.
+pub fn reconnect(ui: &AppWindow, browser: &Shared, client: Client) {
+    {
+        let mut b = browser.borrow_mut();
+        b.client = Some(Arc::new(client));
+        b.offline = false;
+    }
+    ui.set_roles("".into());
+    ui.set_may_administer(true);
+    ui.set_may_download(true);
+    load_playlists(ui, browser);
+    load_tags(ui, browser);
+    load_me(ui, browser);
+    ui.invoke_library_started();
+    #[cfg(not(target_family = "wasm"))]
+    crate::downloads::resume(ui, browser);
+    refresh(ui, browser);
+}
+
+/// Whether the pages show what is kept on this device instead of asking
+/// the server, which didn't answer at start.
+pub fn is_offline(browser: &Shared) -> bool {
+    browser.borrow().offline
+}
+
+/// What `call` asks the server for, or when it can't be reached, or
+/// while offline, what `kept` has.
+pub async fn saved_or<T>(
+    offline: bool,
+    kept: impl Fn() -> Option<T>,
+    call: impl Future<Output = opensubsonic::Result<T>>,
+) -> opensubsonic::Result<T> {
+    if offline && let Some(saved) = kept() {
+        return Ok(saved);
+    }
+    match call.await {
+        Err(opensubsonic::Error::Http(e)) => kept().ok_or(opensubsonic::Error::Http(e)),
+        answer => answer,
+    }
+}
+
+/// `songs` without those not kept on this device, while the server isn't
+/// there to stream them.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub fn available(browser: &Shared, songs: Vec<Child>) -> Vec<Child> {
+    let b = browser.borrow();
+    if !b.offline {
+        return songs;
+    }
+    let kept = songs.into_iter();
+    kept.filter(|song| b.downloads.local(&song.id).is_some())
+        .collect()
 }
 
 /// Reads what is kept on this device, once at start.
@@ -366,6 +441,51 @@ pub fn shown_item(browser: &Shared) -> Option<offline::Item> {
 #[cfg(not(target_family = "wasm"))]
 pub fn song_at(browser: &Shared, row: usize) -> Option<Child> {
     browser.borrow().songs.get(row).cloned()
+}
+
+/// The downloads page: the albums and playlists kept as tiles, the songs
+/// kept on their own as rows.
+fn downloads_page(ui: &AppWindow, browser: &Shared) {
+    ui.set_header_title("Downloads".into());
+    let mut tiles = Vec::new();
+    let mut songs = Vec::new();
+    for item in browser.borrow().downloads.items() {
+        match item {
+            offline::Item::Album(album) => {
+                tiles.push(album_tile(&album.album, album_names(&album.album)))
+            }
+            offline::Item::Playlist(playlist) => tiles.push(playlist_tile(&playlist.playlist)),
+            offline::Item::Song(song) => songs.push(*song),
+        }
+    }
+    let rows: Vec<Track> = songs.iter().map(song_track).collect();
+    {
+        let mut b = browser.borrow_mut();
+        b.tracks.set_vec(rows);
+        b.songs = songs;
+    }
+    add_tiles(ui, browser, tiles);
+    show_downloads(ui, browser);
+}
+
+/// Shows what was added to or removed from the downloads: the sidebar's
+/// entry, the downloads page, or else the marks on the page on screen.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub fn downloads_changed(ui: &AppWindow, browser: &Shared) {
+    let (on_page, any, listed) = {
+        let b = browser.borrow();
+        let on_page = b.history.get(b.at).is_some_and(|link| link == "downloads");
+        (on_page, b.downloads.any(), b.downloads_listed)
+    };
+    if any != listed {
+        browser.borrow_mut().downloads_listed = any;
+        sidebar(ui, browser);
+    }
+    if on_page {
+        show(ui, browser);
+    } else {
+        show_downloads(ui, browser);
+    }
 }
 
 /// Shows how much of the page on screen is kept, on its header and on the
@@ -471,7 +591,8 @@ pub fn swap(browser: &Shared, client: Client) {
 
 /// Whether the library is open: signed in, and not signed out since.
 pub fn started(browser: &Shared) -> bool {
-    browser.borrow().client.is_some()
+    let b = browser.borrow();
+    b.client.is_some() && !b.offline
 }
 
 /// Forgets the client and the pages seen, on sign out.
@@ -1152,6 +1273,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
                 load_me(ui, browser);
             }
         }
+        "downloads" => {
+            ui.set_page(Page::Downloads);
+            downloads_page(ui, browser);
+        }
         "settings" => ui.set_page(Page::Settings),
         "setting" => {
             ui.set_page(Page::Setting);
@@ -1219,13 +1344,23 @@ fn folders_of(b: &Browser) -> Option<&[PlaylistFolder]> {
 
 /// The sidebar's entries for what the server has.
 fn sections_of(b: &Browser) -> Vec<(String, &str, &str)> {
-    sections(&b.playlists, offers_compositions(b), offers(b, TAGS))
+    sections(
+        &b.playlists,
+        offers_compositions(b),
+        offers(b, TAGS),
+        b.downloads.any(),
+    )
 }
 
 /// The sidebar's entries, as links, labels and groups: the home page and the
 /// radio, the library's pages, with the tags, composers and compositions
 /// where the server has them, and every playlist, those in folders too.
-fn sections(playlists: &[Playlist], compositions: bool, tags: bool) -> Vec<(String, &str, &str)> {
+fn sections(
+    playlists: &[Playlist],
+    compositions: bool,
+    tags: bool,
+    downloads: bool,
+) -> Vec<(String, &str, &str)> {
     let library = [
         ("albums", "Albums", true),
         ("artists", "Artists", true),
@@ -1248,6 +1383,7 @@ fn sections(playlists: &[Playlist], compositions: bool, tags: bool) -> Vec<(Stri
         ("radio".to_owned(), "Radio", "Browse"),
     ]
     .into_iter()
+    .chain(downloads.then(|| ("downloads".to_owned(), "Downloads", "Browse")))
     .chain(library)
     .chain([("playlists".to_owned(), "Playlists", "Playlists")])
     .chain(playlists)
@@ -1455,6 +1591,9 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
         })
         .collect();
     ui.set_playlist_targets(names(targets));
+    let listed = b.downloads.any();
+    drop(b);
+    browser.borrow_mut().downloads_listed = listed;
 }
 
 /// The icon in front of the sidebar's entry for `link`; none for the
@@ -1472,6 +1611,7 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
         "playlists" | "playlist" => SharedString::new(),
         "radio" => icons.get_radio(),
         "genres" => icons.get_genre(),
+        "downloads" => icons.get_download(),
         _ => icons.get_person(),
     }
 }
@@ -3015,16 +3155,22 @@ fn sort_artist(album: &AlbumID3) -> &str {
 
 fn album(ui: &AppWindow, browser: &Shared, id: String) {
     let notes = id.clone();
-    aside(
-        ui,
-        browser,
-        |client| async move { client.get_album_info2(&notes).await },
-        |ui, _, info| show_about(ui, info.notes.as_deref()),
-    );
+    let (kept, offline) = (downloads(browser), is_offline(browser));
+    if !offline {
+        aside(
+            ui,
+            browser,
+            |client| async move { client.get_album_info2(&notes).await },
+            |ui, _, info| show_about(ui, info.notes.as_deref()),
+        );
+    }
     load(
         ui,
         browser,
-        |client| async move { client.get_album(&id).await },
+        |client| async move {
+            let call = client.get_album(&id);
+            saved_or(offline, || kept.album(&id), call).await
+        },
         |ui, browser, album| {
             let songs = album.song;
             let album = album.album;
@@ -3189,10 +3335,14 @@ fn own_albums_of<'a>(
 /// A playlist's tracks: each with its artists and album, and the heart that
 /// loves it.
 fn playlist(ui: &AppWindow, browser: &Shared, id: String) {
+    let (kept, offline) = (downloads(browser), is_offline(browser));
     load(
         ui,
         browser,
-        |client| async move { client.get_playlist(&id).await },
+        |client| async move {
+            let call = client.get_playlist(&id);
+            saved_or(offline, || kept.playlist(&id), call).await
+        },
         show_playlist,
     );
 }
@@ -5172,10 +5322,14 @@ fn scan_text(status: &ScanStatus) -> String {
 /// title and artists, and under them every field it has, named as the tracks
 /// table's columns are.
 fn song(ui: &AppWindow, browser: &Shared, id: String) {
+    let (kept, offline) = (downloads(browser), is_offline(browser));
     load(
         ui,
         browser,
-        |client| async move { client.get_song(&id).await },
+        |client| async move {
+            let call = client.get_song(&id);
+            saved_or(offline, || kept.song(&id), call).await
+        },
         |ui, browser, song| {
             ui.set_header_title(song.title.as_str().into());
             ui.set_header_names(names(song_names(&song)));
@@ -6416,7 +6570,7 @@ async fn cover_art(
             .then_some(image);
     }
     let key = (cover, size);
-    let client = {
+    let (client, kept, offline) = {
         let b = browser.borrow();
         if visit.is_some_and(|visit| b.visit != visit) {
             return None;
@@ -6424,12 +6578,18 @@ async fn cover_art(
         if let Some(image) = b.pictures.get(&key) {
             return Some(Some(image.clone()));
         }
-        b.client.clone()?
+        (b.client.clone()?, b.downloads.clone(), b.offline)
     };
-    let bytes = client.get_cover_art(&key.0, Some(size)).await;
-    let image = bytes
-        .ok()
-        .and_then(|bytes| Image::load_from_data(&bytes, None).ok());
+    // The cover kept on this device answers while the server can't.
+    let saved = offline.then(|| kept.cover(&key.0)).flatten();
+    let bytes = match saved {
+        Some(bytes) => Some(bytes),
+        None => match client.get_cover_art(&key.0, Some(size)).await {
+            Ok(bytes) => Some(bytes),
+            Err(_) => kept.cover(&key.0),
+        },
+    };
+    let image = bytes.and_then(|bytes| Image::load_from_data(&bytes, None).ok());
     let mut b = browser.borrow_mut();
     let signed_in = b
         .client
@@ -7418,7 +7578,7 @@ mod tests {
                 {"id":"p3","name":"Zed","songCount":0,"duration":0,"created":"2026-01-01T00:00:00Z","changed":"2026-01-01T00:00:00Z","playlistFolderId":"","playlistFolderSortOrder":0}]"#,
         )
         .unwrap();
-        let shown: Vec<(String, &str)> = sections(&playlists, false, true)
+        let shown: Vec<(String, &str)> = sections(&playlists, false, true, false)
             .into_iter()
             .skip_while(|(link, ..)| link != "playlists")
             .map(|(link, label, _)| (link, label))
@@ -7432,7 +7592,7 @@ mod tests {
                 ("playlist:p3".to_owned(), "Zed"),
             ]
         );
-        let library = sections(&playlists, false, true);
+        let library = sections(&playlists, false, true, false);
         assert!(library.iter().any(|(link, ..)| link == "tags"));
         let inside: Vec<&str> = placed(&playlists, Some(&folders), Some("f1"))
             .into_iter()
@@ -7471,9 +7631,36 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_copy_answers_when_the_server_cant_or_isnt_asked() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let unreachable = || async {
+                let client = Client::new("http://127.0.0.1:1", opensubsonic::Auth::None).unwrap();
+                client.ping().await.map(|_| "from the server")
+            };
+            let kept = || Some("kept");
+            let never = async { panic!("the server was asked") };
+            assert_eq!(saved_or(true, kept, never).await.unwrap(), "kept");
+            assert_eq!(saved_or(false, kept, unreachable()).await.unwrap(), "kept");
+            assert!(saved_or(false, || None, unreachable()).await.is_err());
+            assert!(saved_or(true, || None, unreachable()).await.is_err());
+            let refused = async { Err(opensubsonic::Error::Status(403)) };
+            assert!(matches!(
+                saved_or::<&str>(false, kept, refused).await,
+                Err(opensubsonic::Error::Status(403))
+            ));
+            let answered = async { Ok("from the server") };
+            assert_eq!(
+                saved_or(false, kept, answered).await.unwrap(),
+                "from the server"
+            );
+        });
+    }
+
+    #[test]
     fn composers_only_where_the_server_has_them() {
         let labels = |compositions| -> Vec<String> {
-            sections(&[], compositions, false)
+            sections(&[], compositions, false, false)
                 .into_iter()
                 .map(|(_, label, _)| label.to_owned())
                 .collect()
@@ -7506,6 +7693,11 @@ mod tests {
                 "Playlists"
             ]
         );
+        let kept: Vec<&str> = sections(&[], false, false, true)
+            .into_iter()
+            .map(|(_, label, _)| label)
+            .collect();
+        assert_eq!(kept[..4], ["Home", "Genres", "Radio", "Downloads"]);
     }
 
     #[test]

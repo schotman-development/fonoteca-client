@@ -11,7 +11,7 @@ use std::time::Duration;
 use opensubsonic::Client;
 use slint::{ComponentHandle, Timer};
 
-use crate::offline::Item;
+use crate::offline::{Item, Work};
 use crate::{AppWindow, browse, offline, prefs};
 
 /// How long to wait before the first, second and third new try of a song
@@ -57,7 +57,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             if let Err(e) = browse::downloads(&browser).remove_all() {
                 browse::notify(&ui, &browser, format!("Not all of it was removed: {e}"));
             }
-            browse::show_downloads(&ui, &browser);
+            browse::downloads_changed(&ui, &browser);
         }
     });
     ui.on_download_page({
@@ -124,7 +124,7 @@ fn keep(ui: &AppWindow, browser: &browse::Shared, item: Item) {
     let server = ui.get_address().to_string();
     match browse::downloads(browser).add(&server, item) {
         Ok(()) => {
-            browse::show_downloads(ui, browser);
+            browse::downloads_changed(ui, browser);
             pump(ui, browser);
         }
         Err(e) => browse::notify(ui, browser, format!("Not downloaded: {e}")),
@@ -136,7 +136,7 @@ fn let_go(ui: &AppWindow, browser: &browse::Shared, link: &str) {
     if let Err(e) = browse::downloads(browser).remove(link) {
         browse::notify(ui, browser, format!("Not all of it was removed: {e}"));
     }
-    browse::show_downloads(ui, browser);
+    browse::downloads_changed(ui, browser);
     pump(ui, browser);
 }
 
@@ -170,10 +170,10 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
         Ok(None) => return,
         Err(reason) => return browse::notify(ui, browser, reason),
     };
-    let id = next.song.id.clone();
+    let work = next.work;
     let job = tokio::spawn(fetch(
         client,
-        id.clone(),
+        work.clone(),
         next.partial,
         next.path.clone(),
         next.room,
@@ -183,7 +183,7 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
     slint::spawn_local(async move {
         let result = job.await.expect("the download task doesn't panic");
         let Some(ui) = weak.upgrade() else { return };
-        let delay = settle(&ui, &browser, &id, next.path, result);
+        let delay = settle(&ui, &browser, &work, next.path, result);
         browse::show_downloads(&ui, &browser);
         match delay {
             None => pump(&ui, &browser),
@@ -200,18 +200,18 @@ fn pump(ui: &AppWindow, browser: &browse::Shared) {
     .expect("the event loop is running");
 }
 
-/// Records how the fetch of song `id` ended, and says how long to wait
+/// Records how the fetch of `work` ended, and says how long to wait
 /// before going on, if it should.
 fn settle(
     ui: &AppWindow,
     browser: &browse::Shared,
-    id: &str,
+    work: &Work,
     path: PathBuf,
     result: Result<(), Failure>,
 ) -> Option<Duration> {
     let downloads = browse::downloads(browser);
     let failure = match result {
-        Ok(()) => match downloads.finished(id, path) {
+        Ok(()) => match downloads.finished(work, path) {
             Ok(()) => return None,
             Err(e) => Failure::Disk(e),
         },
@@ -234,8 +234,8 @@ fn settle(
         Failure::Server(e) => {
             let delay = retry_after(&e, downloads.failed_try());
             if delay.is_none() {
-                downloads.give_up(id, e.to_string());
-                browse::notify(ui, browser, format!("A song wasn't downloaded: {e}"));
+                downloads.give_up(work, e.to_string());
+                browse::notify(ui, browser, format!("Something wasn't downloaded: {e}"));
             }
             delay
         }
@@ -291,36 +291,52 @@ fn create(path: &Path, cancel: &AtomicBool) -> Result<File, Failure> {
 
 async fn fetch(
     client: Arc<Client>,
-    id: String,
+    work: Work,
     partial: PathBuf,
     path: PathBuf,
     room: Option<u64>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), Failure> {
-    let mut stream = client.download(&id).await.map_err(Failure::Server)?;
-    let mut file = create(&partial, &cancel)?;
-    let arrived = async {
-        let mut written = 0;
-        while let Some(bytes) = stream.chunk().await.map_err(Failure::Server)? {
-            if cancel.load(Relaxed) {
-                return Err(Failure::Stopped);
-            }
-            written += bytes.len() as u64;
-            if room.is_some_and(|room| written > room) {
-                return Err(Failure::OverLimit);
-            }
-            file.write_all(&bytes).map_err(disk)?;
-        }
-        Ok(())
-    }
-    .await;
-    drop(file);
+    let arrived = receive(&client, &work, &partial, room, &cancel).await;
     let moved = arrived.and_then(|()| std::fs::rename(&partial, &path).map_err(disk));
     if moved.is_err() {
         // A half-fetched file left behind is deleted at the next start.
         let _ = std::fs::remove_file(&partial);
     }
     moved
+}
+
+/// Writes `work` to `partial` as it arrives.
+async fn receive(
+    client: &Client,
+    work: &Work,
+    partial: &Path,
+    room: Option<u64>,
+    cancel: &AtomicBool,
+) -> Result<(), Failure> {
+    let song = match work {
+        Work::Cover(id) => {
+            let cover = client.get_cover_art(id, Some(offline::COVER_SIZE));
+            let bytes = cover.await.map_err(Failure::Server)?;
+            let mut file = create(partial, cancel)?;
+            return file.write_all(&bytes).map_err(disk);
+        }
+        Work::Song(song) => song,
+    };
+    let mut stream = client.download(&song.id).await.map_err(Failure::Server)?;
+    let mut file = create(partial, cancel)?;
+    let mut written = 0;
+    while let Some(bytes) = stream.chunk().await.map_err(Failure::Server)? {
+        if cancel.load(Relaxed) {
+            return Err(Failure::Stopped);
+        }
+        written += bytes.len() as u64;
+        if room.is_some_and(|room| written > room) {
+            return Err(Failure::OverLimit);
+        }
+        file.write_all(&bytes).map_err(disk)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -368,6 +384,40 @@ mod tests {
         assert_eq!(stop_reason(&full), "Downloads stopped: the disk is full.");
         let other = io::Error::other("no good");
         assert_eq!(stop_reason(&other), "Downloads stopped: no good");
+    }
+
+    /// A server that answers every request with the three bytes "abc".
+    fn serve_abc() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = std::io::Read::read(&mut stream, &mut [0; 1024]);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+                );
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn a_cover_is_not_written_once_cancelled() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let client = Client::new(&serve_abc(), opensubsonic::Auth::None).unwrap();
+        let folder = std::env::temp_dir().join(format!("cover-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let partial = folder.join("c.partial");
+        let cover = Work::Cover("c".to_owned());
+        let cancelled = AtomicBool::new(true);
+        let result = runtime.block_on(receive(&client, &cover, &partial, None, &cancelled));
+        assert!(matches!(result, Err(Failure::Stopped)));
+        assert!(!partial.exists(), "a cancelled cover isn't written");
+        let going = AtomicBool::new(false);
+        let result = runtime.block_on(receive(&client, &cover, &partial, None, &going));
+        assert!(result.is_ok());
+        assert!(partial.exists());
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

@@ -5,7 +5,7 @@ export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine 
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -1023,7 +1023,7 @@ export component AppWindow inherits Window {
         { id: "next", label: "Play next", icon: Icons.next },
         { id: "queue", label: "Add to queue", icon: Icons.queue },
     ];
-    property <bool> tiles-queued: root.can-play && (root.page == Page.albums || root.page == Page.artist || root.page == Page.playlists);
+    property <bool> tiles-queued: root.can-play && (root.page == Page.albums || root.page == Page.artist || root.page == Page.playlists || root.page == Page.downloads);
     property <bool> tiles-moved: root.page == Page.playlists && root.tile-moves.length > 0;
     property <[MenuEntry]> tile-entries: root.tiles-queued && root.tiles-moved ? [
         { id: "play", label: "Play now", icon: Icons.play },
@@ -2104,7 +2104,9 @@ export component AppWindow inherits Window {
                         font-weight: 600;
                         color: Theme.text;
                     }
-                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist || root.page == Page.composers: CoverGrid {
+                    if root.page == Page.downloads: Heading { text: "Downloads"; }
+                    if root.page == Page.downloads && root.tiles.length == 0 && root.tracks.length == 0: Note { text: "Nothing is downloaded yet."; }
+                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist || root.page == Page.composers || root.page == Page.downloads: CoverGrid {
                         tiles: root.tiles;
                         round: root.page == Page.artists || root.page == Page.composers;
                         view-top: -scroll.content-y - self.y;
@@ -2128,6 +2130,31 @@ export component AppWindow inherits Window {
                             }
                         }
                         dropped(index) => { root.drop-on-tile(index); }
+                    }
+                    // The songs kept on their own, under the albums and
+                    // playlists kept.
+                    if root.page == Page.downloads && root.tracks.length > 0: Text {
+                        text: "Songs";
+                        font-size: Theme.heading;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    if root.page == Page.downloads: VerticalLayout {
+                        for track[row] in root.tracks: TrackRow {
+                            title: track.title;
+                            names: track.names;
+                            split: track.split;
+                            duration: track.duration;
+                            lovable: false;
+                            downloaded: track.downloaded;
+                            playable: root.can-play;
+                            downloadable: root.can-download && root.may-download;
+                            download-removable: track.downloaded-alone;
+                            open(link) => { root.open(link); }
+                            play => { root.play-tracks(row); }
+                            queue(next) => { root.queue-tracks(row, 1, next); }
+                            remove-download => { root.remove-track-download(row); }
+                        }
                     }
                     // The library's genres, each opening its page.
                     if root.page == Page.genres: Heading { text: "Genres"; }

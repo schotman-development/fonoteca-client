@@ -269,8 +269,9 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
                 return;
             };
             let (weak, browser, playing) = (weak.clone(), browser.clone(), playing.clone());
+            let (kept, offline) = (browse::downloads(&browser), browse::is_offline(&browser));
             slint::spawn_local(async move {
-                let songs = songs_of(&client, &link).await;
+                let songs = songs_of(&client, &kept, offline, &link).await;
                 let Some(ui) = weak.upgrade() else { return };
                 match songs {
                     Ok(songs) if how == "play" => play(&ui, &browser, &playing, songs, 0),
@@ -464,6 +465,10 @@ fn play(
     songs: Vec<Child>,
     start: usize,
 ) {
+    let (songs, start) = playable(ui, browser, songs, start);
+    if songs.is_empty() {
+        return;
+    }
     let shuffled = playing.borrow().queue.shuffled();
     let (queue, start) = page_queue(songs, start, shuffled);
     begin(ui, browser, playing, queue, (start, 0.0), false);
@@ -489,6 +494,10 @@ fn queue_songs(
     songs: Vec<Child>,
     how: &str,
 ) {
+    let (songs, _) = playable(ui, browser, songs, 0);
+    if songs.is_empty() {
+        return;
+    }
     let queue_is_empty = playing.borrow().queue.is_empty();
     match plan(how, songs, queue_is_empty, seed()) {
         Plan::Play(songs) => play(ui, browser, playing, songs, 0),
@@ -508,6 +517,7 @@ fn queue_artist(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, how:
     let Some(client) = browse::client(browser) else {
         return;
     };
+    let (kept, offline) = (browse::downloads(browser), browse::is_offline(browser));
     let albums = browse::own_albums(browser);
     if albums.is_empty() {
         return browse::notify(ui, browser, "They have no albums of their own.".into());
@@ -517,7 +527,7 @@ fn queue_artist(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, how:
     slint::spawn_local(async move {
         let mut songs = Vec::new();
         for link in albums {
-            match songs_of(&client, &link).await {
+            match songs_of(&client, &kept, offline, &link).await {
                 Ok(album) => songs.extend(album),
                 Err(e) => {
                     let Some(ui) = weak.upgrade() else { return };
@@ -606,6 +616,7 @@ fn enqueue(
     next: bool,
     shuffle_seed: Option<u64>,
 ) {
+    let (songs, _) = playable(ui, browser, songs, 0);
     let what = match &songs[..] {
         [] => return,
         [song] => song.title.clone(),
@@ -1136,12 +1147,52 @@ fn remember_expanded_works(queue: &Queue) {
 }
 
 /// The songs of an album's or a playlist's link, in their order.
-async fn songs_of(client: &Client, link: &str) -> opensubsonic::Result<Vec<Child>> {
+async fn songs_of(
+    client: &Client,
+    kept: &offline::Downloads,
+    offline: bool,
+    link: &str,
+) -> opensubsonic::Result<Vec<Child>> {
     Ok(match link.split_once(':') {
-        Some(("album", id)) => client.get_album(id).await?.song,
-        Some(("playlist", id)) => client.get_playlist(id).await?.entry,
+        Some(("album", id)) => {
+            let call = client.get_album(id);
+            browse::saved_or(offline, || kept.album(id), call)
+                .await?
+                .song
+        }
+        Some(("playlist", id)) => {
+            let call = client.get_playlist(id);
+            browse::saved_or(offline, || kept.playlist(id), call)
+                .await?
+                .entry
+        }
         _ => Vec::new(),
     })
+}
+
+/// `songs` that can play now: while the server isn't there, only those kept
+/// on this device, and `start`, the index of the one to start from, moved
+/// to where it is among them.
+fn playable(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    songs: Vec<Child>,
+    start: usize,
+) -> (Vec<Child>, usize) {
+    let wanted = songs.get(start).map(|song| song.id.clone());
+    let all = songs.len();
+    let songs = browse::available(browser, songs);
+    if songs.len() < all {
+        let text = match songs.is_empty() {
+            true => "None of it is downloaded.",
+            false => "What isn't downloaded was left out.",
+        };
+        browse::notify(ui, browser, text.into());
+    }
+    let start = wanted
+        .and_then(|id| songs.iter().position(|song| song.id == id))
+        .unwrap_or(0);
+    (songs, start)
 }
 
 /// A seed no shuffle had before.
