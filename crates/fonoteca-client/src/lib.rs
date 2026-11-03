@@ -549,6 +549,8 @@ mod tests {
         7, 16, 81, 255, 254, 7, 34, 162, 255, 1, 0,
     ];
 
+    /// The playlist of the classical album's songs.
+    const WORKS: &str = r#""id":"p5","name":"Symphony","songCount":7,"duration":3000,"created":"2024-01-01T00:00:00Z","changed":"2024-02-01T00:00:00Z""#;
     /// A classical album: two movements of a symphony by one orchestra, the
     /// second with its conductor too, an overture whose composer has no artist
     /// id, two encores that belong to no work, and two more movements of the
@@ -572,6 +574,37 @@ mod tests {
 
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// The songs of the playlist `WORKS`: the classical album's four
+    /// movements of Symphony No. 5 together, its overture, then its second
+    /// and third movements alone, numbered as Fonoteca numbers them.
+    fn works_playlist() -> String {
+        let album: serde_json::Value = serde_json::from_str(&format!("{{{CLASSICAL}}}")).unwrap();
+        let song = |id: &str, number: Option<i64>| {
+            let mut song = album["song"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|song| song["id"] == id)
+                .unwrap()
+                .clone();
+            if let Some(number) = number {
+                song["movements"] =
+                    serde_json::json!([{"name": "m", "number": number, "count": 4}]);
+            }
+            song
+        };
+        let songs = [
+            song("c1", Some(1)),
+            song("c2", Some(2)),
+            song("c7", Some(3)),
+            song("c5", Some(4)),
+            song("c3", None),
+            song("c2", Some(2)),
+            song("c7", Some(3)),
+        ];
+        serde_json::to_string(&songs).unwrap()
+    }
+
     /// The playlist changes the server was asked for, each its method and
     /// its arguments but the credentials.
     static PLAYLIST_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -994,6 +1027,11 @@ mod tests {
             } else {
                 json(OK)
             }
+        } else if request.contains("/rest/getPlaylist") && id == Some("p5") {
+            ok(&format!(
+                r#""playlist":{{{WORKS},"entry":{}}}"#,
+                works_playlist()
+            ))
         } else if request.contains("/rest/getPlaylist") {
             let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}]"#;
             ok(&format!(r#""playlist":{{{ROAD_TRIP},"entry":{songs}}}"#))
@@ -2199,6 +2237,35 @@ mod tests {
             wait_for("the notice", || ui.get_notice() != "").await;
             assert_eq!(ui.get_notice(), "Added 1 track to Road Trip.");
             ui.set_notice("".into());
+            // Movements of a whole work are its row and their rows; the
+            // second and third of four, and the overture, stay songs.
+            ui.invoke_open("playlist:p5".into());
+            wait_for("the playlist of works", || ui.get_tracks().row_count() == 7).await;
+            let rows: Vec<(String, i32, bool)> = ui
+                .get_tracks()
+                .iter()
+                .map(|track| (track.work.to_string(), track.work_tracks, track.part))
+                .collect();
+            let row = |work: &str, tracks: i32, part: bool| (work.to_owned(), tracks, part);
+            assert_eq!(
+                rows,
+                [
+                    row("Symphony No. 5", 4, true),
+                    row("", 0, true),
+                    row("", 0, true),
+                    row("", 0, true),
+                    row("", 0, false),
+                    row("", 0, false),
+                    row("", 0, false)
+                ]
+            );
+            // A song inside the work leaves the playlist by its own place.
+            PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_remove_from_playlist(2);
+            wait_for("the movement removed", || {
+                writes() == ["updatePlaylist playlistId=p5&songIndexToRemove=2"]
+            })
+            .await;
             // A selected album goes in a playlist song by song, and the
             // selection is let go.
             ui.invoke_open("albums".into());

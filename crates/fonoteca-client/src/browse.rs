@@ -23,7 +23,7 @@ use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
     GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate, ListOptions, MediaType,
-    Playlist, PlaylistFolder, PlaylistFolderUpdate, PlaylistUpdate, PlaylistWithSongs,
+    Movement, Playlist, PlaylistFolder, PlaylistFolderUpdate, PlaylistUpdate, PlaylistWithSongs,
     RadioStation, ScanStatus, SearchOptions, Span, Tag, TagUpdate, User,
 };
 use radiobrowser::Station;
@@ -2905,82 +2905,85 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             header_motion(ui, browser, album.id);
 
             let mut b = browser.borrow_mut();
-            // As Roon draws a classical album: consecutive tracks of one work
-            // are headed by a row for the work, the years it was written, its
-            // composers, the performers all its movements share, and when and
-            // where they were recorded, with the movements under it; a work's
-            // only track is such a row itself.
-            let runs = songs.chunk_by(same_work);
-            for run in runs {
-                let parts = run.len() > 1;
-                let length: i64 = run.iter().filter_map(|song| song.duration).sum();
-                let length = if run.iter().all(|song| song.duration.is_some()) {
-                    duration(length)
-                } else {
-                    String::new()
-                };
-                let performers: Vec<Vec<Name>> = run.iter().map(song_names).collect();
-                let shared: Vec<Name> = performers[0]
-                    .iter()
-                    .filter(|name| performers.iter().all(|them| them.contains(name)))
-                    .cloned()
-                    .collect();
-                let performed = performed(run);
-                for (i, song) in run.iter().enumerate() {
-                    let alone = !parts && !song.works.is_empty();
-                    let own = performers[i].clone();
-                    let (title, composers, credits) = match (parts, alone) {
-                        (true, _) if own.iter().all(|name| shared.contains(name)) => {
-                            (track_title(run, i), Vec::new(), Vec::new())
-                        }
-                        (true, _) => (track_title(run, i), Vec::new(), own),
-                        (false, true) => (song.title.clone(), composer_names(song), own),
-                        (false, false) => (song.title.clone(), Vec::new(), own),
-                    };
-                    let (years, performed_alone) = if alone {
-                        (composed(song), performed.as_str())
-                    } else {
-                        (String::new(), "")
-                    };
-                    let (work, work_composers, work_performers, work_duration) =
-                        match song.works.first() {
-                            Some(work) if parts && i == 0 => (
-                                work.name.as_str(),
-                                composer_names(song),
-                                shared.clone(),
-                                length.as_str(),
-                            ),
-                            _ => ("", Vec::new(), Vec::new(), ""),
-                        };
-                    let (work_years, work_performed) = if work.is_empty() {
-                        (String::new(), "")
-                    } else {
-                        (composed(song), performed.as_str())
-                    };
-                    b.tracks.push(Track {
-                        title: title.into(),
-                        split: composers.len() as i32,
-                        names: names([composers, credits].concat()),
-                        duration: song.duration.map(duration).unwrap_or_default().into(),
-                        loved: song.starred.is_some(),
-                        years: years.into(),
-                        performed: performed_alone.into(),
-                        work: work.into(),
-                        work_split: work_composers.len() as i32,
-                        work_names: names([work_composers, work_performers].concat()),
-                        work_duration: work_duration.into(),
-                        work_years: work_years.into(),
-                        work_performed: work_performed.into(),
-                        work_tracks: if work.is_empty() { 0 } else { run.len() as i32 },
-                        part: parts,
-                        alone,
-                        ..Track::default()
-                    });
-                }
-            }
+            let rows: Vec<Track> = songs.chunk_by(same_work).flat_map(work_rows).collect();
+            b.tracks.set_vec(rows);
             b.songs = songs;
         },
     );
+}
+
+/// The rows of a run of consecutive tracks of one work, as Roon draws a
+/// classical album: the first is headed by a row for the work, the years it
+/// was written, its composers, the performers all its movements share, and
+/// when and where they were recorded, with the movements under it; a work's
+/// only track is such a row itself.
+fn work_rows(run: &[Child]) -> Vec<Track> {
+    let mut tracks = Vec::new();
+    let parts = run.len() > 1;
+    let length: i64 = run.iter().filter_map(|song| song.duration).sum();
+    let length = if run.iter().all(|song| song.duration.is_some()) {
+        duration(length)
+    } else {
+        String::new()
+    };
+    let performers: Vec<Vec<Name>> = run.iter().map(song_names).collect();
+    let shared: Vec<Name> = performers[0]
+        .iter()
+        .filter(|name| performers.iter().all(|them| them.contains(name)))
+        .cloned()
+        .collect();
+    let performed = performed(run);
+    for (i, song) in run.iter().enumerate() {
+        let alone = !parts && !song.works.is_empty();
+        let own = performers[i].clone();
+        let (title, composers, credits) = match (parts, alone) {
+            (true, _) if own.iter().all(|name| shared.contains(name)) => {
+                (track_title(run, i), Vec::new(), Vec::new())
+            }
+            (true, _) => (track_title(run, i), Vec::new(), own),
+            (false, true) => (song.title.clone(), composer_names(song), own),
+            (false, false) => (song.title.clone(), Vec::new(), own),
+        };
+        let (years, performed_alone) = if alone {
+            (composed(song), performed.as_str())
+        } else {
+            (String::new(), "")
+        };
+        let (work, work_composers, work_performers, work_duration) = match song.works.first() {
+            Some(work) if parts && i == 0 => (
+                work.name.as_str(),
+                composer_names(song),
+                shared.clone(),
+                length.as_str(),
+            ),
+            _ => ("", Vec::new(), Vec::new(), ""),
+        };
+        let (work_years, work_performed) = if work.is_empty() {
+            (String::new(), "")
+        } else {
+            (composed(song), performed.as_str())
+        };
+        tracks.push(Track {
+            title: title.into(),
+            split: composers.len() as i32,
+            names: names([composers, credits].concat()),
+            duration: song.duration.map(duration).unwrap_or_default().into(),
+            loved: song.starred.is_some(),
+            years: years.into(),
+            performed: performed_alone.into(),
+            work: work.into(),
+            work_split: work_composers.len() as i32,
+            work_names: names([work_composers, work_performers].concat()),
+            work_duration: work_duration.into(),
+            work_years: work_years.into(),
+            work_performed: work_performed.into(),
+            work_tracks: if work.is_empty() { 0 } else { run.len() as i32 },
+            part: parts,
+            alone,
+            ..Track::default()
+        });
+    }
+    tracks
 }
 
 /// An artist's page: their picture and name, what the server says about
@@ -3194,7 +3197,16 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     header_image(ui, browser, playlist.cover_art);
     playlist_moves(ui, &browser.borrow());
 
-    let tracks: Vec<Track> = songs.iter().map(song_track).collect();
+    // As an album: the movements of a whole work are the work's row and its
+    // movements; every other song is a row of its own. A row is still one
+    // song, so a row's number is its song's in what plays, loves and removes.
+    let tracks: Vec<Track> = whole_works(&songs)
+        .into_iter()
+        .flat_map(|run| match run {
+            [song] => vec![song_track(song)],
+            _ => work_rows(run),
+        })
+        .collect();
     let mut b = browser.borrow_mut();
     b.tracks.set_vec(tracks);
     b.songs = songs;
@@ -6343,6 +6355,50 @@ pub(crate) fn same_work(one: &Child, next: &Child) -> bool {
     one.is_some() && one.map(|work| &work.name) == next.map(|work| &work.name)
 }
 
+/// The runs a page's songs fall in: each complete work, with all its
+/// movements next to each other on one album, is one run; every other song
+/// stands alone, also where it is some movements of a work.
+pub(crate) fn whole_works(songs: &[Child]) -> Vec<&[Child]> {
+    let mut runs = Vec::new();
+    for run in songs.chunk_by(|one, next| same_work(one, next) && one.album_id == next.album_id) {
+        if is_complete_work(run) {
+            runs.push(run);
+        } else {
+            runs.extend(run.chunks(1));
+        }
+    }
+    runs
+}
+
+/// Whether `run`, neighbouring songs of one work, holds the whole of it, by
+/// the movements' number and count. Where numbers come with the count, every
+/// number from 1 to the count must be there (a movement may take several
+/// tracks, so more songs than the count is fine). Where the count comes
+/// without numbers, the songs must be as many as the count. A server that
+/// sends no count (Navidrome sends movement names only) gives no ground to
+/// call the run partial, so it is whole, as the album page already shows it.
+fn is_complete_work(run: &[Child]) -> bool {
+    if run.len() < 2 {
+        return false;
+    }
+    let movements: Vec<Option<&Movement>> = run.iter().map(|song| song.movements.first()).collect();
+    let Some(count) = movements
+        .iter()
+        .flatten()
+        .find_map(|movement| movement.count)
+    else {
+        return true;
+    };
+    let numbers: Option<HashSet<i64>> = movements
+        .iter()
+        .map(|movement| movement.and_then(|movement| movement.number))
+        .collect();
+    match numbers {
+        Some(numbers) => (1..=count).all(|number| numbers.contains(&number)),
+        None => run.len() as i64 >= count,
+    }
+}
+
 /// The title of a run's `i`th track within its work: the movement's name
 /// where the server sends one that no neighbour shares, else the track's own
 /// title without the work's name in front, or from the movement's name on,
@@ -6522,6 +6578,74 @@ pub fn duration(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lengths of the runs `whole_works` makes of songs, each given as
+    /// its album, its work and its movement as the server sends it.
+    fn runs(songs: &[(&str, &str, &str)]) -> Vec<usize> {
+        let songs: Vec<Child> = songs
+            .iter()
+            .map(|&(album, work, movement)| {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"s","isDir":false,"title":"t","albumId":"{album}","works":[{{"name":"{work}"}}],"movements":[{{"name":"m"{movement}}}]}}"#
+                ))
+                .unwrap()
+            })
+            .collect();
+        whole_works(&songs).iter().map(|run| run.len()).collect()
+    }
+
+    /// One work's songs, numbered as given, of `count` movements.
+    fn numbered(numbers: &[i64], count: i64) -> Vec<usize> {
+        let movements: Vec<String> = numbers
+            .iter()
+            .map(|number| format!(r#","number":{number},"count":{count}"#))
+            .collect();
+        let songs: Vec<(&str, &str, &str)> = movements
+            .iter()
+            .map(|movement| ("a", "W", movement.as_str()))
+            .collect();
+        runs(&songs)
+    }
+
+    #[test]
+    fn a_run_is_a_work_when_it_holds_all_its_movements() {
+        assert_eq!(numbered(&[1, 2, 3, 4], 4), [4]);
+        assert_eq!(numbered(&[3, 4], 4), [1, 1]);
+        assert_eq!(numbered(&[1, 4], 4), [1, 1]);
+        assert_eq!(numbered(&[1, 2, 3, 1], 4), [1; 4]);
+        assert_eq!(numbered(&[1, 2, 3, 4, 5], 6), [1; 5]);
+        // A movement on several tracks, as in Das Rheingold.
+        assert_eq!(numbered(&[1, 2, 2, 2, 3, 4, 4], 4), [7]);
+        assert_eq!(numbered(&[1], 1), [1]);
+    }
+
+    #[test]
+    fn a_run_without_numbers_is_a_work_when_it_is_as_long_as_the_count() {
+        let count = r#","count":4"#;
+        assert_eq!(runs(&[("a", "W", count); 4]), [4]);
+        assert_eq!(runs(&[("a", "W", count); 3]), [1; 3]);
+    }
+
+    #[test]
+    fn a_run_without_a_count_is_a_work() {
+        // Navidrome sends movement names only.
+        assert_eq!(runs(&[("a", "W", ""); 3]), [3]);
+    }
+
+    #[test]
+    fn songs_of_other_works_or_albums_are_not_one_run() {
+        let (first, second) = (r#","number":1,"count":2"#, r#","number":2,"count":2"#);
+        assert_eq!(
+            runs(&[
+                ("a", "W", first),
+                ("a", "W", second),
+                ("b", "W", first),
+                ("b", "W", second),
+                ("b", "V", first),
+            ]),
+            [2, 2, 1]
+        );
+    }
 
     #[test]
     fn an_artists_own_albums_are_theirs_alone_in_page_order() {
