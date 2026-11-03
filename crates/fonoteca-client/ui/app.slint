@@ -961,6 +961,8 @@ export component AppWindow inherits Window {
     // The settings' downloads: how many songs are kept, what they take, what
     // is wrong or to go, and the entry of the size limit.
     in property <int> download-songs;
+    // What signing out frees by removing the downloads; empty without any.
+    in property <string> sign-out-frees;
     in property <string> download-space;
     in property <string> download-status;
     in-out property <int> download-limit;
@@ -2283,7 +2285,7 @@ export component AppWindow inherits Window {
                             alignment: start;
                             spacing: 8px;
                             Button {
-                                text: "Sign out";
+                                text: root.sign-out-frees == "" ? "Sign out" : "Sign out and free " + root.sign-out-frees;
                                 enabled: !root.busy && !Input.modal;
                                 clicked => { root.sign-out(); }
                             }

@@ -316,6 +316,19 @@ fn run<T: 'static>(
     .expect("the event loop is running");
 }
 
+/// Deletes the downloads, which belong to the account and its server, before
+/// either goes. When they can't be deleted it says so and stays signed in.
+fn remove_downloads(ui: &AppWindow, browser: &browse::Shared) -> bool {
+    match browse::downloads(browser).remove_all() {
+        Ok(()) => true,
+        Err(e) => {
+            let note = format!("Not signed out: the downloads couldn't be removed: {e}");
+            ui.set_saved_note(note.into());
+            false
+        }
+    }
+}
+
 /// Stops the library and clears what the screens know of the account.
 fn signed_out(ui: &AppWindow, browser: &browse::Shared) {
     browse::stop(browser);
@@ -584,6 +597,9 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             if ui.get_busy() {
                 return;
             }
+            if !remove_downloads(&ui, &browser) {
+                return;
+            }
             let browser = browser.clone();
             run(&ui, store::forget(), move |ui, ()| {
                 signed_out(ui, &browser);
@@ -599,6 +615,9 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             let ui = weak.unwrap();
             // A disabled button still takes a screen reader's press.
             if ui.get_busy() {
+                return;
+            }
+            if !remove_downloads(&ui, &browser) {
                 return;
             }
             let browser = browser.clone();
@@ -4824,9 +4843,14 @@ mod tests {
             let signed_in_as = store::load().await.expect("saved").login;
             assert!(matches!(signed_in_as, Login::Password { ref username, .. } if username == "eve"));
             // Only changing the server forgets it, and the token stays.
+            // The downloads belong to the server, and go with it.
+            let downloads_folder = crate::offline::folder().unwrap();
+            std::fs::create_dir_all(&downloads_folder).unwrap();
+            std::fs::write(downloads_folder.join("marker"), b"x").unwrap();
             click(&ui, "Account");
             click(&ui, "Change server");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
+            assert!(!downloads_folder.exists(), "the downloads went with the server");
             assert_eq!(ui.get_address(), "");
             assert!(store::load().await.is_none());
             assert!(store::load_server().await.is_none());
@@ -5758,9 +5782,20 @@ mod tests {
             ui.invoke_remove_all_downloads();
             assert!(!listed(&ui), "the sidebar's entry goes with the downloads");
 
-            click(&ui, "Account");
-            click(&ui, "Sign out");
+            // Signing out takes the downloads with it, and the button says
+            // what that frees.
+            ui.invoke_open("account".into());
+            assert_eq!(ui.get_sign_out_frees(), "", "nothing is kept");
+            ui.invoke_open("album:a1".into());
+            wait_for("the album", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Download");
+            wait_for("the album kept", || ui.get_download_state() == 2).await;
+            ui.invoke_open("account".into());
+            assert!(ui.get_sign_out_frees().ends_with(" MB"), "{}", ui.get_sign_out_frees());
+            let frees = format!("Sign out and free {}", ui.get_sign_out_frees());
+            click(&ui, &frees);
             wait_for("the sign-in step again", || ui.get_step() == Step::SignIn).await;
+            assert!(!kept.exists(), "the downloads went with the account");
 
             slint::quit_event_loop().unwrap();
         })

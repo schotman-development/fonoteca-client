@@ -507,6 +507,7 @@ pub fn show_downloads(ui: &AppWindow, browser: &Shared) {
     ui.set_download_songs(summary.songs as i32);
     ui.set_download_space(summary.space().into());
     ui.set_download_status(summary.status().into());
+    ui.set_sign_out_frees(summary.frees().into());
     for (row, song) in b.songs.iter().enumerate() {
         let downloaded = b.downloads.local(&song.id).is_some();
         let alone = downloaded && b.downloads.is_kept_alone(&song.id);
@@ -1268,6 +1269,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "account" => {
             ui.set_page(Page::Account);
+            show_downloads(ui, browser);
             // Asks again when the server didn't say at sign-in.
             if browser.borrow().me.is_none() {
                 load_me(ui, browser);

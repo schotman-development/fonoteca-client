@@ -246,6 +246,14 @@ impl Summary {
         }
     }
 
+    /// What signing out frees, when something is kept.
+    pub fn frees(&self) -> String {
+        if self.songs == 0 {
+            return String::new();
+        }
+        bytes_text(self.used)
+    }
+
     pub fn status(&self) -> String {
         match (&self.halted, self.missing) {
             (Some(reason), _) => reason.clone(),
@@ -1046,6 +1054,8 @@ mod tests {
         assert_eq!(summary(1, 0, None).space(), "3.0 GB used by 1 song.");
         assert_eq!(summary(14, 0, None).space(), "3.0 GB used by 14 songs.");
         assert_eq!(summary(14, 0, None).status(), "");
+        assert_eq!(summary(14, 0, None).frees(), "3.0 GB");
+        assert_eq!(summary(0, 2, None).frees(), "");
         assert_eq!(summary(14, 3, None).status(), "3 to go.");
         assert_eq!(summary(14, 3, Some("Full")).status(), "Full");
     }
