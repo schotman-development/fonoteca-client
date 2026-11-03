@@ -86,7 +86,7 @@ pub struct Client {
     auth: Auth,
     password_method: AtomicU8,
     form_post: AtomicBool,
-    extensions: Mutex<Vec<String>>,
+    extensions: Mutex<Vec<model::OpenSubsonicExtension>>,
 }
 
 impl Client {
@@ -143,7 +143,15 @@ impl Client {
     pub fn supports(&self, extension: &str) -> bool {
         self.extensions
             .lock()
-            .is_ok_and(|names| names.iter().any(|name| name == extension))
+            .is_ok_and(|listed| listed.iter().any(|listed| listed.name == extension))
+    }
+
+    /// Whether the server listed `version` of `extension`.
+    pub fn supports_version(&self, extension: &str, version: i64) -> bool {
+        self.extensions.lock().is_ok_and(|listed| {
+            (listed.iter())
+                .any(|listed| listed.name == extension && listed.versions.contains(&version))
+        })
     }
 
     fn request(&self, endpoint: &str, params: &Params) -> Result<(reqwest::RequestBuilder, u8)> {
@@ -747,6 +755,7 @@ mod tests {
         assert!(!client.supports("formPost"));
         client.get_open_subsonic_extensions().await.unwrap();
         assert!(client.supports("formPost") && !client.supports("songLyrics"));
+        assert!(client.supports_version("formPost", 1) && !client.supports_version("formPost", 2));
         client.ping().await.unwrap();
         let log = log.lock().unwrap();
         assert!(!log[0].contains("SECRET"), "{}", log[0]);

@@ -74,6 +74,8 @@ const GENRES: [(&str, &str); 27] = [
 ];
 /// The shelf of the country the device is in, after the genres'.
 const LOCAL: usize = GENRES.len();
+/// The genre page's shelf of stations, after the radio page's.
+const GENRE_RADIO: usize = LOCAL + 1;
 /// How many stations a shelf shows, and a genre's page asks for at a time;
 /// how many of each language its first page has.
 const SHELF_STATIONS: u32 = 12;
@@ -110,6 +112,8 @@ const TILE_SIZE: f32 = 300.0;
 /// The widest a genre's tile gets: two to a row across the page's most width,
 /// 1600 points, less its padding and the gap.
 const GENRE_SIZE: f32 = 800.0;
+/// The widest a genre page's banner gets, the page's own most width.
+const BANNER_SIZE: f32 = 1600.0;
 const HEADER_SIZE: f32 = 220.0;
 /// The size of a cover in a row of the tracks table.
 const LINE_COVER_SIZE: f32 = 42.0;
@@ -125,6 +129,8 @@ const FOLDERS: &str = "playlistFolders";
 const TAGS: &str = "fonotecaTags";
 /// Fonoteca's extension for the genres each genre sits under.
 const GENRE_TREE: &str = "fonotecaGenres";
+/// The version of that extension whose genres carry descriptions.
+const GENRE_DESCRIPTIONS: i64 = 2;
 /// Fonoteca's extension for artists' banners.
 const ARTIST_BANNER: &str = "fonotecaArtistBanner";
 /// How many of an artist's top songs their page shows.
@@ -189,6 +195,9 @@ pub struct Browser {
     genres_loaded: bool,
     genre_tiles: Rc<VecModel<AlbumTile>>,
     genre_artists: Rc<VecModel<AlbumTile>>,
+    /// The tiles of the genre page's stations, whose stations are in
+    /// `shelves` under `GENRE_RADIO`.
+    genre_radio: Rc<VecModel<AlbumTile>>,
     /// The pictures in the genres' shared tint, for the session.
     tinted: HashMap<(String, u32), Image>,
     /// The playlists, for the sidebar and the playlists page, asked for on
@@ -951,6 +960,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_similar(ModelRc::default());
     ui.set_genre_tiles(ModelRc::default());
     ui.set_genre_artists(ModelRc::default());
+    ui.set_genre_banner(Image::default());
+    ui.set_genre_radio(StationShelf::default());
+    ui.set_about_source("".into());
+    ui.set_about_url("".into());
 
     let (page, id) = link.split_once(':').unwrap_or((&link, ""));
     let id = id.to_owned();
@@ -1083,6 +1096,13 @@ fn offers(b: &Browser, extension: &str) -> bool {
     b.client
         .as_ref()
         .is_some_and(|client| client.supports(extension))
+}
+
+/// Whether the server has this version of the extension.
+fn offers_version(b: &Browser, extension: &str, version: i64) -> bool {
+    b.client
+        .as_ref()
+        .is_some_and(|client| client.supports_version(extension, version))
 }
 
 /// The playlist folders, on servers with them.
@@ -1595,11 +1615,12 @@ fn genres(ui: &AppWindow, browser: &Shared) {
     }
 }
 
-/// A genre's page, from the library: its artists, its albums and the genres
-/// under it.
+/// A genre's page, from the library: its albums, its artists and the genres
+/// under it, and the directory's stations for it.
 fn genre(ui: &AppWindow, browser: &Shared, name: String) {
-    ui.set_header_title(name.into());
+    ui.set_header_title(name.as_str().into());
     genres(ui, browser);
+    genre_radio(ui, browser, &name);
 }
 
 /// Asks for the library unless it is in or on its way.
@@ -4436,17 +4457,32 @@ fn station_tile(b: &Browser, station: &Station) -> AlbumTile {
     }
 }
 
+/// A genre's name as the radio page matches it, whatever its case and
+/// punctuation.
+fn genre_key(name: &str) -> String {
+    (name.chars())
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The directory's tag for a library genre: the radio page's shelf whose
+/// title or tag it is, such as "world music" for World, else its own name.
+fn directory_tag(genre: &str) -> String {
+    let wanted = genre_key(genre);
+    (GENRES.iter())
+        .find(|(title, tag)| {
+            !tag.is_empty() && [title, tag].iter().any(|name| genre_key(name) == wanted)
+        })
+        .map_or_else(|| genre.to_lowercase(), |(_, tag)| (*tag).to_owned())
+}
+
 /// The genres' places on the radio page: Top worldwide first, then the
 /// genres with the most albums in the library, the rest as they are. A
 /// library genre counts when its name, or a part of it split by "/", ";" or
 /// ",", is a shelf's title or tag, whatever its case and punctuation.
 fn genre_ranks(library: &[Genre]) -> Vec<usize> {
-    let key = |name: &str| -> String {
-        (name.chars())
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
+    let key = genre_key;
     let mut albums: HashMap<String, i64> = HashMap::new();
     for genre in library {
         for part in genre.value.split(['/', ';', ',']) {
@@ -4630,11 +4666,15 @@ fn toggle_language(ui: &AppWindow, browser: &Shared, index: usize) {
 fn shelf_logos(browser: &Shared, shelf: usize, rows: Range<usize>) {
     let (wanted, tiles) = {
         let mut b = browser.borrow_mut();
-        let shown = b.shelf_model.iter().find(|row| row.shelf as usize == shelf);
-        let (Some(row), Some(stations)) = (shown, b.shelves.get(&shelf)) else {
+        let tiles = if shelf == GENRE_RADIO {
+            Some(ModelRc::from(b.genre_radio.clone()))
+        } else {
+            let shown = b.shelf_model.iter().find(|row| row.shelf as usize == shelf);
+            shown.map(|row| row.tiles)
+        };
+        let (Some(tiles), Some(stations)) = (tiles, b.shelves.get(&shelf)) else {
             return;
         };
-        let tiles = row.tiles;
         let wanted: Vec<(usize, String)> = rows
             .filter_map(|row| Some((row, stations.get(row)?.favicon.clone())))
             .filter(|(_, favicon)| !favicon.is_empty())
@@ -5517,12 +5557,12 @@ fn show_genres(ui: &AppWindow, browser: &Shared) {
 }
 
 /// A genre's page beside its albums: the genres it sits under, how many
-/// albums and artists carry it, its artists known for it best first, and on
-/// servers with Fonoteca's genres the genres under it, those most albums
-/// carry first.
+/// albums and artists carry it, its artists known for it best first, the
+/// banner of the best known with one, and on servers with Fonoteca's genres
+/// its description and the genres under it, those most albums carry first.
 fn show_genre(ui: &AppWindow, browser: &Shared) {
     let (size, genre_size) = (tile_pixels(ui), genre_pixels(ui));
-    let (wanted_subgenres, wanted_artists) = {
+    let (wanted_subgenres, wanted_artists, banner) = {
         let mut b = browser.borrow_mut();
         let genre = shown_genre(&b).to_owned();
         let tree = offers(&b, GENRE_TREE);
@@ -5533,6 +5573,13 @@ fn show_genre(ui: &AppWindow, browser: &Shared) {
             .filter(|album| carries(album, &genre))
             .count();
         let known = known_for(&b.library, &b.artists, &genre, &siblings(&b, &genre));
+        // Its own best-known artist's, even if a tile shows it too.
+        let banners = artist_banners(&b.artists, offers(&b, ARTIST_BANNER));
+        let banner = banner_of(&known, &banners, &HashSet::new());
+        let described = offers_version(&b, GENRE_TREE, GENRE_DESCRIPTIONS);
+        let description = (b.genres.iter().find(|shown| shown.value == genre))
+            .and_then(|genre| description_of(genre, described));
+        show_description(ui, description);
         let facts = if b.library_loaded {
             let albums = count(albums, "album", "albums");
             format!("{albums} · {}", count(known.len(), "artist", "artists"))
@@ -5571,8 +5618,9 @@ fn show_genre(ui: &AppWindow, browser: &Shared) {
         b.genre_artists = artists;
         ui.set_genre_tiles(ModelRc::from(b.genre_tiles.clone()));
         ui.set_genre_artists(ModelRc::from(b.genre_artists.clone()));
-        (wanted_subgenres, wanted_artists)
+        (wanted_subgenres, wanted_artists, banner)
     };
+    genre_banner(ui, browser, banner);
     side_covers(
         browser,
         |b| &b.genre_tiles,
@@ -5581,6 +5629,116 @@ fn show_genre(ui: &AppWindow, browser: &Shared) {
         true,
     );
     side_covers(browser, |b| &b.genre_artists, wanted_artists, size, false);
+}
+
+/// What the server says a genre is, and where the text comes from.
+#[derive(Debug, PartialEq)]
+struct Description {
+    text: String,
+    source: String,
+    /// An address to open, only ever a web page.
+    url: String,
+}
+
+/// A genre's description, unless the server (`offered`) gave none. The
+/// source's address is kept only if it is a web page, since the app opens it.
+fn description_of(genre: &Genre, offered: bool) -> Option<Description> {
+    if !offered {
+        return None;
+    }
+    let text = genre.description.as_deref().map(str::trim)?;
+    if text.is_empty() {
+        return None;
+    }
+    let url = (genre.description_url.as_deref())
+        .map(str::trim)
+        .filter(|url| url.starts_with("https://") || url.starts_with("http://"));
+    Some(Description {
+        text: text.to_owned(),
+        source: genre.description_source.clone().unwrap_or_default(),
+        url: url.unwrap_or_default().to_owned(),
+    })
+}
+
+fn show_description(ui: &AppWindow, description: Option<Description>) {
+    let description = description.unwrap_or(Description {
+        text: String::new(),
+        source: String::new(),
+        url: String::new(),
+    });
+    show_about(ui, Some(&description.text));
+    ui.set_about_source(description.source.into());
+    ui.set_about_url(description.url.into());
+}
+
+/// Puts the genre page's banner in the genres' tint over its title once it
+/// comes; the page's text is there before it.
+fn genre_banner(ui: &AppWindow, browser: &Shared, banner: Option<String>) {
+    let Some(banner) = banner else { return };
+    let size = pixels(
+        ui,
+        (ui.window()
+            .size()
+            .to_logical(ui.window().scale_factor())
+            .width)
+            .clamp(100.0, BANNER_SIZE),
+    );
+    let visit = browser.borrow().visit;
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        if let Some(Some(image)) = tinted_art(&browser, visit, banner, size).await
+            && let Some(ui) = weak.upgrade()
+        {
+            ui.set_genre_banner(image);
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// The genre page's popular stations: those of the radio directory tagged
+/// with the genre, in the languages picked first, as a radio page's shelf.
+/// None, or a directory that doesn't answer, leaves the shelf out: the page
+/// is whole without it.
+fn genre_radio(ui: &AppWindow, browser: &Shared, genre: &str) {
+    let Some(directory) = directory(browser) else {
+        return;
+    };
+    let tag = directory_tag(genre);
+    let (languages, visit) = {
+        let b = browser.borrow();
+        (b.languages.clone(), b.visit)
+    };
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        learn(&browser, &directory).await;
+        let found = shelf_stations(&directory, &tag, &languages).await;
+        let Some(ui) = weak.upgrade() else { return };
+        if browser.borrow().visit != visit {
+            return;
+        }
+        if let Ok(stations) = found {
+            show_genre_radio(&ui, &browser, &tag, stations);
+        }
+    })
+    .expect("the event loop is running");
+}
+
+fn show_genre_radio(ui: &AppWindow, browser: &Shared, tag: &str, stations: Vec<Station>) {
+    let mut b = browser.borrow_mut();
+    let tiles: Vec<AlbumTile> = stations.iter().map(|s| station_tile(&b, s)).collect();
+    b.genre_radio = Rc::new(VecModel::from(tiles));
+    b.logos_asked.retain(|(asked, _)| *asked != GENRE_RADIO);
+    let empty = stations.is_empty();
+    b.shelves.insert(GENRE_RADIO, stations);
+    if empty {
+        return;
+    }
+    ui.set_genre_radio(StationShelf {
+        title: "Popular radio stations".into(),
+        link: format!("stations:{tag}").into(),
+        shelf: GENRE_RADIO as i32,
+        tiles: ModelRc::from(b.genre_radio.clone()),
+    });
 }
 
 /// The artists of the albums carrying `genre` that have a page, with how many
@@ -6875,12 +7033,61 @@ mod tests {
     }
 
     #[test]
+    fn a_genre_is_described_only_when_the_server_says_so() {
+        let genre = |text: Option<&str>, source: Option<&str>, url: Option<&str>| Genre {
+            value: "Jazz".into(),
+            song_count: 0,
+            album_count: 0,
+            parents: Vec::new(),
+            description: text.map(str::to_owned),
+            description_source: source.map(str::to_owned),
+            description_url: url.map(str::to_owned),
+        };
+        assert_eq!(
+            description_of(&genre(None, Some("Wikipedia"), None), true),
+            None
+        );
+        assert_eq!(description_of(&genre(Some("  "), None, None), true), None);
+        let url = "https://en.wikipedia.org/wiki/Jazz";
+        assert_eq!(
+            description_of(&genre(Some("Music. "), Some("Wikipedia"), Some(url)), true),
+            Some(Description {
+                text: "Music.".into(),
+                source: "Wikipedia".into(),
+                url: url.into(),
+            })
+        );
+        // Only a web page is ever opened.
+        let described = description_of(
+            &genre(Some("Music."), None, Some("file:///etc/passwd")),
+            true,
+        );
+        assert_eq!(described.unwrap().url, "");
+        // Only the version of the extension that has them.
+        assert_eq!(
+            description_of(&genre(Some("Music."), None, None), false),
+            None
+        );
+    }
+
+    #[test]
+    fn a_library_genre_asks_the_directory_by_the_radio_pages_tag() {
+        assert_eq!(directory_tag("World"), "world music");
+        assert_eq!(directory_tag("R&B"), "rnb");
+        assert_eq!(directory_tag("Hip-Hop"), "hip hop");
+        assert_eq!(directory_tag("New Age"), "new age");
+    }
+
+    #[test]
     fn genres_by_the_librarys_albums() {
         let genre = |value: &str, album_count| Genre {
             value: value.into(),
             song_count: 0,
             album_count,
             parents: Vec::new(),
+            description: None,
+            description_source: None,
+            description_url: None,
         };
         let ranks = genre_ranks(&[
             genre("Rock", 3),
@@ -7220,6 +7427,9 @@ mod tests {
             song_count: 0,
             album_count: 2,
             parents: Vec::new(),
+            description: None,
+            description_source: None,
+            description_url: None,
         };
         let genres = [
             genre("Blues"),

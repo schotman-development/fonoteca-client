@@ -245,8 +245,8 @@ impl Client {
             .await?;
         self.form_post
             .store(extensions.iter().any(|e| e.name == "formPost"), Relaxed);
-        if let Ok(mut names) = self.extensions.lock() {
-            *names = extensions.iter().map(|e| e.name.clone()).collect();
+        if let Ok(mut listed) = self.extensions.lock() {
+            *listed = extensions.clone();
         }
         Ok(extensions)
     }

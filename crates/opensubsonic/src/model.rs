@@ -784,6 +784,11 @@ pub struct Genre {
     /// Fonoteca's `fonotecaGenres` extension.
     #[serde(default)]
     pub parents: Vec<String>,
+    /// Not in the spec: what the genre is, with the name and address of
+    /// where the text comes from, from the same extension.
+    pub description: Option<String>,
+    pub description_source: Option<String>,
+    pub description_url: Option<String>,
 }
 
 /// Genres list.

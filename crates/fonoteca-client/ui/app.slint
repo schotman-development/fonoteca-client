@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
 
@@ -905,6 +905,14 @@ export component AppWindow inherits Window {
     in property <string> about;
     in property <string> about-short;
     in-out property <bool> about-open;
+    // Where a genre's description comes from: the source's name, and its
+    // address.
+    in property <string> about-source;
+    in property <string> about-url;
+    // The wide picture over a genre page's title.
+    in property <image> genre-banner;
+    // A genre's popular radio stations, for its page.
+    in property <StationShelf> genre-radio;
     in property <[Name]> similar;
     // The settings page's word on the server's scan of its libraries, and
     // whether one is going.
@@ -1724,11 +1732,10 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track || root.page == Page.genre: PageHeader {
+                    if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;
-                        text-only: root.page == Page.genre;
                         round: root.page == Page.artist || root.page == Page.composer;
-                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : root.page == Page.genre ? "Genre" : "Album";
+                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : "Album";
                         title: root.header-title;
                         names: root.header-names;
                         facts: root.header-facts;
@@ -1769,6 +1776,29 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // A genre's banner with its name over it, then the genres it
+                    // sits under and how much the library has of it.
+                    if root.page == Page.genre: VerticalLayout {
+                        spacing: 8px;
+                        GenreBanner {
+                            height: Screen.phone ? 200px : 320px * Theme.zoom;
+                            picture: root.genre-banner;
+                            name: root.header-title;
+                            name-size: Screen.phone ? 28px * Theme.zoom : 40px * Theme.zoom;
+                        }
+                        if root.header-names.length > 0: Links {
+                            names: root.header-names;
+                            font-size: Theme.body;
+                            text-color: Theme.text;
+                            open(link) => { root.open(link); }
+                        }
+                        if root.header-facts != "": Text {
+                            text: root.header-facts;
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                            wrap: word-wrap;
+                        }
+                    }
                     // Each value at the width it has, so one that wraps
                     // measures all its lines.
                     if root.page == Page.track: about := VerticalLayout {
@@ -1804,7 +1834,7 @@ export component AppWindow inherits Window {
                     // until opened, at the width it has so it wraps. In a
                     // HorizontalLayout, which measures it at its 800px most
                     // where a VerticalLayout would at its own whole width.
-                    if (root.page == Page.artist || root.page == Page.album) && root.about != "": VerticalLayout {
+                    if (root.page == Page.artist || root.page == Page.album || root.page == Page.genre) && root.about != "": VerticalLayout {
                         spacing: 4px;
                         HorizontalLayout {
                             alignment: start;
@@ -1823,6 +1853,28 @@ export component AppWindow inherits Window {
                                 text: root.about-open ? "Less" : "More";
                                 font-weight: 600;
                                 clicked => { root.about-open = !root.about-open; }
+                            }
+                        }
+                        // As the text's licence asks: where it comes from.
+                        if root.about-source != "": HorizontalLayout {
+                            alignment: start;
+                            spacing: 4px;
+                            Text {
+                                text: "Source:";
+                                font-size: Theme.small;
+                                color: Theme.muted;
+                                vertical-alignment: center;
+                            }
+                            if root.about-url != "": Link {
+                                text: root.about-source;
+                                font-size: Theme.small;
+                                clicked => { Platform.open-url(root.about-url); }
+                            }
+                            if root.about-url == "": Text {
+                                text: root.about-source;
+                                font-size: Theme.small;
+                                color: Theme.muted;
+                                vertical-alignment: center;
                             }
                         }
                     }
@@ -1892,16 +1944,9 @@ export component AppWindow inherits Window {
                             open(link) => { root.open(link); }
                         }
                     }
-                    // A genre's artists and albums sliding by, each with
-                    // all of them behind "See all", then its subgenres.
-                    if root.page == Page.genre && root.genre-artists.length > 0: CoverShelf {
-                        title: "Artists";
-                        tiles: root.genre-artists;
-                        round: true;
-                        more: true;
-                        see-all => { root.open("artists:" + root.header-title); }
-                        open(link) => { root.open(link); }
-                    }
+                    // A genre's albums, artists and popular radio stations
+                    // sliding by, each with all of them behind "See all",
+                    // then its subgenres.
                     if root.page == Page.genre && root.tiles.length > 0: CoverShelf {
                         title: "Albums";
                         tiles: root.tiles;
@@ -1913,6 +1958,23 @@ export component AppWindow inherits Window {
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
+                    }
+                    if root.page == Page.genre && root.genre-artists.length > 0: CoverShelf {
+                        title: "Artists";
+                        tiles: root.genre-artists;
+                        round: true;
+                        more: true;
+                        see-all => { root.open("artists:" + root.header-title); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.genre && root.genre-radio.tiles.length > 0: CoverShelf {
+                        title: root.genre-radio.title;
+                        tiles: root.genre-radio.tiles;
+                        more: true;
+                        entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
+                        see-all => { root.open(root.genre-radio.link); }
+                        activated(index) => { root.save-station(root.genre-radio.shelf, index); }
+                        in-view(first, last) => { root.station-shelf-in-view(root.genre-radio.shelf, first, last); }
                     }
                     if root.page == Page.genre && root.genre-tiles.length > 0: Text {
                         text: "Subgenres";

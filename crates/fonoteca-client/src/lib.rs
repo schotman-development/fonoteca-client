@@ -739,6 +739,9 @@ mod tests {
     static NO_WAVEFORM: AtomicBool = AtomicBool::new(false);
     /// While set, the server converts a song from part way in.
     static TRANSCODE_OFFSET: AtomicBool = AtomicBool::new(false);
+    /// While set, the server's genres are Fonoteca's first version, with no
+    /// descriptions.
+    static OLD_GENRES: AtomicBool = AtomicBool::new(false);
     static SLOW_WAVEFORM: AtomicBool = AtomicBool::new(false);
     static WAVEFORMS_ASKED: AtomicUsize = AtomicUsize::new(0);
     /// How many scans were asked for; the server refuses the first. Whether
@@ -901,13 +904,14 @@ mod tests {
             } else {
                 r#"{"name":"fonotecaWaveform","versions":[1]},"#
             };
+            let genre_versions = if OLD_GENRES.load(Relaxed) { "1" } else { "1,2" };
             let offset = if TRANSCODE_OFFSET.load(Relaxed) {
                 r#",{"name":"transcodeOffset","versions":[1]}"#
             } else {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[1]}},{{"name":"fonotecaArtistBanner","versions":[1]}}{by_id}{organized}{offset}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{{"name":"fonotecaArtistBanner","versions":[1]}}{by_id}{organized}{offset}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1100,7 +1104,7 @@ mod tests {
             ok(&format!(r#""user":{}"#, joe()))
         } else if request.contains("/rest/getGenres") {
             ok(
-                r#""genres":{"genre":[{"value":"Folk","songCount":2,"albumCount":1},{"value":"Jazz","songCount":3,"albumCount":2},{"value":"hip-hop","songCount":1,"albumCount":1,"parents":["Jazz"]}]}"#,
+                r#""genres":{"genre":[{"value":"Folk","songCount":2,"albumCount":1},{"value":"Jazz","songCount":3,"albumCount":2,"description":"Jazz is music of improvisation.","descriptionSource":"Wikipedia","descriptionUrl":"https://en.wikipedia.org/wiki/Jazz"},{"value":"hip-hop","songCount":1,"albumCount":1,"parents":["Jazz"]}]}"#,
             )
         } else if request.contains("/rest/getInternetRadioStations") {
             ok(
@@ -2184,7 +2188,9 @@ mod tests {
             // best, a banner, in the genres' tint. A genre's page has the
             // library's albums carrying it and their artists, all of each
             // behind See all. With Fonoteca's genres, those under none, and on
-            // a genre's page those under it, which link back.
+            // a genre's page those under it, which link back, and its
+            // description. Its popular stations come from the radio directory.
+            // What a genre has nothing of is left out.
             click(&ui, "Genres");
             assert_eq!(ui.get_page(), Page::Genres);
             wait_for("the genres", || ui.get_genre_tiles().row_count() == 2).await;
@@ -2202,6 +2208,16 @@ mod tests {
             ui.invoke_open("genre:Jazz".into());
             wait_for("Jazz's subgenres", || ui.get_genre_tiles().row_count() == 1).await;
             assert_eq!(genre(0).link, "genre:hip-hop");
+            assert_eq!(ui.get_about(), "Jazz is music of improvisation.");
+            assert_eq!(
+                (ui.get_about_source().as_str(), ui.get_about_url().as_str()),
+                ("Wikipedia", "https://en.wikipedia.org/wiki/Jazz")
+            );
+            wait_for("Jazz's stations", || ui.get_genre_radio().tiles.row_count() == 12).await;
+            let stations = ui.get_genre_radio();
+            assert_eq!(stations.link, "stations:jazz");
+            assert_eq!(stations.tiles.row_data(0).unwrap().title, "Dutch Jazz");
+            assert_eq!(ui.get_genre_banner().size().width, 0);
             ui.invoke_open("genre:hip-hop".into());
             let parents = || -> Vec<String> {
                 ui.get_header_names().iter().map(|name| name.link.into()).collect()
@@ -2211,9 +2227,15 @@ mod tests {
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Genres);
             let tile = |row| ui.get_tiles().row_data(row).unwrap();
+            // Jazz's stations coming after Folk's page opened are not Folk's.
+            ui.invoke_open("genre:Jazz".into());
             ui.invoke_open("genre:Folk".into());
             assert_eq!(ui.get_page(), Page::Genre);
             assert_eq!(ui.get_header_title(), "Folk");
+            assert_eq!(ui.get_genre_radio().tiles.row_count(), 0);
+            wait_for("Folk's banner", || ui.get_genre_banner().size().width > 0).await;
+            assert_eq!(ui.get_about(), "");
+            assert_eq!(ui.get_about_source(), "");
             wait_for("Folk's albums", || ui.get_tiles().row_count() == 1).await;
             assert_eq!(tile(0).link, "album:a1");
             wait_for("Folk's artists", || ui.get_genre_artists().row_count() == 1).await;
@@ -2223,6 +2245,11 @@ mod tests {
                 ("artist:r1", "1 album")
             );
             wait_for("the whole library", || ui.get_header_facts() == "1 album · 1 artist").await;
+            let later = Instant::now() + Duration::from_millis(1500);
+            while Instant::now() < later {
+                YieldNow(false).await;
+            }
+            assert_eq!(ui.get_genre_radio().tiles.row_count(), 0);
             assert_eq!(ui.get_genre_tiles().row_count(), 0);
             let section = || -> String {
                 let at = usize::try_from(ui.get_section()).unwrap();
@@ -2240,6 +2267,7 @@ mod tests {
             assert_eq!(section(), "Artists");
             wait_for("all Folk's artists", || ui.get_tiles().row_count() == 1).await;
             assert_eq!(tile(0).link, "artist:r1");
+            ui.invoke_back();
             ui.invoke_back();
             ui.invoke_back();
             ui.invoke_back();
@@ -4540,6 +4568,7 @@ mod tests {
             wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
             NO_MOTION.store(true, Relaxed);
             NO_WAVEFORM.store(true, Relaxed);
+            OLD_GENRES.store(true, Relaxed);
             ui.set_username("joe".into());
             ui.set_password("pw".into());
             click(&ui, "Sign in");
@@ -4553,6 +4582,12 @@ mod tests {
             wait_for("a few frames' time", || Instant::now() > later).await;
             assert_eq!(ui.get_playing_art().size().width, 1);
             assert_eq!(MOTIONS_ASKED.load(Relaxed), asked);
+            // Descriptions come from the second version of the genres only.
+            ui.invoke_open("genre:Jazz".into());
+            wait_for("Jazz's subgenres", || ui.get_genre_tiles().row_count() == 1).await;
+            assert_eq!(ui.get_about(), "");
+            ui.invoke_back();
+            OLD_GENRES.store(false, Relaxed);
             NO_MOTION.store(false, Relaxed);
             play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
             idle(Duration::from_millis(300)).await;
