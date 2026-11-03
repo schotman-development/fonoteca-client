@@ -23,7 +23,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 pub use cpal::SampleFormat;
-pub use download::{Download, Fill, new as download};
+pub use download::{Download, Fill, new as download, open as open_file};
 pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
 pub use output::{SystemMixer, devices};
 pub use outputs::OutputDevice;

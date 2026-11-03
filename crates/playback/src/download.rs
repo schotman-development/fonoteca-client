@@ -96,6 +96,27 @@ pub fn new(folder: &Path, total: Option<u64>) -> io::Result<(Download, Fill)> {
     Ok((download, Fill { file: write, inner }))
 }
 
+/// A track already on disk at `path`, whole and ready: nothing is waited for
+/// and nothing is written.
+pub fn open(path: &Path) -> io::Result<Download> {
+    let file = File::open(path)?;
+    let length = file.metadata()?.len();
+    let inner = Arc::new(Inner::default());
+    *inner.state.lock().unwrap() = State {
+        written: length,
+        total: Some(length),
+        done: true,
+        readers: 1,
+        ..State::default()
+    };
+    Ok(Download {
+        file,
+        position: 0,
+        starts_at: None,
+        inner,
+    })
+}
+
 fn random() -> u64 {
     use std::hash::{BuildHasher, RandomState};
     RandomState::new().hash_one(std::time::SystemTime::now())
@@ -276,6 +297,28 @@ mod tests {
         assert_eq!(download.read(&mut buf).unwrap(), 2);
         assert_eq!(&buf[..2], b"ef");
         std::fs::remove_dir(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_file_on_disk_is_read_whole_without_waiting() {
+        let folder = std::env::temp_dir().join(format!("playback-test-{:x}", random()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("song");
+        std::fs::write(&path, b"abcdef").unwrap();
+
+        let mut download = open(&path).unwrap();
+        assert!(download.complete());
+        assert_eq!(download.seek(SeekFrom::End(-2)).unwrap(), 4);
+        let mut tail = Vec::new();
+        download.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, b"ef");
+        let mut again = download.reader().unwrap();
+        let mut all = Vec::new();
+        again.read_to_end(&mut all).unwrap();
+        assert_eq!(all, b"abcdef");
+        assert!(open(&folder.join("missing")).is_err());
+        drop((download, again));
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

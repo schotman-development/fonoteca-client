@@ -13,6 +13,15 @@ use super::*;
 /// A WAV file of `samples` (interleaved, `bits` of each significant), as a
 /// finished download.
 fn wav(rate: u32, channels: u16, bits: u16, samples: &[i32]) -> Download {
+    let file = wav_bytes(rate, channels, bits, samples);
+    let folder = std::env::temp_dir().join("playback-tests");
+    let (download, mut fill) = download::new(&folder, Some(file.len() as u64)).unwrap();
+    assert!(fill.append(&file));
+    fill.finish();
+    download
+}
+
+fn wav_bytes(rate: u32, channels: u16, bits: u16, samples: &[i32]) -> Vec<u8> {
     let width = bits / 8;
     let data_len = samples.len() as u32 * u32::from(width);
     let mut file = Vec::new();
@@ -31,11 +40,7 @@ fn wav(rate: u32, channels: u16, bits: u16, samples: &[i32]) -> Download {
     for sample in samples {
         file.extend_from_slice(&sample.to_le_bytes()[..usize::from(width)]);
     }
-    let folder = std::env::temp_dir().join("playback-tests");
-    let (download, mut fill) = download::new(&folder, Some(file.len() as u64)).unwrap();
-    assert!(fill.append(&file));
-    fill.finish();
-    download
+    file
 }
 
 /// A ramp that runs through the whole range of `bits`, so a sample out of
@@ -166,6 +171,24 @@ fn sixteen_bits_reach_a_sixteen_bit_device_untouched() {
         "{:?}",
         decoding.path
     );
+}
+
+#[test]
+fn a_file_on_disk_decodes_bit_perfect() {
+    let samples = ramp(4_410, 2, 16);
+    let folder = std::env::temp_dir().join(format!("playback-open-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("song.wav");
+    std::fs::write(&path, wav_bytes(44_100, 2, 16, &samples)).unwrap();
+    let (out, _) = decode(
+        open_file(&path).unwrap(),
+        Gain::default(),
+        Leveling::Off,
+        &device(&[44_100], &[I16]),
+        None,
+    );
+    std::fs::remove_dir_all(&folder).unwrap();
+    assert_eq!(ints(&out, 2), samples);
 }
 
 #[test]
