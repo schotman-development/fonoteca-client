@@ -20,7 +20,7 @@ use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMo
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::{
-    AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, prefs, quality,
+    AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, offline, prefs, quality,
     queue_drag, sound, waveform,
 };
 
@@ -571,7 +571,7 @@ fn begin(
     // lets the device go first, since a device played on directly can only
     // be open once.
     p.player = None;
-    let player = new_player(device, fetch(client));
+    let player = new_player(device, fetch(client, browse::downloads(browser)));
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
     player.set_repeat(REPEAT[ui.get_repeat().clamp(0, 2) as usize]);
     player.set_dsp(sound::dsp());
@@ -1188,12 +1188,19 @@ const TRANSCODE_OFFSET: &str = "transcodeOffset";
 /// that are gone once played. A track fetched ahead keeps the quality it was
 /// fetched in if the connection changes before its turn. A conversion
 /// arrives only as fast as the server makes it, so on a server that can, one
-/// played from part way in is converted from there. Runs on the player's
-/// thread.
-fn fetch(client: Arc<Client>) -> playback::Fetch {
+/// played from part way in is converted from there. A track kept in
+/// `downloads` is read from its whole file, which seeks on disk. Runs on the
+/// player's thread.
+fn fetch(client: Arc<Client>, downloads: offline::Downloads) -> playback::Fetch {
     let runtime = tokio::runtime::Handle::current();
     let folder = cache();
     Box::new(move |track: &Track, seconds: f64| {
+        // A file that went missing since is streamed instead.
+        if let Some(path) = downloads.local(&track.id)
+            && let Ok(download) = playback::open_file(&path)
+        {
+            return Ok(download);
+        }
         let (format, max_bit_rate) = quality::request(&prefs::load(), quality::connection());
         let start = quality::stream_start(format, client.supports(TRANSCODE_OFFSET), seconds);
         // A song played from its start is asked for as before, so its
@@ -1301,6 +1308,18 @@ pub(crate) mod testing {
         )
     }
 
+    /// Fetches song `id` as the player would.
+    pub(crate) fn fetch_track(id: &str) -> Result<playback::Download, String> {
+        let (browser, _) = handles();
+        let client = browse::client(&browser).expect("signed in");
+        let mut fetch = fetch(client, browse::downloads(&browser));
+        let track = Track {
+            id: id.into(),
+            gain: Gain::default(),
+        };
+        fetch(&track, 0.0)
+    }
+
     /// Takes the queue away, as when its last song is removed.
     pub(crate) fn clear(ui: &AppWindow) {
         let (browser, playing) = handles();
@@ -1332,7 +1351,7 @@ pub(crate) mod testing {
     pub(crate) fn fetch_song(id: &str, seconds: f64) -> Option<f64> {
         let (browser, _) = handles();
         let client = browse::client(&browser).expect("signed in");
-        let mut fetch = super::fetch(client);
+        let mut fetch = super::fetch(client, offline::Downloads::default());
         let track = Track {
             id: id.into(),
             gain: Gain::default(),

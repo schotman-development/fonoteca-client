@@ -20,6 +20,8 @@ use std::time::Duration;
 
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames};
+#[cfg(not(target_family = "wasm"))]
+use opensubsonic::AlbumID3WithSongs;
 use opensubsonic::{
     AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
     GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate, ListOptions, MediaType,
@@ -34,7 +36,7 @@ use slint::{
 
 use crate::{
     AlbumTile, AppWindow, ColumnChoice, Detail, Drag, Icons, Name, Page, Stat, StationRow,
-    StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, prefs, zone,
+    StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, offline, prefs, zone,
 };
 
 /// The newest albums on the home page.
@@ -161,6 +163,10 @@ pub struct Browser {
     tracks: Rc<VecModel<Track>>,
     /// The song of each track row.
     songs: Vec<Child>,
+    /// The album on screen, when one is, for downloading it.
+    album: Option<AlbumID3>,
+    /// What is kept on this device for use without a connection.
+    downloads: offline::Downloads,
     /// The links of an artist's own albums, in the order their page shows.
     own_albums: Vec<String>,
     /// Tile or tracks table rows whose covers are still to fetch, the rows on
@@ -309,13 +315,76 @@ pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_folder_filter("".into());
     ui.set_roles("".into());
     ui.set_may_administer(true);
+    ui.set_may_download(true);
     sidebar(ui, browser);
     load_playlists(ui, browser);
     load_tags(ui, browser);
     load_me(ui, browser);
     open(ui, browser, "home".into());
     ui.invoke_library_started();
+    #[cfg(not(target_family = "wasm"))]
+    crate::downloads::resume(ui, browser);
 }
+
+/// Reads what is kept on this device, once at start.
+#[cfg(not(target_family = "wasm"))]
+pub fn load_downloads(browser: &Shared) {
+    browser.borrow_mut().downloads = offline::Downloads::load();
+}
+
+/// What is kept on this device.
+pub fn downloads(browser: &Shared) -> offline::Downloads {
+    browser.borrow().downloads.clone()
+}
+
+/// The link of the page on screen.
+#[cfg(not(target_family = "wasm"))]
+pub fn link(browser: &Shared) -> Option<String> {
+    let b = browser.borrow();
+    b.history.get(b.at).cloned()
+}
+
+/// The album on screen, as something to keep.
+#[cfg(not(target_family = "wasm"))]
+pub fn shown_item(browser: &Shared) -> Option<offline::Item> {
+    let b = browser.borrow();
+    let album = b.album.clone()?;
+    Some(offline::Item::Album(AlbumID3WithSongs {
+        album,
+        song: b.songs.clone(),
+    }))
+}
+
+/// Shows how much of the page on screen is kept, on its header and on the
+/// rows of its songs.
+pub fn show_downloads(ui: &AppWindow, browser: &Shared) {
+    let b = browser.borrow();
+    let progress = b
+        .history
+        .get(b.at)
+        .and_then(|link| b.downloads.progress_of(link));
+    let (state, text) = match progress {
+        Some((done, total)) if done == total => (DOWNLOADED, String::new()),
+        Some((done, total)) => (DOWNLOADING, format!("{done} of {total}")),
+        None => (NOT_DOWNLOADED, String::new()),
+    };
+    ui.set_download_state(state);
+    ui.set_download_progress(text.into());
+    for (row, song) in b.songs.iter().enumerate() {
+        let downloaded = b.downloads.local(&song.id).is_some();
+        if let Some(mut track) = b.tracks.row_data(row)
+            && track.downloaded != downloaded
+        {
+            track.downloaded = downloaded;
+            b.tracks.set_row_data(row, track);
+        }
+    }
+}
+
+/// The values of the header's download button state.
+const NOT_DOWNLOADED: i32 = 0;
+const DOWNLOADING: i32 = 1;
+const DOWNLOADED: i32 = 2;
 
 /// The links of the albums of the artist on screen that are their own.
 #[cfg(not(target_family = "wasm"))]
@@ -379,8 +448,10 @@ pub fn started(browser: &Shared) -> bool {
 /// Forgets the client and the pages seen, on sign out.
 pub fn stop(browser: &Shared) {
     let visit = browser.borrow().visit;
+    let downloads = downloads(browser);
     *browser.borrow_mut() = Browser {
         visit: visit + 1,
+        downloads,
         ..Browser::default()
     };
 }
@@ -927,6 +998,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         b.tracks = Rc::default();
         b.lines = Rc::default();
         b.songs.clear();
+        b.album = None;
         b.covers.clear();
         b.fetching = 0;
         b.motion = Timer::default();
@@ -951,6 +1023,8 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_facts("".into());
     ui.set_details(ModelRc::default());
     ui.set_playlist_editable(false);
+    ui.set_download_state(NOT_DOWNLOADED);
+    ui.set_download_progress("".into());
     ui.set_shown_id("".into());
     ui.set_move_targets(ModelRc::default());
     ui.set_tile_moves(ModelRc::default());
@@ -2921,6 +2995,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
         |ui, browser, album| {
             let songs = album.song;
             let album = album.album;
+            let shown = album.clone();
             ui.set_header_title(album.name.as_str().into());
             ui.set_header_names(names(album_names(&album)));
             ui.set_header_facts(album_facts(&album).into());
@@ -2931,6 +3006,9 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             let rows: Vec<Track> = songs.chunk_by(same_work).flat_map(work_rows).collect();
             b.tracks.set_vec(rows);
             b.songs = songs;
+            b.album = Some(shown);
+            drop(b);
+            show_downloads(ui, browser);
         },
     );
 }
@@ -4179,6 +4257,7 @@ fn load_me(ui: &AppWindow, browser: &Shared) {
         }
         ui.set_roles(user.as_ref().map(role_text).unwrap_or_default().into());
         ui.set_may_administer(user.as_ref().is_none_or(|user| user.admin_role));
+        ui.set_may_download(user.as_ref().is_none_or(|user| user.download_role));
         browser.borrow_mut().me = user;
     })
     .expect("the event loop is running");

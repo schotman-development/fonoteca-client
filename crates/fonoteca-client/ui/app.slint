@@ -1,5 +1,5 @@
 import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
 
@@ -12,7 +12,7 @@ export enum Page { home, albums, artists, tracks, playlists, album, artist, play
 // new password for the account signed in; a new radio station, changes to
 // one, or whether to delete one; a new tag, a tag's new name, or whether to
 // delete it; and which tags songs have.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-eq-preset, import-eq }
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-eq-preset, import-eq, remove-download }
 
 // A headphone found in OPRA's presets, and one of the presets it has. The
 // summary is its bands in words; the problem is why the EQ can't hold it,
@@ -99,6 +99,8 @@ export struct Track {
     split: int,
     duration: string,
     loved: bool,
+    // Whether the song is kept on this device.
+    downloaded: bool,
     // For a work's only track: the years the work was written, and when and
     // where the track was recorded.
     years: string,
@@ -947,6 +949,13 @@ export component AppWindow inherits Window {
     // its radio stations, which it may when the server doesn't say.
     in property <string> roles;
     in property <bool> may-administer: true;
+    // Whether this build can keep songs on the device and the account may
+    // download; how much of the album or playlist on screen is kept (0 none,
+    // 1 on its way, 2 all) and how far it is.
+    in property <bool> can-download;
+    in property <bool> may-download: true;
+    in property <int> download-state;
+    in property <string> download-progress;
     in property <[StationRow]> station-rows;
     // The radio directory's shelves, each a genre's stations with the most
     // votes, and the stations saved on the server, for the home page.
@@ -1138,6 +1147,9 @@ export component AppWindow inherits Window {
     callback remove-from-playlist(row: int);
     callback add-line-to-playlist(row: int, id: string);
     callback add-track-to-playlist(row: int, id: string);
+    // Keeps the album or playlist on screen on this device, or removes it.
+    callback download-page();
+    callback remove-page-download();
     // Plays the album's, playlist's or artist's tracks, or the songs of the
     // table on screen, from the `row`th.
     callback play-tracks(row: int);
@@ -1257,7 +1269,7 @@ export component AppWindow inherits Window {
     property <bool> asks-station: root.asking == Asking.new-station || root.asking == Asking.edit-station;
     property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag || root.asking == Asking.save-eq-preset;
     property <bool> asks-password: root.asking == Asking.own-password;
-    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-station || root.asking == Asking.delete-tag;
+    property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-station || root.asking == Asking.delete-tag || root.asking == Asking.remove-download;
 
     // Shows the dialog for `what`, the window behind out of the keys' reach.
     function open-dialog(what: Asking) {
@@ -1327,6 +1339,8 @@ export component AppWindow inherits Window {
             root.update-station(root.asked-id, root.asked-name, root.asked-stream, root.asked-homepage);
         } else if root.asking == Asking.delete-station {
             root.delete-station(root.asked-id, root.asked-name);
+        } else if root.asking == Asking.remove-download {
+            root.remove-page-download();
         } else if root.asking == Asking.save-eq-preset {
             root.save-eq-preset(root.asked-name);
         } else if root.asking == Asking.import-eq {
@@ -1352,10 +1366,12 @@ export component AppWindow inherits Window {
         if root.asking == Asking.edit-station { return "Edit radio station"; }
         if root.asking == Asking.save-eq-preset { return "Save EQ as preset"; }
         if root.asking == Asking.import-eq { return "Paste AutoEQ settings"; }
+        if root.asking == Asking.remove-download { return "Remove the download of “" + root.header-title + "”?"; }
         return "Delete “" + root.asked-name + "”?";
     }
 
     function asked-action() -> string {
+        if root.asking == Asking.remove-download { return "Remove"; }
         if root.deleting { return "Delete"; }
         if root.asking == Asking.rename-playlist || root.asking == Asking.rename-folder || root.asking == Asking.rename-tag { return "Rename"; }
         if root.asking == Asking.tag-songs { return "Done"; }
@@ -1813,6 +1829,17 @@ export component AppWindow inherits Window {
                             }
                             queue(how) => { root.queue-page(how); }
                         }
+                        if root.can-download && root.may-download && root.page == Page.album && root.tracks.length > 0: DownloadButton {
+                            state: root.download-state;
+                            progress: root.download-progress;
+                            clicked => {
+                                if root.download-state == 0 {
+                                    root.download-page();
+                                } else {
+                                    root.ask(Asking.remove-download);
+                                }
+                            }
+                        }
                         // Any playlist can go in a folder, read-only too.
                         if root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0): MoreMenu {
                             label: "Playlist";
@@ -1973,6 +2000,7 @@ export component AppWindow inherits Window {
                                 performed: track.performed;
                                 strong: track.alone;
                                 part: track.part;
+                                downloaded: track.downloaded;
                                 playlists: root.playlist-targets;
                                 removable: root.page == Page.playlist && root.playlist-editable;
                                 taggable: root.tags-offered;
