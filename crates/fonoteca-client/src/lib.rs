@@ -5,10 +5,14 @@ mod bit_perfect;
 mod browse;
 #[cfg(not(target_family = "wasm"))]
 mod eq_graph;
+#[cfg(not(target_family = "wasm"))]
+mod headphones;
 #[cfg(target_os = "android")]
 mod media;
 #[cfg(target_os = "android")]
 mod network;
+#[cfg(not(target_family = "wasm"))]
+mod opra;
 #[cfg(not(target_family = "wasm"))]
 mod play;
 mod prefs;
@@ -2128,6 +2132,32 @@ mod tests {
             drag(&ui, slint::LogicalPosition::new(900.0, 400.0), &[(0, 0.0, -20.0), (0, 0.0, -40.0)], 100).await;
             assert!(frame().absolute_position().y < page_at, "the page scrolls elsewhere");
             ui.global::<Input>().set_finger(false);
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Settings);
+            // A headphone picked from OPRA's presets loads into the EQ: the
+            // page goes back to it, with the bands on the graph and in rows.
+            click(&ui, "Sound processing");
+            click(&ui, "Headphone presets");
+            assert_eq!(ui.get_shown_id(), "headphones");
+            wait_for("the headphone presets", || ui.get_headphone_status().starts_with("Type a brand")).await;
+            assert_eq!(ui.get_headphone_results().row_count(), 0, "nothing is listed before typing");
+            ui.invoke_search_headphones("sennheiser hd 650".into());
+            assert!(ui.get_headphone_results().row_count() > 0);
+            ui.invoke_pick_headphone(0);
+            assert!(ui.get_headphone_presets().row_count() > 0);
+            assert!(find(&ui, "Load into EQ").is_some());
+            let catalog = opra::bundled().unwrap();
+            let expected = catalog.product(catalog.search("sennheiser hd 650")[0]).presets[0]
+                .equalizer()
+                .unwrap();
+            ui.invoke_load_headphone(0);
+            assert_eq!((ui.get_page(), ui.get_shown_id()), (Page::Setting, "sound".into()));
+            assert_eq!(prefs::load().eq, expected);
+            assert!(prefs::load().eq_on);
+            assert!(!expected.bands.is_empty());
+            assert_eq!(ui.get_eq_bands().row_count(), expected.bands.len(), "its bands in rows");
+            assert_eq!(ui.get_eq_points().row_count(), expected.bands.len(), "its points on the graph");
+            assert_ne!(ui.get_eq_curve(), "");
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Settings);
             click(&ui, "Library");

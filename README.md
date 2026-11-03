@@ -216,3 +216,10 @@ which asks for the badge above. The JSON examples in
 [OpenSubsonic API docs](https://github.com/opensubsonic/open-subsonic-api) and
 keep their [Apache-2.0](crates/opensubsonic/spec-examples/LICENSE) license. The
 Obtainium badge comes from [Obtainium](https://github.com/ImranR98/Obtainium).
+The headphone EQ presets in `crates/fonoteca-client/data` are an extract of
+[OPRA](https://github.com/opra-project/OPRA), by Roon Labs and its community.
+OPRA's data is licensed
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/legalcode.en),
+and the extract stays under it (see
+[OPRA-LICENSE.md](crates/fonoteca-client/data/OPRA-LICENSE.md)). The app credits
+OPRA, with its logo, where the presets are browsed, and each preset's creator beside it.

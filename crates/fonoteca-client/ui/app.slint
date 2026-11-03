@@ -14,6 +14,22 @@ export enum Page { home, albums, artists, tracks, playlists, album, artist, play
 // delete it; and which tags songs have.
 enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-eq-preset, import-eq }
 
+// A headphone found in OPRA's presets, and one of the presets it has. The
+// summary is its bands in words; the problem is why the EQ can't hold it,
+// when it can't.
+export struct HeadphoneRow {
+    title: string,
+    details: string,
+}
+
+export struct HeadphonePresetLine {
+    author: string,
+    details: string,
+    summary: string,
+    link: string,
+    problem: string,
+}
+
 // A tag on the tags page: its id, name and how many tracks have it, how
 // deep under other tags it sits, and where it can be moved.
 export struct TagRow {
@@ -1020,6 +1036,13 @@ export component AppWindow inherits Window {
     in-out property <int> eq-selected: -1;
     in property <[string]> eq-presets;
     in-out property <int> eq-preset;
+    // The headphone presets page: what is typed, the headphones that match
+    // it, a line on what that is, the headphone picked and its presets.
+    in-out property <string> headphone-filter;
+    in property <[HeadphoneRow]> headphone-results;
+    in property <string> headphone-status;
+    in property <string> headphone-picked;
+    in property <[HeadphonePresetLine]> headphone-presets;
     // The tracks or compositions page's table: the columns shown, their
     // rows, how wide they are together, how narrow they get together, and
     // every column there is to pick from.
@@ -1160,6 +1183,10 @@ export component AppWindow inherits Window {
     callback save-eq-preset(name: string);
     callback delete-eq-preset();
     callback import-eq(text: string) -> string;
+    callback open-headphones();
+    callback search-headphones(text: string);
+    callback pick-headphone(row: int);
+    callback load-headphone(row: int);
     callback choose-leveling(index: int);
     callback choose-stream-quality(mobile: bool, format: int, bitrate: int);
     callback add-selection-to-playlist(id: string);
@@ -2349,6 +2376,17 @@ export component AppWindow inherits Window {
                             toggled => { root.toggle-eq(self.checked); }
                         }
                         if root.can-play && root.eq-on: HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Headphone presets";
+                                enabled: !Input.modal;
+                                clicked => {
+                                    root.open("setting:headphones");
+                                    root.open-headphones();
+                                }
+                            }
+                        }
+                        if root.can-play && root.eq-on: HorizontalLayout {
                             spacing: 8px;
                             ComboBox {
                                 horizontal-stretch: 1;
@@ -2427,6 +2465,117 @@ export component AppWindow inherits Window {
                                 enabled: !Input.modal;
                                 clicked => { root.add-band(); }
                             }
+                        }
+                    }
+                    // OPRA's headphone presets: search for a headphone, and load
+                    // one of its presets into the EQ. Each preset names who made
+                    // it above OPRA, which distributes it; both as OPRA asks.
+                    if root.page == Page.setting && root.shown-id == "headphones": VerticalLayout {
+                        max-width: 560px;
+                        spacing: 12px;
+                        Heading { text: "Headphone presets"; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Image {
+                                width: 72px;
+                                height: 28px;
+                                source: @image-url("../data/opra-logo.png");
+                                image-fit: contain;
+                                colorize: Theme.text;
+                                accessible-role: image;
+                                accessible-label: "OPRA";
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: "OPRA is an open, community-maintained directory of headphone EQ curves.";
+                                font-size: Theme.small;
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Link {
+                                text: "github.com/opra-project/OPRA";
+                                font-size: Theme.small;
+                                clicked => { Platform.open-url("https://github.com/opra-project/OPRA"); }
+                            }
+                        }
+                        Filter {
+                            what: "headphones";
+                            placeholder-text: "Brand or model";
+                            text <=> root.headphone-filter;
+                            edited(text) => { root.search-headphones(text); }
+                        }
+                        Note { text: root.headphone-status; }
+                        if root.headphone-picked != "": VerticalLayout {
+                            spacing: 8px;
+                            SectionHeading { text: root.headphone-picked; }
+                            for preset[row] in root.headphone-presets: Rectangle {
+                                background: Theme.surface;
+                                border-radius: Theme.radius;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Preset by " + preset.author;
+                                        font-size: Theme.heading;
+                                        font-weight: 700;
+                                        color: Theme.text;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: preset.details;
+                                        font-size: Theme.body;
+                                        color: Theme.muted;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: preset.summary;
+                                        font-size: Theme.small;
+                                        color: Theme.muted;
+                                        overflow: elide;
+                                    }
+                                    if preset.problem != "": Problem { text: preset.problem; }
+                                    HorizontalLayout {
+                                        padding-top: 4px;
+                                        alignment: start;
+                                        spacing: 16px;
+                                        Button {
+                                            text: "Load into EQ";
+                                            enabled: preset.problem == "" && !Input.modal;
+                                            clicked => { root.load-headphone(row); }
+                                        }
+                                        if preset.link != "": Link {
+                                            cross-axis-self-alignment: center;
+                                            text: "Source";
+                                            clicked => { Platform.open-url(preset.link); }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 4px;
+                                        Text {
+                                            text: "Distributed by";
+                                            font-size: Theme.small;
+                                            color: Theme.muted;
+                                            vertical-alignment: center;
+                                        }
+                                        Link {
+                                            text: "OPRA by Roon";
+                                            font-size: Theme.small;
+                                            clicked => { Platform.open-url("https://github.com/opra-project/OPRA"); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for headphone[row] in root.headphone-results: ListRow {
+                            title: headphone.title;
+                            details: headphone.details;
+                            link: "headphone:" + row;
+                            open(link) => { root.pick-headphone(row); }
                         }
                     }
                     // Your tags, each under the one it sits in, each opening

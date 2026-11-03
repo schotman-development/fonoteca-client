@@ -1593,6 +1593,7 @@ version = "0.0.0"
 dependencies = [
  "android-native-keyring-store",
  "apple-native-keyring-store",
+ "flate2",
  "i-slint-backend-testing",
  "image",
  "jni 0.22.4",

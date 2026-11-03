@@ -11,7 +11,7 @@ use playback::{Band, Crossfeed, Dsp, Equalizer, Filter};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::prefs::{self, EqBand, EqPreset, Prefs};
-use crate::{AppWindow, EqBandLine, EqGridLine, EqPoint, eq_graph};
+use crate::{AppWindow, EqBandLine, EqGridLine, EqPoint, eq_graph, headphones};
 
 /// The settings' headroom, crossfeed and filter entries, in their order.
 const HEADROOM: [f64; 8] = [0.0, -1.0, -2.0, -3.0, -4.5, -6.0, -9.0, -12.0];
@@ -211,18 +211,33 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
             show(&weak.unwrap(), &saved);
         }
     });
-    ui.on_import_eq({
+    // Makes `eq` the EQ, and turns the EQ on to hear it.
+    let load_eq = {
         let (weak, changed) = (ui.as_weak(), changed.clone());
+        Rc::new(move |eq: prefs::Equalizer| {
+            changed(&|saved| {
+                saved.eq = eq.clone();
+                saved.eq_on = true;
+            });
+            show(&weak.unwrap(), &prefs::load());
+        })
+    };
+    ui.on_import_eq({
+        let load_eq = load_eq.clone();
         move |text| match parametric(&text) {
             Ok(eq) => {
-                changed(&|saved| {
-                    saved.eq = eq.clone();
-                    saved.eq_on = true;
-                });
-                show(&weak.unwrap(), &prefs::load());
+                load_eq(eq);
                 SharedString::new()
             }
             Err(problem) => problem.into(),
+        }
+    });
+    headphones::wire(ui, {
+        let weak = ui.as_weak();
+        move |eq| {
+            load_eq(eq);
+            // Back to the EQ, where the preset shows on the graph.
+            weak.unwrap().invoke_back();
         }
     });
     wire_graph(ui, changed, apply);
