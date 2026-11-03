@@ -725,6 +725,15 @@ mod tests {
     /// The fields of the one album, without its braces.
     const ALBUM: &str = r#""id":"a1","name":"Night Harbour","artist":"Mara Lind","artistId":"r1","coverArt":"al-a1","songCount":2,"duration":470,"created":"2021-01-01T00:00:00Z","year":2021,"genre":"Folk""#;
 
+    /// Road Trip's fields as the server has them now.
+    fn road_trip_now() -> String {
+        if ROAD_TRIP_EDITED.load(Relaxed) {
+            ROAD_TRIP.replace("2024-02-01T00:00:00Z", "2024-03-01T00:00:00Z")
+        } else {
+            ROAD_TRIP.to_owned()
+        }
+    }
+
     /// The fields of the playlist with songs, without its braces.
     const ROAD_TRIP: &str = r#""id":"p1","name":"Road Trip","comment":"For the car","owner":"joe","public":false,"songCount":2,"duration":470,"created":"2024-01-01T00:00:00Z","changed":"2024-02-01T00:00:00Z","coverArt":"pl-p1""#;
 
@@ -857,6 +866,9 @@ mod tests {
     static TAGS_DOWN: AtomicBool = AtomicBool::new(false);
     /// Whether the server takes its time over a song's download.
     static SLOW_DOWNLOAD: AtomicBool = AtomicBool::new(false);
+    /// Whether Road Trip has been edited on the server since: changed later,
+    /// and Rope and Anchor in place of Fugue.
+    static ROAD_TRIP_EDITED: AtomicBool = AtomicBool::new(false);
 
     /// A request's method and its arguments but the credentials.
     fn write_of(request: &str) -> String {
@@ -1180,12 +1192,12 @@ mod tests {
             ))
         } else if request.contains("/rest/getPlaylists") {
             let road_trip = if MOVED.load(Relaxed) {
-                ROAD_TRIP.replace(
+                road_trip_now().replace(
                     r#""id":"p1","name":"Road Trip""#,
                     r#""id":"p4","name":"Moved""#,
                 )
             } else {
-                ROAD_TRIP.to_owned()
+                road_trip_now()
             };
             let road_trip = if ORGANIZED.load(Relaxed) {
                 road_trip.replacen(r#""name":"#, r#""playlistFolderId":"f1","name":"#, 1)
@@ -1250,8 +1262,18 @@ mod tests {
                 works_playlist()
             ))
         } else if request.contains("/rest/getPlaylist") {
-            let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}]"#;
-            ok(&format!(r#""playlist":{{{ROAD_TRIP},"entry":{songs}}}"#))
+            let second = if ROAD_TRIP_EDITED.load(Relaxed) {
+                r#"{"id":"s2","isDir":false,"title":"Rope and Anchor","duration":218,"artist":"Mara Lind"}"#
+            } else {
+                r#"{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}"#
+            };
+            let songs = format!(
+                r#"[{{"id":"s1","isDir":false,"title":"Harbour Lights","album":"Night Harbour","albumId":"a1","duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{{"id":"r1","name":"Mara Lind"}}]}},{second}]"#
+            );
+            ok(&format!(
+                r#""playlist":{{{},"entry":{songs}}}"#,
+                road_trip_now()
+            ))
         } else if request.contains("/rest/getComposers") {
             ok(
                 r#""composers":{"index":[{"name":"B","composer":[{"id":"r9","name":"Ludwig van Beethoven","sortName":"Beethoven, Ludwig van","coverArt":"ar-r9","compositionCount":2}]},{"name":"M","composer":[{"id":"r10","name":"Wolfgang Amadeus Mozart","compositionCount":1}]}]}"#,
@@ -5667,6 +5689,44 @@ mod tests {
             assert_eq!(ui.get_download_state(), 0);
             assert_eq!(marked(&ui), [true, false], "s9 went, s1 is the album's");
             assert_eq!(files(&kept.join("songs")), 2);
+
+            // A downloaded playlist follows the server: on a visit to its page
+            // and when the playlists are listed, new songs come and those
+            // taken off go.
+            ui.invoke_remove_all_downloads();
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Download");
+            wait_for("the playlist kept", || ui.get_download_state() == 2).await;
+            ROAD_TRIP_EDITED.store(true, Relaxed);
+            ui.invoke_open("albums".into());
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the edited playlist", || ui.get_tracks().row_count() == 2 && ui.get_tracks().row_data(1).is_some_and(|t| t.title == "Rope and Anchor")).await;
+            wait_for("its new song", || marked(&ui) == [true, true]).await;
+            assert_eq!(files(&kept.join("songs")), 2, "Fugue was deleted");
+            ui.invoke_remove_all_downloads();
+            ROAD_TRIP_EDITED.store(false, Relaxed);
+            ui.invoke_open("albums".into());
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist as it was", || ui.get_tracks().row_count() == 2 && ui.get_tracks().row_data(1).is_some_and(|t| t.title == "Fugue")).await;
+            click(&ui, "Download");
+            wait_for("kept as it was", || ui.get_download_state() == 2).await;
+            ROAD_TRIP_EDITED.store(true, Relaxed);
+            ui.invoke_open("playlists".into());
+            let has_rope = || {
+                let songs = kept.join("songs").read_dir();
+                songs.is_ok_and(|songs| {
+                    // "s2" in hex.
+                    (songs.flatten()).any(|file| file.file_name().to_string_lossy().starts_with("7332."))
+                })
+            };
+            wait_for("the song put in", has_rope).await;
+            ROAD_TRIP_EDITED.store(false, Relaxed);
+            ui.invoke_remove_all_downloads();
+            ui.invoke_open("album:a1".into());
+            wait_for("the album", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Download");
+            wait_for("the album kept again", || ui.get_download_state() == 2).await;
 
             // With the server down, a start finds the downloads under the
             // note that it didn't answer, opens their albums without asking

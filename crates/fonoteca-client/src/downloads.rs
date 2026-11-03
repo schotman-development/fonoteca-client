@@ -140,6 +140,60 @@ fn let_go(ui: &AppWindow, browser: &browse::Shared, link: &str) {
     pump(ui, browser);
 }
 
+/// Brings the kept copy of the album or playlist on screen up to what the
+/// server just sent, unless that came from the kept copy itself.
+pub fn follow_shown(ui: &AppWindow, browser: &browse::Shared) {
+    if browse::is_offline(browser) {
+        return;
+    }
+    if let Some(item) = browse::shown_item(browser) {
+        follow(ui, browser, item);
+    }
+}
+
+/// Follows the server's playlists: the kept ones it says changed are
+/// fetched anew, and those it no longer has are let go.
+pub fn follow_playlists(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    (stale, gone): (Vec<String>, Vec<String>),
+) {
+    if browse::is_offline(browser) {
+        return;
+    }
+    for id in gone {
+        let_go(ui, browser, &format!("playlist:{id}"));
+    }
+    let Some(client) = browse::client(browser) else {
+        return;
+    };
+    for id in stale {
+        let (client, weak, browser) = (client.clone(), ui.as_weak(), browser.clone());
+        slint::spawn_local(async move {
+            let playlist = client.get_playlist(&id).await;
+            let Some(ui) = weak.upgrade() else { return };
+            match playlist {
+                Ok(playlist) => follow(&ui, &browser, Item::Playlist(playlist)),
+                Err(e) => {
+                    browse::notify(&ui, &browser, format!("A download isn't up to date: {e}"))
+                }
+            }
+        })
+        .expect("the event loop is running");
+    }
+}
+
+fn follow(ui: &AppWindow, browser: &browse::Shared, item: Item) {
+    match browse::downloads(browser).follow(item) {
+        Ok(true) => {
+            browse::downloads_changed(ui, browser);
+            pump(ui, browser);
+        }
+        Ok(false) => {}
+        Err(e) => browse::notify(ui, browser, format!("A download isn't up to date: {e}")),
+    }
+}
+
 /// The album or playlist at `link`, as the server has it now.
 async fn item_at(client: &Client, link: &str) -> opensubsonic::Result<Item> {
     match link.split_once(':') {

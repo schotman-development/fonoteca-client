@@ -1946,6 +1946,8 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
             return;
         }
         let shown = ui.get_page() == Page::Playlists;
+        #[cfg(not(target_family = "wasm"))]
+        let mut out_of_step = (Vec::new(), Vec::new());
         let (changed, known) = {
             let mut b = browser.borrow_mut();
             b.playlists_loading = false;
@@ -1953,6 +1955,10 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
             let changed = match answer {
                 Ok(list) => {
                     b.playlists_loaded = true;
+                    #[cfg(not(target_family = "wasm"))]
+                    {
+                        out_of_step = b.downloads.playlists_out_of_step(&list.playlist);
+                    }
                     let mut changed = b.playlists != list.playlist;
                     b.playlists = list.playlist;
                     if let Some(folders) = folders {
@@ -1981,6 +1987,8 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
             Err(e) if shown && !known => ui.set_page_problem(e.to_string().into()),
             Err(_) => {}
         }
+        #[cfg(not(target_family = "wasm"))]
+        crate::downloads::follow_playlists(&ui, &browser, out_of_step);
     })
     .expect("the event loop is running");
 }
@@ -3188,6 +3196,8 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             b.album = Some(shown);
             drop(b);
             show_downloads(ui, browser);
+            #[cfg(not(target_family = "wasm"))]
+            crate::downloads::follow_shown(ui, browser);
         },
     );
 }
@@ -3498,6 +3508,8 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     b.playlist = Some(playlist_shown);
     drop(b);
     show_downloads(ui, browser);
+    #[cfg(not(target_family = "wasm"))]
+    crate::downloads::follow_shown(ui, browser);
 }
 
 /// The id of the playlist on screen, if one is.

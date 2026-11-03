@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use opensubsonic::{AlbumID3WithSongs, Child, PlaylistWithSongs};
+use opensubsonic::{AlbumID3WithSongs, Child, Playlist, PlaylistWithSongs};
 use serde::{Deserialize, Serialize};
 
 const MANIFEST: &str = "index.json";
@@ -386,42 +386,38 @@ impl Downloads {
     pub fn remove(&self, link: &str) -> io::Result<()> {
         let mut state = self.state();
         state.manifest.items.retain(|item| item.link() != link);
-        let gone = orphans(&state.manifest.items, &state.present);
-        let mut problem = None;
-        for id in gone {
-            if let Some(saved) = state.present.remove(&id)
-                && let Err(e) = std::fs::remove_file(&saved.path)
-            {
-                problem = Some(e);
-            }
-        }
-        let wanted = state.manifest.items.iter().flat_map(Item::songs);
-        if let Some((id, cancel)) = &state.running
-            && !wanted.into_iter().any(|song| &song.id == id)
-        {
-            cancel.store(true, Relaxed);
-        }
-        let unwanted: Vec<String> = {
-            let wanted = wanted_covers(&state.manifest.items);
-            let mut unwanted: Vec<String> = state
-                .covers
-                .iter()
-                .filter(|id| !wanted.contains(&id.as_str()))
-                .cloned()
-                .collect();
-            unwanted.sort();
-            unwanted
+        settle_files(&mut state)
+    }
+
+    /// Replaces the item shown at the same link as `item` with it, if it
+    /// is kept and differs: songs added to a playlist are then fetched and
+    /// those taken off are deleted. True if it was replaced.
+    pub fn follow(&self, item: Item) -> io::Result<bool> {
+        let mut state = self.state();
+        let link = item.link();
+        let Some(at) = state
+            .manifest
+            .items
+            .iter()
+            .position(|kept| kept.link() == link)
+        else {
+            return Ok(false);
         };
-        if let Some(folder) = state.folder.clone() {
-            for id in unwanted {
-                state.covers.remove(&id);
-                if let Err(e) = std::fs::remove_file(folder.join(COVERS).join(hex(&id))) {
-                    problem = Some(e);
-                }
-            }
-            write_manifest(&folder, &state.manifest)?;
+        if state.manifest.items[at] == item {
+            return Ok(false);
         }
-        problem.map_or(Ok(()), Err)
+        state.manifest.items[at] = item;
+        state.failed.clear();
+        state.halted = None;
+        state.attempt = 0;
+        settle_files(&mut state)?;
+        Ok(true)
+    }
+
+    /// The kept playlists that `server`'s list says changed since, and those
+    /// it no longer has, by id.
+    pub fn playlists_out_of_step(&self, server: &[Playlist]) -> (Vec<String>, Vec<String>) {
+        out_of_step(&self.state().manifest.items, server)
     }
 
     /// The next song to fetch, and where its file goes while it arrives and
@@ -644,6 +640,59 @@ impl Downloads {
         }
         std::fs::read(state.folder.as_ref()?.join(COVERS).join(hex(id))).ok()
     }
+}
+
+/// After the items changed: deletes the song and cover files no item wants,
+/// stops a fetch of a song no item wants, and saves the manifest. The last
+/// file that wouldn't go is reported once the rest is done.
+fn settle_files(state: &mut State) -> io::Result<()> {
+    let mut problem = None;
+    for id in orphans(&state.manifest.items, &state.present) {
+        if let Some(saved) = state.present.remove(&id)
+            && let Err(e) = std::fs::remove_file(&saved.path)
+        {
+            problem = Some(e);
+        }
+    }
+    let mut songs = state.manifest.items.iter().flat_map(Item::songs);
+    if let Some((id, cancel)) = &state.running
+        && !songs.any(|song| &song.id == id)
+    {
+        cancel.store(true, Relaxed);
+    }
+    let wanted = wanted_covers(&state.manifest.items);
+    let mut unwanted: Vec<String> = (state.covers.iter())
+        .filter(|id| !wanted.contains(&id.as_str()))
+        .cloned()
+        .collect();
+    unwanted.sort();
+    let Some(folder) = state.folder.clone() else {
+        return problem.map_or(Ok(()), Err);
+    };
+    for id in unwanted {
+        state.covers.remove(&id);
+        if let Err(e) = std::fs::remove_file(folder.join(COVERS).join(hex(&id))) {
+            problem = Some(e);
+        }
+    }
+    write_manifest(&folder, &state.manifest)?;
+    problem.map_or(Ok(()), Err)
+}
+
+/// Of the playlists in `items`, those whose `changed` on the server isn't
+/// the one kept, and those the server doesn't have.
+fn out_of_step(items: &[Item], server: &[Playlist]) -> (Vec<String>, Vec<String>) {
+    let (mut stale, mut gone) = (Vec::new(), Vec::new());
+    for item in items {
+        let Item::Playlist(kept) = item else { continue };
+        let id = &kept.playlist.id;
+        match server.iter().find(|playlist| &playlist.id == id) {
+            Some(now) if now.changed != kept.playlist.changed => stale.push(id.clone()),
+            Some(_) => {}
+            None => gone.push(id.clone()),
+        }
+    }
+    (stale, gone)
 }
 
 fn cover_key(id: &str) -> String {
@@ -910,6 +959,64 @@ mod tests {
         );
         downloads.remove_all().unwrap();
         assert!(!folder.exists());
+    }
+
+    fn kept_playlist(id: &str, changed: &str, songs: &[&str]) -> PlaylistWithSongs {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": id, "songCount": songs.len(), "duration": 0,
+            "created": "2020-01-01T00:00:00Z", "changed": changed,
+            "entry": songs.iter().map(|id| serde_json::json!({"id": id, "isDir": false, "title": id})).collect::<Vec<_>>(),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_kept_playlist_is_stale_when_the_servers_changed_differs_and_gone_when_missing() {
+        let items = [
+            Item::Playlist(kept_playlist("p1", "t1", &["a"])),
+            Item::Playlist(kept_playlist("p2", "t1", &["a"])),
+            Item::Playlist(kept_playlist("p3", "t1", &["a"])),
+            album("one", &["a"]),
+        ];
+        let server: Vec<Playlist> = [("p1", "t1"), ("p2", "t2"), ("p9", "t1")]
+            .iter()
+            .map(|(id, changed)| kept_playlist(id, changed, &[]).playlist)
+            .collect();
+        let (stale, gone) = out_of_step(&items, &server);
+        assert_eq!(
+            (stale, gone),
+            (vec!["p2".to_owned()], vec!["p3".to_owned()])
+        );
+    }
+
+    #[test]
+    fn following_the_server_fetches_new_songs_and_deletes_those_taken_off() {
+        let folder = std::env::temp_dir().join(format!("follow-test-{}", std::process::id()));
+        prepare(&folder).unwrap();
+        for id in ["a", "b"] {
+            std::fs::write(
+                folder.join(SONGS).join(file_name(id, ORIGINAL, "audio")),
+                b"x",
+            )
+            .unwrap();
+        }
+        let downloads = Downloads::default();
+        {
+            let mut state = downloads.state();
+            state.manifest.items = vec![Item::Playlist(kept_playlist("p1", "t1", &["a", "b"]))];
+            state.present = scan(&folder.join(SONGS));
+            state.folder = Some(folder.clone());
+        }
+        let same = Item::Playlist(kept_playlist("p1", "t1", &["a", "b"]));
+        assert!(!downloads.follow(same).unwrap());
+        assert!(!downloads.follow(album("one", &["a"])).unwrap(), "not kept");
+        let now = Item::Playlist(kept_playlist("p1", "t2", &["b", "c"]));
+        assert!(downloads.follow(now.clone()).unwrap());
+        assert_eq!(downloads.summary().missing, 1, "c is to come");
+        assert_eq!(downloads.local("a"), None, "a went");
+        assert!(downloads.local("b").is_some());
+        assert_eq!(read_manifest(&folder).unwrap().items, [now]);
+        downloads.remove_all().unwrap();
     }
 
     #[test]
