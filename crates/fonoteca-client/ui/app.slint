@@ -99,8 +99,10 @@ export struct Track {
     split: int,
     duration: string,
     loved: bool,
-    // Whether the song is kept on this device.
+    // Whether the song is kept on this device, and whether it was asked for
+    // on its own.
     downloaded: bool,
+    downloaded-alone: bool,
     // For a work's only track: the years the work was written, and when and
     // where the track was recorded.
     years: string,
@@ -1156,6 +1158,12 @@ export component AppWindow inherits Window {
     // Keeps the album or playlist on screen on this device, or removes it.
     callback download-page();
     callback remove-page-download();
+    // A song of the page's rows, or the album or playlist at a link, kept or
+    // let go.
+    callback download-track(row: int);
+    callback remove-track-download(row: int);
+    callback download-link(link: string);
+    callback remove-link-download(link: string);
     callback choose-download-limit(index: int);
     callback remove-all-downloads();
     // Plays the album's, playlist's or artist's tracks, or the songs of the
@@ -1840,7 +1848,7 @@ export component AppWindow inherits Window {
                             }
                             queue(how) => { root.queue-page(how); }
                         }
-                        if root.can-download && root.may-download && root.page == Page.album && root.tracks.length > 0: DownloadButton {
+                        if root.can-download && root.may-download && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0: DownloadButton {
                             state: root.download-state;
                             progress: root.download-progress;
                             clicked => {
@@ -2016,8 +2024,12 @@ export component AppWindow inherits Window {
                                 removable: root.page == Page.playlist && root.playlist-editable;
                                 taggable: root.tags-offered;
                                 playable: root.can-play;
+                                downloadable: root.can-download && root.may-download;
+                                download-removable: track.downloaded-alone;
                                 open(link) => { root.open(link); }
                                 play => { root.play-tracks(row); }
+                                download => { root.download-track(row); }
+                                remove-download => { root.remove-track-download(row); }
                                 queue(next) => { root.queue-tracks(row, 1, next); }
                                 add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
                                 remove => { root.remove-from-playlist(row); }
@@ -2102,10 +2114,15 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
                         movable: root.page == Page.playlists && root.folders-offered;
+                        downloadable: root.can-download && root.may-download && root.page != Page.artists && root.page != Page.composers;
                         entries: root.tile-entries;
                         activated(index, id, choice) => {
                             if id == "move" {
                                 root.move-tile(index, choice);
+                            } else if id == "download" {
+                                root.download-link(root.tiles[index].link);
+                            } else if id == "remove-download" {
+                                root.remove-link-download(root.tiles[index].link);
                             } else {
                                 root.queue-link(root.tiles[index].link, id);
                             }

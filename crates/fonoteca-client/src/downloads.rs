@@ -11,6 +11,7 @@ use std::time::Duration;
 use opensubsonic::Client;
 use slint::{ComponentHandle, Timer};
 
+use crate::offline::Item;
 use crate::{AppWindow, browse, offline, prefs};
 
 /// How long to wait before the first, second and third new try of a song
@@ -62,34 +63,92 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     ui.on_download_page({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || {
-            let ui = weak.unwrap();
-            let Some(item) = browse::shown_item(&browser) else {
-                return;
-            };
-            let server = ui.get_address().to_string();
-            match browse::downloads(&browser).add(&server, item) {
-                Ok(()) => {
-                    browse::show_downloads(&ui, &browser);
-                    pump(&ui, &browser);
-                }
-                Err(e) => browse::notify(&ui, &browser, format!("Not downloaded: {e}")),
+            if let Some(item) = browse::shown_item(&browser) {
+                keep(&weak.unwrap(), &browser, item);
             }
         }
+    });
+    ui.on_download_track({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row| {
+            if let Some(song) = browse::song_at(&browser, row as usize) {
+                keep(&weak.unwrap(), &browser, Item::Song(Box::new(song)));
+            }
+        }
+    });
+    ui.on_remove_track_download({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row| {
+            if let Some(song) = browse::song_at(&browser, row as usize) {
+                let link = Item::Song(Box::new(song)).link();
+                let_go(&weak.unwrap(), &browser, &link);
+            }
+        }
+    });
+    ui.on_download_link({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |link| {
+            let Some(client) = browse::client(&browser) else {
+                return;
+            };
+            let (weak, browser) = (weak.clone(), browser.clone());
+            slint::spawn_local(async move {
+                let item = item_at(&client, &link).await;
+                let Some(ui) = weak.upgrade() else { return };
+                match item {
+                    Ok(item) => keep(&ui, &browser, item),
+                    Err(e) => {
+                        browse::notify(&ui, &browser, format!("Not downloaded: {e}"));
+                    }
+                }
+            })
+            .expect("the event loop is running");
+        }
+    });
+    ui.on_remove_link_download({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |link| let_go(&weak.unwrap(), &browser, &link)
     });
     ui.on_remove_page_download({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || {
-            let ui = weak.unwrap();
-            let Some(link) = browse::link(&browser) else {
-                return;
-            };
-            if let Err(e) = browse::downloads(&browser).remove(&link) {
-                browse::notify(&ui, &browser, format!("Not all of it was removed: {e}"));
+            if let Some(link) = browse::link(&browser) {
+                let_go(&weak.unwrap(), &browser, &link);
             }
-            browse::show_downloads(&ui, &browser);
-            pump(&ui, &browser);
         }
     });
+}
+
+/// Asks for `item` to be kept and starts fetching it.
+fn keep(ui: &AppWindow, browser: &browse::Shared, item: Item) {
+    let server = ui.get_address().to_string();
+    match browse::downloads(browser).add(&server, item) {
+        Ok(()) => {
+            browse::show_downloads(ui, browser);
+            pump(ui, browser);
+        }
+        Err(e) => browse::notify(ui, browser, format!("Not downloaded: {e}")),
+    }
+}
+
+/// Lets go of the item at `link` and deletes what no other item wants.
+fn let_go(ui: &AppWindow, browser: &browse::Shared, link: &str) {
+    if let Err(e) = browse::downloads(browser).remove(link) {
+        browse::notify(ui, browser, format!("Not all of it was removed: {e}"));
+    }
+    browse::show_downloads(ui, browser);
+    pump(ui, browser);
+}
+
+/// The album or playlist at `link`, as the server has it now.
+async fn item_at(client: &Client, link: &str) -> opensubsonic::Result<Item> {
+    match link.split_once(':') {
+        Some(("album", id)) => client.get_album(id).await.map(Item::Album),
+        Some(("playlist", id)) => client.get_playlist(id).await.map(Item::Playlist),
+        _ => Err(opensubsonic::Error::Unexpected(format!(
+            "{link} can't be downloaded"
+        ))),
+    }
 }
 
 /// Picks up what the last run left: half-fetched songs are dropped and the

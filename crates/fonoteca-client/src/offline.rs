@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use opensubsonic::{AlbumID3WithSongs, Child};
+use opensubsonic::{AlbumID3WithSongs, Child, PlaylistWithSongs};
 use serde::{Deserialize, Serialize};
 
 const MANIFEST: &str = "index.json";
@@ -38,8 +38,14 @@ const BYTES_PER_GB: u64 = 1_073_741_824;
 
 /// Something the user asked to keep, with what it was made of when asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// There are few items and they live as long as the list, so boxing the big
+// ones would only add indirection.
+#[allow(clippy::large_enum_variant)]
 pub enum Item {
     Album(AlbumID3WithSongs),
+    Playlist(PlaylistWithSongs),
+    /// A song asked for on its own.
+    Song(Box<Child>),
 }
 
 impl Item {
@@ -47,12 +53,16 @@ impl Item {
     pub fn link(&self) -> String {
         match self {
             Item::Album(album) => format!("album:{}", album.album.id),
+            Item::Playlist(playlist) => format!("playlist:{}", playlist.playlist.id),
+            Item::Song(song) => format!("song:{}", song.id),
         }
     }
 
     pub fn songs(&self) -> &[Child] {
         match self {
             Item::Album(album) => &album.song,
+            Item::Playlist(playlist) => &playlist.entry,
+            Item::Song(song) => std::slice::from_ref(song.as_ref()),
         }
     }
 }
@@ -295,6 +305,18 @@ impl Downloads {
             .iter()
             .find(|item| item.link() == link)?;
         Some(progress(item.songs(), &state.present))
+    }
+
+    /// Whether all of the item shown at `link` has arrived.
+    pub fn is_kept(&self, link: &str) -> bool {
+        self.progress_of(link)
+            .is_some_and(|(done, total)| done == total)
+    }
+
+    /// Whether the song was asked for on its own, not only as part of an
+    /// album or a playlist.
+    pub fn is_kept_alone(&self, id: &str) -> bool {
+        self.is_kept(&format!("song:{id}"))
     }
 
     /// Asks for `item`, from `server`. Anything that stopped is tried again.
@@ -640,6 +662,31 @@ mod tests {
             "the next song can start"
         );
         assert!(downloads.local("a").is_none());
+    }
+
+    #[test]
+    fn every_kind_of_item_has_its_page_and_its_songs() {
+        let playlist: PlaylistWithSongs = serde_json::from_value(serde_json::json!({
+            "id": "p1", "name": "Mix", "songCount": 1, "duration": 0,
+            "created": "2020-01-01T00:00:00Z", "changed": "2020-01-01T00:00:00Z",
+            "entry": [{"id": "a", "isDir": false, "title": "a"}],
+        }))
+        .unwrap();
+        let items = [
+            album("one", &["a", "b"]),
+            Item::Playlist(playlist),
+            Item::Song(Box::new(song("a", None))),
+        ];
+        assert_eq!(
+            items.each_ref().map(Item::link),
+            ["album:one", "playlist:p1", "song:a"]
+        );
+        assert_eq!(items.each_ref().map(|item| item.songs().len()), [2, 1, 1]);
+        // One song wanted by all three is kept until the last goes.
+        let present = saved(&["a", "b"]);
+        assert!(orphans(&items, &present).is_empty());
+        assert_eq!(orphans(&items[1..], &present), ["b"]);
+        assert!(orphans(&items[2..], &present).contains(&"b".to_owned()));
     }
 
     #[test]

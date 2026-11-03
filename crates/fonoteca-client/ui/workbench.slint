@@ -324,11 +324,14 @@ export component Workbench inherits Window {
                         FlexboxLayout {
                             spacing: Theme.gap;
                             cross-axis-alignment: start;
-                            for album in root.albums: CoverTile {
+                            for album[i] in root.albums: CoverTile {
                                 cover: album.cover;
                                 title: album.title;
                                 names: album.names;
+                                downloadable: true;
+                                downloaded: i == 1;
                                 clicked => { root.event = "open " + album.link; }
+                                activated(id) => { root.event = id + " " + album.link; }
                                 context-clicked => { root.event = "select " + album.link; }
                                 open(link) => { root.event = "open " + link; }
                             }
@@ -346,6 +349,7 @@ export component Workbench inherits Window {
                                 names: [{ label: i == 0 ? "6 albums" : "1 album", link: "" }];
                                 selecting: i == 0;
                                 selected: i == 0;
+                                downloaded: i == 0;
                                 clicked => { root.event = "open artist:" + i; }
                                 context-clicked => { root.event = "select artist:" + i; }
                             }
@@ -418,6 +422,7 @@ export component Workbench inherits Window {
                         TrackRow {
                             title: "Inland";
                             duration: "11:27";
+                            downloadable: true;
                             loved: root.loved-3;
                             clicked => { root.event = "play track:3"; }
                             toggle-love => { root.loved-3 = !root.loved-3; }

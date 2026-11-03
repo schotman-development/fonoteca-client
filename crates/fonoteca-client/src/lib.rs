@@ -5586,6 +5586,37 @@ mod tests {
             assert_eq!(ui.get_download_state(), 0);
             assert_eq!(marked(&ui), [false, false]);
 
+            // A playlist downloads from its page, a song from its row's menu
+            // and an album from its tile's; a song several want stays until
+            // the last of them is let go.
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Download");
+            wait_for("the playlist's songs", || ui.get_download_state() == 2).await;
+            assert_eq!(marked(&ui), [true, true]);
+            ui.invoke_open("album:a1".into());
+            wait_for("the album", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(marked(&ui), [true, false], "s1 is kept by the playlist");
+            ui.invoke_download_track(1);
+            wait_for("the song", || marked(&ui) == [true, true]).await;
+            let alone = || -> Vec<bool> { ui.get_tracks().iter().map(|t| t.downloaded_alone).collect() };
+            assert_eq!(alone(), [false, true]);
+            ui.invoke_download_link("album:a1".into());
+            wait_for("the album kept", || ui.get_download_state() == 2).await;
+            ui.invoke_open("albums".into());
+            wait_for("the album tile", || ui.get_tiles().iter().any(|t| t.link == "album:a1")).await;
+            let tile_marked = |link: &str| ui.get_tiles().iter().any(|t| t.link == link && t.downloaded);
+            assert!(tile_marked("album:a1"));
+            assert!(!tile_marked("album:b2"));
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist again", || ui.get_tracks().row_count() == 2).await;
+            click(&ui, "Downloaded, remove download");
+            click(&ui, "Remove");
+            assert_eq!(ui.get_download_state(), 0);
+            assert_eq!(marked(&ui), [true, false], "s9 went, s1 is the album's");
+            assert_eq!(files(&kept.join("songs")), 2);
+            ui.invoke_remove_all_downloads();
+
             click(&ui, "Account");
             click(&ui, "Sign out");
             wait_for("the sign-in step again", || ui.get_step() == Step::SignIn).await;

@@ -72,6 +72,8 @@ export struct AlbumTile {
     link: string,
     selected: bool,
     folder: bool,
+    // Whether all of it is kept on this device.
+    downloaded: bool,
 }
 
 export global Icons {
@@ -962,6 +964,10 @@ export component CoverTile inherits Pressable {
     in property <bool> selecting;
     in property <bool> selected;
     in property <[MenuEntry]> entries;
+    // Whether it is kept on this device, and whether its menu offers to keep
+    // or let go of it ("download" and "remove-download").
+    in property <bool> downloaded;
+    in property <bool> downloadable;
     // A folder a playlist can be dragged onto, lit while one is over it.
     in property <bool> drop-target;
     callback open(link: string);
@@ -992,6 +998,27 @@ export component CoverTile inherits Pressable {
             folder: root.folder;
             source: root.cover;
             highlighted: root.hovered || drop.has-drag;
+            if root.downloaded: Rectangle {
+                x: root.round ? root.size * 0.85 - self.width : root.size - self.width - 10px;
+                y: root.round ? root.size * 0.15 : 10px;
+                width: 24px;
+                height: 24px;
+                border-radius: self.height / 2;
+                background: #00000059;
+                Path {
+                    x: 4px;
+                    y: 4px;
+                    width: 16px;
+                    height: 16px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Icons.download;
+                    stroke: white;
+                    stroke-width: 2.5px;
+                    accessible-role: image;
+                    accessible-label: "Downloaded";
+                }
+            }
             // Inside the circle when round.
             if root.selecting: Rectangle {
                 x: root.round ? root.size * 0.15 : 10px;
@@ -1028,9 +1055,16 @@ export component CoverTile inherits Pressable {
                 vertical-alignment: center;
                 overflow: elide;
             }
-            if root.entries.length > 0: MoreMenu {
+            if root.entries.length > 0 || root.downloadable: MoreMenu {
                 label: "More for " + root.title;
-                entries: root.entries;
+                opening => {
+                    self.entries = root.entries;
+                    if root.downloadable && root.downloaded {
+                        self.entries.push({ id: "remove-download", label: "Remove download", icon: Icons.trash });
+                    } else if root.downloadable {
+                        self.entries.push({ id: "download", label: "Download", icon: Icons.download });
+                    }
+                }
                 activated(id, choice) => { root.activated(id, choice); }
             }
         }
@@ -1111,12 +1145,18 @@ export component TrackRow inherits Pressable {
     in property <bool> taggable;
     // Whether its menu can play from it.
     in property <bool> playable;
+    // Whether its menu can download its song, or take back a download of it
+    // alone.
+    in property <bool> downloadable;
+    in property <bool> download-removable;
     callback open(link: string);
     callback toggle-love();
     callback add-to-playlist(id: string);
     callback remove();
     callback tag();
     callback play();
+    callback download();
+    callback remove-download();
     // Puts its song in the queue, to play next or at the end.
     callback queue(next: bool);
     label: self.title;
@@ -1182,17 +1222,21 @@ export component TrackRow inherits Pressable {
             accessible-checked: root.loved;
             clicked => { root.toggle-love(); }
         }
-        if root.downloaded: Path {
-            cross-axis-self-alignment: center;
+        // A slot kept whether or not the song is downloaded, so the hearts
+        // and times of the rows stay in line.
+        if root.downloadable || root.downloaded: Rectangle {
             width: 14px;
-            height: 14px;
-            viewbox-width: 24;
-            viewbox-height: 24;
-            commands: Icons.download;
-            stroke: Theme.muted;
-            stroke-width: 2px;
-            accessible-role: image;
-            accessible-label: "Downloaded";
+            if root.downloaded: Path {
+                width: 14px;
+                height: 14px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Icons.download;
+                stroke: Theme.muted;
+                stroke-width: 2px;
+                accessible-role: image;
+                accessible-label: "Downloaded";
+            }
         }
         Text {
             horizontal-stretch: 0;
@@ -1203,7 +1247,7 @@ export component TrackRow inherits Pressable {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
-        if root.playlists.length > 0 || root.removable || root.taggable || root.playable: MoreMenu {
+        if root.playlists.length > 0 || root.removable || root.taggable || root.playable || root.downloadable: MoreMenu {
             cross-axis-self-alignment: center;
             label: "More for " + root.title;
             opening => {
@@ -1222,6 +1266,12 @@ export component TrackRow inherits Pressable {
                 if root.taggable {
                     self.entries.push({ id: "tags", label: "Tags", icon: Icons.tag });
                 }
+                if root.downloadable && !root.downloaded {
+                    self.entries.push({ id: "download", label: "Download", icon: Icons.download });
+                }
+                if root.downloadable && root.download-removable {
+                    self.entries.push({ id: "remove-download", label: "Remove download", icon: Icons.trash });
+                }
             }
             activated(id, choice) => {
                 if id == "play" {
@@ -1232,6 +1282,10 @@ export component TrackRow inherits Pressable {
                     root.add-to-playlist(choice);
                 } else if id == "tags" {
                     root.tag();
+                } else if id == "download" {
+                    root.download();
+                } else if id == "remove-download" {
+                    root.remove-download();
                 } else {
                     root.remove();
                 }
@@ -1800,6 +1854,8 @@ export component CoverGrid {
     // Whether tiles that aren't folders can be dragged with a mouse onto
     // those that are, playlists into folders.
     in property <bool> movable;
+    // Whether their menus offer to download them.
+    in property <bool> downloadable;
     callback open(link: string);
     // A tile right-clicked, or clicked while selecting; with Shift held,
     // every tile from the one last picked to it.
@@ -1840,6 +1896,7 @@ export component CoverGrid {
         title: "Probe";
         names: [{ label: "Probe", link: "" }];
         entries: root.entries;
+        downloadable: root.downloadable;
     }
 
     // A finger never drags: it scrolls, and a long press selects.
@@ -1870,6 +1927,8 @@ export component CoverGrid {
             selecting: root.selecting;
             selected: tile.selected;
             entries: tile.folder ? [] : root.entries;
+            downloaded: tile.downloaded;
+            downloadable: root.downloadable && !tile.folder;
             drop-target: root.movable && tile.folder;
             activated(id, choice) => { root.activated(i, id, choice); }
             dropped => { root.dropped(i); }

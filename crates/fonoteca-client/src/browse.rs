@@ -163,8 +163,9 @@ pub struct Browser {
     tracks: Rc<VecModel<Track>>,
     /// The song of each track row.
     songs: Vec<Child>,
-    /// The album on screen, when one is, for downloading it.
+    /// The album or playlist on screen, when one is, for downloading it.
     album: Option<AlbumID3>,
+    playlist: Option<Playlist>,
     /// What is kept on this device for use without a connection.
     downloads: offline::Downloads,
     /// The links of an artist's own albums, in the order their page shows.
@@ -344,15 +345,27 @@ pub fn link(browser: &Shared) -> Option<String> {
     b.history.get(b.at).cloned()
 }
 
-/// The album on screen, as something to keep.
+/// The album or playlist on screen, as something to keep.
 #[cfg(not(target_family = "wasm"))]
 pub fn shown_item(browser: &Shared) -> Option<offline::Item> {
     let b = browser.borrow();
-    let album = b.album.clone()?;
-    Some(offline::Item::Album(AlbumID3WithSongs {
-        album,
-        song: b.songs.clone(),
+    if let Some(album) = b.album.clone() {
+        return Some(offline::Item::Album(AlbumID3WithSongs {
+            album,
+            song: b.songs.clone(),
+        }));
+    }
+    let playlist = b.playlist.clone()?;
+    Some(offline::Item::Playlist(PlaylistWithSongs {
+        playlist,
+        entry: b.songs.clone(),
     }))
+}
+
+/// The song of the `row`th track row of the album or playlist on screen.
+#[cfg(not(target_family = "wasm"))]
+pub fn song_at(browser: &Shared, row: usize) -> Option<Child> {
+    browser.borrow().songs.get(row).cloned()
 }
 
 /// Shows how much of the page on screen is kept, on its header and on the
@@ -376,11 +389,23 @@ pub fn show_downloads(ui: &AppWindow, browser: &Shared) {
     ui.set_download_status(summary.status().into());
     for (row, song) in b.songs.iter().enumerate() {
         let downloaded = b.downloads.local(&song.id).is_some();
+        let alone = downloaded && b.downloads.is_kept_alone(&song.id);
         if let Some(mut track) = b.tracks.row_data(row)
-            && track.downloaded != downloaded
+            && (track.downloaded, track.downloaded_alone) != (downloaded, alone)
         {
             track.downloaded = downloaded;
+            track.downloaded_alone = alone;
             b.tracks.set_row_data(row, track);
+        }
+    }
+    for row in 0..b.tiles.row_count() {
+        let Some(mut tile) = b.tiles.row_data(row) else {
+            continue;
+        };
+        let kept = b.downloads.is_kept(&tile.link);
+        if tile.downloaded != kept {
+            tile.downloaded = kept;
+            b.tiles.set_row_data(row, tile);
         }
     }
 }
@@ -1003,6 +1028,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         b.lines = Rc::default();
         b.songs.clear();
         b.album = None;
+        b.playlist = None;
         b.covers.clear();
         b.fetching = 0;
         b.motion = Timer::default();
@@ -3294,6 +3320,7 @@ fn song_track(song: &Child) -> Track {
 fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) {
     let songs = playlist.entry;
     let playlist = playlist.playlist;
+    let playlist_shown = playlist.clone();
     ui.set_header_title(playlist.name.as_str().into());
     ui.set_playlist_editable(playlist.readonly != Some(true));
     let facts = [
@@ -3318,6 +3345,9 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     let mut b = browser.borrow_mut();
     b.tracks.set_vec(tracks);
     b.songs = songs;
+    b.playlist = Some(playlist_shown);
+    drop(b);
+    show_downloads(ui, browser);
 }
 
 /// The id of the playlist on screen, if one is.
@@ -6128,6 +6158,7 @@ fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<Str
             }
             tile.cover = seen.unwrap_or_default();
             tile.selected = b.selected.iter().any(|link| *link == tile.link.as_str());
+            tile.downloaded = b.downloads.is_kept(&tile.link);
             b.tiles.push(tile);
         }
     }
