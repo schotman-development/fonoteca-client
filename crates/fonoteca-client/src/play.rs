@@ -109,7 +109,10 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             let Some(player) = &p.player else { return };
             let status = player.status();
             if status.ended {
-                player.play(tracks(&p.queue), 0, 0.0);
+                // Short of the queue's end it goes on where it stopped; played
+                // to its end, the queue starts over.
+                let (start, seconds) = status.stopped.unwrap_or((0, 0.0));
+                player.play(tracks(&p.queue), start, seconds);
             } else {
                 player.set_paused(!status.paused);
             }
@@ -355,6 +358,7 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
                 return;
             };
             p.queue.toggle_work(key);
+            remember_expanded_works(&p.queue);
             list_queue(&weak.unwrap(), &browser, &mut p, &playing);
         }
     });
@@ -1037,7 +1041,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         }
         let queue = match saved {
             Ok(Some(queue)) if !queue.entry.is_empty() => queue,
-            Err(opensubsonic::Error::Status(_) | opensubsonic::Error::Api(_)) => {
+            Err(error) if refuses_play_queues(&error) => {
                 p.queue_refused = true;
                 return;
             }
@@ -1049,6 +1053,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             .unwrap_or(0);
         let seconds = queue.position.unwrap_or(0) as f64 / 1000.0;
         p.queue = Queue::new(queue.entry);
+        p.queue.expand_works(&prefs::load().expanded_works);
         p.resume = Some((index, seconds));
         p.shown = Some(index);
         ui.set_playing(true);
@@ -1066,7 +1071,8 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
 
 /// Saves the queue and where it is on the server, for any app to carry on
 /// with, or clears the one saved there when the queue is empty; a server
-/// that turned it down isn't asked again.
+/// that turned it down isn't asked again. Which of its works are open is
+/// kept beside it on this device.
 fn save(
     browser: &browse::Shared,
     p: &Playing,
@@ -1084,6 +1090,7 @@ fn save(
         None => return,
     };
     let ids: Vec<String> = p.queue.songs().map(|song| song.id.clone()).collect();
+    remember_expanded_works(&p.queue);
     let position = current.is_some().then_some((seconds * 1000.0) as i64);
     let clearing = current.is_none();
     let playing = playing.clone();
@@ -1095,13 +1102,37 @@ fn save(
         // One lost on the way is made again with the next change. Only
         // OpenSubsonic's servers clear a queue, so turning that down says
         // nothing of saving one.
-        if let Err(opensubsonic::Error::Status(_) | opensubsonic::Error::Api(_)) = saved
+        if let Err(error) = saved
             && !clearing
+            && refuses_play_queues(&error)
         {
             playing.borrow_mut().queue_refused = true;
         }
     })
     .expect("the event loop is running");
+}
+
+/// Whether `error` says the server will never keep a play queue: it lacks the
+/// call (HTTP 404, 405 or 501), the protocol versions don't match (20, 30),
+/// the user may not (50) or the trial is over (60). A server that is down,
+/// restarting or out of reach is asked again with the next change.
+fn refuses_play_queues(error: &opensubsonic::Error) -> bool {
+    match error {
+        opensubsonic::Error::Status(status) => matches!(status, 404 | 405 | 501),
+        opensubsonic::Error::Api(problem) => matches!(problem.code, 20 | 30 | 50 | 60),
+        _ => false,
+    }
+}
+
+/// Keeps which works of `queue` the sheet lists open on this device, for the
+/// queue saved on the server to open them again at the next start.
+fn remember_expanded_works(queue: &Queue) {
+    let expanded = queue.expanded_works();
+    let mut saved = prefs::load();
+    if saved.expanded_works != expanded {
+        saved.expanded_works = expanded;
+        prefs::save(&saved);
+    }
 }
 
 /// The songs of an album's or a playlist's link, in their order.
@@ -1280,6 +1311,19 @@ pub(crate) mod testing {
     pub(crate) fn restore(ui: &AppWindow) {
         let (browser, playing) = handles();
         super::restore(ui, &browser, &playing);
+    }
+
+    /// Saves the queue at its `index`th song, `seconds` into it, as the
+    /// player's ticks do.
+    pub(crate) fn save(index: usize, seconds: f64) {
+        let (browser, playing) = handles();
+        super::save(&browser, &playing.borrow(), &playing, Some(index), seconds);
+    }
+
+    /// What the player says, while there is one.
+    pub(crate) fn player_status() -> Option<playback::Status> {
+        let (_, playing) = handles();
+        playing.borrow().player.as_ref().map(Player::status)
     }
 
     /// Fetches the song `id` from `seconds` into it as the player does, once

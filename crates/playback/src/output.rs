@@ -85,6 +85,9 @@ pub(crate) struct Ring {
     pub idle: bool,
     /// The device couldn't play what came, so the decoder stops.
     pub halt: bool,
+    /// Where the queue stopped short of its end: the track it couldn't go on
+    /// with, and how far into it.
+    pub stopped: Option<(usize, f64)>,
     /// The track and time being opened, until its audio comes.
     pub loading: Option<(usize, f64)>,
     /// When the last audio handed to the device will have been heard.
@@ -286,6 +289,7 @@ pub(crate) fn run(shared: Arc<Shared>, system: Option<Arc<dyn SystemMixer>>) {
             Err(problem) => {
                 ring.problem = Some(problem);
                 ring.open = None;
+                ring.stopped = ring.heard().or(ring.stopped);
                 ring.segments.clear();
                 ring.halt = true;
             }

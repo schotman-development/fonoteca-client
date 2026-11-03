@@ -161,6 +161,10 @@ pub struct Status {
     /// A track that couldn't play, by its place in the queue, and why; while
     /// the one played in its place is heard.
     pub skipped: Option<(usize, String)>,
+    /// Where the queue stopped short of its end, as a device that can't play
+    /// or tracks that can't play up to its end leave it: the track to go on
+    /// with, and how far into it.
+    pub stopped: Option<(usize, f64)>,
     /// How many of the queue's changes the player has made. Until it has
     /// made all that were asked, `index` counts in the queue as it was.
     pub requeues: u64,
@@ -246,6 +250,7 @@ impl Player {
             current: None,
             next: None,
             failures: 0,
+            failed_from: (0, 0.0),
         };
         std::thread::Builder::new()
             .name("audio decoder".into())
@@ -361,6 +366,7 @@ impl Player {
             path,
             problem: ring.problem.clone(),
             skipped: ring.shown_skip().cloned(),
+            stopped: ring.stopped,
             requeues: ring.requeues,
         }
     }
@@ -423,8 +429,10 @@ struct Decoder {
     current: Option<Current>,
     /// The next track, fetched ahead once the current one has all arrived.
     next: Option<(usize, Result<Download, String>)>,
-    /// Tracks that couldn't play, one after the other.
+    /// Tracks that couldn't play, one after the other, and the first of them
+    /// with how far into it.
     failures: usize,
+    failed_from: (usize, f64),
 }
 
 impl Decoder {
@@ -560,6 +568,9 @@ impl Decoder {
                 .skipped
                 .take()
                 .and_then(|(index, why)| Some((place(index)?, why)));
+            ring.stopped = ring
+                .stopped
+                .and_then(|(index, seconds)| Some((place(index)?, seconds)));
             let heard_gone = ring
                 .segments
                 .front()
@@ -647,6 +658,7 @@ impl Decoder {
             ring.segments.clear();
             ring.problem = None;
             ring.skipped = None;
+            ring.stopped = None;
             ring.loading = Some((index, seconds));
         }
         let again = self
@@ -673,6 +685,7 @@ impl Decoder {
             Ok(supported) => supported,
             Err(Stop::Interrupted) => return,
             Err(Stop::Failed(_)) => {
+                self.shared.ring.lock().unwrap().stopped = Some((index, seconds));
                 self.stop();
                 return;
             }
@@ -734,12 +747,17 @@ impl Decoder {
             }
             // A command came; it says what's next.
             Err(Stop::Interrupted) => {}
-            Err(Stop::Failed(problem)) => self.skip(index, problem),
+            Err(Stop::Failed(problem)) => self.skip(index, seconds, problem),
         }
     }
 
-    /// Reports why the `index`th track can't play and goes on with the next.
-    fn skip(&mut self, index: usize, problem: String) {
+    /// Reports why the `index`th track can't play from `seconds` into it and
+    /// goes on with the next. With none left, the queue stopped short at the
+    /// first of the tracks that failed one after the other.
+    fn skip(&mut self, index: usize, seconds: f64, problem: String) {
+        if self.failures == 0 {
+            self.failed_from = (index, seconds);
+        }
         self.shared.ring.lock().unwrap().skipped = Some((index, problem));
         self.current = None;
         self.failures += 1;
@@ -748,6 +766,9 @@ impl Decoder {
         let next = self
             .following(index)
             .filter(|_| self.failures < self.queue.len());
+        if next.is_none() {
+            self.shared.ring.lock().unwrap().stopped = Some(self.failed_from);
+        }
         self.open(next.unwrap_or(self.queue.len()), 0.0, None);
     }
 
@@ -791,14 +812,22 @@ impl Decoder {
         let result = current.decoding.step(&mut out);
         let index = current.index;
         let finished = !matches!(result, Ok(true) | Err(Stop::Interrupted));
-        {
+        // How far into the track its audio reaches.
+        let reached = {
             let mut ring = self.shared.ring.lock().unwrap();
-            if let Some(segment) = ring.segments.back_mut().filter(|s| s.track == index) {
-                segment.data.extend(out);
-                segment.ended |= finished;
-            }
+            let reached = ring
+                .segments
+                .back_mut()
+                .filter(|s| s.track == index)
+                .map(|segment| {
+                    segment.data.extend(out);
+                    segment.ended |= finished;
+                    (segment.start + segment.played) as f64 / f64::from(segment.format.rate)
+                        + segment.data.len() as f64 / segment.format.bytes_per_second()
+                });
             self.shared.changed.notify_all();
-        }
+            reached
+        };
         match result {
             Ok(true) => {}
             Ok(false) => {
@@ -813,7 +842,7 @@ impl Decoder {
             }
             // A command is waiting and is handled next.
             Err(Stop::Interrupted) => current.decoding.resume(),
-            Err(Stop::Failed(problem)) => self.skip(index, problem),
+            Err(Stop::Failed(problem)) => self.skip(index, reached.unwrap_or(0.0), problem),
         }
         // The next track starts downloading once this one is in, so a gap
         // in the network doesn't become one in the music. One played again

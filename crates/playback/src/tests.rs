@@ -744,6 +744,7 @@ fn nothing_is_fetched_without_a_device() {
         current: None,
         next: None,
         failures: 0,
+        failed_from: (0, 0.0),
     };
     decoder.open(0, 0.0, None);
     assert_eq!(fetched.load(Relaxed), 0);
@@ -932,6 +933,7 @@ fn decoder_of(ids: &[&str]) -> (Decoder, Arc<Shared>, Arc<std::sync::Mutex<Vec<S
         current: None,
         next: None,
         failures: 0,
+        failed_from: (0, 0.0),
     };
     (decoder, shared, fetched)
 }
@@ -1028,6 +1030,25 @@ fn a_repeating_queue_whose_tracks_all_fail_stops() {
     decoder.open(1, 0.0, None);
     assert_eq!(tries.load(Relaxed), 3);
     assert!(shared.ring.lock().unwrap().idle);
+}
+
+#[test]
+fn a_queue_stopped_short_says_where_and_one_played_to_its_end_does_not() {
+    let (mut decoder, shared, _) = decoder_of(&["a", "b", "c"]);
+    let samples = ramp(4_410, 2, 16);
+    decoder.fetch = Box::new(move |track: &Track, _: f64| match track.id.as_str() {
+        "a" => Ok(wav(44_100, 2, 16, &samples)),
+        _ => Err("Gone.".into()),
+    });
+    decoder.open(0, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 3), ["a"]);
+    let stopped = shared.ring.lock().unwrap().stopped;
+    assert_eq!(stopped, Some((1, 0.0)), "at the first that failed");
+
+    let (mut decoder, shared, _) = decoder_of(&["a", "b"]);
+    decoder.open(0, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 3), ["a", "b"]);
+    assert_eq!(shared.ring.lock().unwrap().stopped, None);
 }
 
 #[test]

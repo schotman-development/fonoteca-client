@@ -737,9 +737,16 @@ mod tests {
     /// While set, the server takes only an artist's name for their top
     /// songs, not their id, as Fonoteca does.
     static NAMES_ONLY: AtomicBool = AtomicBool::new(false);
-    /// While set, the server has a saved play queue, one song of the
-    /// classical album, and no motion covers; and how many it was asked for.
+    /// While set, the server has a saved play queue, a song and a whole work
+    /// of the classical album a minute into the work's second movement, and
+    /// no motion covers; and how many it was asked for.
     static QUEUED: AtomicBool = AtomicBool::new(false);
+    /// The play queues the server was asked to save, as `PLAYLIST_WRITES`
+    /// has them; while set, it answers the next save as one restarting does,
+    /// and every save as one that doesn't let the user.
+    static SAVES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static SAVE_DOWN: AtomicBool = AtomicBool::new(false);
+    static SAVE_REFUSED: AtomicBool = AtomicBool::new(false);
     static NO_MOTION: AtomicBool = AtomicBool::new(false);
     /// While set, the classical album's motion cover takes a while to come.
     static SLOW_MOTION: AtomicBool = AtomicBool::new(false);
@@ -1197,10 +1204,33 @@ mod tests {
         } else if request.contains("/rest/startScan") {
             SCANNING.store(true, Relaxed);
             ok(r#""scanStatus":{"scanning":true,"count":3}"#)
+        } else if request.contains("/rest/savePlayQueue") {
+            SAVES.lock().unwrap().push(write_of(request));
+            if SAVE_DOWN.swap(false, Relaxed) {
+                reply("503 Service Unavailable", "text/plain", b"Restarting.")
+            } else if SAVE_REFUSED.load(Relaxed) {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Not allowed"}}}"#,
+                )
+            } else {
+                json(OK)
+            }
         } else if request.contains("/rest/getPlayQueue") && QUEUED.load(Relaxed) {
-            ok(
-                r#""playQueue":{"current":"c1","position":0,"username":"joe","changed":"2024-01-01T00:00:00Z","changedBy":"test","entry":[{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","album":"Symphonies","albumId":"a2","coverArt":"al-a2","duration":441}]}"#,
-            )
+            let movement = |id: &str, name: &str, number: u8| {
+                format!(
+                    r#"{{"id":"{id}","isDir":false,"title":"Sonata: {name}","album":"Symphonies","albumId":"a2","coverArt":"al-a2","duration":300,"works":[{{"name":"Sonata"}}],"movements":[{{"name":"{name}","number":{number},"count":3}}]}}"#
+                )
+            };
+            let entries = [
+                r#"{"id":"c1","isDir":false,"title":"Symphony No. 5: I. Allegro con brio","album":"Symphonies","albumId":"a2","coverArt":"al-a2","duration":441}"#.to_owned(),
+                movement("m1", "I", 1),
+                movement("m2", "II", 2),
+                movement("m3", "III", 3),
+            ]
+            .join(",");
+            ok(&format!(
+                r#""playQueue":{{"current":"m2","position":61500,"username":"joe","changed":"2024-01-01T00:00:00Z","changedBy":"test","entry":[{entries}]}}"#
+            ))
         } else if request.contains("/rest/getCoverArt") {
             if COVERS.fetch_add(1, Relaxed) < 6 {
                 FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
@@ -5112,12 +5142,94 @@ mod tests {
             assert_eq!(play::testing::queued_ids().0, ["lead", "solo", "I", "II", "III", "one", "two"]);
 
             // So does the queue loaded anew, as on a sign in.
+            let mut saved = prefs::load();
+            saved.expanded_works = vec!["m1".into()];
+            prefs::save(&saved);
             let asked = MOTIONS_ASKED.load(Relaxed);
             play::testing::restore(&ui);
             wait_for("its motion after the sign in", || {
                 MOTIONS_ASKED.load(Relaxed) > asked
             })
             .await;
+
+            // It is at the song it was at, as far into it, and its whole work
+            // is one row again, open as it was left; closed, it stays closed.
+            let row = |title: &str, work: bool, part: bool| (title.to_owned(), work, part);
+            wait_for("the saved queue", || ui.get_playing_movement() == "II").await;
+            assert_eq!(ui.get_playing_title(), "Sonata");
+            assert_eq!(ui.get_playing_movement_place(), "2 of 3");
+            assert_eq!(ui.get_playing_position(), 61.5);
+            assert_eq!(
+                rows(),
+                [
+                    row("Sonata", true, false),
+                    row("I", false, true),
+                    row("II", false, true),
+                    row("III", false, true)
+                ]
+            );
+            ui.invoke_toggle_queued_work(0);
+            assert_eq!(rows(), [row("Sonata", true, false)]);
+            assert!(prefs::load().expanded_works.is_empty());
+
+            // A save the server turns down while it restarts doesn't stop the
+            // next: that one goes out with where the queue is by then.
+            SAVES.lock().unwrap().clear();
+            SAVE_DOWN.store(true, Relaxed);
+            play::testing::save(2, 70.0);
+            wait_for("the save turned down", || !SAVE_DOWN.load(Relaxed)).await;
+            idle(Duration::from_millis(200)).await;
+            play::testing::save(3, 5.0);
+            wait_for("the next save", || SAVES.lock().unwrap().len() == 2).await;
+            assert_eq!(
+                SAVES.lock().unwrap().clone(),
+                [
+                    "savePlayQueue id=c1&id=m1&id=m2&id=m3&current=m2&position=70000",
+                    "savePlayQueue id=c1&id=m1&id=m2&id=m3&current=m3&position=5000"
+                ]
+            );
+
+            // One that says it will never keep the queue, as when the user
+            // may not, isn't asked again until the next sign in.
+            SAVES.lock().unwrap().clear();
+            SAVE_REFUSED.store(true, Relaxed);
+            play::testing::save(2, 70.0);
+            wait_for("the save refused", || SAVES.lock().unwrap().len() == 1).await;
+            idle(Duration::from_millis(200)).await;
+            play::testing::save(3, 5.0);
+            idle(Duration::from_millis(200)).await;
+            assert_eq!(SAVES.lock().unwrap().len(), 1, "not asked again");
+            SAVE_REFUSED.store(false, Relaxed);
+            play::testing::restore(&ui);
+            wait_for("the queue loaded again", || ui.get_playing()).await;
+            play::testing::save(3, 5.0);
+            wait_for("a save after the sign in", || SAVES.lock().unwrap().len() == 2).await;
+            assert_eq!(
+                SAVES.lock().unwrap()[1],
+                "savePlayQueue id=c1&id=m1&id=m2&id=m3&current=m3&position=5000"
+            );
+
+            // Played, it goes on at that song from as far into it. A player
+            // that stops short of the queue's end, as without a sound device
+            // or with songs that can't play, goes on from there again, not
+            // from the queue's first song.
+            ui.invoke_toggle_pause();
+            wait_for("the player to stop short", || {
+                play::testing::player_status()
+                    .is_some_and(|status| status.ended && status.stopped.is_some())
+            })
+            .await;
+            let stopped = play::testing::player_status().and_then(|status| status.stopped);
+            assert_eq!(stopped, Some((2, 61.5)));
+            ui.invoke_toggle_pause();
+            wait_for("Play to go on where it stopped", || {
+                play::testing::player_status().is_some_and(|status| {
+                    let at = status.index.map(|index| (index, status.position));
+                    at.or(status.stopped) == Some((2, 61.5))
+                })
+            })
+            .await;
+            play::testing::clear(&ui);
 
             // A song with a waveform shows it as the seek bar, and one without
             // keeps the plain bar. The last song's waveform goes at once, and

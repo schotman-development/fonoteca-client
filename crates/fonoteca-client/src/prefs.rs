@@ -50,6 +50,10 @@ pub struct Prefs {
     pub eq_presets: Vec<EqPreset>,
     /// Whether the queue repeats: not, all of it, or the track playing.
     pub repeat: i32,
+    /// The works of the queue saved on the server whose rows the now playing
+    /// sheet lists open, by the ids of their first songs: the server keeps
+    /// only the songs.
+    pub expanded_works: Vec<String>,
 }
 
 /// A streaming format's entry in the settings, and its bitrate's; the first

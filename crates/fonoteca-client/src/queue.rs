@@ -61,13 +61,11 @@ pub struct Row {
 }
 
 impl Queue {
+    /// The queue of `songs` queued before, as the server keeps them: a list
+    /// of songs that has lost which of them were works, so each whole work
+    /// is a unit again, as a page makes it.
     pub fn new(songs: Vec<Child>) -> Self {
-        let mut queue = Queue::default();
-        queue.entries = songs
-            .into_iter()
-            .map(|song| queue.entry(song, None))
-            .collect();
-        queue
+        Queue::from_page(songs, 0)
     }
 
     /// The queue of a page's `songs`, played from the `start`th.
@@ -190,6 +188,34 @@ impl Queue {
         if !self.expanded.remove(&key) {
             self.expanded.insert(key);
         }
+    }
+
+    /// The works whose rows are open, by the ids of their first songs, which
+    /// outlast the keys.
+    pub fn expanded_works(&self) -> Vec<String> {
+        self.work_starts()
+            .filter(|(_, key)| self.expanded.contains(key))
+            .map(|(song, _)| song.id.clone())
+            .collect()
+    }
+
+    /// Opens the rows of the works whose first songs are `first_songs`.
+    pub fn expand_works(&mut self, first_songs: &[String]) {
+        let keys: Vec<u64> = self
+            .work_starts()
+            .filter(|(song, _)| first_songs.contains(&song.id))
+            .map(|(_, key)| key)
+            .collect();
+        self.expanded.extend(keys);
+    }
+
+    /// The first song of each work queued whole, and the work's key.
+    fn work_starts(&self) -> impl Iterator<Item = (&Child, u64)> {
+        self.entries.iter().enumerate().filter_map(|(at, entry)| {
+            let key = entry.work?;
+            let continues_its_work = at > 0 && self.entries[at - 1].work == Some(key);
+            (!continues_its_work).then_some((&entry.song, key))
+        })
     }
 
     /// Puts `songs` in before the `at`th song, or at the end; shuffled by
@@ -781,5 +807,28 @@ mod tests {
         assert_eq!(q.rows(None, 2).len(), 2, "stops at the limit");
         q.toggle_work(key(&q, 4));
         assert_eq!(q.rows(Some(3), 10).len(), 2);
+    }
+
+    #[test]
+    fn a_queue_loaded_anew_has_its_whole_works_open_as_they_were() {
+        let mut q = Queue::from_page(page(), 0);
+        q.toggle_work(q.unit_at(4).work.unwrap());
+        let expanded = q.expanded_works();
+        assert_eq!(expanded, ["s1"]);
+
+        let mut loaded = Queue::new(page());
+        assert_eq!(units(&loaded), [0..1, 1..3, 3..4, 4..7]);
+        loaded.expand_works(&expanded);
+        let rows = loaded.rows(None, 10);
+        assert_eq!(rows.len(), 7);
+        assert!(matches!(
+            rows[1].shape,
+            Shape::Work {
+                expanded: false,
+                ..
+            }
+        ));
+        assert!(matches!(rows[3].shape, Shape::Work { expanded: true, .. }));
+        assert_eq!(loaded.expanded_works(), ["s1"]);
     }
 }
