@@ -236,6 +236,8 @@ component PageScroll inherits FocusScope {
     // Whether it takes the keys back when Input.refocus asks: the page
     // doesn't while the sheet is over it, nor the sheet once it is gone.
     in property <bool> active: true;
+    // Whether more may come below its end, as a long list's next hundred.
+    in property <bool> open-ended;
     out property <length> visible-width: flick.width;
     out property <length> visible-height: flick.height;
     in-out property <length> content-width <=> flick.content-width;
@@ -473,8 +475,14 @@ component PageScroll inherits FocusScope {
                 }
                 root.glide-from = clamp(root.dragged-to, root.far, 0);
                 root.glided-to = root.page-at;
-                root.glide-by = Fling.distance(flung);
-                root.glide-time = Fling.time(flung);
+                // Short of an end, it eases into it rather than stopping dead
+                // on it, as a shelf comes to rest on its last tile; in that
+                // much less time, so it still leaves the finger as fast as the
+                // finger went. Not into a bottom that more may come under.
+                let natural = Fling.distance(flung);
+                let open = root.open-ended && !root.across && natural < 0;
+                root.glide-by = open ? natural : clamp(root.glide-from + natural, root.far, 0) - root.glide-from;
+                root.glide-time = natural == 0px ? 0ms : Fling.time(flung) * (root.glide-by / natural);
                 root.gliding = root.glide-by != 0;
             }
             // A shelf goes back to where it rested.
@@ -1560,8 +1568,9 @@ export component AppWindow inherits Window {
                         root.clear-selection();
                     }
                 }
+                open-ended: (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.stations || root.table) && root.more-tiles && root.page-problem == "";
                 near-end => {
-                    if (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.stations || root.table) && root.more-tiles && !root.loading && root.page-problem == "" {
+                    if self.open-ended && !root.loading {
                         root.show-more();
                     }
                 }

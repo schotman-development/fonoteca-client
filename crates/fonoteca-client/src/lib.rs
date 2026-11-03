@@ -1372,6 +1372,25 @@ mod tests {
         panic!("still moving at {last}");
     }
 
+    /// Waits for a glide just let go 248px short of an edge at 2000px/s,
+    /// which glides 647px, to reach it, and checks it eased into it, as a
+    /// shelf into its last tile, rather than stopping dead on it after a
+    /// tenth of a second; in 248/647 of the 925ms, so it left the finger as
+    /// fast.
+    async fn eases_into(edge: &str, reached: impl Fn() -> bool) {
+        let let_go = Instant::now();
+        wait_for(edge, reached).await;
+        let eased = let_go.elapsed();
+        assert!(
+            eased > Duration::from_millis(250),
+            "stopped dead on {edge} after {eased:?}"
+        );
+        assert!(
+            eased < Duration::from_millis(600),
+            "eased into {edge} over {eased:?}"
+        );
+    }
+
     fn middle(element: &ElementHandle) -> slint::LogicalPosition {
         let (at, size) = (element.absolute_position(), element.size());
         slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0)
@@ -2671,7 +2690,31 @@ mod tests {
             drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -220.0)], 0).await;
             let glided = settled(scrolled).await - let_go;
             assert!((glided - 7186.4).abs() < 0.5, "glided {glided}px");
+            // A list more may come under it glides on into, as far as ever:
+            // short of the bottom it had when let go, it takes in the next
+            // hundred as it nears it.
+            assert!(ui.get_more_tiles());
+            let let_go = scrolled() + 220.0;
+            drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -220.0)], 0).await;
+            let glided = settled(scrolled).await - let_go;
+            assert!((glided - 7186.4).abs() < 0.5, "glided {glided}px on");
+            // Once nothing more comes under it, it eases into the bottom, as
+            // into the top.
+            wait_for("the last albums", || {
+                scroll(-100000.0);
+                !ui.get_more_tiles()
+            })
+            .await;
+            scroll(-100000.0);
+            let bottom = scrolled();
+            scroll(300.0);
+            drag(&ui, from, &[(0, 0.0, -20.0), (0, 0.0, -52.0)], 0).await;
+            eases_into("the bottom", || (scrolled() - bottom).abs() < 0.01).await;
             scroll(100000.0);
+            scroll(-300.0);
+            assert_eq!(scrolled(), 300.0);
+            drag(&ui, from, &[(0, 0.0, 20.0), (0, 0.0, 52.0)], 0).await;
+            eases_into("the top", || scrolled() == 0.0).await;
             hold(&ui, left, 50.0, 0).await;
             assert_eq!(ui.get_page(), Page::Albums, "not far enough");
             hold(&ui, left, 100.0, 0).await;
@@ -3656,7 +3699,17 @@ mod tests {
             drag(&ui, middle(&page), &[(0, -20.0, 4.0), (0, -60.0, 6.0)], 100).await;
             let panned = unpanned - title_x();
             assert!((panned - 60.0).abs() < 0.01, "panned {panned}px");
-            drag(&ui, middle(&page), &[(0, 20.0, 0.0), (0, 200.0, 0.0)], 100).await;
+            // Flung sideways, it eases into its edge, though more may come
+            // under it. Only the columns in sight are there.
+            assert!(ui.get_more_tiles());
+            let size_x = || find(&ui, "Sort by Size").map(|size| size.absolute_position().x);
+            drag(&ui, middle(&page), &[(0, -20.0, 0.0), (0, -2000.0, 0.0)], 100).await;
+            let edge = size_x().unwrap();
+            drag(&ui, middle(&page), &[(0, 20.0, 0.0), (0, 300.0, 0.0)], 100).await;
+            drag(&ui, middle(&page), &[(0, -20.0, 0.0), (0, -52.0, 0.0)], 0).await;
+            let at_edge = || size_x().is_some_and(|x| (x - edge).abs() < 0.01);
+            eases_into("the right edge", at_edge).await;
+            drag(&ui, middle(&page), &[(0, 20.0, 0.0), (0, 2000.0, 0.0)], 100).await;
             assert!((title_x() - unpanned).abs() < 0.01, "back at its left edge");
             ui.global::<Input>().set_finger(false);
             assert_eq!(ui.get_track_lines().row_count(), 100);
