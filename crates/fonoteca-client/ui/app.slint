@@ -1,5 +1,5 @@
 import { Button, CheckBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
 
@@ -1006,6 +1006,12 @@ export component AppWindow inherits Window {
     // from the track playing on, with how many more there are than it shows.
     in property <image> playing-art;
     in property <Name> playing-album;
+    in property <bool> playing-loved;
+    callback toggle-playing-love();
+    // A song was loved or unloved, whatever the page; for the sheet's heart.
+    callback song-loved(id: string, loved: bool);
+    callback add-playing-to-playlist(id: string);
+    callback tag-playing();
     out property <bool> now-playing-open;
     // Whether what plays moves on the sheet: the motion cover plays only
     // while the sheet is open and the song plays.
@@ -3058,10 +3064,32 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         padding: 8px;
                         padding-left: 16px;
+                        padding-right: 16px;
                         IconButton {
                             icon: Icons.chevron-down;
                             label: "Close now playing";
                             clicked => { root.close-now-playing(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        // What plays gets the menu a song gets in a table,
+                        // less what queues or selects it.
+                        TrackMenu {
+                            line: {
+                                title: root.playing-title,
+                                loved: root.playing-loved,
+                                album: root.playing-album,
+                                artists: root.playing-names,
+                            };
+                            playlists: root.playlist-targets;
+                            taggable: root.tags-offered;
+                            selectable: false;
+                            open(link) => { root.open-from-now-playing(link); }
+                            toggle-love => { root.toggle-playing-love(); }
+                            add-to-playlist(id) => { root.add-playing-to-playlist(id); }
+                            tag => {
+                                root.tag-playing();
+                                root.ask(Asking.tag-songs);
+                            }
                         }
                     }
                     sheet-scroll := PageScroll {
@@ -3085,11 +3113,12 @@ export component AppWindow inherits Window {
                             // starts below its fold.
                             VerticalLayout {
                                 min-height: sheet-scroll.visible-height - sheet-stage.padding-top - sheet-stage.spacing;
-                                spacing: 24px;
+                                spacing: 32px;
                                 VerticalLayout {
-                                    spacing: 24px;
+                                    spacing: 32px;
                                     alignment: start;
                                     NowPlaying {
+                                        active: root.now-playing-open;
                                         available: min(sheet-scroll.visible-width, 1600px) - 48px;
                                         cover: root.playing-art;
                                         title: root.playing-title;

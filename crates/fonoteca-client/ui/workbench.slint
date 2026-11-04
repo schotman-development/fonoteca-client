@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -799,7 +799,32 @@ export component Workbench inherits Window {
 
                     if root.current == 16: Example {
                         caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. The sound device menu opens from the button at the bottom, named beside it, with the long list of an ALSA host under the Long text switch. A phone's controls follow, then the queue's rows, the one playing coloured; a work queued whole is one row that opens to its movements";
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            IconButton {
+                                icon: Icons.chevron-down;
+                                label: "Close now playing";
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            TrackMenu {
+                                line: {
+                                    title: "Northern Lights",
+                                    loved: root.loved-1,
+                                    album: { label: "Aurora", link: "album:1" },
+                                    artists: root.mara,
+                                };
+                                playlists: [{ label: "Road Trip", link: "1" }, { label: "Running", link: "2" }];
+                                taggable: true;
+                                selectable: false;
+                                open(link) => { root.event = "open " + link; }
+                                toggle-love => { root.loved-1 = !root.loved-1; }
+                                add-to-playlist(id) => { root.event = "add to playlist " + id; }
+                                tag => { root.event = "tag"; }
+                            }
+                        }
                         NowPlaying {
+                            active: true;
                             available: root.long-text ? 400px : 900px;
                             cover: root.albums[0].cover;
                             title: root.long-text ? root.long-title : "Northern Lights";

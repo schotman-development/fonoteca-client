@@ -5043,6 +5043,22 @@ mod tests {
             wait_for("its frames", || ["red", "blue"].contains(&art_looks(&ui))).await;
             assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
 
+            // The sheet's heart follows the song that plays: a love from a
+            // table lands in the queue's copy, so it holds when the song comes
+            // round again; a heart the server refuses goes back.
+            play::testing::show_song(&ui, vec![song("h1", "a2"), song("h2", "a2")], 0);
+            assert!(!ui.get_playing_loved());
+            ui.invoke_song_loved("h2".into(), true);
+            assert!(!ui.get_playing_loved(), "another song's heart");
+            ui.invoke_song_loved("h1".into(), true);
+            assert!(ui.get_playing_loved());
+            assert_eq!(play::testing::loved_ids(), [true, true]);
+            ui.invoke_toggle_playing_love();
+            assert!(!ui.get_playing_loved(), "unloved at once");
+            assert_eq!(play::testing::loved_ids(), [false, true]);
+            wait_for("the refused unstar", || ui.get_playing_loved()).await;
+            assert_eq!(play::testing::loved_ids(), [true, true], "refused, so loved again");
+
             // A work played whole is one row of the queue that opens to its
             // movements; played from the middle, its movements are songs.
             let movement = |id: &str, work: &str| -> opensubsonic::Child {

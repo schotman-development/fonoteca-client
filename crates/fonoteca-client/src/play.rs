@@ -151,6 +151,47 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             announce(&p, status.index, status.paused || status.ended, seconds);
         }
     });
+    ui.on_toggle_playing_love({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let ui = weak.unwrap();
+            let Some(id) = shown_song_id(&playing.borrow()) else {
+                return;
+            };
+            browse::love_playing(&ui, &browser, id, !ui.get_playing_loved());
+        }
+    });
+    // Whichever way a song is loved or unloved, in a table or on the sheet,
+    // the queue's copy and the sheet's heart follow.
+    ui.on_song_loved({
+        let (weak, playing) = (ui.as_weak(), playing.clone());
+        move |id, loved| {
+            let mut p = playing.borrow_mut();
+            p.queue.set_loved(&id, loved);
+            if shown_song_id(&p).as_deref() == Some(id.as_str()) {
+                weak.unwrap().set_playing_loved(loved);
+            }
+        }
+    });
+    ui.on_add_playing_to_playlist({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |playlist| {
+            let links = shown_song_id(&playing.borrow()).map(|id| format!("song:{id}"));
+            browse::add_to_playlist(
+                &weak.unwrap(),
+                &browser,
+                playlist.into(),
+                links.into_iter().collect(),
+            );
+        }
+    });
+    ui.on_tag_playing({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let links = shown_song_id(&playing.borrow()).map(|id| format!("song:{id}"));
+            browse::start_tagging(&weak.unwrap(), &browser, links.into_iter().collect());
+        }
+    });
     ui.on_toggle_shuffle({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move || {
@@ -784,6 +825,13 @@ fn quality_name(quality: Quality) -> &'static str {
     }
 }
 
+/// The id of the song the bar shows.
+fn shown_song_id(p: &Playing) -> Option<String> {
+    p.shown
+        .and_then(|shown| p.queue.get(shown))
+        .map(|song| song.id.clone())
+}
+
 /// Puts the `index`th song of the queue on the bar and the now playing
 /// page, with its cover once it comes.
 fn show_song(
@@ -824,6 +872,7 @@ fn show_song(
             .as_ref()
             .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
     });
+    ui.set_playing_loved(song.starred.is_some());
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());
     let (playing_now, song_id) = (playing.clone(), song.id.clone());
@@ -1357,6 +1406,13 @@ pub(crate) mod testing {
             p.queue.songs().map(|song| song.id.clone()).collect(),
             p.shown,
         )
+    }
+
+    /// Whether each song queued is loved, in order.
+    pub(crate) fn loved_ids() -> Vec<bool> {
+        let (_, playing) = handles();
+        let p = playing.borrow();
+        p.queue.songs().map(|song| song.starred.is_some()).collect()
     }
 
     /// What is kept on this device, as the first window has it.

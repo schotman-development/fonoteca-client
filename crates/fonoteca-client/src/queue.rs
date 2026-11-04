@@ -243,6 +243,13 @@ impl Queue {
         })
     }
 
+    /// Records whether the song `id` is loved, wherever it is queued.
+    pub fn set_loved(&mut self, id: &str, loved: bool) {
+        for entry in self.entries.iter_mut().filter(|entry| entry.song.id == id) {
+            entry.song.starred = loved.then(String::new);
+        }
+    }
+
     /// Takes out the songs in `songs`.
     pub fn remove(&mut self, songs: Range<usize>) -> Moved {
         self.change(|queue| {
@@ -449,6 +456,16 @@ mod tests {
 
     fn ids(queue: &Queue) -> Vec<&str> {
         queue.songs().map(|song| song.id.as_str()).collect()
+    }
+
+    #[test]
+    fn loving_a_song_marks_every_copy_of_it_in_the_queue() {
+        let mut q = queue(&["a", "b", "a"]);
+        let loved = |q: &Queue| -> Vec<bool> { q.songs().map(|s| s.starred.is_some()).collect() };
+        q.set_loved("a", true);
+        assert_eq!(loved(&q), [true, false, true]);
+        q.set_loved("a", false);
+        assert_eq!(loved(&q), [false, false, false]);
     }
 
     #[test]

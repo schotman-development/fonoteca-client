@@ -3872,7 +3872,7 @@ fn remove_from_playlist(ui: &AppWindow, browser: &Shared, row: usize) {
 /// order, and says how many went in: a song's own, an album's, an artist's
 /// albums' or a playlist's. Folders and compositions add none.
 // ponytail: folders and compositions are skipped; walk them when someone selects those to add.
-fn add_to_playlist(ui: &AppWindow, browser: &Shared, id: String, links: Vec<String>) {
+pub(crate) fn add_to_playlist(ui: &AppWindow, browser: &Shared, id: String, links: Vec<String>) {
     let name = browser
         .borrow()
         .playlists
@@ -4137,7 +4137,7 @@ fn delete_tag(ui: &AppWindow, browser: &Shared, id: String) {
 /// Readies the tags dialog for the songs of these links, as add_to_playlist
 /// takes them, with the tags each has: known for the songs on screen, else
 /// asked for.
-fn start_tagging(ui: &AppWindow, browser: &Shared, links: Vec<String>) {
+pub(crate) fn start_tagging(ui: &AppWindow, browser: &Shared, links: Vec<String>) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
@@ -6748,6 +6748,8 @@ fn love(
     let visit = b.visit;
     drop(b);
 
+    // The song may be the one that plays, whose sheet shows the heart too.
+    ui.invoke_song_loved(id.as_str().into(), loved);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
         let starred = if loved {
@@ -6757,12 +6759,24 @@ fn love(
         };
         if let (Err(e), Some(ui)) = (starred, weak.upgrade()) {
             undo(&ui, &browser);
+            ui.invoke_song_loved(id.as_str().into(), !loved);
             if browser.borrow().visit == visit {
                 ui.set_page_problem(format!("Your server didn't take that: {e}").into());
             }
         }
     })
     .expect("the event loop is running");
+}
+
+/// Loves or unloves a song that plays, which no table of the page holds a
+/// row of.
+#[cfg(not(target_family = "wasm"))]
+pub fn love_playing(ui: &AppWindow, browser: &Shared, id: String, loved: bool) {
+    mark_loved(&mut browser.borrow_mut(), ui.get_page(), &id, loved);
+    let song = id.clone();
+    love(ui, browser, id, loved, move |ui, browser| {
+        mark_loved(&mut browser.borrow_mut(), ui.get_page(), &song, !loved);
+    });
 }
 
 /// `logical` pixels in physical ones, which is what the server should scale to.
