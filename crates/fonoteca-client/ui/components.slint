@@ -55,6 +55,15 @@ export struct Name {
     link: string,
 }
 
+// A place to go from the navigation: its name, its icon, the link it opens
+// and the group it is listed under, if any.
+export struct NavEntry {
+    title: string,
+    icon: string,
+    link: string,
+    group: string,
+}
+
 // An entry of a menu: its words, its icon, a path of `Icons`, and whether
 // it is red, for one that destroys. With `choices` it opens a submenu of
 // them, such as the playlists to add to. `id` tells the menu's owner which
@@ -1451,7 +1460,7 @@ export component SettingsRow inherits Pressable {
                 color: Theme.text;
                 overflow: elide;
             }
-            Text {
+            if root.summary != "": Text {
                 text: root.summary;
                 font-size: Theme.small;
                 color: Theme.muted;
@@ -2678,9 +2687,80 @@ export component Sidebar inherits Rectangle {
     }
 }
 
+// One destination of the BottomBar: its icon in a pill that lights when it is
+// the current one, and its name under it.
+component BarItem inherits Pressable {
+    in property <string> text;
+    in property <string> icon;
+    in property <bool> current;
+    label: self.text;
+    accessible-item-selectable: true;
+    accessible-item-selected: self.current;
+    // Equal widths, whatever the names measure bold or plain.
+    preferred-width: 0;
+    horizontal-stretch: 1;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 4px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 56px;
+                height: 32px;
+                border-radius: 16px;
+                background: root.current ? Theme.accent.transparentize(75%) : root.hovered ? Theme.hover : transparent;
+                Path {
+                    width: 24px;
+                    height: 24px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: root.icon;
+                    stroke: root.current ? Theme.text : Theme.muted;
+                    stroke-width: 1.75px;
+                }
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: Theme.small;
+            font-weight: root.current ? 600 : 400;
+            color: root.current ? Theme.text : Theme.muted;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// The navigation of a phone, along the bottom of the window in the place of
+// the sidebar: Material 3's navigation bar, 80px high, each entry its
+// icon and name, the current one's icon in a pill.
+export component BottomBar inherits Rectangle {
+    in property <[NavEntry]> entries;
+    in property <int> current;
+    callback selected(index: int);
+
+    height: 80px;
+    background: Theme.surface;
+    accessible-role: navigation;
+    accessible-label: "Main";
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        for entry[i] in root.entries: BarItem {
+            text: entry.title;
+            icon: entry.icon;
+            current: i == root.current;
+            clicked => { root.selected(i); }
+        }
+    }
+}
+
 // Back and forward through the pages seen, search across the library, and at
 // the end the settings and the account. With `menu`, a button first that
-// opens the sidebar. On a `phone` the buttons are a finger's size.
+// opens the sidebar. On a `phone` the buttons are a finger's size and the
+// settings are on the bottom bar instead.
 export component TopBar inherits HorizontalLayout {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
@@ -2743,7 +2823,7 @@ export component TopBar inherits HorizontalLayout {
         text <=> root.query;
         accepted(text) => { root.search(text); }
     }
-    IconButton {
+    if !root.phone: IconButton {
         cross-axis-self-alignment: center;
         width: root.button-size;
         height: root.button-size;

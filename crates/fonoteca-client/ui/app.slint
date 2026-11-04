@@ -1,11 +1,11 @@
 import { Button, CheckBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, BottomBar, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
 
-export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
+export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads, browse, library }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -918,6 +918,13 @@ export component AppWindow inherits Window {
     in property <[string]> section-groups;
     in property <[string]> section-icons;
     in-out property <int> section;
+    // The phone's bottom bar: its entries, the one lit, and what the pages
+    // it opens link to.
+    in property <[NavEntry]> bar-entries;
+    in property <int> bar-section;
+    in property <[NavEntry]> browse-links;
+    in property <[NavEntry]> library-links;
+    property <[NavEntry]> hub-links: root.page == Page.browse ? root.browse-links : root.library-links;
     in property <[AlbumTile]> tiles;
     in property <bool> more-tiles;
     in property <[Stat]> stats;
@@ -1482,10 +1489,15 @@ export component AppWindow inherits Window {
     property <bool> sidebar-open;
 
     changed docked => { root.sidebar-open = false; }
+    changed phone => { root.sidebar-open = false; }
 
     // A phone-sized window, where the onboarding is a form from the top
-    // with bigger text and buttons.
+    // with bigger text and buttons, and a bar along the bottom takes the
+    // sidebar's place. It gives way to the keyboard, which needs the room
+    // more.
     property <bool> phone: root.width < 600px;
+    property <bool> bottom-bar-shown: root.phone && root.virtual-keyboard-size.height <= 0;
+    property <length> bottom-bar-height: root.bottom-bar-shown ? 80px : 0;
     // What a phone covers at the bottom: its navigation bar, or the keyboard
     // when that is open, which the pages and forms stay above.
     property <length> bottom-inset: max(root.safe-area-insets.bottom, root.virtual-keyboard-size.height);
@@ -1515,7 +1527,7 @@ export component AppWindow inherits Window {
                 can-go-back: root.can-go-back;
                 can-go-forward: root.can-go-forward;
                 searchable: false;
-                menu: !root.docked;
+                menu: !root.docked && !root.phone;
                 phone: root.phone;
                 back => { root.back(); }
                 forward => { root.forward(); }
@@ -2338,6 +2350,28 @@ export component AppWindow inherits Window {
                     }
                     // The settings: the server's scan of its libraries, which only
                     // its admins may start.
+                    // Where the bottom bar's Browse and Library lead: links to
+                    // the pages under them.
+                    if root.page == Page.browse || root.page == Page.library: VerticalLayout {
+                        max-width: 480px;
+                        spacing: 4px;
+                        Heading { text: root.page == Page.browse ? "Browse" : "Library"; }
+                        for link[i] in root.hub-links: VerticalLayout {
+                            spacing: 4px;
+                            if link.group != "" && (i == 0 || link.group != root.hub-links[i - 1].group): Text {
+                                text: link.group;
+                                font-size: Theme.small;
+                                font-weight: 600;
+                                color: Theme.muted;
+                                overflow: elide;
+                            }
+                            SettingsRow {
+                                icon: link.icon;
+                                title: link.title;
+                                clicked => { root.open(link.link); }
+                            }
+                        }
+                    }
                     if root.page == Page.settings: VerticalLayout {
                         max-width: 480px;
                         spacing: 4px;
@@ -2953,13 +2987,21 @@ export component AppWindow inherits Window {
                     seek(seconds) => { root.seek(seconds); }
                 }
             }
+            // Under the player's bar, and over the phone's own bar. The
+            // now playing sheet, which has its own controls, covers it.
+            if root.bottom-bar-shown: BottomBar {
+                visible: !root.page-covered;
+                entries: root.bar-entries;
+                current: root.bar-section;
+                selected(index) => { root.open(root.bar-entries[index].link); }
+            }
         }
     }
 
     if root.step == Step.done && root.selected-tiles > 0: SelectionBar {
         x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
         // Over the player's bar, when it is up.
-        y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0);
+        y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0) - root.bottom-bar-height;
         width: self.preferred-width;
         height: self.preferred-height;
         count: root.selected-tiles;
@@ -3274,7 +3316,7 @@ export component AppWindow inherits Window {
     // Over the player's bar, when it is up, as the selection bar.
     if root.step == Step.done && root.notice != "" && root.selected-tiles == 0: Rectangle {
         x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
-        y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0);
+        y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0) - root.bottom-bar-height;
         width: min(notice.preferred-width, root.width - root.sidebar-width - 32px);
         height: notice.preferred-height;
         border-radius: 12px;
@@ -3296,7 +3338,7 @@ export component AppWindow inherits Window {
     // The sidebar opened over a narrow window; a tap beside it, Escape or
     // Android's back closes it. It takes the keys when it opens, and gives
     // them to the page when it closes.
-    if root.step == Step.done && !root.docked && root.sidebar-open: Rectangle {
+    if root.step == Step.done && !root.docked && !root.phone && root.sidebar-open: Rectangle {
         background: #0000004d;
         TouchArea {
             clicked => {

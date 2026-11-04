@@ -35,8 +35,9 @@ use slint::{
 };
 
 use crate::{
-    AlbumTile, AppWindow, ColumnChoice, Detail, Drag, Icons, Name, Page, Stat, StationRow,
-    StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, offline, prefs, zone,
+    AlbumTile, AppWindow, ColumnChoice, Detail, Drag, Icons, Name, NavEntry, Page, Stat,
+    StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, offline, prefs,
+    zone,
 };
 
 /// The newest albums on the home page.
@@ -1165,6 +1166,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         ui.set_tracks(ModelRc::from(b.tracks.clone()));
         ui.set_track_lines(ModelRc::from(b.lines.clone()));
         ui.set_section(section(&b));
+        ui.set_bar_section(bar_section(&b));
         b.history[b.at].clone()
     };
     ui.set_page_problem("".into());
@@ -1281,6 +1283,8 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Downloads);
             downloads_page(ui, browser);
         }
+        "browse" => ui.set_page(Page::Browse),
+        "library" => ui.set_page(Page::Library),
         "settings" => ui.set_page(Page::Settings),
         "setting" => {
             ui.set_page(Page::Setting);
@@ -1566,6 +1570,82 @@ fn section(b: &Browser) -> i32 {
     found.map_or(-1, |at| at as i32)
 }
 
+/// The phone's bottom bar: the links it opens and their names.
+const BAR: [(&str, &str); 4] = [
+    ("home", "Home"),
+    ("browse", "Browse"),
+    ("library", "Library"),
+    ("settings", "Settings"),
+];
+
+fn bar_entries(icons: &Icons) -> ModelRc<NavEntry> {
+    let icon = |link| match link {
+        "home" => icons.get_home(),
+        "browse" => icons.get_genre(),
+        "library" => icons.get_album(),
+        _ => icons.get_settings(),
+    };
+    let entries: Vec<_> = BAR
+        .iter()
+        .map(|&(link, title)| NavEntry {
+            title: title.into(),
+            icon: icon(link),
+            link: link.into(),
+            group: "".into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(entries))
+}
+
+/// The bottom bar's entry of the page on screen, or -1 when it has none:
+/// the account's is on the top bar. Every page of the library, such as an
+/// album, belongs to Library.
+fn bar_section(b: &Browser) -> i32 {
+    let Some(link) = b.history.get(b.at) else {
+        return -1;
+    };
+    let page = link.split_once(':').map_or(link.as_str(), |(page, _)| page);
+    let entry = match page {
+        "home" => "home",
+        "browse" | "genres" | "genre" | "radio" | "stations" => "browse",
+        "settings" | "setting" => "settings",
+        "account" => return -1,
+        _ => "library",
+    };
+    BAR.iter()
+        .position(|&(link, _)| link == entry)
+        .map_or(-1, |at| at as i32)
+}
+
+/// What the Browse page, or else the Library page, links to: the sidebar's
+/// entries, the playlists under their own heading.
+fn nav_entries(
+    icons: &Icons,
+    sections: &[(String, &str, &str)],
+    browse: bool,
+) -> ModelRc<NavEntry> {
+    let entries: Vec<_> = sections
+        .iter()
+        .filter(|(link, ..)| {
+            link != "home" && matches!(link.as_str(), "genres" | "radio") == browse
+        })
+        .map(|(link, title, group)| NavEntry {
+            title: (*title).into(),
+            icon: match link.split_once(':').map_or(link.as_str(), |(page, _)| page) {
+                "playlists" | "playlist" => icons.get_playlist(),
+                _ => section_icon(icons, link),
+            },
+            link: link.into(),
+            group: if link.starts_with("playlist:") {
+                (*group).into()
+            } else {
+                "".into()
+            },
+        })
+        .collect();
+    ModelRc::new(VecModel::from(entries))
+}
+
 /// Lists the sidebar's entries, the page on screen's current, the playlists
 /// songs can be added to: those the server doesn't call read-only, and
 /// whether the server has playlist folders and tags.
@@ -1582,6 +1662,11 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     ui.set_section_groups(ModelRc::new(VecModel::from(groups)));
     ui.set_section_icons(ModelRc::new(VecModel::from(pictures)));
     ui.set_section(section(&b));
+    ui.set_bar_section(bar_section(&b));
+    let entries = sections_of(&b);
+    ui.set_browse_links(nav_entries(&icons, &entries, true));
+    ui.set_library_links(nav_entries(&icons, &entries, false));
+    ui.set_bar_entries(bar_entries(&icons));
     show_selected(ui, &b);
     ui.set_folders_offered(offers(&b, FOLDERS));
     ui.set_tags_offered(offers(&b, TAGS));

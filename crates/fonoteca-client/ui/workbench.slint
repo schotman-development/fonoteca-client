@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, BottomBar, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -51,8 +51,10 @@ export component Workbench inherits Window {
         "Now playing",
         "Quality picker",
         "Genre tiles and banner",
+        "Bottom bar",
     ];
     property <int> current;
+    property <int> bar-current: 2;
     property <bool> long-text;
     property <bool> no-art;
     property <string> event;
@@ -994,6 +996,23 @@ export component Workbench inherits Window {
                         GenreGrid {
                             tiles: root.genres;
                             open(link) => { root.event = "open " + link; }
+                        }
+                    }
+
+                    if root.current == 19: Example {
+                        caption: "A phone's navigation along the bottom: the current entry's icon in a pill";
+                        BottomBar {
+                            entries: [
+                                { title: "Home", icon: Icons.home },
+                                { title: "Browse", icon: Icons.genre },
+                                { title: "Library", icon: Icons.album },
+                                { title: "Settings", icon: Icons.settings },
+                            ];
+                            current: root.bar-current;
+                            selected(index) => {
+                                root.bar-current = index;
+                                root.event = "bar " + index;
+                            }
                         }
                     }
                 }

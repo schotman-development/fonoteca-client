@@ -3675,7 +3675,8 @@ mod tests {
             assert_eq!(work(6), none());
             assert_eq!(row(6), ("IV. Allegro", to(&[]), 0, true, false));
             // On a phone the rows wrap, and the page still scrolls to the end
-            // of the last one.
+            // of the last one, above the bottom bar.
+            let bottom_bar = 80.0;
             let window = ui.window();
             window.set_size(slint::LogicalSize::new(360.0, 640.0));
             window.dispatch_event(WindowEvent::PointerScrolled {
@@ -3686,7 +3687,7 @@ mod tests {
             let last = button(&ui, "IV. Allegro");
             let bottom = last.absolute_position().y + last.size().height;
             assert!(
-                (600.0..=640.0).contains(&bottom),
+                (600.0 - bottom_bar..=640.0 - bottom_bar).contains(&bottom),
                 "the last row ends at {bottom}"
             );
             window.set_size(slint::LogicalSize::new(1100.0, 760.0));
@@ -4824,31 +4825,71 @@ mod tests {
             assert_eq!(sorted(&again), [("Date".to_owned(), true)]);
             drop(again);
 
-            // A phone's top bar has buttons a finger can hit, the first
-            // one's icon on the pages' 24px margin.
-            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
-            let menu = button(&ui, "Menu");
-            assert_eq!(menu.size(), slint::LogicalSize::new(48.0, 48.0));
-            assert_eq!(menu.absolute_position().x, 12.0);
-            // Android's back closes the drawer and stays on the page.
-            let drawers = || {
+            // A phone has no sidebar and no menu button: a bottom bar takes
+            // its place, and the settings leave the top bar for it. The top
+            // bar's buttons are a finger's size, the first one's icon on the
+            // pages' 24px margin.
+            let navigations = || -> Vec<String> {
                 ui.root_element()
                     .query_descendants()
                     .match_accessible_role(AccessibleRole::Navigation)
                     .find_all()
-                    .len()
+                    .iter()
+                    .filter_map(|navigation| navigation.accessible_label())
+                    .map(Into::into)
+                    .collect()
             };
+            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            assert_eq!(navigations(), ["Main"]);
+            assert!(find(&ui, "Menu").is_none());
+            let back = button(&ui, "Back");
+            assert_eq!(back.size(), slint::LogicalSize::new(48.0, 48.0));
+            assert_eq!(back.absolute_position().x, 12.0);
+            for entry in ["Home", "Browse", "Library", "Settings"] {
+                button(&ui, entry);
+            }
+            click(&ui, "Library");
+            assert_eq!(ui.get_page(), Page::Library);
+            click(&ui, "Albums");
+            wait_for("the albums", || ui.get_page() == Page::Albums).await;
+            assert_eq!(ui.get_bar_section(), 2, "an album's page lights Library");
+            // An upright tablet's window keeps the sidebar closed until the
+            // menu button opens it over the page, and Android's back closes
+            // it and stays on the page.
+            ui.window().set_size(slint::LogicalSize::new(800.0, 640.0));
+            // `changed phone` closes the drawer once the event loop runs;
+            // let it, or it closes the drawer opened next.
+            idle(Duration::from_millis(400)).await;
+            assert!(navigations().is_empty());
             let page = ui.get_page();
             click(&ui, "Menu");
-            assert_eq!(drawers(), 1);
+            assert_eq!(navigations(), ["Library"]);
             press(&ui, slint::platform::Key::Back);
-            assert_eq!(drawers(), 0);
+            assert!(navigations().is_empty());
             assert_eq!(ui.get_page(), page);
-            // So does an upright tablet's; a laptop's window docks the sidebar.
+            // A drawer left open when the window turns into a phone's stays
+            // closed when it widens again.
+            click(&ui, "Menu");
+            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            idle(Duration::from_millis(400)).await;
             ui.window().set_size(slint::LogicalSize::new(800.0, 640.0));
-            button(&ui, "Menu");
+            idle(Duration::from_millis(400)).await;
+            assert!(navigations().is_empty(), "the drawer stays shut");
+            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            click(&ui, "Browse");
+            assert_eq!(ui.get_page(), Page::Browse);
+            click(&ui, "Genres");
+            wait_for("the genres", || ui.get_page() == Page::Genres).await;
+            assert_eq!(ui.get_bar_section(), 1, "Genres lights Browse");
+            click(&ui, "Back");
+            assert_eq!(ui.get_page(), Page::Browse);
+            click(&ui, "Settings");
+            assert_eq!(ui.get_page(), Page::Settings);
+            assert_eq!(ui.get_bar_section(), 3);
+            // A laptop's window docks the sidebar.
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
             assert!(find(&ui, "Menu").is_none());
+            assert_eq!(navigations(), ["Library"]);
 
             let kept = ListenBrainz {
                 token: "kept token".into(),
