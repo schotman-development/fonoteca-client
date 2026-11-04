@@ -697,6 +697,16 @@ export component MoreMenu {
     width: Screen.phone ? Theme.phone-target : 32px;
     height: self.width;
 
+    // Opens the menu, as the button does, for what else is part of the button.
+    public function show() {
+        root.opening();
+        root.current = -1;
+        root.open = -1;
+        root.choice = -1;
+        root.keyed = false;
+        popup.show();
+    }
+
     // The item `by`, 1 or -1, from `i` of `n`, round the ends; from none,
     // the first or the last.
     function step(i: int, by: int, n: int) -> int {
@@ -737,14 +747,7 @@ export component MoreMenu {
         label: root.label;
         accessible-expandable: true;
         accessible-expanded: popup.is-open;
-        clicked => {
-            root.opening();
-            root.current = -1;
-            root.open = -1;
-            root.choice = -1;
-            root.keyed = false;
-            popup.show();
-        }
+        clicked => { root.show(); }
     }
 
     popup := PopupWindow {
@@ -3625,7 +3628,7 @@ export component OutputPicker inherits HorizontalLayout {
     alignment: center;
     spacing: 8px;
 
-    MoreMenu {
+    menu := MoreMenu {
         cross-axis-self-alignment: center;
         label: "Sound device";
         icon: Icons.speaker;
@@ -3635,13 +3638,19 @@ export component OutputPicker inherits HorizontalLayout {
         opening => { root.list-devices(); }
         activated(id) => { root.choose-output(Math.floor(id.to-float())); }
     }
+    // The name opens the menu too; the button stays the one a screen reader finds.
     Text {
-        cross-axis-self-alignment: center;
         max-width: 240px;
+        min-height: menu.height;
         text: root.output-name;
         font-size: Theme.small;
-        color: Theme.muted;
+        color: name-touch.has-hover ? Theme.text : Theme.muted;
+        vertical-alignment: center;
         overflow: elide;
+        name-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { menu.show(); }
+        }
     }
 }
 
