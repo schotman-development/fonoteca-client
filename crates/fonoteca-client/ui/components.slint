@@ -1190,8 +1190,14 @@ export component TrackRow inherits Pressable {
     // alone.
     in property <bool> downloadable;
     in property <bool> download-removable;
+    // Whether its song is selected, and whether the page is selecting, when
+    // a click selects rather than plays.
+    in property <bool> selected;
+    in property <bool> selecting;
     callback open(link: string);
     callback toggle-love();
+    // With Shift held, everything from the row last picked to this one.
+    callback select(range: bool);
     callback add-to-playlist(id: string);
     callback remove();
     callback tag();
@@ -1202,14 +1208,19 @@ export component TrackRow inherits Pressable {
     callback queue(next: bool);
     label: self.title;
     clicked => {
-        if root.playable {
+        if root.selecting {
+            root.select(root.shift);
+        } else if root.playable {
             root.play();
         }
     }
+    context-clicked => { root.select(root.shift); }
 
     Rectangle {
         border-radius: Theme.radius;
-        background: root.hovered ? Theme.hover : transparent;
+        border-width: root.selected ? 2px : 0;
+        border-color: Theme.accent;
+        background: root.selected ? Theme.accent.transparentize(85%) : root.hovered ? Theme.hover : transparent;
     }
     HorizontalLayout {
         padding: 8px;
@@ -1243,6 +1254,7 @@ export component TrackRow inherits Pressable {
                 split: root.split;
                 font-size: Theme.small;
                 open(link) => { root.open(link); }
+                context-clicked => { root.select(false); }
             }
             if root.performed != "": Text {
                 text: root.performed;

@@ -2868,9 +2868,15 @@ mod tests {
             // asked for again.
             let writes = || PLAYLIST_WRITES.lock().unwrap().clone();
             PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_select_track(0, false);
+            ui.invoke_select_track(1, false);
+            assert_eq!(ui.get_selected_tiles(), 2);
             ui.invoke_remove_from_playlist(0);
+            assert_eq!(ui.get_selected_tiles(), 1, "the song taken off is no longer picked");
             assert_eq!(ui.get_tracks().row_count(), 1);
             assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Fugue");
+            assert!(ui.get_tracks().row_data(0).unwrap().selected);
+            ui.invoke_clear_selection();
             wait_for("the track taken off", || {
                 writes() == ["updatePlaylist playlistId=p1&songIndexToRemove=0"]
             })
@@ -3570,6 +3576,17 @@ mod tests {
 
             ui.invoke_open("album:a2".into());
             wait_for("the classical album", || ui.get_tracks().row_count() == 7).await;
+            // With Shift held, a click picks every row from the one picked
+            // last to it.
+            ui.invoke_select_track(0, false);
+            let shift = slint::platform::Key::Shift;
+            ui.window().dispatch_event(WindowEvent::KeyPressed { text: shift.into() });
+            let third = ui.get_tracks().row_data(3).unwrap().title;
+            button(&ui, &third).single_click(PointerEventButton::Left).await;
+            ui.window().dispatch_event(WindowEvent::KeyReleased { text: shift.into() });
+            let picked: Vec<bool> = ui.get_tracks().iter().map(|track| track.selected).collect();
+            assert_eq!(picked, [true, true, true, true, false, false, false]);
+            ui.invoke_clear_selection();
             let tracks: Vec<Track> = ui.get_tracks().iter().collect();
             let links = |names: &slint::ModelRc<Name>| -> Vec<String> {
                 names.iter().map(|name| name.link.to_string()).collect()
@@ -4406,6 +4423,54 @@ mod tests {
             hold(&ui, beside(2), 0.0, 0).await;
             assert!(!selected(&ui, 2));
             ui.global::<Input>().set_touch(false);
+            ui.invoke_clear_selection();
+            // An album's track rows pick the same ways: a finger held, or a
+            // right-click, and then a click on another; a finger that moves
+            // or lifts sooner picks nothing. The pick outlasts the page.
+            ui.invoke_open("album:a1".into());
+            wait_for("the album's rows", || ui.get_tracks().row_count() == 2).await;
+            let track_picks = |ui: &AppWindow| -> Vec<bool> {
+                ui.get_tracks().iter().map(|track| track.selected).collect()
+            };
+            let track_at = |ui: &AppWindow, row: usize| {
+                middle(&button(ui, &ui.get_tracks().row_data(row).unwrap().title))
+            };
+            ui.global::<Input>().set_touch(true);
+            hold(&ui, track_at(&ui, 0), 20.0, 800).await;
+            hold(&ui, track_at(&ui, 0), 0.0, 300).await;
+            assert_eq!(track_picks(&ui), [false, false]);
+            hold(&ui, track_at(&ui, 0), 0.0, 800).await;
+            assert_eq!(track_picks(&ui), [true, false]);
+            assert_eq!(ui.get_page(), Page::Album);
+            ui.global::<Input>().set_touch(false);
+            hold(&ui, track_at(&ui, 1), 0.0, 0).await;
+            assert_eq!(track_picks(&ui), [true, true]);
+            ui.invoke_open("albums".into());
+            ui.invoke_open("album:a1".into());
+            wait_for("the album again", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(track_picks(&ui), [true, true]);
+            let top = ui.get_tracks().row_data(0).unwrap().title;
+            button(&ui, &top)
+                .single_click(PointerEventButton::Right)
+                .await;
+            assert_eq!(track_picks(&ui), [false, true]);
+            ui.invoke_clear_selection();
+            assert_eq!(track_picks(&ui), [false, false]);
+            // A finger held on a name under the title picks the row too. The
+            // page's header names the artists as well, above the rows.
+            let artist = ui.get_tracks().row_data(1).unwrap().names.row_data(0).unwrap().label;
+            let names = ui
+                .root_element()
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::Button)
+                .match_predicate(move |link| link.accessible_label().is_some_and(|l| l == artist))
+                .find_all();
+            ui.global::<Input>().set_touch(true);
+            hold(&ui, middle(names.last().unwrap()), 0.0, 800).await;
+            ui.global::<Input>().set_touch(false);
+            ui.global::<Input>().set_finger(false);
+            assert_eq!(track_picks(&ui), [false, true]);
+            assert_eq!(ui.get_page(), Page::Album);
             ui.invoke_clear_selection();
             // Kept for the session, columns, order and all.
             click(&ui, "Albums");
@@ -5956,6 +6021,15 @@ mod tests {
             wait_for("the song", || marked(&ui) == [true, true]).await;
             let alone = || -> Vec<bool> { ui.get_tracks().iter().map(|t| t.downloaded_alone).collect() };
             assert_eq!(alone(), [false, true]);
+            // The songs kept on their own pick like an album's.
+            ui.invoke_open("downloads".into());
+            wait_for("the kept song", || ui.get_page() == Page::Downloads && ui.get_tracks().row_count() == 1).await;
+            let kept_song = ui.get_tracks().row_data(0).unwrap().title;
+            button(&ui, &kept_song).single_click(PointerEventButton::Right).await;
+            assert!(ui.get_tracks().row_data(0).unwrap().selected);
+            ui.invoke_clear_selection();
+            ui.invoke_open("album:a1".into());
+            wait_for("the album", || ui.get_tracks().row_count() == 2).await;
             ui.invoke_download_link("album:a1".into());
             wait_for("the question", || find(&ui, "Cancel").is_some()).await;
             confirm_download(&ui);

@@ -462,11 +462,7 @@ fn downloads_page(ui: &AppWindow, browser: &Shared) {
         }
     }
     let rows: Vec<Track> = songs.iter().map(song_track).collect();
-    {
-        let mut b = browser.borrow_mut();
-        b.tracks.set_vec(rows);
-        b.songs = songs;
-    }
+    show_songs(&mut browser.borrow_mut(), songs, rows);
     add_tiles(ui, browser, tiles);
     show_downloads(ui, browser);
 }
@@ -709,6 +705,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_select_line({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |row, range| select_line(&weak.unwrap(), &browser, row as usize, range)
+    });
+    ui.on_select_track({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row, range| select_track(&weak.unwrap(), &browser, row as usize, range)
     });
     ui.on_clear_selection({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -1010,6 +1010,32 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
     show_selected(ui, &b);
 }
 
+/// Puts `songs` on screen as the rows of an album's, playlist's, artist's or
+/// downloads page, the ones already selected marked as such.
+fn show_songs(b: &mut Browser, songs: Vec<Child>, mut rows: Vec<Track>) {
+    for (row, song) in rows.iter_mut().zip(&songs) {
+        row.selected = b.selected.contains(&song_link(song));
+    }
+    b.tracks.set_vec(rows);
+    b.songs = songs;
+}
+
+/// Selects the song of a track row of an album, playlist, artist or
+/// downloads page, or lets it go if it is selected. With `range`, selects
+/// every row from the one last picked to it instead.
+fn select_track(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
+    let mut b = browser.borrow_mut();
+    let links: Vec<String> = b.songs.iter().map(song_link).collect();
+    let tracks = b.tracks.clone();
+    for (row, selected) in pick(&mut b, &links, row, range) {
+        if let Some(mut track) = tracks.row_data(row) {
+            track.selected = selected;
+            tracks.set_row_data(row, track);
+        }
+    }
+    show_selected(ui, &b);
+}
+
 /// Says how many tiles and rows are selected, and where the playlists among
 /// them can be moved: the top level and every folder.
 fn show_selected(ui: &AppWindow, b: &Browser) {
@@ -1070,11 +1096,11 @@ fn song_link(song: &Child) -> String {
 }
 
 fn clear_selection(ui: &AppWindow, browser: &Shared) {
-    let (tiles, lines) = {
+    let (tiles, lines, tracks) = {
         let mut b = browser.borrow_mut();
         b.selected.clear();
         b.anchor = None;
-        (b.tiles.clone(), b.lines.clone())
+        (b.tiles.clone(), b.lines.clone(), b.tracks.clone())
     };
     for row in 0..tiles.row_count() {
         if let Some(mut tile) = tiles.row_data(row).filter(|tile| tile.selected) {
@@ -1086,6 +1112,12 @@ fn clear_selection(ui: &AppWindow, browser: &Shared) {
         if let Some(mut line) = lines.row_data(row).filter(|line| line.selected) {
             line.selected = false;
             lines.set_row_data(row, line);
+        }
+    }
+    for row in 0..tracks.row_count() {
+        if let Some(mut track) = tracks.row_data(row).filter(|track| track.selected) {
+            track.selected = false;
+            tracks.set_row_data(row, track);
         }
     }
     show_selected(ui, &browser.borrow());
@@ -3280,8 +3312,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
 
             let mut b = browser.borrow_mut();
             let rows: Vec<Track> = songs.chunk_by(same_work).flat_map(work_rows).collect();
-            b.tracks.set_vec(rows);
-            b.songs = songs;
+            show_songs(&mut b, songs, rows);
             b.album = Some(shown);
             drop(b);
             show_downloads(ui, browser);
@@ -3463,10 +3494,8 @@ fn top_songs(ui: &AppWindow, browser: &Shared, artist: String, by_id: bool) {
             }
         },
         |_, browser, top| {
-            let mut b = browser.borrow_mut();
-            b.tracks
-                .set_vec(top.song.iter().map(song_track).collect::<Vec<_>>());
-            b.songs = top.song;
+            let rows = top.song.iter().map(song_track).collect();
+            show_songs(&mut browser.borrow_mut(), top.song, rows);
         },
     );
 }
@@ -3592,8 +3621,7 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
         })
         .collect();
     let mut b = browser.borrow_mut();
-    b.tracks.set_vec(tracks);
-    b.songs = songs;
+    show_songs(&mut b, songs, tracks);
     b.playlist = Some(playlist_shown);
     drop(b);
     show_downloads(ui, browser);
@@ -3934,8 +3962,13 @@ fn remove_from_playlist(ui: &AppWindow, browser: &Shared, row: usize) {
         if row >= b.songs.len() || row >= b.tracks.row_count() {
             return;
         }
-        b.songs.remove(row);
+        let removed = song_link(&b.songs.remove(row));
         b.tracks.remove(row);
+        // The same song may be on the playlist twice.
+        if !b.songs.iter().any(|song| song_link(song) == removed) {
+            b.selected.retain(|link| *link != removed);
+        }
+        show_selected(ui, &b);
     }
     let at = id.clone();
     change_playlist(

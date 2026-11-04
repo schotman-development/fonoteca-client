@@ -125,6 +125,8 @@ export struct Track {
     // The page a click on the row opens: a composition's, or on its page a
     // performance's album. Empty on albums and playlists.
     link: string,
+    // Whether its song is selected.
+    selected: bool,
 }
 
 // A page's own title: on a phone Material's Headline Medium, the title of
@@ -1182,6 +1184,7 @@ export component AppWindow inherits Window {
     // is selected.
     callback select-tile(index: int, range: bool);
     callback select-line(index: int, range: bool);
+    callback select-track(index: int, range: bool);
     callback clear-selection();
     callback resized();
     // Playlists: a new one with this name; the one on screen renamed or
@@ -2087,6 +2090,8 @@ export component AppWindow inherits Window {
                                 strong: track.alone;
                                 part: track.part;
                                 downloaded: track.downloaded;
+                                selected: track.selected;
+                                selecting: root.selected-tiles > 0;
                                 playlists: root.playlist-targets;
                                 removable: root.page == Page.playlist && root.playlist-editable;
                                 taggable: root.tags-offered;
@@ -2094,6 +2099,7 @@ export component AppWindow inherits Window {
                                 downloadable: root.can-download && root.may-download;
                                 download-removable: track.downloaded-alone;
                                 open(link) => { root.open(link); }
+                                select(range) => { root.select-track(row, range); }
                                 play => { root.play-tracks(row); }
                                 download => { root.download-track(row); }
                                 remove-download => { root.remove-track-download(row); }
@@ -2214,10 +2220,13 @@ export component AppWindow inherits Window {
                             duration: track.duration;
                             lovable: false;
                             downloaded: track.downloaded;
+                            selected: track.selected;
+                            selecting: root.selected-tiles > 0;
                             playable: root.can-play;
                             downloadable: root.can-download && root.may-download;
                             download-removable: track.downloaded-alone;
                             open(link) => { root.open(link); }
+                            select(range) => { root.select-track(row, range); }
                             play => { root.play-tracks(row); }
                             queue(next) => { root.queue-tracks(row, 1, next); }
                             remove-download => { root.remove-track-download(row); }
