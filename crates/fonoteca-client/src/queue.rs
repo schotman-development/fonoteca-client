@@ -183,6 +183,31 @@ impl Queue {
         rows
     }
 
+    /// The rows the sheet lists above the unit holding the `shown`th song:
+    /// the units before it in the queue's order (the shuffled one, while
+    /// shuffled), each one row with a work closed. At most `limit` of them,
+    /// the nearest, and how many songs come before those.
+    pub fn previous_rows(&self, shown: Option<usize>, limit: usize) -> (Vec<Row>, usize) {
+        let mut before = shown
+            .filter(|&shown| shown < self.len())
+            .map_or(0, |shown| self.unit_at(shown).songs.start);
+        let mut rows = Vec::new();
+        while before > 0 && rows.len() < limit {
+            let unit = self.unit_at(before - 1);
+            before = unit.songs.start;
+            let shape = unit.work.map_or(Shape::Song, |key| Shape::Work {
+                key,
+                expanded: false,
+            });
+            rows.push(Row {
+                songs: unit.songs,
+                shape,
+            });
+        }
+        rows.reverse();
+        (rows, before)
+    }
+
     /// Opens the row of the work `key`, or closes it.
     pub fn toggle_work(&mut self, key: u64) {
         if !self.expanded.remove(&key) {
@@ -272,6 +297,18 @@ impl Queue {
             let at = queue.outside_works(to.min(queue.len()));
             queue.entries.splice(at..at, moved);
         })
+    }
+
+    /// Moves the songs in `songs`, played before the `current`th or queued
+    /// after it, to play right after it, or after the work it is in.
+    pub fn move_after(&mut self, songs: Range<usize>, current: usize) -> Moved {
+        // Songs from before it leave a gap behind them.
+        let gap = if songs.start < current {
+            songs.len()
+        } else {
+            0
+        };
+        self.move_to(songs, current + 1 - gap)
     }
 
     /// Moves the songs in `from` onto the ones in `onto`: after them when
@@ -466,6 +503,66 @@ mod tests {
         assert_eq!(loved(&q), [true, false, true]);
         q.set_loved("a", false);
         assert_eq!(loved(&q), [false, false, false]);
+    }
+
+    #[test]
+    fn the_rows_above_the_one_playing_are_the_units_played_in_their_order() {
+        let mut q = queue(&["a", "b", "c", "d", "e"]);
+        let rows = |q: &Queue, shown, limit| {
+            let (rows, hidden) = q.previous_rows(shown, limit);
+            (
+                rows.into_iter().map(|row| row.songs).collect::<Vec<_>>(),
+                hidden,
+            )
+        };
+        assert_eq!(rows(&q, Some(0), 10), (vec![], 0), "nothing played yet");
+        assert_eq!(rows(&q, None, 10), (vec![], 0), "nothing playing");
+        assert_eq!(rows(&q, Some(3), 10), (vec![0..1, 1..2, 2..3], 0));
+        assert_eq!(rows(&q, Some(3), 2), (vec![1..2, 2..3], 1), "the nearest");
+        // A work queued whole is one row, whichever of its movements plays.
+        let work = |id: &str| -> Child {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "isDir": false, "title": id,
+                "works": [{ "name": "Suite" }], "movements": [{ "name": id }]
+            }))
+            .unwrap()
+        };
+        q.insert(2, vec![work("w1"), work("w2"), work("w3")], None);
+        assert_eq!(ids(&q), ["a", "b", "w1", "w2", "w3", "c", "d", "e"]);
+        let (before, _) = q.previous_rows(Some(5), 10);
+        assert_eq!(before.len(), 3);
+        assert_eq!(before[2].songs, 2..5);
+        assert!(matches!(
+            before[2].shape,
+            Shape::Work {
+                expanded: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            rows(&q, Some(3), 10).0,
+            [0..1, 1..2],
+            "inside the work, it is current"
+        );
+    }
+
+    #[test]
+    fn a_song_played_before_comes_round_again_right_after_the_one_playing() {
+        let mut q = queue(&["a", "b", "c", "d", "e"]);
+        q.move_after(0..1, 2);
+        assert_eq!(ids(&q), ["b", "c", "a", "d", "e"], "from before it");
+        q.move_after(4..5, 1);
+        assert_eq!(
+            ids(&q),
+            ["b", "c", "e", "a", "d"],
+            "from after it, as before"
+        );
+        q.move_after(0..2, 3);
+        assert_eq!(
+            ids(&q),
+            ["e", "a", "b", "c", "d"],
+            "two songs from before it"
+        );
     }
 
     #[test]

@@ -781,6 +781,7 @@ export component Workbench inherits Window {
                                     details: line.details;
                                     covered: true;
                                     current: line.current;
+                                    paused: root.player-paused;
                                     entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
                                 }
                             }
@@ -800,7 +801,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 16: Example {
-                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. The sound device menu opens from the button at the bottom, named beside it, with the long list of an ALSA host under the Long text switch. A phone's controls follow, then the queue's rows, the one playing coloured; a work queued whole is one row that opens to its movements";
+                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. The sound device menu opens from the button at the bottom, named beside it, with the long list of an ALSA host under the Long text switch. A phone's controls follow, then the queue's rows, the one playing on a tinted row with a bar, and play or pause on its cover, the song played before above it; a work queued whole is one row that opens to its movements";
                         HorizontalLayout {
                             padding-left: 8px;
                             padding-right: 8px;
@@ -865,11 +866,22 @@ export component Workbench inherits Window {
                         }
                         VerticalLayout {
                             ListRow {
+                                title: root.long-text ? root.long-title : "Ocean Floor";
+                                link: "jump";
+                                details: "Ove Strand · 3:40";
+                                cover: root.albums[1].cover;
+                                covered: true;
+                                entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
+                                open => { root.event = "jump to the played row"; }
+                                activated(id) => { root.event = id + " played row"; }
+                            }
+                            ListRow {
                                 title: "Northern Lights";
                                 details: "Mara · 4:31";
                                 cover: root.albums[0].cover;
                                 covered: true;
                                 current: true;
+                                paused: root.player-paused;
                                 entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
                                 activated(id) => { root.event = id + " row 0"; }
                             }

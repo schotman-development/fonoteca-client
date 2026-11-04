@@ -41,6 +41,8 @@ const LINE_COVER_SIZE: f32 = 40.0;
 /// playing on.
 // ponytail: a fixed window; page through it once queues that long need reordering.
 const QUEUE_SHOWN: usize = 100;
+/// How many rows of the songs played before the one playing the sheet lists.
+const PREVIOUS_SHOWN: usize = 50;
 
 #[derive(Default)]
 struct Playing {
@@ -56,6 +58,8 @@ struct Playing {
     /// The rows of the now playing sheet's list of the queue, and the
     /// covers it has shown, by their ids.
     listed: Vec<Row>,
+    /// The rows above those, of the songs played before, in order.
+    previous: Vec<Row>,
     covers: HashMap<String, Image>,
     /// Where the queue saved on the server left off, until it plays.
     resume: Option<(usize, f64)>,
@@ -348,7 +352,7 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             let Some(songs) = listed_songs(&p, row) else {
                 return;
             };
-            let moved = p.queue.move_to(songs, current + 1);
+            let moved = p.queue.move_after(songs, current);
             drop(p);
             requeued(&weak.unwrap(), &browser, &playing, moved);
         }
@@ -873,6 +877,7 @@ fn show_song(
             .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
     });
     ui.set_playing_loved(song.starred.is_some());
+    ui.set_playing_shown(ui.get_playing_shown() + 1);
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());
     let (playing_now, song_id) = (playing.clone(), song.id.clone());
@@ -909,24 +914,54 @@ fn parts(lines: &ModelRc<QueueLine>) -> Vec<bool> {
     lines.iter().map(|line| line.part).collect()
 }
 
-/// The songs the `row` of the sheet's list stands for.
+/// The songs the `row` of the sheet's list stands for. The rows of the
+/// songs played before count back from the one playing: -1 is the one
+/// above it.
 fn listed_songs(p: &Playing, row: i32) -> Option<Range<usize>> {
-    p.listed.get(row as usize).map(|row| row.songs.clone())
+    let row = match usize::try_from(row) {
+        Ok(row) => p.listed.get(row),
+        Err(_) => p
+            .previous
+            .len()
+            .checked_sub(row.unsigned_abs() as usize)
+            .and_then(|row| p.previous.get(row)),
+    };
+    row.map(|row| row.songs.clone())
 }
 
 /// Lists the queue on the now playing sheet from the work or song playing
-/// on, with the covers it has shown before and the others once they come.
+/// on, and above it the songs played before, with the covers it has shown
+/// before and the others once they come.
 fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing: &Shared) {
     p.listed = p.queue.rows(p.shown, QUEUE_SHOWN);
+    let (previous, earlier) = p.queue.previous_rows(p.shown, PREVIOUS_SHOWN);
+    p.previous = previous;
     let lines: Vec<QueueLine> = p.listed.iter().map(|row| queue_line(p, row)).collect();
+    let before: Vec<QueueLine> = p.previous.iter().map(|row| queue_line(p, row)).collect();
     let listed_to = p.listed.last().map_or(0, |row| row.songs.end);
     ui.set_queue_more((p.queue.len() - listed_to) as i32);
+    ui.set_queue_earlier(earlier as i32);
     ui.set_shuffled(p.queue.shuffled());
     let model = Rc::new(VecModel::from(lines));
+    let before_model = Rc::new(VecModel::from(before));
     ui.set_queue_lines(ModelRc::from(model.clone()));
+    ui.set_previous_lines(ModelRc::from(before_model.clone()));
+    show_covers(ui, browser, p, playing, &p.listed, model);
+    show_covers(ui, browser, p, playing, &p.previous, before_model);
+}
+
+/// Fetches the covers of `rows` that haven't been shown, and puts each on
+/// its line of `model` once it comes.
+fn show_covers(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    p: &Playing,
+    playing: &Shared,
+    rows: &[Row],
+    model: Rc<VecModel<QueueLine>>,
+) {
     let wanted: Rc<Vec<Option<String>>> = Rc::new(
-        p.listed
-            .iter()
+        rows.iter()
             .map(|row| {
                 p.queue
                     .get(row.songs.start)
@@ -1385,6 +1420,14 @@ pub(crate) mod testing {
             p.shown = Some(index);
         }
         super::show_song(ui, &browser, &playing.borrow(), &playing, index);
+    }
+
+    /// Queues `songs` with the `index`th playing, shows it and lists the
+    /// queue on the sheet.
+    pub(crate) fn show_queue(ui: &AppWindow, songs: Vec<Child>, index: usize) {
+        let (browser, playing) = handles();
+        show_song(ui, songs, index);
+        list_queue(ui, &browser, &mut playing.borrow_mut(), &playing);
     }
 
     /// Queues a page's `songs` as a play from the `start`th does and lists

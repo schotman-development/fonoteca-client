@@ -5100,6 +5100,54 @@ mod tests {
             wait_for("the refused unstar", || ui.get_playing_loved()).await;
             assert_eq!(play::testing::loved_ids(), [true, true], "refused, so loved again");
 
+            // The songs played before the one playing wait above it, out of
+            // view: the sheet opens on what plays, and comes back to it when
+            // the song changes, with the earlier ones a scroll up away.
+            let played = |title: &str| -> bool {
+                let wanted = title.to_owned();
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::ListItem)
+                    .match_predicate(move |row| row.accessible_label().is_some_and(|l| l == wanted))
+                    .find_first()
+                    .is_some()
+            };
+            let on_what_plays = || find(&ui, "Sound device").is_some();
+            let tracks: Vec<_> = (0..12).map(|n| song(&format!("Track {n}"), "a2")).collect();
+            play::testing::show_queue(&ui, tracks.clone(), 6);
+            click(&ui, "Close now playing");
+            idle(Duration::from_millis(300)).await;
+            click(&ui, "Now playing");
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(ui.get_previous_lines().row_count(), 6);
+            assert!(on_what_plays(), "opened on what plays");
+            assert!(!played("Track 5"), "the song before it is above the view");
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(550.0, 400.0),
+                delta_x: 0.0,
+                delta_y: 100000.0,
+            });
+            idle(Duration::from_millis(100)).await;
+            assert!(played("Track 0"), "scrolled up to the first played");
+            assert!(!on_what_plays());
+            play::testing::show_queue(&ui, tracks, 7);
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(ui.get_previous_lines().row_count(), 7);
+            assert!(on_what_plays(), "back on what plays after the song changed");
+            assert!(!played("Track 6"));
+            // A row played before counts back from the one playing: it plays
+            // next, or goes from the queue, whole and in its place.
+            let titles = |lines: slint::ModelRc<QueueLine>| -> Vec<String> {
+                lines.iter().map(|line| line.title.to_string()).collect()
+            };
+            ui.invoke_play_queued_next(-2);
+            assert_eq!(titles(ui.get_queue_lines())[..3], ["Track 7", "Track 5", "Track 8"]);
+            assert_eq!(ui.get_previous_lines().row_count(), 6);
+            ui.invoke_remove_queued(-1);
+            assert_eq!(ui.get_previous_lines().row_count(), 5);
+            assert_eq!(titles(ui.get_previous_lines())[4], "Track 4");
+            assert_eq!(titles(ui.get_queue_lines())[0], "Track 7", "what plays plays on");
+
             // A work played whole is one row of the queue that opens to its
             // movements; played from the middle, its movements are songs.
             let movement = |id: &str, work: &str| -> opensubsonic::Child {

@@ -290,6 +290,9 @@ component PageScroll inherits FocusScope {
     // How far right and down the page goes.
     property <length> right: min(0, flick.width - flick.content-width);
     property <length> bottom: min(0, flick.height - flick.content-height);
+    // Whether a finger holds the page or it glides on from one, which
+    // nothing may move it from under.
+    out property <bool> busy: root.taken || root.gliding;
     // Whether the drag has the finger, and whether sideways; how far the
     // page goes that way, where it was when the drag took the finger, and
     // where the finger has dragged it to since, past its top when pulled.
@@ -1031,6 +1034,12 @@ export component AppWindow inherits Window {
     // The row that has the keys once the list is made anew after a move.
     property <int> queue-focus-row: -1;
     in property <int> queue-more;
+    // The songs played before the one playing, as rows from the oldest, and
+    // how many songs came before those. `playing-shown` counts the songs
+    // the sheet has been given, for it to snap back to the one playing.
+    in property <[QueueLine]> previous-lines;
+    in property <int> queue-earlier;
+    in property <int> playing-shown;
     // Whether the queue is shuffled, and whether it repeats: 0 not, 1 all
     // of it, 2 the track.
     in property <bool> shuffled;
@@ -3057,8 +3066,20 @@ export component AppWindow inherits Window {
     }
     function open-now-playing() {
         root.now-playing-open = true;
-        sheet-scroll.content-y = 0;
+        root.snap-to-current();
         sheet-scroll.focus();
+    }
+    // Scrolls to what plays, which has the songs played before it above, out
+    // of view, to be scrolled up to.
+    function snap-to-current() {
+        sheet-scroll.content-y = -(first-screen.y - sheet-stage.padding-top);
+    }
+    // A song begins: the sheet comes back to it, unless the user is
+    // scrolling or dragging a row.
+    changed playing-shown => {
+        if root.now-playing-open && !sheet-scroll.busy && reorder.dragged < 0 {
+            root.snap-to-current();
+        }
     }
     function close-now-playing() {
         root.now-playing-open = false;
@@ -3151,9 +3172,59 @@ export component AppWindow inherits Window {
                             padding-top: 8px;
                             spacing: 24px;
                             alignment: start;
+                            // Above what plays, out of view when the sheet opens: what
+                            // played before it.
+                            if root.previous-lines.length > 0: VerticalLayout {
+                                SectionHeading { text: "Played"; }
+                                if root.queue-earlier > 0: Note {
+                                    text: root.queue-earlier == 1 ? "1 earlier" : root.queue-earlier + " earlier";
+                                    font-size: Theme.body;
+                                }
+                                // As high as its rows are, whatever the list has been made of
+                                // by the time the sheet scrolls to what plays.
+                                Rectangle {
+                                    height: root.previous-lines.length * root.queue-row-height;
+                                    VerticalLayout {
+                                        for line[row] in root.previous-lines: ListRow {
+                                            // Counted back from the row playing.
+                                            property <int> at: row - root.previous-lines.length;
+                                            min-height: root.queue-row-height;
+                                            max-height: root.queue-row-height;
+                                            reserve: Screen.phone ? Theme.phone-target : 32px;
+                                            title: line.title;
+                                            link: "jump";
+                                            details: line.details;
+                                            cover: line.cover;
+                                            covered: true;
+                                            entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
+                                            open => { root.jump-to(self.at); }
+                                            opening => {
+                                                self.entries = [];
+                                                self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
+                                                self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                                                if line.album != "" {
+                                                    self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
+                                                }
+                                                self.entries.push({ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true });
+                                            }
+                                            activated(id) => {
+                                                if id == "play" {
+                                                    root.jump-to(self.at);
+                                                } else if id == "next" {
+                                                    root.play-queued-next(self.at);
+                                                } else if id == "album" {
+                                                    root.open-from-now-playing(line.album);
+                                                } else {
+                                                    root.remove-queued(self.at);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             // What plays fills the sheet's first screen: the queue
                             // starts below its fold.
-                            VerticalLayout {
+                            first-screen := VerticalLayout {
                                 min-height: sheet-scroll.visible-height - sheet-stage.padding-top - sheet-stage.spacing;
                                 spacing: 32px;
                                 VerticalLayout {
@@ -3254,6 +3325,7 @@ export component AppWindow inherits Window {
                                             covered: !line.part;
                                             depth: line.part ? 1 : 0;
                                             current: line.current;
+                                            paused: root.playing-paused;
                                             expandable: line.work;
                                             expanded: line.expanded;
                                             // All of them when opened; one so it shows.

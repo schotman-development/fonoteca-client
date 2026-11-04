@@ -1357,6 +1357,8 @@ export component ListRow inherits Rectangle {
     in property <image> cover;
     in property <bool> covered;
     in property <bool> current;
+    // Whether what is playing is paused, which its row says on its cover.
+    in property <bool> paused;
     // A row that opens to the rows under it, with a button to do so.
     in property <bool> expandable;
     in property <bool> expanded;
@@ -1371,8 +1373,19 @@ export component ListRow inherits Rectangle {
     accessible-expandable: root.expandable;
     accessible-expanded: root.expanded;
     accessible-label: self.title;
-    accessible-description: self.details;
+    accessible-description: root.current ? (root.paused ? "Paused. " : "Playing. ") + self.details : self.details;
+    border-radius: Theme.radius;
+    background: root.current ? Theme.accent.transparentize(88%) : transparent;
 
+    // The row playing: a bar at its edge, and on its cover the state.
+    if root.current: Rectangle {
+        x: 0;
+        y: 8px;
+        width: 3px;
+        height: parent.height - 16px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
     HorizontalLayout {
         padding: 8px;
         padding-left: 8px + root.depth * 20px;
@@ -1382,6 +1395,22 @@ export component ListRow inherits Rectangle {
             cross-axis-self-alignment: center;
             size: 40px;
             source: root.cover;
+            if root.current: Rectangle {
+                background: #00000099;
+                Path {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 24px;
+                    height: 24px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    // Paused, it is the pause button's mark; playing, sound bars.
+                    commands: root.paused ? Icons.pause : "M6 13v5 M12 6v12 M18 10v8";
+                    fill: root.paused ? white : transparent;
+                    stroke: white;
+                    stroke-width: root.paused ? 0px : 2.5px;
+                }
+            }
         }
         VerticalLayout {
             horizontal-stretch: 1;
@@ -1390,7 +1419,7 @@ export component ListRow inherits Rectangle {
             if root.link == "": Text {
                 text: root.title;
                 font-size: Theme.body;
-                font-weight: 600;
+                font-weight: root.current ? 700 : 600;
                 color: root.current ? Theme.accent : Theme.text;
                 overflow: elide;
             }
