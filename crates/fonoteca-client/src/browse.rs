@@ -1707,7 +1707,6 @@ fn bar_entries(icons: &Icons) -> ModelRc<NavEntry> {
             title: title.into(),
             icon: icon(link),
             link: link.into(),
-            group: "".into(),
         })
         .collect();
     ModelRc::new(VecModel::from(entries))
@@ -1734,7 +1733,7 @@ fn bar_section(b: &Browser) -> i32 {
 }
 
 /// What the Browse page, or else the Library page, links to: the sidebar's
-/// entries, the playlists under their own heading.
+/// entries, but not the playlists: their page is enough here.
 fn nav_entries(
     icons: &Icons,
     sections: &[(String, &str, &str)],
@@ -1743,20 +1742,17 @@ fn nav_entries(
     let entries: Vec<_> = sections
         .iter()
         .filter(|(link, ..)| {
-            link != "home" && matches!(link.as_str(), "genres" | "radio") == browse
+            link != "home"
+                && !link.starts_with("playlist:")
+                && matches!(link.as_str(), "genres" | "radio") == browse
         })
-        .map(|(link, title, group)| NavEntry {
+        .map(|(link, title, _)| NavEntry {
             title: (*title).into(),
-            icon: match link.split_once(':').map_or(link.as_str(), |(page, _)| page) {
-                "playlists" | "playlist" => icons.get_playlist(),
+            icon: match link.as_str() {
+                "playlists" => icons.get_playlist(),
                 _ => section_icon(icons, link),
             },
             link: link.into(),
-            group: if link.starts_with("playlist:") {
-                (*group).into()
-            } else {
-                "".into()
-            },
         })
         .collect();
     ModelRc::new(VecModel::from(entries))

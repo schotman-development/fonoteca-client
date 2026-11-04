@@ -5012,6 +5012,12 @@ mod tests {
             }
             click(&ui, "Library");
             assert_eq!(ui.get_page(), Page::Library);
+            // The playlists page is their way in; the sidebar's entry per
+            // playlist stays out of the hub.
+            assert!(ui.get_sections().iter().any(|label| label == "Road Trip"));
+            let hub: Vec<_> = ui.get_library_links().iter().map(|entry| entry.link).collect();
+            assert!(hub.iter().any(|link| link == "playlists"), "{hub:?}");
+            assert!(!hub.iter().any(|link| link.starts_with("playlist:")), "{hub:?}");
             click(&ui, "Albums");
             wait_for("the albums", || ui.get_page() == Page::Albums).await;
             assert_eq!(ui.get_bar_section(), 2, "an album's page lights Library");

@@ -2398,20 +2398,10 @@ export component AppWindow inherits Window {
                         max-width: 480px;
                         spacing: 4px;
                         Heading { text: root.page == Page.browse ? "Browse" : "Library"; }
-                        for link[i] in root.hub-links: VerticalLayout {
-                            spacing: 4px;
-                            if link.group != "" && (i == 0 || link.group != root.hub-links[i - 1].group): Text {
-                                text: link.group;
-                                font-size: Theme.small;
-                                font-weight: 600;
-                                color: Theme.muted;
-                                overflow: elide;
-                            }
-                            SettingsRow {
-                                icon: link.icon;
-                                title: link.title;
-                                clicked => { root.open(link.link); }
-                            }
+                        for link in root.hub-links: SettingsRow {
+                            icon: link.icon;
+                            title: link.title;
+                            clicked => { root.open(link.link); }
                         }
                     }
                     if root.page == Page.settings: VerticalLayout {
