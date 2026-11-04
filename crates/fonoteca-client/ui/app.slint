@@ -1,5 +1,5 @@
-import { Button, CheckBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, BottomBar, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
+import { LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { AlbumTile, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine }
 
@@ -127,8 +127,10 @@ export struct Track {
     link: string,
 }
 
+// A page's own title: on a phone Material's Headline Medium, the title of
+// its large top app bar.
 component Heading inherits Text {
-    font-size: 24px * Theme.zoom;
+    font-size: (Screen.phone ? 28px : 24px) * Theme.zoom;
     font-weight: 600;
     wrap: word-wrap;
 }
@@ -641,7 +643,9 @@ component StatCards {
     property <bool> compact: (self.width + Theme.gap) / (180px + Theme.gap) < self.stats.length;
     property <length> gap: self.compact ? 8px : Theme.gap;
     property <length> card-height: (self.compact ? 64px : 88px) * Theme.zoom;
-    property <int> fit: max(1, floor((self.width + self.gap) / ((self.compact ? 64px * Theme.zoom : 180px) + self.gap)));
+    // How narrow a card gets: on a phone, still as wide as its label.
+    property <length> least-width: self.compact ? (Screen.phone ? 96px : 64px) * Theme.zoom : 180px;
+    property <int> fit: max(1, floor((self.width + self.gap) / (self.least-width + self.gap)));
     property <int> rows: ceil(self.stats.length / self.fit);
     property <int> columns: max(1, ceil(self.stats.length / max(1, self.rows)));
     property <length> card-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
@@ -786,20 +790,17 @@ component StepButtons inherits VerticalLayout {
     if root.phone: VerticalLayout {
         spacing: 8px;
         Button {
-            height: 48px;
             text: root.main;
             primary: true;
             enabled: root.main-enabled;
             clicked => { root.main-clicked(); }
         }
         if root.other != "": Button {
-            height: 48px;
             text: root.other;
             enabled: !root.busy;
             clicked => { root.other-clicked(); }
         }
         if root.back: Button {
-            height: 48px;
             text: "Back";
             enabled: !root.busy;
             clicked => { root.back-clicked(); }
@@ -1481,7 +1482,7 @@ export component AppWindow inherits Window {
     // How much bigger than its usual 14px the system's text size setting
     // makes text: Android's font size, Windows' text size; only bigger counts.
     // Other systems report none, which leaves 12px.
-    property <float> text-zoom: (root.phone ? Theme.phone-text-scale : 1) * max(1, 1rem / 14px);
+    property <float> text-zoom: max(1, 1rem / 14px);
     changed text-zoom => { Theme.zoom = self.text-zoom; }
 
     function share-size() {
@@ -1956,7 +1957,7 @@ export component AppWindow inherits Window {
                         }
                         if root.header-facts != "": Text {
                             text: root.header-facts;
-                            font-size: Theme.body;
+                            font-size: Theme.detail;
                             color: Theme.muted;
                             wrap: word-wrap;
                         }
@@ -2013,6 +2014,7 @@ export component AppWindow inherits Window {
                             alignment: start;
                             Link {
                                 text: root.about-open ? "Less" : "More";
+                                font-size: Theme.detail;
                                 font-weight: 600;
                                 clicked => { root.about-open = !root.about-open; }
                             }

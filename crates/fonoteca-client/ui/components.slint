@@ -2,7 +2,7 @@
 // `link` names where it leads (such as "artist:<id>"), and the component hands
 // it to `open`.
 
-import { Button, ComboBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { Button as StdButton, CheckBox as StdCheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch as StdSwitch } from "std-widgets.slint";
 
 export global Theme {
     // How much bigger the phone's or the desktop's text size setting makes
@@ -16,17 +16,24 @@ export global Theme {
     out property <brush> surface: Palette.alternate-background;
     out property <brush> accent: Palette.accent-background;
 
-    // A phone holds the screen close, and its covers fill the width: its text
-    // is 16/14 larger, which makes the body 16 and the small text 14, as
-    // Material sets text on a phone.
-    out property <float> phone-text-scale: 16 / 14;
-    // The least a finger's target is on a phone, as Material sets it.
+    // The least a finger's target is on a phone, and an icon's size there,
+    // as Material 3 sets them.
     out property <length> phone-target: 48px;
+    out property <length> phone-icon: 24px;
 
-    out property <length> small: 12px * self.zoom;
-    out property <length> body: 14px * self.zoom;
-    out property <length> heading: 20px * self.zoom;
-    out property <length> title: 32px * self.zoom;
+    // On a phone each text style is Material 3's for its role: Body Medium
+    // for the lines under a name, Body Large for a list's names, Title Large
+    // for a section and Headline Small for what a page is about.
+    out property <length> small: (Screen.phone ? 14px : 12px) * self.zoom;
+    out property <length> body: (Screen.phone ? 16px : 14px) * self.zoom;
+    out property <length> heading: (Screen.phone ? 22px : 20px) * self.zoom;
+    out property <length> title: (Screen.phone ? 24px : 32px) * self.zoom;
+    // The same on a phone as on a desktop: Label Medium for the bottom
+    // bar's names and the word over a page's title; Body Medium for a
+    // song's length and a page's facts, and Label Large, as large, for the
+    // words of a small button or of a link that acts as one.
+    out property <length> label: 12px * self.zoom;
+    out property <length> detail: 14px * self.zoom;
 
     out property <length> gap: 16px;
     out property <length> radius: 6px;
@@ -528,7 +535,7 @@ export component IconButton inherits Pressable {
     in property <string> icon;
     in property <bool> filled;
     in property <brush> color: Theme.text;
-    in property <length> icon-size: 20px;
+    in property <length> icon-size: Screen.phone ? Theme.phone-icon : 20px;
     in property <brush> hover-color: Theme.hover;
     // A round plate behind the icon, for the one button that leads.
     in property <brush> plate: transparent;
@@ -686,7 +693,10 @@ export component MoreMenu {
 
     property <length> row-height: 32px * Theme.zoom;
     property <length> entry-height: (root.two-line ? 44px : 32px) * Theme.zoom;
-    property <length> sheet-entry-height: (root.two-line ? 64px : 48px) * Theme.zoom;
+    // A sheet's rows are Material's one-line list rows, its entries with
+    // a `detail` its two-line ones.
+    property <length> sheet-row-height: 56px * Theme.zoom;
+    property <length> sheet-entry-height: root.two-line ? 72px * Theme.zoom : root.sheet-row-height;
     property <length> pad: 4px;
     property <length> gap: 4px;
     property <length> above: root.absolute-position.y - 8px;
@@ -933,8 +943,8 @@ export component MoreMenu {
                                 detail: entry.detail;
                                 danger: entry.danger;
                                 more: entry.choices.length > 0;
-                                icon-size: 22px;
-                                font-size: 16px * Theme.zoom;
+                                icon-size: Theme.phone-icon;
+                                font-size: Theme.body;
                                 lit: root.current == i;
                                 keyed: root.keyed;
                                 clicked => { root.choose(i); }
@@ -943,21 +953,21 @@ export component MoreMenu {
                         if root.open >= 0: VerticalLayout {
                             // Back to the entries.
                             MenuRow {
-                                height: 48px * Theme.zoom;
+                                height: root.sheet-row-height;
                                 icon: Icons.back;
                                 label: root.entries[root.open].label;
                                 strong: true;
-                                icon-size: 22px;
-                                font-size: 16px * Theme.zoom;
+                                icon-size: Theme.phone-icon;
+                                font-size: Theme.body;
                                 clicked => {
                                     root.open = -1;
                                     root.choice = -1;
                                 }
                             }
                             for choice[j] in root.choices: MenuRow {
-                                height: 48px * Theme.zoom;
+                                height: root.sheet-row-height;
                                 label: choice.label;
-                                font-size: 16px * Theme.zoom;
+                                font-size: Theme.body;
                                 lit: root.choice == j;
                                 keyed: root.keyed;
                                 clicked => { root.pick(j); }
@@ -1261,7 +1271,7 @@ export component TrackRow inherits Pressable {
             horizontal-stretch: 0;
             min-width: 44px;
             text: root.duration;
-            font-size: Theme.body;
+            font-size: Theme.detail;
             color: Theme.muted;
             horizontal-alignment: right;
             vertical-alignment: center;
@@ -1459,7 +1469,8 @@ export component SettingsRow inherits Pressable {
     in property <string> title;
     in property <string> summary;
     label: self.title;
-    min-height: Screen.phone ? 64px : 52px;
+    // Material's one-line and two-line list rows on a phone.
+    min-height: !Screen.phone ? 52px : root.summary == "" ? 56px : 72px;
 
     Rectangle {
         border-radius: Theme.radius;
@@ -1470,8 +1481,8 @@ export component SettingsRow inherits Pressable {
         spacing: 16px;
         Path {
             cross-axis-self-alignment: center;
-            width: 22px;
-            height: 22px;
+            width: Screen.phone ? Theme.phone-icon : 22px;
+            height: self.width;
             viewbox-width: 24;
             viewbox-height: 24;
             commands: root.icon;
@@ -1498,8 +1509,8 @@ export component SettingsRow inherits Pressable {
         }
         Path {
             cross-axis-self-alignment: center;
-            width: 16px;
-            height: 16px;
+            width: Screen.phone ? Theme.phone-icon : 16px;
+            height: self.width;
             viewbox-width: 24;
             viewbox-height: 24;
             commands: Icons.forward;
@@ -1527,7 +1538,7 @@ export component TrackHeader inherits HorizontalLayout {
     padding-left: 8px;
     padding-right: 8px;
     spacing: 12px;
-    height: (Screen.phone ? 44px : 32px) * Theme.zoom;
+    height: (Screen.phone ? Theme.phone-target : 32px) * Theme.zoom;
 
     for column[c] in root.columns: TableCell {
         column: column;
@@ -1824,6 +1835,7 @@ export component Shelf {
             if root.more: Link {
                 cross-axis-self-alignment: center;
                 text: "See all";
+                font-size: Theme.detail;
                 clicked => { root.see-all(); }
             }
         }
@@ -2168,6 +2180,7 @@ export component CoverShelf {
             // As tall as the row, a target big enough for a finger.
             if root.more: Link {
                 text: "See all";
+                font-size: Theme.detail;
                 label: "See all " + root.title;
                 clicked => { root.see-all(); }
             }
@@ -2389,10 +2402,12 @@ export component PlayButton inherits HorizontalLayout {
             padding-right: 16px;
             spacing: 6px;
             alignment: center;
+            // Material's small button on a phone: a 20px icon and Label
+            // Large words.
             Path {
                 cross-axis-self-alignment: center;
-                width: 16px;
-                height: 16px;
+                width: Screen.phone ? 20px : 16px;
+                height: self.width;
                 viewbox-width: 24;
                 viewbox-height: 24;
                 commands: Icons.play;
@@ -2400,7 +2415,7 @@ export component PlayButton inherits HorizontalLayout {
             }
             Text {
                 text: "Play";
-                font-size: Theme.body;
+                font-size: Theme.detail;
                 font-weight: 600;
                 color: Palette.accent-foreground;
                 vertical-alignment: center;
@@ -2481,14 +2496,13 @@ export component PageHeader inherits FlexboxLayout {
         spacing: 6px;
         if root.kind != "": Text {
             text: root.kind;
-            font-size: Theme.small;
+            font-size: Theme.label;
             font-weight: 600;
             color: Theme.muted;
         }
-        // Smaller on a phone, where long titles would take several lines.
         Text {
             text: root.title;
-            font-size: Screen.phone ? 26px * Theme.zoom : Theme.title;
+            font-size: Theme.title;
             font-weight: 700;
             color: Theme.text;
             wrap: word-wrap;
@@ -2501,7 +2515,7 @@ export component PageHeader inherits FlexboxLayout {
         }
         if root.facts != "": Text {
             text: root.facts;
-            font-size: Theme.body;
+            font-size: Theme.detail;
             color: Theme.muted;
             wrap: word-wrap;
         }
@@ -2752,7 +2766,7 @@ component BarItem inherits Pressable {
         }
         Text {
             text: root.text;
-            font-size: Theme.small;
+            font-size: Theme.label;
             font-weight: root.current ? 600 : 400;
             color: root.current ? Theme.text : Theme.muted;
             horizontal-alignment: center;
@@ -2805,7 +2819,7 @@ export component TopBar inherits HorizontalLayout {
     callback account();
 
     property <length> button-size: root.phone ? Theme.phone-target : 32px;
-    property <length> icon-size: root.phone ? 24px : 20px;
+    property <length> icon-size: root.phone ? Theme.phone-icon : 20px;
 
     height: Theme.bar-height;
     padding: 8px;
@@ -3348,9 +3362,32 @@ component EqFieldLabel inherits Text {
     color: Theme.muted;
 }
 
-// A ComboBox a finger can hit on a phone, where Material's is 24px high.
+// Slint's controls, a finger's target high on a phone. Material 3 draws a
+// Button 40px high, a Switch 32px and a CheckBox 18px, and takes taps in
+// 48px around each, which Slint's Material style leaves out. A state leaves
+// the desktop's own heights alone.
+export component Button inherits StdButton {
+    states [
+        phone when Screen.phone: { min-height: Theme.phone-target; }
+    ]
+}
+
+export component Switch inherits StdSwitch {
+    states [
+        phone when Screen.phone: { min-height: Theme.phone-target; }
+    ]
+}
+
+export component CheckBox inherits StdCheckBox {
+    states [
+        phone when Screen.phone: { min-height: Theme.phone-target; }
+    ]
+}
+
+// A ComboBox as high on a phone as a text field, as Material's dropdown is
+// one, where Slint's Material style draws it 22px high.
 export component Choice inherits ComboBox {
-    min-height: Screen.phone ? Theme.phone-target : 0px;
+    min-height: Screen.phone ? 56px : 0px;
 }
 
 // A format and quality to take audio in, for the settings: Original, which
@@ -3570,8 +3607,8 @@ export component PlayerControls inherits VerticalLayout {
     callback seek(seconds: float);
     callback toggle-shuffle();
     callback cycle-repeat();
-    // Narrow phones give the smaller buttons their 44px targets and no more.
-    property <length> side: Screen.width < 360px ? 44px : 56px;
+    // Narrow phones give the smaller buttons a finger's target and no more.
+    property <length> side: Screen.width < 360px ? Theme.phone-target : 56px;
     spacing: 8px;
 
     SeekRow {
@@ -3640,8 +3677,8 @@ component SignalPathLight inherits Pressable {
     accessible-expandable: true;
     accessible-expanded: steps.is-open;
     // A finger's target is taller and wider than the chip drawn in it.
-    width: max(badge.preferred-width, Screen.phone ? 44px : 0px);
-    height: Screen.phone ? 44px : 28px;
+    width: max(badge.preferred-width, Screen.phone ? Theme.phone-target : 0px);
+    height: Screen.phone ? Theme.phone-target : 28px;
     clicked => { steps.show(); }
     Rectangle {
         x: (parent.width - self.width) / 2;
@@ -3779,6 +3816,9 @@ component NowPlayingDetails inherits VerticalLayout {
     // Whether the sheet is open, which the titles scroll only while.
     in property <bool> active;
     callback open(link: string);
+    // The lines under the title: Body Large on a phone, as the title there
+    // is a Headline Small.
+    property <length> second-size: Screen.phone ? Theme.body : Theme.heading;
     spacing: 12px;
     alignment: start;
 
@@ -3791,12 +3831,12 @@ component NowPlayingDetails inherits VerticalLayout {
     if root.movement != "" || root.movement-place != "": Ticker {
         active: root.active;
         text: root.movement != "" && root.movement-place != "" ? root.movement + " · " + root.movement-place : root.movement + root.movement-place;
-        font-size: Theme.heading;
+        font-size: root.second-size;
         text-color: Theme.muted;
     }
     if root.names.length > 0: Links {
         names: root.names;
-        font-size: Theme.heading;
+        font-size: root.second-size;
         open(link) => { root.open(link); }
     }
     if root.album.link != "": Link {
