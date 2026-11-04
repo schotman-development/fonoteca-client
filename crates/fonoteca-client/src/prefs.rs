@@ -114,6 +114,24 @@ const PREFERENCES: &str = "preferences";
 
 const LOGOS: &str = "station-logos";
 
+#[cfg(not(target_family = "wasm"))]
+const WAITING_LISTENS: &str = "waiting-listens";
+
+#[cfg(not(target_family = "wasm"))]
+/// The listens made and not yet submitted to ListenBrainz, oldest first.
+pub fn waiting_listens() -> Vec<listenbrainz::Listen> {
+    read(WAITING_LISTENS)
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn save_waiting_listens(listens: &[listenbrainz::Listen]) {
+    if let Ok(json) = serde_json::to_string(listens) {
+        write(WAITING_LISTENS, &json);
+    }
+}
+
 /// What the radio directory had for a saved station the server has no
 /// picture of: the picture's address and bytes, or nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

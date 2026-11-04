@@ -28,6 +28,8 @@ mod queue;
 #[cfg(not(target_family = "wasm"))]
 mod queue_drag;
 #[cfg(not(target_family = "wasm"))]
+mod scrobble;
+#[cfg(not(target_family = "wasm"))]
 mod sound;
 mod store;
 #[cfg(not(target_family = "wasm"))]
@@ -5537,6 +5539,8 @@ mod tests {
             assert_eq!(ui.get_playing_title(), "Sonata");
             assert_eq!(ui.get_playing_movement_place(), "2 of 3");
             assert_eq!(ui.get_playing_position(), 61.5);
+            // The scrobbler flushes what waits with the sign in.
+            assert!(play::testing::scrobbler_calls().1 > 0);
             assert_eq!(
                 rows(),
                 [
@@ -5607,6 +5611,8 @@ mod tests {
                 })
             })
             .await;
+            // It is shown the player on each tick while there is one.
+            assert!(play::testing::scrobbler_calls().0 > 0);
             play::testing::clear(&ui);
 
             // A song with a waveform shows it as the seek bar, and one without

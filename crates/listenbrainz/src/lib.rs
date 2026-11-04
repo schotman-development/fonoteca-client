@@ -1,6 +1,6 @@
 //! The [ListenBrainz](https://listenbrainz.readthedocs.io/en/latest/users/api/)
-//! feedback calls: love, hate or clear a recording, and read a user's
-//! feedback back.
+//! calls: submit listens and the track playing now, love, hate or clear a
+//! recording, and read a user's feedback back.
 //!
 //! Recordings are identified by their MusicBrainz recording ID, which
 //! OpenSubsonic servers such as Navidrome put in a song's `musicBrainzId`.
@@ -18,7 +18,42 @@ use serde::{Deserialize, Serialize};
 
 pub const API_ROOT: &str = "https://api.listenbrainz.org/1/";
 
+/// The most listens one submit call takes.
+pub const MAX_LISTENS_PER_REQUEST: usize = 1000;
+
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// What ListenBrainz keeps of a track played.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackMetadata {
+    pub artist_name: String,
+    pub track_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_name: Option<String>,
+    pub additional_info: AdditionalInfo,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdditionalInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_mbid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracknumber: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u64>,
+    /// The program playing and the one submitting, which are this app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_player: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_client: Option<String>,
+}
+
+/// A track played, and when it began, in seconds since 1970.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listen {
+    pub listened_at: i64,
+    pub track_metadata: TrackMetadata,
+}
 
 /// A user's feedback on a recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,9 +118,15 @@ pub struct Client {
 impl Client {
     /// `token` is the user token shown on <https://listenbrainz.org/settings/>.
     pub fn new(token: impl Into<String>) -> Result<Self> {
+        Self::with_root(token, API_ROOT)
+    }
+
+    /// A client for a server other than ListenBrainz's own, so that tests
+    /// never reach the real one. `root` ends in the API version.
+    pub fn with_root(token: impl Into<String>, root: &str) -> Result<Self> {
         Ok(Self {
             http: reqwest::Client::builder().build()?,
-            root: Url::parse(API_ROOT).expect("API_ROOT is a valid URL"),
+            root: Url::parse(root).expect("the root is a valid URL"),
             token: token.into(),
         })
     }
@@ -114,6 +155,40 @@ impl Client {
         let validation: Validation =
             send(self.authorized(self.http.get(self.url(&["validate-token"])))).await?;
         Ok(validation.user_name.filter(|_| validation.valid))
+    }
+
+    /// Says that the user has just begun listening to a track.
+    pub async fn playing_now(&self, track_metadata: &TrackMetadata) -> Result<()> {
+        #[derive(Serialize)]
+        struct Payload<'a> {
+            track_metadata: &'a TrackMetadata,
+        }
+        let body = SubmitListens {
+            listen_type: "playing_now",
+            payload: &[Payload { track_metadata }],
+        };
+        self.submit(&body).await
+    }
+
+    /// Keeps these listens, at most [`MAX_LISTENS_PER_REQUEST`] of them. One
+    /// is a `single`, which ListenBrainz asks of a track just finished; more
+    /// are an `import`.
+    pub async fn submit_listens(&self, listens: &[Listen]) -> Result<()> {
+        let listen_type = if listens.len() == 1 {
+            "single"
+        } else {
+            "import"
+        };
+        let body = SubmitListens {
+            listen_type,
+            payload: listens,
+        };
+        self.submit(&body).await
+    }
+
+    async fn submit<T: Serialize>(&self, body: &SubmitListens<'_, T>) -> Result<()> {
+        let request = self.http.post(self.url(&["submit-listens"])).json(body);
+        send::<IgnoredAny>(self.authorized(request)).await.map(drop)
     }
 
     /// Loves, hates or clears the user's feedback on a recording.
@@ -191,6 +266,12 @@ impl Client {
     }
 }
 
+#[derive(Serialize)]
+struct SubmitListens<'a, T> {
+    listen_type: &'static str,
+    payload: &'a [T],
+}
+
 async fn send<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
     let response = request.send().await?;
     let status = response.status();
@@ -227,6 +308,16 @@ pub enum Error {
     RateLimited { reset_in: Option<u64> },
     /// ListenBrainz refused the call.
     Api { status: u16, message: String },
+}
+
+impl Error {
+    /// Whether ListenBrainz refused a listen as malformed (HTTP 400), which
+    /// sending again won't change. Any other failure, an invalid or revoked
+    /// token (401, 403), a wrong address (404), the network or ListenBrainz
+    /// itself, says nothing about the listen, which may be sent later.
+    pub fn is_malformed_listen(&self) -> bool {
+        matches!(self, Error::Api { status: 400, .. })
+    }
 }
 
 impl fmt::Display for Error {
@@ -271,6 +362,48 @@ mod tests {
             url.as_str(),
             "https://api.listenbrainz.org/1/feedback/user/a%20b%2Fc/get-feedback"
         );
+    }
+
+    #[test]
+    fn a_listen_is_the_json_listenbrainz_takes() {
+        let listen = Listen {
+            listened_at: 1700000000,
+            track_metadata: TrackMetadata {
+                artist_name: "Rob".into(),
+                track_name: "Song".into(),
+                release_name: None,
+                additional_info: AdditionalInfo {
+                    duration: Some(200),
+                    ..Default::default()
+                },
+            },
+        };
+        let body = SubmitListens {
+            listen_type: "single",
+            payload: std::slice::from_ref(&listen),
+        };
+        assert_eq!(
+            serde_json::to_value(&body).unwrap(),
+            serde_json::json!({"listen_type": "single", "payload": [{
+                "listened_at": 1700000000,
+                "track_metadata": {"artist_name": "Rob", "track_name": "Song",
+                    "additional_info": {"duration": 200}}}]})
+        );
+        let kept = serde_json::to_string(&listen).unwrap();
+        assert_eq!(serde_json::from_str::<Listen>(&kept).unwrap(), listen);
+    }
+
+    #[test]
+    fn only_a_400_says_the_listen_is_malformed() {
+        let api = |status| Error::Api {
+            status,
+            message: String::new(),
+        };
+        assert!(api(400).is_malformed_listen());
+        for status in [401, 403, 404, 429, 500, 503] {
+            assert!(!api(status).is_malformed_listen(), "{status}");
+        }
+        assert!(!Error::RateLimited { reset_in: None }.is_malformed_listen());
     }
 
     #[test]

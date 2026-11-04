@@ -21,7 +21,7 @@ use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMo
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::{
     AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, offline, prefs, quality,
-    queue_drag, sound, waveform,
+    queue_drag, scrobble, sound, waveform,
 };
 
 /// The settings' volume leveling entries, in their order.
@@ -72,12 +72,14 @@ struct Playing {
     /// What names each of `devices` beside the button that opens their menu.
     device_titles: Vec<SharedString>,
     tick: Timer,
+    scrobbler: scrobble::Scrobbler,
 }
 
 type Shared = Rc<RefCell<Playing>>;
 
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     let playing = Shared::default();
+    playing.borrow_mut().scrobbler = scrobble::Scrobbler::load();
     #[cfg(test)]
     testing::keep(browser, &playing);
     let saved = prefs::load();
@@ -771,6 +773,9 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         return;
     }
     let state = (status.index, status.paused || status.ended);
+    let scrobbling = &mut *p;
+    let song = status.index.and_then(|index| scrobbling.queue.get(index));
+    scrobbling.scrobbler.observe(song, status.position, state.1);
     let last = p.saved;
     #[cfg(target_os = "android")]
     if last.map(|(index, paused, _)| (index, paused)) != Some(state) {
@@ -1107,6 +1112,7 @@ fn announce(p: &Playing, index: Option<usize>, paused: bool, seconds: f64) {
 fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     #[cfg(target_os = "android")]
     crate::media::hide();
+    playing.borrow().scrobbler.flush();
     {
         let mut p = playing.borrow_mut();
         p.player = None;
@@ -1515,6 +1521,11 @@ pub(crate) mod testing {
             .join()
             .unwrap()
             .expect("fetched")
+    }
+
+    /// How often the scrobbler was shown the player and asked to flush.
+    pub(crate) fn scrobbler_calls() -> (u32, u32) {
+        handles().1.borrow().scrobbler.calls()
     }
 
     /// Shows the streaming quality saved, as at the start.

@@ -182,7 +182,7 @@ The repository holds these crates:
 | --- | --- |
 | [`fonoteca-client`](crates/fonoteca-client) | The app: Slint UI in `ui/`, Rust in `src/` |
 | [`opensubsonic`](crates/opensubsonic) | An async client for the OpenSubsonic API, checked against the spec's own examples |
-| [`listenbrainz`](crates/listenbrainz) | A client for ListenBrainz; the app only checks a user token with it so far |
+| [`listenbrainz`](crates/listenbrainz) | A client for ListenBrainz: it checks a user token and submits what the app plays |
 | [`playback`](crates/playback) | The audio player: FFmpeg decodes, the sound device plays each track in its own format where it can |
 
 The Android app is built by [`.github/workflows/rolling-release.yml`](.github/workflows/rolling-release.yml)
@@ -191,7 +191,6 @@ and packaged by Gradle in [`android/`](android).
 ## Roadmap
 
 - **Playback.**
-- **Scrobbling** to ListenBrainz.
 - **The whole OpenSubsonic API** and every extension the server announces, not
   only the Subsonic subset most players stop at.
 - **Packages:** an AppImage for Linux, an unsigned app for macOS, and stable
