@@ -3589,6 +3589,86 @@ mod tests {
             let picked: Vec<bool> = ui.get_tracks().iter().map(|track| track.selected).collect();
             assert_eq!(picked, [true, true, true, true, false, false, false]);
             ui.invoke_clear_selection();
+            // A work's row picks all its movements, by a finger held or a
+            // right-click, and a click on it while selecting lets them go.
+            let picks = || -> Vec<bool> { ui.get_tracks().iter().map(|t| t.selected).collect() };
+            let works = || -> Vec<bool> {
+                [0, 5].map(|row| ui.get_tracks().row_data(row).unwrap().work_selected).to_vec()
+            };
+            let headings = || {
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Button)
+                    .match_predicate(|e| e.accessible_label().is_some_and(|l| l == "Symphony No. 5"))
+                    .find_all()
+            };
+            let shift_held = |held: bool| {
+                let text = slint::platform::Key::Shift.into();
+                ui.window().dispatch_event(if held {
+                    WindowEvent::KeyPressed { text }
+                } else {
+                    WindowEvent::KeyReleased { text }
+                });
+            };
+            assert_eq!(headings().len(), 2);
+            // Tall enough that the bar of the selection covers no row.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 1500.0));
+            idle(Duration::from_millis(100)).await;
+            ui.global::<Input>().set_touch(true);
+            hold(&ui, middle(&headings()[0]), 0.0, 800).await;
+            ui.global::<Input>().set_touch(false);
+            assert_eq!(picks(), [true, true, false, false, false, false, false]);
+            assert_eq!(ui.get_selected_tiles(), 2);
+            assert_eq!(works(), [true, false]);
+            hold(&ui, middle(&headings()[0]), 0.0, 0).await;
+            assert_eq!(picks(), [false; 7]);
+            assert_eq!(ui.get_selected_tiles(), 0);
+            assert_eq!(works(), [false, false]);
+            headings()[1].single_click(PointerEventButton::Right).await;
+            assert_eq!(picks(), [false, false, false, false, false, true, true]);
+            assert_eq!(works(), [false, true]);
+            // One movement let go, the work is not selected, and picking it
+            // again takes the one missing.
+            ui.invoke_select_track(5, false);
+            assert_eq!(works(), [false, false]);
+            headings()[1].single_click(PointerEventButton::Right).await;
+            assert_eq!(picks(), [false, false, false, false, false, true, true]);
+            assert_eq!(ui.get_selected_tiles(), 2);
+            ui.invoke_clear_selection();
+            // Movements picked one by one make the work selected.
+            ui.invoke_select_track(0, false);
+            assert_eq!(works(), [false, false]);
+            ui.invoke_select_track(1, false);
+            assert_eq!(works(), [true, false]);
+            ui.invoke_clear_selection();
+            // A range from the work's row, and to it from either side.
+            headings()[0].single_click(PointerEventButton::Right).await;
+            shift_held(true);
+            let bows = button(&ui, "Bows");
+            bows.single_click(PointerEventButton::Left).await;
+            assert_eq!(picks(), [true, true, true, true, true, false, false]);
+            ui.invoke_clear_selection();
+            ui.invoke_select_track(2, false);
+            headings()[1].single_click(PointerEventButton::Right).await;
+            assert_eq!(picks(), [false, false, true, true, true, true, true]);
+            ui.invoke_clear_selection();
+            shift_held(false);
+            ui.invoke_select_track(6, false);
+            shift_held(true);
+            headings()[0].single_click(PointerEventButton::Right).await;
+            assert_eq!(picks(), [true; 7]);
+            // Shift from a movement of the work itself picks the whole work.
+            ui.invoke_clear_selection();
+            ui.invoke_select_track(5, false);
+            headings()[1].single_click(PointerEventButton::Right).await;
+            assert_eq!(picks(), [false, false, false, false, false, true, true]);
+            // With nothing picked before, Shift picks just the work.
+            ui.invoke_clear_selection();
+            headings()[1].single_click(PointerEventButton::Right).await;
+            shift_held(false);
+            assert_eq!(picks(), [false, false, false, false, false, true, true]);
+            ui.invoke_clear_selection();
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
             let tracks: Vec<Track> = ui.get_tracks().iter().collect();
             let links = |names: &slint::ModelRc<Name>| -> Vec<String> {
                 names.iter().map(|name| name.link.to_string()).collect()

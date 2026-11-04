@@ -710,6 +710,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |row, range| select_track(&weak.unwrap(), &browser, row as usize, range)
     });
+    ui.on_select_work({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |row, range| select_work(&weak.unwrap(), &browser, row as usize, range)
+    });
     ui.on_clear_selection({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || clear_selection(&weak.unwrap(), &browser)
@@ -1012,12 +1016,10 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
 
 /// Puts `songs` on screen as the rows of an album's, playlist's, artist's or
 /// downloads page, the ones already selected marked as such.
-fn show_songs(b: &mut Browser, songs: Vec<Child>, mut rows: Vec<Track>) {
-    for (row, song) in rows.iter_mut().zip(&songs) {
-        row.selected = b.selected.contains(&song_link(song));
-    }
+fn show_songs(b: &mut Browser, songs: Vec<Child>, rows: Vec<Track>) {
     b.tracks.set_vec(rows);
     b.songs = songs;
+    show_track_selection(b);
 }
 
 /// Selects the song of a track row of an album, playlist, artist or
@@ -1026,14 +1028,60 @@ fn show_songs(b: &mut Browser, songs: Vec<Child>, mut rows: Vec<Track>) {
 fn select_track(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
     let mut b = browser.borrow_mut();
     let links: Vec<String> = b.songs.iter().map(song_link).collect();
-    let tracks = b.tracks.clone();
-    for (row, selected) in pick(&mut b, &links, row, range) {
-        if let Some(mut track) = tracks.row_data(row) {
-            track.selected = selected;
-            tracks.set_row_data(row, track);
+    pick(&mut b, &links, row, range);
+    show_track_selection(&b);
+    show_selected(ui, &b);
+}
+
+/// Selects the songs of the work whose row heads the tracks from `row`, or
+/// lets them all go if they are all selected. With `range`, selects every
+/// row from the one last picked to the work's nearest end instead.
+fn select_work(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
+    let mut b = browser.borrow_mut();
+    let Some(movements) = b
+        .tracks
+        .row_data(row)
+        .map(|track| track.work_tracks as usize)
+    else {
+        return;
+    };
+    let links: Vec<String> = b.songs.iter().map(song_link).collect();
+    let work = row..(row + movements).min(links.len());
+    let anchor = b
+        .anchor
+        .as_ref()
+        .and_then(|anchor| links.iter().position(|link| link == anchor));
+    match anchor.filter(|anchor| range && !work.contains(anchor)) {
+        Some(anchor) => {
+            let end = if anchor < row {
+                work.end - 1
+            } else {
+                work.start
+            };
+            pick(&mut b, &links, end, true);
+        }
+        None => pick_all(&mut b, &links[work]),
+    }
+    show_track_selection(&b);
+    show_selected(ui, &b);
+}
+
+/// Shows on every track row whether its song is selected, and on a work's
+/// row whether all of the work's songs are, whichever way they were picked.
+fn show_track_selection(b: &Browser) {
+    let is_selected = |song: &Child| b.selected.contains(&song_link(song));
+    for row in 0..b.tracks.row_count() {
+        let (Some(mut track), Some(song)) = (b.tracks.row_data(row), b.songs.get(row)) else {
+            continue;
+        };
+        let work = &b.songs[row..(row + track.work_tracks as usize).min(b.songs.len())];
+        let work_selected = !work.is_empty() && work.iter().all(is_selected);
+        if track.selected != is_selected(song) || track.work_selected != work_selected {
+            track.selected = is_selected(song);
+            track.work_selected = work_selected;
+            b.tracks.set_row_data(row, track);
         }
     }
-    show_selected(ui, &b);
 }
 
 /// Says how many tiles and rows are selected, and where the playlists among
@@ -1085,6 +1133,21 @@ fn pick(b: &mut Browser, links: &[String], row: usize, range: bool) -> Vec<(usiz
     }
 }
 
+/// Picks all of `links`, or lets them all go if all are picked, and makes the
+/// first where a range starts.
+fn pick_all(b: &mut Browser, links: &[String]) {
+    b.anchor = links.first().cloned();
+    if links.iter().all(|link| b.selected.contains(link)) {
+        b.selected.retain(|picked| !links.contains(picked));
+        return;
+    }
+    for link in links {
+        if !b.selected.contains(link) {
+            b.selected.push(link.clone());
+        }
+    }
+}
+
 /// A song's page, or a folder's for a folder in one, which also stands for
 /// it in the selection.
 fn song_link(song: &Child) -> String {
@@ -1096,11 +1159,11 @@ fn song_link(song: &Child) -> String {
 }
 
 fn clear_selection(ui: &AppWindow, browser: &Shared) {
-    let (tiles, lines, tracks) = {
+    let (tiles, lines) = {
         let mut b = browser.borrow_mut();
         b.selected.clear();
         b.anchor = None;
-        (b.tiles.clone(), b.lines.clone(), b.tracks.clone())
+        (b.tiles.clone(), b.lines.clone())
     };
     for row in 0..tiles.row_count() {
         if let Some(mut tile) = tiles.row_data(row).filter(|tile| tile.selected) {
@@ -1114,12 +1177,7 @@ fn clear_selection(ui: &AppWindow, browser: &Shared) {
             lines.set_row_data(row, line);
         }
     }
-    for row in 0..tracks.row_count() {
-        if let Some(mut track) = tracks.row_data(row).filter(|track| track.selected) {
-            track.selected = false;
-            tracks.set_row_data(row, track);
-        }
-    }
+    show_track_selection(&browser.borrow());
     show_selected(ui, &browser.borrow());
 }
 
@@ -7506,6 +7564,53 @@ mod tests {
         assert!(hearts(&b));
         mark_loved(&mut b, Page::Tracks, "s1", false);
         assert!(!hearts(&b));
+    }
+
+    #[test]
+    fn a_work_is_selected_when_all_its_songs_are_whichever_way_they_were_picked() {
+        // A work of two songs, then the first of them again on its own.
+        let songs: Vec<Child> = ["a", "b", "a"]
+            .iter()
+            .map(|id| {
+                serde_json::from_str(&format!(r#"{{"id":"{id}","isDir":false,"title":"t"}}"#))
+                    .unwrap()
+            })
+            .collect();
+        let links: Vec<String> = songs.iter().map(song_link).collect();
+        let mut b = Browser::default();
+        b.tracks.set_vec(vec![
+            Track {
+                work_tracks: 2,
+                ..Track::default()
+            },
+            Track::default(),
+            Track::default(),
+        ]);
+        b.songs = songs;
+        let shown = |b: &Browser| -> (Vec<bool>, bool) {
+            let rows = b.tracks.iter().map(|track| track.selected).collect();
+            (rows, b.tracks.row_data(0).unwrap().work_selected)
+        };
+        // Picked one by one, the work counts once both are; the song on two
+        // rows shows on both.
+        pick(&mut b, &links, 0, false);
+        show_track_selection(&b);
+        assert_eq!(shown(&b), (vec![true, false, true], false));
+        pick(&mut b, &links, 1, false);
+        show_track_selection(&b);
+        assert_eq!(shown(&b), (vec![true, true, true], true));
+        // The work lets all go at once when all are picked, else picks all.
+        pick_all(&mut b, &links[..2]);
+        show_track_selection(&b);
+        assert_eq!(shown(&b), (vec![false, false, false], false));
+        pick(&mut b, &links, 1, false);
+        pick_all(&mut b, &links[..2]);
+        assert_eq!(b.selected, ["song:b", "song:a"]);
+        assert_eq!(b.anchor.as_deref(), Some("song:a"));
+        // A work with nothing under it is never selected.
+        b.tracks.set_row_data(0, Track::default());
+        show_track_selection(&b);
+        assert!(!shown(&b).1);
     }
 
     #[test]

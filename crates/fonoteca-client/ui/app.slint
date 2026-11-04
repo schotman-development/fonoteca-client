@@ -118,6 +118,8 @@ export struct Track {
     work-performed: string,
     // How many tracks the work spans, for its row to queue them all.
     work-tracks: int,
+    // Whether all of them are selected.
+    work-selected: bool,
     // A movement, under its work's row.
     part: bool,
     // A work's only track on the album, a row as strong as a work's.
@@ -1185,6 +1187,8 @@ export component AppWindow inherits Window {
     callback select-tile(index: int, range: bool);
     callback select-line(index: int, range: bool);
     callback select-track(index: int, range: bool);
+    // The work whose row heads the tracks from this one.
+    callback select-work(index: int, range: bool);
     callback clear-selection();
     callback resized();
     // Playlists: a new one with this name; the one on screen renamed or
@@ -2074,8 +2078,11 @@ export component AppWindow inherits Window {
                                 performed: track.work-performed;
                                 lovable: false;
                                 strong: true;
+                                selected: track.work-selected;
+                                selecting: root.selected-tiles > 0;
                                 playable: root.can-play;
                                 open(link) => { root.open(link); }
+                                select(range) => { root.select-work(row, range); }
                                 play => { root.play-tracks(row); }
                                 queue(next) => { root.queue-tracks(row, track.work-tracks, next); }
                             }
