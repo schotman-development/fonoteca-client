@@ -1,5 +1,5 @@
-import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
-import { AlbumTile, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
+import { Button, CheckBox, LineEdit, Palette, ScrollView, Switch, TextEdit } from "std-widgets.slint";
+import { AlbumTile, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, TrackColumn, TrackLine }
 
@@ -638,7 +638,7 @@ component StatCards {
     property <bool> compact: (self.width + Theme.gap) / (180px + Theme.gap) < self.stats.length;
     property <length> gap: self.compact ? 8px : Theme.gap;
     property <length> card-height: (self.compact ? 64px : 88px) * Theme.zoom;
-    property <int> fit: max(1, floor((self.width + self.gap) / ((self.compact ? 64px : 180px) + self.gap)));
+    property <int> fit: max(1, floor((self.width + self.gap) / ((self.compact ? 64px * Theme.zoom : 180px) + self.gap)));
     property <int> rows: ceil(self.stats.length / self.fit);
     property <int> columns: max(1, ceil(self.stats.length / max(1, self.rows)));
     property <length> card-width: (self.width - (self.columns - 1) * self.gap) / self.columns;
@@ -810,7 +810,7 @@ component SortControls inherits HorizontalLayout {
     in-out property <bool> descending;
     callback sort-selected();
     spacing: 12px;
-    ComboBox {
+    Choice {
         min-width: 96px;
         horizontal-stretch: 0;
         enabled: !Input.modal;
@@ -1459,7 +1459,7 @@ export component AppWindow inherits Window {
     // How much bigger than its usual 14px the system's text size setting
     // makes text: Android's font size, Windows' text size; only bigger counts.
     // Other systems report none, which leaves 12px.
-    property <float> text-zoom: max(1, 1rem / 14px);
+    property <float> text-zoom: (root.phone ? Theme.phone-text-scale : 1) * max(1, 1rem / 14px);
     changed text-zoom => { Theme.zoom = self.text-zoom; }
 
     function share-size() {
@@ -2437,7 +2437,7 @@ export component AppWindow inherits Window {
                             font-size: Theme.body;
                             color: Theme.muted;
                         }
-                        ComboBox {
+                        Choice {
                             accessible-label: "Download size limit";
                             // In the order offline.rs's `LIMITS_GB` takes them.
                             model: ["No limit", "1 GB", "5 GB", "10 GB", "25 GB", "50 GB", "100 GB", "250 GB"];
@@ -2485,7 +2485,7 @@ export component AppWindow inherits Window {
                             font-size: Theme.body;
                             color: Theme.muted;
                         }
-                        if root.can-play: ComboBox {
+                        if root.can-play: Choice {
                             accessible-label: "Volume leveling";
                             // In the order play.rs's `LEVELING` takes them.
                             model: ["Off", "By track", "By album"];
@@ -2519,7 +2519,7 @@ export component AppWindow inherits Window {
                             color: Theme.muted;
                             wrap: word-wrap;
                         }
-                        if root.can-play: ComboBox {
+                        if root.can-play: Choice {
                             accessible-label: "Headroom";
                             model: ["None", "−1 dB", "−2 dB", "−3 dB", "−4.5 dB", "−6 dB", "−9 dB", "−12 dB"];
                             current-index <=> root.headroom;
@@ -2531,7 +2531,7 @@ export component AppWindow inherits Window {
                             font-size: Theme.body;
                             color: Theme.muted;
                         }
-                        if root.can-play: ComboBox {
+                        if root.can-play: Choice {
                             accessible-label: "Crossfeed";
                             model: ["Off", "Light", "Medium", "Strong"];
                             current-index <=> root.crossfeed;
@@ -2543,7 +2543,7 @@ export component AppWindow inherits Window {
                             font-size: Theme.body;
                             color: Theme.muted;
                         }
-                        if root.can-play: ComboBox {
+                        if root.can-play: Choice {
                             accessible-label: "Upsampling";
                             model: ["Off", "To the highest multiple of the file's rate"];
                             current-index <=> root.upsampling;
@@ -2569,7 +2569,7 @@ export component AppWindow inherits Window {
                         }
                         if root.can-play && root.eq-on: HorizontalLayout {
                             spacing: 8px;
-                            ComboBox {
+                            Choice {
                                 horizontal-stretch: 1;
                                 accessible-label: "EQ preset";
                                 model: root.eq-presets;
@@ -3175,7 +3175,7 @@ export component AppWindow inherits Window {
                                             width: parent.width;
                                             height: parent.height;
                                             opacity: reorder.dragged == row ? 0.4 : 1;
-                                            reserve: Screen.phone ? 44px : 32px;
+                                            reserve: Screen.phone ? Theme.phone-target : 32px;
                                             title: line.title;
                                             link: row > 0 ? "jump" : "";
                                             details: line.details;
@@ -3338,7 +3338,7 @@ export component AppWindow inherits Window {
                     if root.step == Step.opening: Note {
                         preferred-width: form.column-width;
                         text: "Reading your saved sign-in…";
-                        font-size: root.phone ? 16px * Theme.zoom : 0px;
+                        font-size: root.phone ? Theme.body : 0px;
                     }
 
                     if root.step == Step.server: VerticalLayout {
@@ -3347,7 +3347,7 @@ export component AppWindow inherits Window {
                         Heading { text: "Connect to your music server"; }
                         Note {
                             text: "The address of an OpenSubsonic or Subsonic server, such as Navidrome.";
-                            font-size: root.phone ? 16px * Theme.zoom : 0px;
+                            font-size: root.phone ? Theme.body : 0px;
                         }
                         LineEdit {
                             placeholder-text: "https://music.example.org";
@@ -3365,7 +3365,7 @@ export component AppWindow inherits Window {
                         if root.problem != "": Problem {
                             preferred-width: form.column-width;
                             text: root.problem;
-                            font-size: root.phone ? 16px * Theme.zoom : 0px;
+                            font-size: root.phone ? Theme.body : 0px;
                         }
                         StepButtons {
                             phone: root.phone;
@@ -3382,14 +3382,14 @@ export component AppWindow inherits Window {
                         Heading { text: "Sign in"; }
                         Note {
                             text: root.address;
-                            font-size: root.phone ? 16px * Theme.zoom : 0px;
+                            font-size: root.phone ? Theme.body : 0px;
                         }
                         if root.unencrypted: Problem {
                             preferred-width: form.column-width;
                             text: "This address isn't encrypted (http). Anyone on the network between you and the server can read what you send.";
-                            font-size: root.phone ? 16px * Theme.zoom : 0px;
+                            font-size: root.phone ? Theme.body : 0px;
                         }
-                        if root.api-key-offered: ComboBox {
+                        if root.api-key-offered: Choice {
                             accessible-label: "Sign in with";
                             model: ["API key", "Username and password"];
                             current-index <=> root.login-method;
@@ -3433,7 +3433,7 @@ export component AppWindow inherits Window {
                         if root.problem != "": Problem {
                             preferred-width: form.column-width;
                             text: root.problem;
-                            font-size: root.phone ? 16px * Theme.zoom : 0px;
+                            font-size: root.phone ? Theme.body : 0px;
                         }
                         StepButtons {
                             phone: root.phone;
@@ -3455,7 +3455,7 @@ export component AppWindow inherits Window {
                         Heading { text: "ListenBrainz"; }
                         Note {
                             text: "Optional. The app doesn't use ListenBrainz yet. Your user token is on https://listenbrainz.org/settings/";
-                            font-size: root.phone ? 16px * Theme.zoom : 0px;
+                            font-size: root.phone ? Theme.body : 0px;
                         }
                         LineEdit {
                             placeholder-text: "User token";
@@ -3473,7 +3473,7 @@ export component AppWindow inherits Window {
                         if root.problem != "": Problem {
                             preferred-width: form.column-width;
                             text: root.problem;
-                            font-size: root.phone ? 16px * Theme.zoom : 0px;
+                            font-size: root.phone ? Theme.body : 0px;
                         }
                         StepButtons {
                             phone: root.phone;

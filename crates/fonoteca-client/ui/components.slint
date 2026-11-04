@@ -16,6 +16,13 @@ export global Theme {
     out property <brush> surface: Palette.alternate-background;
     out property <brush> accent: Palette.accent-background;
 
+    // A phone holds the screen close, and its covers fill the width: its text
+    // is 16/14 larger, which makes the body 16 and the small text 14, as
+    // Material sets text on a phone.
+    out property <float> phone-text-scale: 16 / 14;
+    // The least a finger's target is on a phone, as Material sets it.
+    out property <length> phone-target: 48px;
+
     out property <length> small: 12px * self.zoom;
     out property <length> body: 14px * self.zoom;
     out property <length> heading: 20px * self.zoom;
@@ -518,7 +525,7 @@ export component IconButton inherits Pressable {
     in property <brush> plate: transparent;
     in property <length> stroke: 1.75px;
 
-    width: Screen.phone ? 44px : 32px;
+    width: Screen.phone ? Theme.phone-target : 32px;
     height: self.width;
 
     Rectangle {
@@ -687,7 +694,7 @@ export component MoreMenu {
     // Lined up with its entry, within the menu's height where it fits.
     property <length> sub-y: clamp(root.main-y + root.open * root.entry-height, 0, root.menu-height - root.sub-height);
 
-    width: Screen.phone ? 44px : 32px;
+    width: Screen.phone ? Theme.phone-target : 32px;
     height: self.width;
 
     // The item `by`, 1 or -1, from `i` of `n`, round the ends; from none,
@@ -1520,7 +1527,7 @@ export component TrackHeader inherits HorizontalLayout {
     }
     // Over the rows' menu buttons.
     Rectangle {
-        width: Screen.phone ? 44px : 32px;
+        width: Screen.phone ? Theme.phone-target : 32px;
     }
 }
 
@@ -2268,7 +2275,7 @@ export component PlayButton inherits HorizontalLayout {
     // or "shuffle-last".
     callback queue(how: string);
 
-    property <length> bar-height: Screen.phone ? 44px : 32px;
+    property <length> bar-height: Screen.phone ? Theme.phone-target : 32px;
     property <length> outer-radius: Screen.phone ? root.bar-height / 2 : Theme.radius;
     property <length> inner-radius: 2px;
     property <brush> segment: root.enabled ? Theme.accent : Theme.accent.transparentize(50%);
@@ -2333,7 +2340,7 @@ export component PlayButton inherits HorizontalLayout {
         }
     }
     Rectangle {
-        width: Screen.phone ? 44px : 36px;
+        width: Screen.phone ? Theme.phone-target : 36px;
         height: root.bar-height;
         background: root.segment;
         border-top-right-radius: root.outer-radius;
@@ -2462,7 +2469,7 @@ component NavButton inherits Pressable {
     label: self.text;
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
-    min-height: Screen.phone ? 44px : 0;
+    min-height: Screen.phone ? Theme.phone-target : 0;
 
     Rectangle {
         border-radius: Theme.radius;
@@ -2505,7 +2512,7 @@ component NavHeading inherits Pressable {
     label: self.text;
     accessible-item-selectable: true;
     accessible-item-selected: self.current;
-    min-height: Screen.phone ? 44px : 32px * Theme.zoom;
+    min-height: Screen.phone ? Theme.phone-target : 32px * Theme.zoom;
 
     Rectangle {
         border-radius: Theme.radius;
@@ -2648,7 +2655,7 @@ export component TopBar inherits HorizontalLayout {
     callback settings();
     callback account();
 
-    property <length> button-size: root.phone ? 48px : 32px;
+    property <length> button-size: root.phone ? Theme.phone-target : 32px;
     property <length> icon-size: root.phone ? 24px : 20px;
 
     height: Theme.bar-height;
@@ -2804,7 +2811,7 @@ export component QueueReorder {
         height: root.row-height;
         grip := GripArea {
             x: parent.width - self.width;
-            width: Screen.phone ? 44px : 32px;
+            width: Screen.phone ? Theme.phone-target : 32px;
             enabled: root.draggable(row);
             mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
             pointer-moved => {
@@ -2850,7 +2857,7 @@ export component QueueReorder {
         ListRow {
             width: parent.width;
             height: parent.height;
-            reserve: Screen.phone ? 44px : 32px;
+            reserve: Screen.phone ? Theme.phone-target : 32px;
             title: root.lines[root.dragged].title;
             details: root.lines[root.dragged].details;
             cover: root.lines[root.dragged].cover;
@@ -3167,7 +3174,7 @@ export component EqGraph inherits VerticalLayout {
     }
     HorizontalLayout {
         // As high as the button, so the page doesn't jump when it appears.
-        min-height: Screen.phone ? 44px : 32px;
+        min-height: Screen.phone ? Theme.phone-target : 32px;
         spacing: 8px;
         Text {
             horizontal-stretch: 1;
@@ -3192,6 +3199,11 @@ component EqFieldLabel inherits Text {
     color: Theme.muted;
 }
 
+// A ComboBox a finger can hit on a phone, where Material's is 24px high.
+export component Choice inherits ComboBox {
+    min-height: Screen.phone ? Theme.phone-target : 0px;
+}
+
 // A format and quality to take audio in, for the settings: Original, which
 // has no bitrate, or a lossy format and the most kbit/s it may use. `name`
 // says what it is for ("Streaming on wifi"). The two entries are the ones
@@ -3211,7 +3223,7 @@ export component QualityPicker inherits VerticalLayout {
     }
     HorizontalLayout {
         spacing: 8px;
-        ComboBox {
+        Choice {
             horizontal-stretch: 1;
             accessible-label: root.name + " format";
             model: ["Original", "MP3", "Opus", "AAC"];
@@ -3219,7 +3231,7 @@ export component QualityPicker inherits VerticalLayout {
             enabled: root.enabled;
             selected => { root.chosen(root.format, root.bitrate); }
         }
-        ComboBox {
+        Choice {
             horizontal-stretch: 1;
             accessible-label: root.name + " bitrate";
             // Original has none, so its box is empty rather than showing one
@@ -3760,6 +3772,7 @@ export component PlayerBar inherits Rectangle {
             spacing: 2px;
             Text {
                 text: root.title;
+                font-size: Screen.phone ? Theme.body : 0px;
                 font-weight: 600;
                 color: Theme.text;
                 overflow: elide;
@@ -3802,7 +3815,7 @@ export component PlayerBar inherits Rectangle {
         }
         IconButton {
             cross-axis-self-alignment: center;
-            width: Screen.phone ? 44px : root.side;
+            width: Screen.phone ? Theme.phone-target : root.side;
             icon-size: 24px;
             icon: Icons.next;
             filled: true;
