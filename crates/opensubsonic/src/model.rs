@@ -1274,6 +1274,47 @@ pub struct InternetRadioStation {
     pub home_page_url: Option<String>,
     /// [OS] The cover art id.
     pub cover_art: Option<String>,
+    /// Not in the spec: where it broadcasts, from Fonoteca's
+    /// `fonotecaRadioCatalogue` extension (version 2), as an ISO 3166-1 code.
+    pub country_code: Option<String>,
+    /// Not in the spec: its languages as ISO 639-1 codes, version 2.
+    #[serde(default)]
+    pub language_codes: Vec<String>,
+    /// Not in the spec: its genres in lower case, version 2.
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+/// Not in the spec: a station of the server's curated catalogue, from
+/// Fonoteca's `fonotecaRadioCatalogue` extension. It has an internet radio
+/// station's fields, and from version 2 where and in what it broadcasts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogueStation {
+    /// `rc-<file>.xspf`
+    pub id: String,
+    pub name: String,
+    pub stream_url: String,
+    pub home_page_url: Option<String>,
+    /// The id of its logo, the same as `id`.
+    pub cover_art: Option<String>,
+    /// Version 2: the country, as an ISO 3166-1 alpha-2 code.
+    pub country_code: Option<String>,
+    /// Version 2: its languages, as ISO 639-1 codes.
+    #[serde(default)]
+    pub language_codes: Vec<String>,
+    /// Version 2: its genres, as plain names.
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+/// Not in the spec: the server's curated stations, from Fonoteca's
+/// `fonotecaRadioCatalogue` extension.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadioCatalogue {
+    #[serde(default)]
+    pub internet_radio_station: Vec<CatalogueStation>,
 }
 
 /// The songs a user had queued, and where in them they were, for any app to

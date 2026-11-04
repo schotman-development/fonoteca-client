@@ -998,6 +998,8 @@ export component AppWindow inherits Window {
     // The radio directory's shelves, each a genre's stations with the most
     // votes, and the stations saved on the server, for the home page.
     in property <[StationShelf]> station-shelves;
+    // The server's curated stations, shelved, to save from.
+    in property <[StationShelf]> catalogue-shelves;
     in property <[AlbumTile]> saved-stations;
     // The genres page's genres, or on a genre's page those under it; and its
     // artists, those with the most of its albums first.
@@ -1325,6 +1327,9 @@ export component AppWindow inherits Window {
     // shelf, or of a genre's page when `shelf` is -1, to save on the server.
     callback station-shelf-in-view(shelf: int, first: int, last: int);
     callback save-station(shelf: int, index: int);
+    // The same for the catalogue's shelves.
+    callback catalogue-shelf-in-view(shelf: int, first: int, last: int);
+    callback save-catalogue-station(shelf: int, index: int);
     callback toggle-language(index: int);
 
     property <Asking> asking;
@@ -2966,6 +2971,13 @@ export component AppWindow inherits Window {
                             activated(index, id) => {
                                 root.ask-station(id == "edit" ? Asking.edit-station : Asking.delete-station, root.station-rows[index]);
                             }
+                        }
+                        for shelf in root.catalogue-shelves: CoverShelf {
+                            title: shelf.title;
+                            tiles: shelf.tiles;
+                            entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
+                            activated(index) => { root.save-catalogue-station(shelf.shelf, index); }
+                            in-view(first, last) => { root.catalogue-shelf-in-view(shelf.shelf, first, last); }
                         }
                         for shelf in root.station-shelves: CoverShelf {
                             title: shelf.title;

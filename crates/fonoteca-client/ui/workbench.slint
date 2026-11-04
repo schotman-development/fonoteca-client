@@ -340,14 +340,16 @@ export component Workbench inherits Window {
                         }
                     }
                     if root.current == 2: Example {
-                        caption: "Station logos, whole and with room around them on one shade: a wide one, a see-through one and none";
+                        caption: "Station logos, whole and with room around them: dark ink on a light plate, white ink on a dark one, none, and one saved";
                         FlexboxLayout {
                             spacing: Theme.gap;
                             cross-axis-alignment: start;
-                            for i in 3: CoverTile {
+                            for i in 4: CoverTile {
                                 logo: true;
-                                cover: root.no-art || i == 2 ? root.none : i == 0 ? @image-url("samples/banner-1.svg") : @image-url("clef.png");
-                                title: i == 0 ? "Radio Mara" : i == 1 ? "Clef FM" : "Tomas Live";
+                                dark-plate: i == 1;
+                                saved: i == 3;
+                                cover: root.no-art || i >= 2 ? root.none : i == 0 ? @image-url("samples/banner-1.svg") : @image-url("clef.png");
+                                title: i == 0 ? "Radio Mara" : i == 1 ? "Clef FM" : i == 2 ? "Tomas Live" : "Saved FM";
                                 names: [{ label: "Netherlands", link: "" }];
                             }
                         }

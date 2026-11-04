@@ -23,10 +23,10 @@ use image::{AnimationDecoder, Frame, Frames};
 #[cfg(not(target_family = "wasm"))]
 use opensubsonic::AlbumID3WithSongs;
 use opensubsonic::{
-    AlbumID3, AlbumListType, ArtistID3, Child, Client, Composer, Composition, ExplicitStatus,
-    GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate, ListOptions, MediaType,
-    Movement, Playlist, PlaylistFolder, PlaylistFolderUpdate, PlaylistUpdate, PlaylistWithSongs,
-    RadioStation, ScanStatus, SearchOptions, Span, Tag, TagUpdate, User,
+    AlbumID3, AlbumListType, ArtistID3, CatalogueStation, Child, Client, Composer, Composition,
+    ExplicitStatus, GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate, ListOptions,
+    MediaType, Movement, Playlist, PlaylistFolder, PlaylistFolderUpdate, PlaylistUpdate,
+    PlaylistWithSongs, RadioStation, ScanStatus, SearchOptions, Span, Tag, TagUpdate, User,
 };
 use radiobrowser::Station;
 use slint::{
@@ -36,8 +36,8 @@ use slint::{
 
 use crate::{
     AlbumTile, AppWindow, ColumnChoice, Detail, Drag, Icons, Name, NavEntry, Page, Stat,
-    StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, offline, prefs,
-    zone,
+    StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, catalogue,
+    logo_ink, offline, prefs, zone,
 };
 
 /// The newest albums on the home page.
@@ -120,6 +120,8 @@ const BANNER_SIZE: f32 = 1600.0;
 const HEADER_SIZE: f32 = 220.0;
 /// The size of a cover in a row of the tracks table.
 const LINE_COVER_SIZE: f32 = 42.0;
+/// Fonoteca's extension for the curated radio catalogue.
+const RADIO_CATALOGUE: &str = "fonotecaRadioCatalogue";
 /// Fonoteca's extension for motion covers.
 const MOTION: &str = "fonotecaAlbumMotion";
 /// Fonoteca's extension for composers and compositions.
@@ -297,6 +299,16 @@ pub struct Browser {
     genre_offset: u32,
     genre_more: bool,
     genre_loading: bool,
+    /// The server's curated stations once asked, whether they were, how many
+    /// albums the library has of each genre (by `genre_key`), the shelves
+    /// they are in and shown as, and the shelves' tiles whose pictures were
+    /// asked for.
+    catalogue: Vec<CatalogueStation>,
+    catalogue_asked: bool,
+    catalogue_albums: HashMap<String, i64>,
+    catalogue_shelves: Vec<catalogue::Shelf>,
+    catalogue_model: Rc<VecModel<StationShelf>>,
+    catalogue_logos_asked: HashSet<(usize, usize)>,
     /// The pictures of saved stations by stream address, where the
     /// directory has them.
     favicons: HashMap<String, Option<String>>,
@@ -735,6 +747,19 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         move |shelf, first, last| {
             let rows = first.max(0) as usize..(last + 1).max(0) as usize;
             shelf_logos(&browser, shelf as usize, rows);
+        }
+    });
+    ui.on_catalogue_shelf_in_view({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |shelf, first, last| {
+            let rows = first.max(0) as usize..(last + 1).max(0) as usize;
+            catalogue_logos(&weak.unwrap(), &browser, shelf as usize, rows);
+        }
+    });
+    ui.on_save_catalogue_station({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |shelf, index| {
+            save_catalogue_station(&weak.unwrap(), &browser, shelf as usize, index as usize)
         }
     });
     ui.on_toggle_language({
@@ -1392,6 +1417,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Radio);
             stations(ui, browser);
             directory_shelves(ui, browser);
+            catalogue_stations(ui, browser);
         }
         "stations" => {
             ui.set_page(Page::Stations);
@@ -3134,7 +3160,8 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
     }
     if ui.get_page() == Page::Radio {
         stations(ui, browser);
-        return directory_shelves(ui, browser);
+        directory_shelves(ui, browser);
+        return catalogue_stations(ui, browser);
     }
     if ui.get_page() == Page::Tags {
         return tags(ui, browser);
@@ -4898,7 +4925,7 @@ fn show_languages(ui: &AppWindow, b: &Browser) {
 /// it has been seen this session.
 fn station_tile(b: &Browser, station: &Station) -> AlbumTile {
     let country = country_name(b, &station.countrycode);
-    AlbumTile {
+    let mut tile = AlbumTile {
         title: station.name.trim().into(),
         names: names(
             (!country.is_empty())
@@ -4906,14 +4933,22 @@ fn station_tile(b: &Browser, station: &Station) -> AlbumTile {
                 .into_iter()
                 .collect(),
         ),
-        cover: b
-            .pictures
-            .get(&(station.favicon.clone(), 0))
-            .cloned()
-            .unwrap_or_default(),
         logo: true,
         ..AlbumTile::default()
+    };
+    if let Some(image) = b.pictures.get(&(station.favicon.clone(), 0)) {
+        show_picture(&mut tile, image.clone());
     }
+    tile
+}
+
+/// Puts a picture on a tile; a station's logo also tells which plate its ink
+/// wants.
+fn show_picture(tile: &mut AlbumTile, image: Image) {
+    if tile.logo {
+        tile.dark_plate = logo_ink::of_image(&image);
+    }
+    tile.cover = image;
 }
 
 /// A genre's name as the radio page matches it, whatever its case and
@@ -4936,18 +4971,43 @@ fn directory_tag(genre: &str) -> String {
         .map_or_else(|| genre.to_lowercase(), |(_, tag)| (*tag).to_owned())
 }
 
+/// A genre as a shelf's title writes it: the radio page's spelling for one
+/// it has ("R&B"), else the name with a capital.
+fn genre_title(name: &str) -> String {
+    let wanted = genre_key(name);
+    let known = GENRES
+        .iter()
+        .find(|(title, tag)| !tag.is_empty() && genre_key(title) == wanted);
+    known.map_or_else(
+        || {
+            let mut letters = name.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(letters).collect()
+            })
+        },
+        |(title, _)| (*title).to_owned(),
+    )
+}
+
+/// How many albums the library has of each genre by `genre_key`, a genre
+/// split by "/", ";" or "," counting for each of its parts.
+fn albums_per_genre(library: &[Genre]) -> HashMap<String, i64> {
+    let mut albums: HashMap<String, i64> = HashMap::new();
+    for genre in library {
+        for part in genre.value.split(['/', ';', ',']) {
+            *albums.entry(genre_key(part)).or_default() += genre.album_count;
+        }
+    }
+    albums
+}
+
 /// The genres' places on the radio page: Top worldwide first, then the
 /// genres with the most albums in the library, the rest as they are. A
 /// library genre counts when its name, or a part of it split by "/", ";" or
 /// ",", is a shelf's title or tag, whatever its case and punctuation.
 fn genre_ranks(library: &[Genre]) -> Vec<usize> {
     let key = genre_key;
-    let mut albums: HashMap<String, i64> = HashMap::new();
-    for genre in library {
-        for part in genre.value.split(['/', ';', ',']) {
-            *albums.entry(key(part)).or_default() += genre.album_count;
-        }
-    }
+    let albums = albums_per_genre(library);
     let count = |(title, tag): (&str, &str)| match tag {
         "" => i64::MAX,
         tag => [title, tag]
@@ -5101,6 +5161,7 @@ fn toggle_language(ui: &AppWindow, browser: &Shared, index: usize) {
         b.shelf_round += 1;
         show_languages(ui, &b);
     }
+    show_catalogue(ui, browser);
     save_prefs(ui, browser);
     let (weak, shared) = (ui.as_weak(), Rc::downgrade(browser));
     let refill = move || {
@@ -5154,7 +5215,7 @@ fn shelf_logos(browser: &Shared, shelf: usize, rows: Range<usize>) {
                 continue;
             };
             if let Some(mut tile) = tiles.row_data(row) {
-                tile.cover = image;
+                show_picture(&mut tile, image);
                 tiles.set_row_data(row, tile);
             }
         }
@@ -5254,6 +5315,207 @@ fn more_stations(ui: &AppWindow, browser: &Shared) {
     .expect("the event loop is running");
 }
 
+/// Asks the server for its curated stations, once per sign-in, where it
+/// offers them, and shows them on the radio page.
+fn catalogue_stations(ui: &AppWindow, browser: &Shared) {
+    let client = {
+        let mut b = browser.borrow_mut();
+        ui.set_catalogue_shelves(ModelRc::from(b.catalogue_model.clone()));
+        let client = b
+            .client
+            .clone()
+            .filter(|client| client.supports(RADIO_CATALOGUE));
+        match client {
+            Some(client) if !b.catalogue_asked => {
+                b.catalogue_asked = true;
+                client
+            }
+            _ => return,
+        }
+    };
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let found = client.get_radio_catalogue().await;
+        // The library's genres only order the shelves; without them the
+        // order is by stations.
+        let library = client
+            .get_genres()
+            .await
+            .map(|g| g.genre)
+            .unwrap_or_default();
+        let Some(ui) = weak.upgrade() else { return };
+        match found {
+            Ok(list) => {
+                {
+                    let mut b = browser.borrow_mut();
+                    b.catalogue = list.internet_radio_station;
+                    b.catalogue_albums = albums_per_genre(&library);
+                }
+                show_catalogue(&ui, &browser);
+            }
+            Err(e) => {
+                browser.borrow_mut().catalogue_asked = false;
+                if ui.get_page() == Page::Radio && ui.get_page_problem().is_empty() {
+                    ui.set_page_problem(format!("The station catalogue didn't answer: {e}").into());
+                }
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Whether the server has saved a station that streams from this address.
+fn is_saved(b: &Browser, stream_url: &str) -> bool {
+    b.server_stations
+        .iter()
+        .any(|saved| saved.stream_url == stream_url)
+}
+
+/// The catalogue as shelves on the radio page, with the pictures that were
+/// shown asked for again; run again when the languages or the saved
+/// stations change.
+fn show_catalogue(ui: &AppWindow, browser: &Shared) {
+    let size = tile_pixels(ui);
+    let seen: Vec<(usize, usize)> = {
+        let mut b = browser.borrow_mut();
+        if b.catalogue.is_empty() {
+            return;
+        }
+        let albums_in = |genre: &str| {
+            b.catalogue_albums
+                .get(&genre_key(genre))
+                .copied()
+                .unwrap_or(0)
+        };
+        let shelves = catalogue::shelves(
+            &b.catalogue,
+            &b.languages,
+            b.local.as_deref(),
+            albums_in,
+            genre_title,
+        );
+        let rows: Vec<StationShelf> = (shelves.iter().enumerate())
+            .map(|(shelf, found)| StationShelf {
+                title: found.title.as_str().into(),
+                link: "".into(),
+                shelf: shelf as i32,
+                tiles: ModelRc::new(VecModel::from(
+                    (found.stations.iter())
+                        .map(|&place| catalogue_tile(&b, &b.catalogue[place], size))
+                        .collect::<Vec<_>>(),
+                )),
+            })
+            .collect();
+        b.catalogue_shelves = shelves;
+        b.catalogue_model.set_vec(rows);
+        b.catalogue_logos_asked.drain().collect()
+    };
+    for shelf in seen.iter().map(|(shelf, _)| *shelf).collect::<HashSet<_>>() {
+        let furthest = seen
+            .iter()
+            .filter(|(asked, _)| *asked == shelf)
+            .map(|(_, row)| row + 1)
+            .max();
+        catalogue_logos(ui, browser, shelf, 0..furthest.unwrap_or(0));
+    }
+}
+
+/// A catalogue station's tile: its name and home page, its picture when this
+/// session has it, and whether the server has it saved.
+fn catalogue_tile(b: &Browser, station: &CatalogueStation, size: u32) -> AlbumTile {
+    let address = station
+        .home_page_url
+        .as_deref()
+        .map(bare_address)
+        .unwrap_or_default();
+    let mut tile = AlbumTile {
+        title: station.name.trim().into(),
+        names: names(
+            (!address.is_empty())
+                .then(|| unlinked(address.to_owned()))
+                .into_iter()
+                .collect(),
+        ),
+        logo: true,
+        saved: is_saved(b, &station.stream_url),
+        ..AlbumTile::default()
+    };
+    if let Some(image) = b.pictures.get(&(catalogue_cover(station), size)) {
+        show_picture(&mut tile, image.clone());
+    }
+    tile
+}
+
+/// The id the server serves a catalogue station's logo under.
+fn catalogue_cover(station: &CatalogueStation) -> String {
+    station
+        .cover_art
+        .clone()
+        .filter(|cover| !cover.is_empty())
+        .unwrap_or_else(|| station.id.clone())
+}
+
+/// Fetches the logos of a catalogue shelf's tiles in `rows`, the ones on
+/// screen, that haven't been asked for.
+fn catalogue_logos(ui: &AppWindow, browser: &Shared, shelf: usize, rows: Range<usize>) {
+    let size = tile_pixels(ui);
+    let (wanted, tiles) = {
+        let mut b = browser.borrow_mut();
+        let tiles = (b.catalogue_model.iter())
+            .find(|row| row.shelf as usize == shelf)
+            .map(|row| row.tiles);
+        let (Some(tiles), Some(found)) = (tiles, b.catalogue_shelves.get(shelf)) else {
+            return;
+        };
+        let places: Vec<(usize, usize)> = rows
+            .filter_map(|row| Some((row, *found.stations.get(row)?)))
+            .collect();
+        let places: Vec<(usize, usize)> = (places.into_iter())
+            .filter(|(row, _)| b.catalogue_logos_asked.insert((shelf, *row)))
+            .collect();
+        let wanted: Vec<(usize, String)> = (places.into_iter())
+            .map(|(row, place)| (row, catalogue_cover(&b.catalogue[place])))
+            .collect();
+        (wanted, tiles)
+    };
+    let browser = browser.clone();
+    slint::spawn_local(async move {
+        for (row, cover) in wanted {
+            let Some(image) = cover_art(&browser, None, cover, size).await.flatten() else {
+                continue;
+            };
+            if let Some(mut tile) = tiles.row_data(row) {
+                show_picture(&mut tile, image);
+                tiles.set_row_data(row, tile);
+            }
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Saves a catalogue station on the server, unless it has it.
+fn save_catalogue_station(ui: &AppWindow, browser: &Shared, shelf: usize, index: usize) {
+    let station = {
+        let b = browser.borrow();
+        let place = b
+            .catalogue_shelves
+            .get(shelf)
+            .and_then(|found| found.stations.get(index));
+        place.map(|&place| b.catalogue[place].clone())
+    };
+    let Some(station) = station else { return };
+    if is_saved(&browser.borrow(), &station.stream_url) {
+        notify(ui, browser, format!("{} is saved already.", station.name));
+        return;
+    }
+    let done = format!("Saved {}.", station.name);
+    change_stations(ui, browser, done, |client| async move {
+        let homepage = station.home_page_url.as_deref().unwrap_or_default();
+        let saved = self::station(&station.name, &station.stream_url, homepage);
+        client.create_internet_radio_station(&saved).await
+    });
+}
+
 /// Saves a station of a shelf, or of the genre page when `shelf` is -1, on
 /// the server, unless the server has its stream already.
 fn save_station(ui: &AppWindow, browser: &Shared, shelf: i32, index: usize) {
@@ -5348,7 +5610,7 @@ fn show_saved(ui: &AppWindow, browser: &Shared, stations: Vec<InternetRadioStati
                 Some(cover) => Some((cover.clone(), size)),
                 None => known.clone().flatten().map(|favicon| (favicon, 0)),
             };
-            let tile = AlbumTile {
+            let mut tile = AlbumTile {
                 title: station.name.as_str().into(),
                 names: names(
                     address
@@ -5357,12 +5619,12 @@ fn show_saved(ui: &AppWindow, browser: &Shared, stations: Vec<InternetRadioStati
                         .into_iter()
                         .collect(),
                 ),
-                cover: seen
-                    .and_then(|key| b.pictures.get(&key).cloned())
-                    .unwrap_or_default(),
                 logo: true,
                 ..AlbumTile::default()
             };
+            if let Some(image) = seen.and_then(|key| b.pictures.get(&key).cloned()) {
+                show_picture(&mut tile, image);
+            }
             b.saved.push(tile);
             let (name, stream) = (station.name.clone(), station.stream_url.clone());
             wanted.push((row, name, stream, known, cover));
@@ -5380,6 +5642,8 @@ fn show_saved(ui: &AppWindow, browser: &Shared, stations: Vec<InternetRadioStati
         }
         (b.saved.clone(), wanted)
     };
+    // The catalogue shows which of its stations are saved now.
+    show_catalogue(ui, browser);
     let browser = browser.clone();
     slint::spawn_local(async move {
         for (row, name, stream, known, cover) in wanted {
@@ -5388,7 +5652,7 @@ fn show_saved(ui: &AppWindow, browser: &Shared, stations: Vec<InternetRadioStati
                 None => found_logo(&browser, &name, &stream, known).await,
             };
             if let (Some(image), Some(mut tile)) = (image, tiles.row_data(row)) {
-                tile.cover = image;
+                show_picture(&mut tile, image);
                 tiles.set_row_data(row, tile);
             }
         }
@@ -6504,7 +6768,9 @@ fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<Str
                 let row = b.tiles.row_count();
                 b.covers.insert(row, cover);
             }
-            tile.cover = seen.unwrap_or_default();
+            if let Some(image) = seen {
+                show_picture(&mut tile, image);
+            }
             tile.selected = b.selected.iter().any(|link| *link == tile.link.as_str());
             tile.downloaded = b.downloads.is_kept(&tile.link);
             b.tiles.push(tile);
@@ -6554,7 +6820,7 @@ fn fetch_covers(ui: &AppWindow, browser: &Shared) {
                 };
                 let Some(image) = image else { continue };
                 if let Some(mut tile) = tiles.row_data(row) {
-                    tile.cover = image;
+                    show_picture(&mut tile, image);
                     tiles.set_row_data(row, tile);
                 } else if let Some(mut line) = lines.row_data(row) {
                     line.cover = image;
@@ -7628,6 +7894,35 @@ mod tests {
         let (songs, start) = songs(&browser, Page::Folders, 3);
         let ids: Vec<&str> = songs.iter().map(|song| song.id.as_str()).collect();
         assert_eq!((ids, start), (vec!["s2", "s1"], 1));
+    }
+
+    #[test]
+    fn only_a_logo_gets_a_plate_from_its_ink() {
+        let white = |logo: bool| {
+            let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(4, 4);
+            let mut buffer = pixels.clone();
+            let pixels = buffer.make_mut_slice();
+            pixels.fill(slint::Rgba8Pixel::new(0, 0, 0, 0));
+            for middle in [5, 6, 9, 10] {
+                pixels[middle] = slint::Rgba8Pixel::new(255, 255, 255, 255);
+            }
+            let mut tile = AlbumTile {
+                logo,
+                ..AlbumTile::default()
+            };
+            show_picture(&mut tile, Image::from_rgba8(buffer));
+            tile
+        };
+        assert!(white(true).dark_plate);
+        assert!(!white(false).dark_plate);
+        assert_eq!(white(true).cover.size().width, 4);
+    }
+
+    #[test]
+    fn the_catalogue_names_music_genres_as_the_radio_page_does() {
+        assert_eq!(genre_title("r&b"), "R&B");
+        assert_eq!(genre_title("hip hop"), "Hip hop");
+        assert_eq!(genre_title("children's music"), "Children's music");
     }
 
     #[test]

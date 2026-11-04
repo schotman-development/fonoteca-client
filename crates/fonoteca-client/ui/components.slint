@@ -99,6 +99,10 @@ export struct AlbumTile {
     downloaded: bool,
     // A station's logo, shown whole rather than filling the square.
     logo: bool,
+    // Whether the logo wants a dark plate rather than a light one.
+    dark-plate: bool,
+    // A catalogue station the server has saved already.
+    saved: bool,
 }
 
 export global Icons {
@@ -506,6 +510,10 @@ export component Artwork inherits Rectangle {
     in property <bool> highlighted;
     // Shows all of the picture, as a logo needs, rather than filling the square.
     in property <bool> logo;
+    // Whether a logo sits on a dark plate rather than a light one: white ink
+    // on dark, dark ink on light, and a logo with a background of its own on
+    // the plate of that background, so either reads in light and dark mode.
+    in property <bool> dark-plate;
     // Room around a logo, so it doesn't run into the square's edges.
     property <length> inset: root.logo ? root.size * 0.12 : 0;
 
@@ -515,8 +523,7 @@ export component Artwork inherits Rectangle {
     clip: true;
     background: Theme.surface;
 
-    // The same shade of the surface behind every logo, whatever its own colours.
-    if root.logo: Rectangle { background: Theme.hover; }
+    if root.logo: Rectangle { background: root.dark-plate ? #2b2b2e : #f1f1f1; }
     if root.source.width == 0: Path {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -1000,6 +1007,10 @@ export component CoverTile inherits Pressable {
     in property <bool> round;
     in property <bool> folder;
     in property <bool> logo;
+    in property <bool> dark-plate;
+    // A catalogue station already saved: it shows a check and its menu is
+    // hidden, keeping the room, so its row lines up with the others.
+    in property <bool> saved;
     // While its page is selecting, every tile shows whether it is selected.
     in property <bool> selecting;
     in property <bool> selected;
@@ -1037,6 +1048,7 @@ export component CoverTile inherits Pressable {
             round: root.round;
             folder: root.folder;
             logo: root.logo;
+            dark-plate: root.dark-plate;
             source: root.cover;
             highlighted: root.hovered || drop.has-drag;
             if root.downloaded: Rectangle {
@@ -1058,6 +1070,27 @@ export component CoverTile inherits Pressable {
                     stroke-width: 2.5px;
                     accessible-role: image;
                     accessible-label: "Downloaded";
+                }
+            }
+            if root.saved: Rectangle {
+                x: root.size - self.width - 10px;
+                y: 10px;
+                width: 24px;
+                height: 24px;
+                border-radius: self.height / 2;
+                background: #00000059;
+                Path {
+                    x: 4px;
+                    y: 4px;
+                    width: 16px;
+                    height: 16px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Icons.check;
+                    stroke: white;
+                    stroke-width: 2.5px;
+                    accessible-role: image;
+                    accessible-label: "Saved";
                 }
             }
             // Inside the circle when round.
@@ -1097,6 +1130,7 @@ export component CoverTile inherits Pressable {
                 overflow: elide;
             }
             if root.entries.length > 0 || root.downloadable: MoreMenu {
+                visible: !root.saved;
                 label: "More for " + root.title;
                 opening => {
                     self.entries = root.entries;
@@ -2043,6 +2077,7 @@ export component CoverGrid {
             round: root.round;
             folder: tile.folder;
             logo: tile.logo;
+            dark-plate: tile.dark-plate;
             cover: tile.cover;
             title: tile.title;
             names: tile.names;
@@ -2302,6 +2337,8 @@ export component CoverShelf {
                             size: root.size;
                             round: root.round;
                             logo: tile.logo;
+                            dark-plate: tile.dark-plate;
+                            saved: tile.saved;
                             cover: tile.cover;
                             title: tile.title;
                             names: tile.names;

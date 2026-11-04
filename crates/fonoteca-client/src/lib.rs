@@ -3,6 +3,7 @@ slint::include_modules!();
 #[cfg(target_os = "android")]
 mod bit_perfect;
 mod browse;
+mod catalogue;
 #[cfg(not(target_family = "wasm"))]
 mod download_job;
 #[cfg(not(target_family = "wasm"))]
@@ -11,6 +12,7 @@ mod downloads;
 mod eq_graph;
 #[cfg(not(target_family = "wasm"))]
 mod headphones;
+mod logo_ink;
 #[cfg(target_os = "android")]
 mod media;
 #[cfg(target_os = "android")]
@@ -1047,7 +1049,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{{"name":"fonotecaArtistBanner","versions":[1]}}{by_id}{organized}{offset}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{{"name":"fonotecaArtistBanner","versions":[1]}},{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1246,6 +1248,10 @@ mod tests {
         } else if request.contains("/rest/getGenres") {
             ok(
                 r#""genres":{"genre":[{"value":"Folk","songCount":2,"albumCount":1},{"value":"Jazz","songCount":3,"albumCount":2,"description":"Jazz is music of improvisation.","descriptionSource":"Wikipedia","descriptionUrl":"https://en.wikipedia.org/wiki/Jazz"},{"value":"hip-hop","songCount":1,"albumCount":1,"parents":["Jazz"]}]}"#,
+            )
+        } else if request.contains("/rest/getRadioCatalogue") {
+            ok(
+                r#""radioCatalogue":{"internetRadioStation":[{"id":"rc-canal.xspf","name":"Canal","streamUrl":"https://catalogue.example.org/canal","homePageUrl":"https://canal.example.org/","coverArt":"rc-canal.xspf","countryCode":"NL","languageCodes":["nl"],"genres":["jazz"]},{"id":"rc-jazz.xspf","name":"Jazz","streamUrl":"https://stream.example.org/jazz","coverArt":"rc-jazz.xspf","countryCode":"NL","languageCodes":["nl"],"genres":["jazz"]},{"id":"rc-berlin.xspf","name":"Berlin","streamUrl":"https://catalogue.example.org/berlin","coverArt":"rc-berlin.xspf","countryCode":"DE","languageCodes":["de"],"genres":["news"]}]}"#,
             )
         } else if request.contains("/rest/getInternetRadioStations") {
             ok(
@@ -2523,6 +2529,25 @@ mod tests {
             );
             ui.invoke_save_station(4, 0);
             assert_eq!(ui.get_notice(), "Jazz is saved already.");
+            // The curated catalogue is shelved by the device's country, then
+            // genre, spoken ones last; a station the server has saved shows
+            // as saved and is not saved twice.
+            wait_for("the catalogue", || ui.get_catalogue_shelves().row_count() == 3).await;
+            let curated = |row: usize| ui.get_catalogue_shelves().row_data(row).unwrap();
+            let titles: Vec<String> = (0..3).map(|row| curated(row).title.into()).collect();
+            assert_eq!(titles, ["Curated · in the Netherlands", "Curated · Jazz", "Curated · News"]);
+            let saved_flags: Vec<bool> = curated(0).tiles.iter().map(|tile| tile.saved).collect();
+            assert_eq!(saved_flags, [false, true]);
+            ui.invoke_catalogue_shelf_in_view(0, 0, 1);
+            wait_for("a catalogue logo", || curated(0).tiles.row_data(0).unwrap().cover.size().width > 0).await;
+            ui.invoke_save_catalogue_station(0, 1);
+            assert_eq!(ui.get_notice(), "Jazz is saved already.");
+            ui.invoke_save_catalogue_station(0, 0);
+            wait_for("a catalogue station saved", || ui.get_notice() == "Saved Canal.").await;
+            assert_eq!(
+                radio_writes().last().unwrap(),
+                "createInternetRadioStation name=Canal&streamUrl=https%3A%2F%2Fcatalogue.example.org%2Fcanal&homepageUrl=https%3A%2F%2Fcanal.example.org%2F"
+            );
             // The languages picked go first in each genre, the order kept on
             // the device.
             let choices = || {
@@ -2535,6 +2560,11 @@ mod tests {
             ui.invoke_toggle_language(0);
             assert_eq!(choices(), [("Dutch".into(), true), ("English".into(), false)]);
             assert_eq!(crate::prefs::load().radio_languages, ["dutch"]);
+            // A language picked has a shelf of the catalogue.
+            let curated_titles = || -> Vec<String> {
+                ui.get_catalogue_shelves().iter().map(|shelf| shelf.title.into()).collect()
+            };
+            assert_eq!(curated_titles()[1], "Curated · Dutch");
             let first_jazz = || shelf(2).tiles.row_data(0).unwrap().title;
             wait_for("Dutch jazz first", || first_jazz() == "Dutch Jazz").await;
             assert_eq!(ui.get_station_shelves().row_count(), 4);

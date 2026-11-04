@@ -1017,6 +1017,14 @@ impl Client {
         .await
     }
 
+    /// The stations the server offers to save from. Not in the spec:
+    /// Fonoteca's own call, offered where the client
+    /// [`supports`](Client::supports) `fonotecaRadioCatalogue`.
+    pub async fn get_radio_catalogue(&self) -> Result<RadioCatalogue> {
+        self.call("getRadioCatalogue", Params::new(), "radioCatalogue")
+            .await
+    }
+
     /// Adds an internet radio station. Admins only.
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/createinternetradiostation/>

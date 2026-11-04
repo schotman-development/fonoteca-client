@@ -1164,6 +1164,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn radio_catalogue_in_fonotecas_shape() {
+        let (server, log) = serve(|_| {
+            json(
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","radioCatalogue":{"internetRadioStation":[{"id":"rc-npo.xspf","name":"NPO","streamUrl":"https://example.org/npo","homePageUrl":"https://npo.nl","coverArt":"rc-npo.xspf","countryCode":"NL","languageCodes":["nl"],"genres":["Pop"]},{"id":"rc-old.xspf","name":"Old","streamUrl":"https://example.org/old","coverArt":"rc-old.xspf"}]}}}"#,
+            )
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let list = client
+            .get_radio_catalogue()
+            .await
+            .unwrap()
+            .internet_radio_station;
+        assert_eq!(list[0].country_code.as_deref(), Some("NL"));
+        assert_eq!((list[0].language_codes.len(), list[0].genres.len()), (1, 1));
+        assert_eq!(list[1].country_code, None);
+        assert!(list[1].genres.is_empty());
+        assert!(log.lock().unwrap()[0].contains("/rest/getRadioCatalogue"));
+    }
+
+    #[tokio::test]
     async fn radio_stations_in_navidromes_shape() {
         let (server, log) = serve(|request| {
             json(
