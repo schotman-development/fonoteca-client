@@ -97,6 +97,8 @@ export struct AlbumTile {
     folder: bool,
     // Whether all of it is kept on this device.
     downloaded: bool,
+    // A station's logo, shown whole rather than filling the square.
+    logo: bool,
 }
 
 export global Icons {
@@ -502,6 +504,8 @@ export component Artwork inherits Rectangle {
     in property <bool> folder;
     in property <length> size: 160px;
     in property <bool> highlighted;
+    // Shows all of the picture, as a logo needs, rather than filling the square.
+    in property <bool> logo;
 
     width: root.size;
     height: root.size;
@@ -524,7 +528,7 @@ export component Artwork inherits Rectangle {
         width: 100%;
         height: 100%;
         source: root.source;
-        image-fit: cover;
+        image-fit: root.logo ? contain : cover;
     }
     Rectangle {
         background: root.highlighted ? #00000026 : transparent;
@@ -989,6 +993,7 @@ export component CoverTile inherits Pressable {
     in property <length> size: 160px;
     in property <bool> round;
     in property <bool> folder;
+    in property <bool> logo;
     // While its page is selecting, every tile shows whether it is selected.
     in property <bool> selecting;
     in property <bool> selected;
@@ -1025,6 +1030,7 @@ export component CoverTile inherits Pressable {
             size: root.size;
             round: root.round;
             folder: root.folder;
+            logo: root.logo;
             source: root.cover;
             highlighted: root.hovered || drop.has-drag;
             if root.downloaded: Rectangle {
@@ -2018,6 +2024,7 @@ export component CoverGrid {
             size: root.size;
             round: root.round;
             folder: tile.folder;
+            logo: tile.logo;
             cover: tile.cover;
             title: tile.title;
             names: tile.names;
@@ -2276,6 +2283,7 @@ export component CoverShelf {
                             height: probe.preferred-height;
                             size: root.size;
                             round: root.round;
+                            logo: tile.logo;
                             cover: tile.cover;
                             title: tile.title;
                             names: tile.names;

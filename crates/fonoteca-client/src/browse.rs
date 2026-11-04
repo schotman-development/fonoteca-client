@@ -4820,6 +4820,7 @@ fn station_tile(b: &Browser, station: &Station) -> AlbumTile {
             .get(&(station.favicon.clone(), 0))
             .cloned()
             .unwrap_or_default(),
+        logo: true,
         ..AlbumTile::default()
     }
 }
@@ -5268,6 +5269,7 @@ fn show_saved(ui: &AppWindow, browser: &Shared, stations: Vec<InternetRadioStati
                 cover: seen
                     .and_then(|key| b.pictures.get(&key).cloned())
                     .unwrap_or_default(),
+                logo: true,
                 ..AlbumTile::default()
             };
             b.saved.push(tile);
