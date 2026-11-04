@@ -340,6 +340,19 @@ export component Workbench inherits Window {
                         }
                     }
                     if root.current == 2: Example {
+                        caption: "Station logos, whole and with room around them on one shade: a wide one, a see-through one and none";
+                        FlexboxLayout {
+                            spacing: Theme.gap;
+                            cross-axis-alignment: start;
+                            for i in 3: CoverTile {
+                                logo: true;
+                                cover: root.no-art || i == 2 ? root.none : i == 0 ? @image-url("samples/banner-1.svg") : @image-url("clef.png");
+                                title: i == 0 ? "Radio Mara" : i == 1 ? "Clef FM" : "Tomas Live";
+                                names: [{ label: "Netherlands", link: "" }];
+                            }
+                        }
+                    }
+                    if root.current == 2: Example {
                         caption: "Round, for artists; the first selected";
                         FlexboxLayout {
                             spacing: Theme.gap;
