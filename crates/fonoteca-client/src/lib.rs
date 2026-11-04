@@ -3427,23 +3427,34 @@ mod tests {
                 click(&ui, "Now playing");
                 idle(Duration::from_millis(400)).await;
 
-                // What plays fills the first screen: the queue starts below it.
-                let queue_heading = || {
-                    ui.root_element()
-                        .query_descendants()
-                        .match_predicate(|e| e.accessible_label().is_some_and(|l| l == "Queue"))
-                        .find_first()
-                };
-                let queue_lines = ui.get_queue_lines();
-                ui.set_queue_lines(slint::ModelRc::new(slint::VecModel::from(vec![
-                    QueueLine::default(),
-                    QueueLine::default(),
-                ])));
-                press(&ui, slint::platform::Key::Home);
-                assert!(queue_heading().is_none(), "the queue starts below the first screen");
-                press(&ui, slint::platform::Key::PageDown);
-                assert!(queue_heading().is_some(), "the queue follows when scrolled to");
-                ui.set_queue_lines(queue_lines);
+                // A finger's swipe up past the controls opens the queue, when it
+                // is long enough, and a swipe down in the queue does not go back.
+                assert!(!ui.get_queue_open(), "Now playing opens on what plays");
+                let sheet_middle = slint::LogicalPosition::new(550.0, 400.0);
+                input.set_finger(true);
+                drag(&ui, sheet_middle, &[(0, 0.0, -20.0), (0, 0.0, -40.0)], 100).await;
+                assert!(!ui.get_queue_open(), "not far enough");
+                drag(&ui, sheet_middle, &[(0, 0.0, -20.0), (0, 0.0, -70.0), (0, 0.0, -120.0)], 100).await;
+                assert!(ui.get_queue_open(), "swiped up past the controls");
+                let menu = format!("More for {}", ui.get_playing_title());
+                assert!(find(&ui, &menu).is_none(), "the queue has no menu of the song playing");
+                drag(&ui, sheet_middle, &[(0, 0.0, 20.0), (0, 0.0, 70.0), (0, 0.0, 120.0)], 100).await;
+                assert!(ui.get_queue_open(), "a swipe down is the queue's to scroll");
+                click(&ui, "Back to now playing");
+                idle(Duration::from_millis(100)).await;
+                assert!(!ui.get_queue_open());
+                assert!(find(&ui, &menu).is_some(), "Now playing has it");
+                // Mostly sideways is no swipe up, and neither is one that
+                // starts away from the page's end, however far it goes.
+                drag(&ui, sheet_middle, &[(0, -100.0, -20.0), (0, -200.0, -60.0), (0, -300.0, -110.0)], 100).await;
+                assert!(!ui.get_queue_open(), "a sideways swipe");
+                ui.window().set_size(slint::LogicalSize::new(360.0, 500.0));
+                idle(Duration::from_millis(400)).await;
+                drag(&ui, slint::LogicalPosition::new(180.0, 300.0), &[(0, 0.0, -20.0), (0, 0.0, -120.0), (0, 0.0, -2000.0)], 100).await;
+                assert!(!ui.get_queue_open(), "a swipe up from mid-page scrolls it");
+                ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+                idle(Duration::from_millis(400)).await;
+                input.set_finger(finger);
 
                 // The seek bar has a row of its own: no title, artist, album
                 // or time runs under or over it, whatever the width.
@@ -3503,32 +3514,6 @@ mod tests {
                         }
                     }
                 }
-                // The queue starts under the controls, however far the words
-                // reach down the sheet.
-                let queued = ui.get_queue_lines();
-                ui.set_queue_lines(slint::ModelRc::new(slint::VecModel::from(vec![
-                    QueueLine::default(),
-                    QueueLine::default(),
-                ])));
-                ui.window().set_size(slint::LogicalSize::new(412.0, 1000.0));
-                idle(Duration::from_millis(400)).await;
-                press(&ui, slint::platform::Key::End);
-                idle(Duration::from_millis(400)).await;
-                let next = button(&ui, "Next");
-                let queue = ui
-                    .root_element()
-                    .query_descendants()
-                    .match_predicate(|e| e.accessible_label().is_some_and(|l| l == "Queue"))
-                    .find_first()
-                    .expect("no Queue heading");
-                assert!(
-                    queue.absolute_position().y >= next.absolute_position().y + next.size().height,
-                    "the queue starts under the controls"
-                );
-                ui.set_queue_lines(queued);
-                ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
-                idle(Duration::from_millis(400)).await;
-
                 // The sheet closes when the page changes under it, and when
                 // playback ends.
                 let visit = ui.get_visit();
@@ -5100,9 +5085,10 @@ mod tests {
             wait_for("the refused unstar", || ui.get_playing_loved()).await;
             assert_eq!(play::testing::loved_ids(), [true, true], "refused, so loved again");
 
-            // The songs played before the one playing wait above it, out of
-            // view: the sheet opens on what plays, and comes back to it when
-            // the song changes, with the earlier ones a scroll up away.
+            // The songs played before the one playing wait above it in the
+            // queue, out of view: the queue opens on what plays, and comes
+            // back to it when the song changes, with the earlier ones a
+            // scroll up away. Now playing has none of them.
             let played = |title: &str| -> bool {
                 let wanted = title.to_owned();
                 ui.root_element()
@@ -5121,6 +5107,13 @@ mod tests {
             idle(Duration::from_millis(300)).await;
             assert_eq!(ui.get_previous_lines().row_count(), 6);
             assert!(on_what_plays(), "opened on what plays");
+            assert!(!ui.get_queue_open());
+            assert!(!played("Track 6") && !played("Track 5"), "no queue on Now playing");
+            click(&ui, "Queue");
+            idle(Duration::from_millis(300)).await;
+            assert!(ui.get_queue_open());
+            assert!(!on_what_plays(), "the queue has no controls");
+            assert!(played("Track 6"), "the song playing is at the top");
             assert!(!played("Track 5"), "the song before it is above the view");
             ui.window().dispatch_event(WindowEvent::PointerScrolled {
                 position: slint::LogicalPosition::new(550.0, 400.0),
@@ -5129,12 +5122,62 @@ mod tests {
             });
             idle(Duration::from_millis(100)).await;
             assert!(played("Track 0"), "scrolled up to the first played");
-            assert!(!on_what_plays());
-            play::testing::show_queue(&ui, tracks, 7);
+            assert!(!played("Track 11"));
+            play::testing::show_queue(&ui, tracks.clone(), 7);
             idle(Duration::from_millis(300)).await;
             assert_eq!(ui.get_previous_lines().row_count(), 7);
-            assert!(on_what_plays(), "back on what plays after the song changed");
+            assert!(played("Track 7"), "back on what plays after the song changed");
             assert!(!played("Track 6"));
+            // The down arrow and the Now playing button go back, one each way.
+            click(&ui, "Back to now playing");
+            idle(Duration::from_millis(100)).await;
+            assert!(on_what_plays() && !ui.get_queue_open());
+            click(&ui, "Queue");
+            idle(Duration::from_millis(100)).await;
+            assert!(ui.get_queue_open() && played("Track 7"), "opens on what plays again");
+            assert!(!on_what_plays());
+            press(&ui, slint::platform::Key::Escape);
+            idle(Duration::from_millis(100)).await;
+            assert!(on_what_plays() && !ui.get_queue_open(), "Back leaves the queue first");
+            assert!(ui.get_now_playing_open());
+            click(&ui, "Queue");
+            idle(Duration::from_millis(100)).await;
+            // The player's bar has a button of the same name, under the sheet.
+            let sheet_button = ui
+                .root_element()
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::Button)
+                .match_predicate(|button| button.accessible_label().is_some_and(|l| l == "Now playing"))
+                .find_all()
+                .into_iter()
+                .min_by(|a, b| a.absolute_position().y.total_cmp(&b.absolute_position().y))
+                .expect("no Now playing button");
+            sheet_button.invoke_accessible_default_action();
+            idle(Duration::from_millis(100)).await;
+            assert!(on_what_plays() && !ui.get_queue_open());
+            // The sheet opened from the bar shows Now playing, wherever it
+            // was left.
+            click(&ui, "Queue");
+            idle(Duration::from_millis(100)).await;
+            let bar_button = || {
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Button)
+                    .match_predicate(|button| button.accessible_label().is_some_and(|l| l == "Now playing"))
+                    .find_all()
+                    .into_iter()
+                    .max_by(|a, b| a.absolute_position().y.total_cmp(&b.absolute_position().y))
+                    .expect("no Now playing button")
+            };
+            bar_button().invoke_accessible_default_action();
+            idle(Duration::from_millis(400)).await;
+            assert!(!ui.get_now_playing_open());
+            bar_button().invoke_accessible_default_action();
+            idle(Duration::from_millis(400)).await;
+            assert!(ui.get_now_playing_open() && !ui.get_queue_open() && on_what_plays());
+            // The rows below are the queue's.
+            click(&ui, "Queue");
+            idle(Duration::from_millis(100)).await;
             // A row played before counts back from the one playing: it plays
             // next, or goes from the queue, whole and in its place.
             let titles = |lines: slint::ModelRc<QueueLine>| -> Vec<String> {
