@@ -135,6 +135,8 @@ export struct Track {
     selected: bool,
     joined-above: bool,
     joined-below: bool,
+    // Whether the library lacks its song, on a playlist ListenBrainz made.
+    unavailable: bool,
 }
 
 // A page's own title: on a phone Material's Headline Medium, the title of
@@ -1007,6 +1009,8 @@ export component AppWindow inherits Window {
     // The server's curated stations, shelved, to save from.
     in property <[StationShelf]> catalogue-shelves;
     in property <[AlbumTile]> saved-stations;
+    // The playlists ListenBrainz made for the user, for the home page.
+    in property <[AlbumTile]> created-for-you;
     // The genres page's genres, or on a genre's page those under it; and its
     // artists, those with the most of its albums first.
     in property <[AlbumTile]> genre-tiles;
@@ -1137,6 +1141,12 @@ export component AppWindow inherits Window {
     // and whether the playlist on screen can be changed.
     in property <[Name]> playlist-targets;
     in property <bool> playlist-editable;
+    // Whether the playlist shown is one ListenBrainz made, and whether the
+    // library is still being searched for its tracks, or the search was
+    // stopped by a failure and "Try again" goes on with it.
+    in property <bool> created-for;
+    in property <bool> created-for-matching;
+    callback save-created-for();
     property <[Name]> no-names;
     // Whether the server has playlist folders and tags. The playlist folder
     // or tag on screen, by id, and where it or the playlist on screen can
@@ -1798,6 +1808,11 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
                     }
+                    if root.page == Page.home && root.created-for-you.length > 0: CoverShelf {
+                        title: "Created for you";
+                        tiles: root.created-for-you;
+                        open(link) => { root.open(link); }
+                    }
                     if root.page == Page.home && root.saved-stations.length > 0: CoverShelf {
                         title: "Saved stations";
                         tiles: root.saved-stations;
@@ -1915,7 +1930,7 @@ export component AppWindow inherits Window {
                     if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;
                         round: root.page == Page.artist || root.page == Page.composer;
-                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? "Playlist" : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : "Album";
+                        kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? (root.created-for ? "Created for you" : "Playlist") : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : "Album";
                         title: root.header-title;
                         names: root.header-names;
                         facts: root.header-facts;
@@ -1932,7 +1947,7 @@ export component AppWindow inherits Window {
                             }
                             queue(how) => { root.queue-page(how); }
                         }
-                        if root.can-download && root.may-download && (root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0: DownloadButton {
+                        if root.can-download && root.may-download && (root.page == Page.album || (root.page == Page.playlist && !root.created-for)) && root.tracks.length > 0: DownloadButton {
                             state: root.download-state;
                             progress: root.download-progress;
                             clicked => {
@@ -1942,6 +1957,12 @@ export component AppWindow inherits Window {
                                     root.ask(Asking.remove-download);
                                 }
                             }
+                        }
+                        if root.created-for: Button {
+                            cross-axis-self-alignment: center;
+                            text: "Save to library";
+                            enabled: !root.created-for-matching && !Input.modal;
+                            clicked => { root.save-created-for(); }
                         }
                         // Any playlist can go in a folder, read-only too.
                         if root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0): MoreMenu {
@@ -2107,6 +2128,7 @@ export component AppWindow inherits Window {
                                 loved: track.loved;
                                 years: track.years;
                                 performed: track.performed;
+                                unavailable: track.unavailable;
                                 strong: track.alone;
                                 part: track.part;
                                 downloaded: track.downloaded;
@@ -2338,7 +2360,7 @@ export component AppWindow inherits Window {
                     if root.page == Page.folders && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "Nothing here matches." : "This folder is empty."; }
                     if root.page == Page.tag && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "No tracks match." : "No tracks have this tag yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.home || root.page == Page.radio || root.page == Page.tags || root.page == Page.genres || root.page == Page.genre || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.home || root.created-for || root.page == Page.radio || root.page == Page.tags || root.page == Page.genres || root.page == Page.genre || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

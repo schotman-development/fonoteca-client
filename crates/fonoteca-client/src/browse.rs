@@ -1,7 +1,8 @@
 //! The library pages after sign-in: what each page shows, where its links lead,
 //! and the history behind back and forward. A link is a page's address, such
 //! as "home", "albums", "artists", "tracks", "playlists", "album:<id>",
-//! "artist:<id>", "playlist:<id>" or "song:<id>", the files' "folders" and
+//! "artist:<id>", "playlist:<id>" or "song:<id>", ListenBrainz's playlist
+//! "createdfor:<id>", the files' "folders" and
 //! "folder:<id>", on servers with playlist folders "playlists:<id>", on
 //! servers with Fonoteca's compositions "composers", "compositions",
 //! "composer:<id>" or "composition:<id>", on servers with Fonoteca's tags
@@ -39,6 +40,8 @@ use crate::{
     StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, catalogue,
     logo_ink, offline, prefs, zone,
 };
+
+pub(crate) mod created_for;
 
 /// The newest albums on the home page.
 const RECENT: usize = 24;
@@ -166,6 +169,7 @@ pub struct Browser {
     tracks: Rc<VecModel<Track>>,
     /// The song of each track row.
     songs: Vec<Child>,
+    created_for: created_for::State,
     /// The album or playlist on screen, when one is, for downloading it.
     album: Option<AlbumID3>,
     playlist: Option<Playlist>,
@@ -559,14 +563,20 @@ pub fn client(browser: &Shared) -> Option<Arc<Client>> {
 }
 
 /// The songs on screen in their rows' order, and where the `row`th row is
-/// among them: an album's, a playlist's or an artist's top songs, or the
+/// among them: an album's, a playlist's (ListenBrainz's without the songs the
+/// library lacks) or an artist's top songs, or the
 /// songs of the tracks, folders or a tag's page as filtered and sorted,
 /// without the folders between them.
 #[cfg(not(target_family = "wasm"))]
 pub fn songs(browser: &Shared, page: Page, row: usize) -> (Vec<Child>, usize) {
     let b = browser.borrow();
     if !matches!(page, Page::Tracks | Page::Folders | Page::Tag) {
-        return (b.songs.clone(), row);
+        let is_playable = |song: &&Child| !created_for::is_missing(song);
+        let before = b.songs.iter().take(row).filter(is_playable).count();
+        return (
+            b.songs.iter().filter(is_playable).cloned().collect(),
+            before,
+        );
     }
     let (songs, order) = listed(&b, page);
     let rows = order.iter().map(|&song| &songs[song]);
@@ -656,6 +666,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_show_more({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || more_tiles(&weak.unwrap(), &browser)
+    });
+    ui.on_save_created_for({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || created_for::save(&weak.unwrap(), &browser)
     });
     ui.on_toggle_love({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -1054,6 +1068,7 @@ fn select_track(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
     let mut b = browser.borrow_mut();
     let links: Vec<String> = b.songs.iter().map(song_link).collect();
     pick(&mut b, &links, row, range);
+    created_for::forget_missing(&mut b);
     show_track_selection(&b);
     show_selected(ui, &b);
 }
@@ -1333,6 +1348,8 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_facts("".into());
     ui.set_details(ModelRc::default());
     ui.set_playlist_editable(false);
+    ui.set_created_for(false);
+    ui.set_created_for_matching(false);
     ui.set_download_state(NOT_DOWNLOADED);
     ui.set_download_progress("".into());
     ui.set_shown_id("".into());
@@ -1384,6 +1401,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
         "playlist" => {
             ui.set_page(Page::Playlist);
             playlist(ui, browser, id);
+        }
+        "createdfor" => {
+            ui.set_page(Page::Playlist);
+            created_for::open_page(ui, browser, id);
         }
         "song" => {
             ui.set_page(Page::Track);
@@ -1719,6 +1740,7 @@ fn section(b: &Browser) -> i32 {
         "folder" => "folders",
         "playlist" | "playlists" => "playlists",
         "stations" => "radio",
+        "createdfor" => "home",
         other => other,
     };
     let found = at(link).or_else(|| at(among));
@@ -1760,7 +1782,7 @@ fn bar_section(b: &Browser) -> i32 {
     };
     let page = link.split_once(':').map_or(link.as_str(), |(page, _)| page);
     let entry = match page {
-        "home" => "home",
+        "home" | "createdfor" => "home",
         "browse" | "genres" | "genre" | "radio" | "stations" => "browse",
         "settings" | "setting" => "settings",
         "account" => return -1,
@@ -1901,6 +1923,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
         load_library(ui, browser);
     }
     saved_stations(ui, browser);
+    created_for::shelf(ui);
     artists(ui, browser);
     if more {
         composers(ui, browser);
@@ -3189,6 +3212,9 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
     if ui.get_page() == Page::Home {
         return home(ui, browser);
+    }
+    if ui.get_created_for() {
+        return created_for::resume(ui, browser);
     }
     if ui.get_page() == Page::Stations {
         return more_stations(ui, browser);

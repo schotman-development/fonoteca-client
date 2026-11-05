@@ -16,6 +16,10 @@ use reqwest::{RequestBuilder, Url};
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
+mod playlist;
+
+pub use playlist::{Playlist, PlaylistTrack};
+
 pub const API_ROOT: &str = "https://api.listenbrainz.org/1/";
 
 /// The most listens one submit call takes.

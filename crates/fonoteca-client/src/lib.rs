@@ -918,6 +918,145 @@ mod tests {
         )
     }
 
+    /// What the flow test's ListenBrainz was asked, as each request's line
+    /// and whether it carried the token "tok", and whether it is down.
+    static LISTENBRAINZ_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static LISTENBRAINZ_DOWN: AtomicBool = AtomicBool::new(false);
+    /// How many searches for a song by its title the server was asked, and
+    /// whether it refuses them.
+    static SEARCHES: AtomicUsize = AtomicUsize::new(0);
+    static SEARCH_DOWN: AtomicBool = AtomicBool::new(false);
+
+    /// The songs of the library the ListenBrainz playlists are matched
+    /// against, by what a search for them starts with: two share a title, one
+    /// of them by another artist; the third is accented in the library, not in
+    /// ListenBrainz.
+    const LISTENBRAINZ_LIBRARY: [(&str, &str); 5] = [
+        (
+            "familiar",
+            r#"{"id":"lb9","isDir":false,"title":"Familiar","artist":"Someone Else","duration":200,"musicBrainzId":"00000000-0000-4000-8000-000000000009"}"#,
+        ),
+        (
+            "familiar",
+            r#"{"id":"lb1","isDir":false,"title":"Familiar","artist":"Nils Frahm","duration":210,"musicBrainzId":"31dad9e2-25fc-48aa-8c01-72c3729f53a1"}"#,
+        ),
+        (
+            "cafe del mar",
+            r#"{"id":"lb2","isDir":false,"title":"Café del Mar","artist":"ENERGY 52","duration":420}"#,
+        ),
+        (
+            "fugue",
+            r#"{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}"#,
+        ),
+        (
+            "salt",
+            r#"{"id":"lb5","isDir":false,"title":"Salt","duration":180,"artist":"Mara Lind"}"#,
+        ),
+    ];
+
+    /// The songs of `LISTENBRAINZ_LIBRARY` a search finds.
+    fn library_search(query: &str) -> String {
+        let query = query.replace("%20", " ").replace('+', " ").to_lowercase();
+        let found: Vec<&str> = LISTENBRAINZ_LIBRARY
+            .iter()
+            .filter(|(searched, _)| query.starts_with(searched))
+            .map(|(_, song)| *song)
+            .collect();
+        format!(r#""searchResult3":{{"song":[{}]}}"#, found.join(","))
+    }
+
+    /// A stand-in for ListenBrainz's API, which knows joe: his three
+    /// playlists, one of them the weekly exploration, and two of them.
+    fn listenbrainz(request: &str) -> Vec<u8> {
+        let line = request.lines().next().unwrap_or_default();
+        let token = request.to_lowercase().contains("authorization: token tok");
+        LISTENBRAINZ_ASKED
+            .lock()
+            .unwrap()
+            .push(format!("{line} token={token}"));
+        if LISTENBRAINZ_DOWN.load(Relaxed) {
+            return reply("503 Service Unavailable", "text/plain", b"down");
+        }
+        let playlist = |title: &str, id: &str, patch: &str, tracks: &str| {
+            format!(
+                r#"{{"playlist":{{"title":"{title}","identifier":"https://listenbrainz.org/playlist/{id}","annotation":"<p>Made for joe</p>","track":[{tracks}],"extension":{{"https://musicbrainz.org/doc/jspf#playlist":{{"additional_metadata":{{"algorithm_metadata":{{"source_patch":"{patch}"}}}}}}}}}}}}"#
+            )
+        };
+        let track = |title: &str, artist: &str, mbid: Option<&str>| {
+            let identifier = mbid.map_or(String::new(), |mbid| {
+                format!(r#""identifier":["https://musicbrainz.org/recording/{mbid}"],"#)
+            });
+            format!(
+                r#"{{{identifier}"title":"{title}","creator":"{artist}","album":"Album","duration":200000}}"#
+            )
+        };
+        let daily = [
+            track(
+                "Familiar",
+                "Nils Frahm",
+                Some("31dad9e2-25fc-48aa-8c01-72c3729f53a1"),
+            ),
+            track("Cafe del Mar", "Energy 52", None),
+            track("Not Here", "Nobody", None),
+            track("Familiar", "Cher", None),
+        ]
+        .join(",");
+        let lists = [
+            (
+                "Daily Jams for joe, 2026-11-04 Wed",
+                "daily",
+                "daily-jams",
+                daily.as_str(),
+            ),
+            (
+                "Weekly Exploration for joe",
+                "exploring",
+                "weekly-exploration",
+                "",
+            ),
+            (
+                "Road Trip",
+                "trip",
+                "weekly-jams",
+                &track("Fugue", "Anna Bach", None),
+            ),
+            (
+                "Later Jams for joe",
+                "later",
+                "weekly-jams",
+                &track("Salt", "Mara Lind", None),
+            ),
+        ];
+        let target = line.split_whitespace().nth(1).unwrap_or_default();
+        let body = if target == "/1/user/joe/playlists/createdfor" {
+            let all: Vec<String> = (lists.iter())
+                .map(|(title, id, patch, _)| playlist(title, id, patch, ""))
+                .collect();
+            format!(
+                r#"{{"count":4,"offset":0,"playlist_count":4,"playlists":[{}]}}"#,
+                all.join(",")
+            )
+        } else if let Some(id) = target.strip_prefix("/1/playlist/") {
+            match lists.iter().find(|list| list.1 == id) {
+                Some((title, id, patch, tracks)) => playlist(title, id, patch, tracks),
+                None => {
+                    return reply(
+                        "404 Not Found",
+                        "application/json",
+                        br#"{"error":"no such playlist"}"#,
+                    );
+                }
+            }
+        } else {
+            return reply(
+                "404 Not Found",
+                "application/json",
+                br#"{"error":"unknown"}"#,
+            );
+        };
+        json(&body)
+    }
+
     /// The radio directory: two stations with the most votes, 65 of jazz
     /// with the server's Jazz first, one of rock, none of other genres, one
     /// of the Netherlands, one of Dutch jazz, two named News, the countries'
@@ -1198,6 +1337,13 @@ mod tests {
             ok(&format!(
                 r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{ALBUM}}}]}}"#
             ))
+        } else if request.contains("/rest/search3") && param("query").is_some_and(|q| !q.is_empty())
+        {
+            if SEARCH_DOWN.load(Relaxed) {
+                return reply("503 Service Unavailable", "text/plain", b"down");
+            }
+            SEARCHES.fetch_add(1, Relaxed);
+            ok(&library_search(param("query").unwrap_or_default()))
         } else if request.contains("/rest/search3") {
             let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
             let song = |n: usize| {
@@ -5061,6 +5207,181 @@ mod tests {
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
             assert!(find(&ui, "Menu").is_none());
             assert_eq!(navigations(), ["Library"]);
+
+            // Without a token the home page has no "Created for you" shelf and
+            // ListenBrainz is not asked; a playlist page says why it is empty.
+            let listenbrainz_root = format!("{}/1/", serve(listenbrainz));
+            browse::created_for::testing::serve_from(&listenbrainz_root);
+            store::forget_listenbrainz().await.unwrap();
+            ui.invoke_open("home".into());
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(ui.get_created_for_you().row_count(), 0);
+            assert_eq!(ui.get_page_problem(), "");
+            assert!(LISTENBRAINZ_ASKED.lock().unwrap().is_empty());
+            ui.invoke_open("createdfor:daily".into());
+            wait_for("the missing token said", || {
+                ui.get_page_problem().starts_with("Set your ListenBrainz token")
+            })
+            .await;
+
+            // With one, the shelf has the playlists made for the user, but not
+            // the exploration one, and the request carries the token.
+            store::save_listenbrainz(ListenBrainz { token: "tok".into(), user: "joe".into() })
+                .await
+                .unwrap();
+            ui.invoke_open("home".into());
+            wait_for("the Created for you shelf", || ui.get_created_for_you().row_count() == 3).await;
+            let shelf: Vec<(String, String)> = (ui.get_created_for_you().iter())
+                .map(|tile| (tile.title.to_string(), tile.link.to_string()))
+                .collect();
+            assert_eq!(
+                shelf,
+                [
+                    ("Daily Jams for joe, 2026-11-04 Wed".to_owned(), "createdfor:daily".to_owned()),
+                    ("Road Trip".to_owned(), "createdfor:trip".to_owned()),
+                    ("Later Jams for joe".to_owned(), "createdfor:later".to_owned())
+                ]
+            );
+            assert_eq!(
+                *LISTENBRAINZ_ASKED.lock().unwrap(),
+                ["GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true"]
+            );
+
+            // Every track is listed in ListenBrainz's order. The library's are
+            // found by recording, or by title and artist whatever the accents,
+            // one search each; the others stay greyed.
+            ui.invoke_open("createdfor:daily".into());
+            wait_for("the playlist", || ui.get_tracks().row_count() == 4).await;
+            assert_eq!(ui.get_header_title(), "Daily Jams for joe, 2026-11-04 Wed");
+            wait_for("the tracks found", || !ui.get_created_for_matching()).await;
+            assert_eq!(lit(&ui), "Home", "a playlist made for you belongs to Home");
+            let rows: Vec<(String, bool)> = (ui.get_tracks().iter())
+                .map(|track| (track.title.to_string(), track.unavailable))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("Familiar".to_owned(), false),
+                    ("Café del Mar".to_owned(), false),
+                    ("Not Here".to_owned(), true),
+                    ("Familiar".to_owned(), true)
+                ]
+            );
+            assert_eq!(ui.get_header_facts(), "2 of 4 tracks in your library");
+            let asked = LISTENBRAINZ_ASKED.lock().unwrap().clone();
+            assert_eq!(asked.len(), 2);
+            assert_eq!(asked[1], "GET /1/playlist/daily HTTP/1.1 token=true");
+            // A track the library has takes one search; one it hasn't, two.
+            assert_eq!(SEARCHES.load(Relaxed), 6);
+
+            // A greyed row can't be selected, by a click or in a range.
+            assert_eq!(button(&ui, "Not Here").accessible_enabled(), Some(false));
+            assert_eq!(button(&ui, "Café del Mar").accessible_enabled(), Some(true));
+            ui.invoke_select_track(0, false);
+            click(&ui, "Not Here");
+            assert_eq!(ui.get_selected_tiles(), 1);
+            click(&ui, "Café del Mar");
+            assert_eq!(ui.get_selected_tiles(), 2);
+            ui.invoke_select_track(3, true);
+            let picked: Vec<bool> = ui.get_tracks().iter().map(|track| track.selected).collect();
+            assert_eq!(picked, [true, true, false, false]);
+            ui.invoke_clear_selection();
+
+            // Opened again, the matches are the session's and nothing is searched.
+            let searched = SEARCHES.load(Relaxed);
+            ui.invoke_open("home".into());
+            ui.invoke_open("createdfor:daily".into());
+            wait_for("the playlist again", || ui.get_tracks().row_count() == 4).await;
+            wait_for("the tracks found again", || {
+                !ui.get_created_for_matching() && ui.get_header_facts() == "2 of 4 tracks in your library"
+            })
+            .await;
+            assert_eq!(SEARCHES.load(Relaxed), searched);
+
+            // Save makes a playlist of the songs the library has, in order.
+            let sent = writes().len();
+            click(&ui, "Save to library");
+            wait_for("the playlist saved", || ui.get_notice() != "").await;
+            assert_eq!(
+                ui.get_notice(),
+                "Saved Daily Jams for joe, 2026-11-04 Wed with 2 of 4 tracks."
+            );
+            assert_eq!(
+                writes()[sent..],
+                ["createPlaylist name=Daily+Jams+for+joe%2C+2026-11-04+Wed&songId=lb1&songId=lb2"]
+            );
+            ui.set_notice("".into());
+
+            // A name the server already has is left alone.
+            ui.invoke_open("createdfor:trip".into());
+            wait_for("the second playlist found", || {
+                ui.get_tracks().row_count() == 1 && !ui.get_created_for_matching()
+            })
+            .await;
+            let sent = writes().len();
+            click(&ui, "Save to library");
+            wait_for("the name taken said", || ui.get_notice() != "").await;
+            assert_eq!(
+                ui.get_notice(),
+                "You already have a playlist named Road Trip, so nothing was saved."
+            );
+            assert_eq!(writes().len(), sent);
+            ui.set_notice("".into());
+
+            // A search that fails stops the matching and keeps Save off, so a
+            // part of the playlist is never saved; Try again goes on.
+            SEARCH_DOWN.store(true, Relaxed);
+            ui.invoke_open("createdfor:later".into());
+            wait_for("the failed search said", || {
+                ui.get_page_problem().starts_with("Your server didn't answer")
+            })
+            .await;
+            assert!(ui.get_created_for_matching());
+            assert_eq!(button(&ui, "Save to library").accessible_enabled(), Some(false));
+            let sent = writes().len();
+            ui.invoke_save_created_for();
+            idle(Duration::from_millis(200)).await;
+            assert_eq!((writes().len(), ui.get_notice().as_str()), (sent, ""));
+            assert!(ui.get_tracks().row_data(0).unwrap().unavailable);
+            SEARCH_DOWN.store(false, Relaxed);
+            click(&ui, "Try again");
+            wait_for("the matching resumed", || !ui.get_created_for_matching()).await;
+            assert_eq!(ui.get_page_problem(), "");
+            assert!(!ui.get_tracks().row_data(0).unwrap().unavailable);
+            assert_eq!(button(&ui, "Save to library").accessible_enabled(), Some(true));
+            click(&ui, "Save to library");
+            wait_for("the resumed playlist saved", || ui.get_notice() != "").await;
+            assert_eq!(ui.get_notice(), "Saved Later Jams for joe with 1 of 1 tracks.");
+            assert_eq!(writes()[sent..], ["createPlaylist name=Later+Jams+for+joe&songId=lb5"]);
+            ui.set_notice("".into());
+
+            // A playlist none of whose tracks the library has saves nothing.
+            ui.invoke_open("createdfor:exploring".into());
+            wait_for("the empty playlist", || {
+                ui.get_header_title() == "Weekly Exploration for joe" && !ui.get_created_for_matching()
+            })
+            .await;
+            let sent = writes().len();
+            click(&ui, "Save to library");
+            wait_for("the nothing to save said", || ui.get_notice() != "").await;
+            assert_eq!(ui.get_notice(), "None of its tracks are in your library.");
+            assert_eq!(writes().len(), sent);
+            ui.set_notice("".into());
+
+            // A ListenBrainz that is down shows as the other problems do.
+            LISTENBRAINZ_DOWN.store(true, Relaxed);
+            ui.invoke_open("home".into());
+            wait_for("the shelf's problem", || {
+                ui.get_page_problem().starts_with("Created for you couldn't be fetched")
+            })
+            .await;
+            assert_eq!(ui.get_created_for_you().row_count(), 0);
+            LISTENBRAINZ_DOWN.store(false, Relaxed);
+            ui.invoke_show_more();
+            wait_for("the shelf again", || ui.get_created_for_you().row_count() == 3).await;
+            assert_eq!(ui.get_page_problem(), "");
+            store::forget_listenbrainz().await.unwrap();
+            ui.invoke_open("settings".into());
 
             let kept = ListenBrainz {
                 token: "kept token".into(),
