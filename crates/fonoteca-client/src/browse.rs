@@ -42,6 +42,9 @@ use crate::{
 };
 
 pub(crate) mod created_for;
+mod stats;
+#[cfg(test)]
+pub use stats::TEST_ROOTS as LISTENBRAINZ_ROOTS;
 
 /// The newest albums on the home page.
 const RECENT: usize = 24;
@@ -277,6 +280,8 @@ pub struct Browser {
     /// shelf of them.
     server_stations: Vec<InternetRadioStation>,
     saved: Rc<VecModel<AlbumTile>>,
+    /// The user's most played on ListenBrainz, for the home page.
+    stats: stats::Stats,
     /// The radio directory once asked, its countries' names by code, its
     /// languages, each shelf's stations as they came, the shelves shown, the
     /// shelves asked for, each genre's place on the page, the shelves' tiles
@@ -629,6 +634,7 @@ pub fn stop(browser: &Shared) {
 }
 
 pub fn wire(ui: &AppWindow, browser: &Shared) {
+    stats::wire(ui, browser);
     let mut carried = DataTransfer::default();
     carried.set_plain_text("playlist".into());
     ui.global::<Drag>().set_data(carried);
@@ -1306,6 +1312,7 @@ fn refresh(ui: &AppWindow, browser: &Shared) {
             b.song_list_loaded = false;
         }
         b.artists_loaded = false;
+        b.stats.forget_indexes();
         b.composers_loaded = false;
         b.compositions_loaded = false;
         b.genres_loaded = false;
@@ -1924,6 +1931,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
     }
     saved_stations(ui, browser);
     created_for::shelf(ui);
+    stats::ask(ui, browser);
     artists(ui, browser);
     if more {
         composers(ui, browser);
@@ -1934,6 +1942,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
 /// The home page's counts, each once all of it has arrived, and the newest
 /// albums once the library has.
 fn show_home(ui: &AppWindow, browser: &Shared) {
+    stats::show(ui, browser);
     let icons = ui.global::<Icons>();
     let stat = |icon: SharedString, label: &str, n: Option<usize>| Stat {
         icon,

@@ -885,6 +885,12 @@ mod tests {
     /// The request lines of the songs streamed.
     static STREAMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static ADMIN: AtomicBool = AtomicBool::new(true);
+    /// The request targets ListenBrainz's statistics were asked at.
+    static STATISTICS_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// The Authorization header of each of those requests, and whether each
+    /// cover art archive request had one.
+    static STATISTICS_AUTHORIZED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static ARCHIVE_AUTHORIZED: Mutex<Vec<bool>> = Mutex::new(Vec::new());
     /// The radio station changes, the same way.
     static RADIO_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// While set, the server has playlist folders and Fonoteca's tags; the
@@ -1132,6 +1138,63 @@ mod tests {
         }
     }
 
+    /// ListenBrainz's statistics of rob: this year, three albums of which two
+    /// are in the library (one by its release group's ID, one by its names)
+    /// and one is not, three artists, and no genres worked out; all time,
+    /// which is slow, with one genre; nothing for any other range. The cover
+    /// art archive is on the same server.
+    fn listenbrainz_statistics(request: &str) -> Vec<u8> {
+        let target = request.split_whitespace().nth(1).unwrap_or_default();
+        let authorization = (request.lines()).find_map(|line| {
+            line.to_lowercase()
+                .strip_prefix("authorization: ")
+                .map(str::to_owned)
+        });
+        if target.starts_with("/release/") {
+            ARCHIVE_AUTHORIZED
+                .lock()
+                .unwrap()
+                .push(authorization.is_some());
+            return reply("200 OK", "image/png", PNG);
+        }
+        STATISTICS_AUTHORIZED.lock().unwrap().extend(authorization);
+        STATISTICS_ASKED.lock().unwrap().push(target.to_owned());
+        let range = target.split("range=").nth(1).unwrap_or_default();
+        let range = range.split('&').next().unwrap_or_default();
+        let kind = target.split('/').nth(5).unwrap_or_default();
+        let kind = kind.split('?').next().unwrap_or_default();
+        if range == "all_time" && kind == "release-groups" {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        let none = || reply("204 No Content", "application/json", b"");
+        match (range, kind) {
+            ("this_year", "release-groups") => json(
+                r#"{"payload":{"release_groups":[
+                {"artist_name":"Bach Ensemble","release_group_mbid":"rg-sonatas","release_group_name":"Sonatas (Deluxe)","listen_count":18},
+                {"artist_name":"mara lind","release_group_name":"night harbour","listen_count":12},
+                {"artist_name":"Cell","release_group_name":"Away","caa_id":42,"caa_release_mbid":"7c45","listen_count":1}]}}"#,
+            ),
+            ("this_year", "artists") => json(
+                r#"{"payload":{"artists":[
+                {"artist_name":"MARA LIND","listen_count":30},
+                {"artist_mbid":"MB-ANNA","artist_name":"A. Bach","listen_count":9},
+                {"artist_name":"Röyksopp","listen_count":2}]}}"#,
+            ),
+            ("all_time", "release-groups") => json(
+                r#"{"payload":{"release_groups":[
+                {"artist_name":"Mara Lind","release_group_name":"Night Harbour","listen_count":480}]}}"#,
+            ),
+            ("all_time", "artists") => json(r#"{"payload":{"artists":[]}}"#),
+            ("all_time", "genre-activity") => json(
+                r#"{"payload":{"genre_activity":[
+                {"genre":"folk","hour":1,"listen_count":20},
+                {"genre":"folk","hour":9,"listen_count":10},
+                {"genre":"shoegaze","hour":9,"listen_count":4}]}}"#,
+            ),
+            _ => none(),
+        }
+    }
+
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
             reply("503 Service Unavailable", "text/plain", b"down")
@@ -1248,7 +1311,7 @@ mod tests {
             let albums: Vec<String> = std::iter::once(format!("{{{ALBUM}}}"))
                 .chain((2..=600).map(album))
                 .chain([
-                    r#"{"id":"b1","name":"Sonatas","artist":"Bach Ensemble","year":2010,"songCount":0,"duration":0,"created":"2022-01-01T00:00:00Z"}"#.to_owned(),
+                    r#"{"id":"b1","name":"Sonatas","artist":"Bach Ensemble","musicBrainzId":"RG-SONATAS","year":2010,"songCount":0,"duration":0,"created":"2022-01-01T00:00:00Z"}"#.to_owned(),
                     r#"{"id":"b3","name":"Variations on Bach","artist":"Anna Bach","year":0,"songCount":0,"duration":0,"created":"2023-01-01T00:00:00Z"}"#.to_owned(),
                     r#"{"id":"b2","name":"partitas","artist":"Anna Bach","year":2010,"songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z"}"#.to_owned(),
                 ])
@@ -1330,7 +1393,7 @@ mod tests {
                 })
                 .collect();
             ok(&format!(
-                r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","bannerArt":"ba-r1","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
+                r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","musicBrainzId":"mb-anna","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","bannerArt":"ba-r1","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
                 others.join(",")
             ))
         } else if request.contains("/rest/getArtist") {
@@ -1752,6 +1815,33 @@ mod tests {
             .is_some()
     }
 
+    /// A scroll far enough up to reach the top of any page.
+    const TOP_OF_PAGE: f32 = 100_000.0;
+
+    /// Scrolls the page by `delta_y`, at once; up, to its top, when
+    /// positive and large.
+    fn scroll_page(ui: &AppWindow, delta_y: f32) {
+        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(600.0, 400.0),
+            delta_x: 0.0,
+            delta_y,
+        });
+    }
+
+    /// Scrolls the page to its top and then down until the button with
+    /// `label` is in view, or to its end, and says whether it came.
+    async fn comes_into_view(ui: &AppWindow, label: &str) -> bool {
+        scroll_page(ui, TOP_OF_PAGE);
+        for _ in 0..40 {
+            idle(Duration::from_millis(30)).await;
+            if find(ui, label).is_some() {
+                return true;
+            }
+            scroll_page(ui, -150.0);
+        }
+        false
+    }
+
     /// Presses the page header's Download and says yes to the question what
     /// it takes.
     fn download_page(ui: &AppWindow) {
@@ -1859,6 +1949,9 @@ mod tests {
         let _runtime = runtime.enter();
         let server = serve(flaky);
         *browse::DIRECTORY_ROOT.lock().unwrap() = format!("{}/json/", serve(radio_directory));
+        let statistics = serve(listenbrainz_statistics);
+        *browse::LISTENBRAINZ_ROOTS.lock().unwrap() =
+            (format!("{statistics}/1/"), format!("{statistics}/"));
         *zone::TESTS.lock().unwrap() = "Europe/Amsterdam".into();
 
         slint::spawn_local(async move {
@@ -4851,6 +4944,11 @@ mod tests {
 
             // A second start finds the saved account, with its server down.
             DOWN.store(true, Relaxed);
+            let rob = ListenBrainz {
+                token: "rob token".into(),
+                user: "rob".into(),
+            };
+            store::save_listenbrainz(rob).await.unwrap();
             let again = start().unwrap();
             wait_for("the offline note", || again.get_offline() != "").await;
             assert_eq!(again.get_step(), Step::Done);
@@ -4895,6 +4993,121 @@ mod tests {
             );
             let newest: Vec<String> = again.get_tiles().iter().map(|t| t.link.into()).collect();
             assert_eq!(newest[..4], ids(&["b2", "b3", "b1", "a1"]));
+
+            // With a token set, the home page lists what rob played most on
+            // ListenBrainz in the period picked, this year at first.
+            let ranking = |list: usize| -> Vec<RankedEntry> {
+                let lists = again.get_stat_lists();
+                let list = lists.row_data(list);
+                list.map_or_else(Vec::new, |list| list.entries.iter().collect())
+            };
+            let places = |list: usize| -> Vec<(i32, String, String, String)> {
+                (ranking(list).into_iter())
+                    .map(|e| (e.rank, e.title.into(), e.plays.into(), e.link.into()))
+                    .collect()
+            };
+            let place = |rank: i32, title: &str, plays: &str, link: &str| {
+                (rank, title.to_owned(), plays.to_owned(), link.to_owned())
+            };
+            wait_for("the albums matched", || {
+                places(0).first().is_some_and(|first| first.3 == "album:b1")
+            })
+            .await;
+            assert_eq!(again.get_stat_period(), 2);
+            assert_eq!(
+                places(0),
+                [
+                    place(1, "Sonatas (Deluxe)", "18 plays", "album:b1"),
+                    place(2, "night harbour", "12 plays", "album:a1"),
+                    place(3, "Away", "1 play", ""),
+                ]
+            );
+            wait_for("the artists matched", || {
+                places(1).first().is_some_and(|first| first.3 == "artist:r1")
+            })
+            .await;
+            assert_eq!(
+                places(1),
+                [
+                    place(1, "MARA LIND", "30 plays", "artist:r1"),
+                    place(2, "A. Bach", "9 plays", "artist:r3"),
+                    place(3, "Röyksopp", "2 plays", ""),
+                ]
+            );
+            let genres = again.get_stat_lists().row_data(2).unwrap();
+            assert_eq!(genres.entries.row_count(), 0);
+            assert_eq!(genres.note, "ListenBrainz hasn't worked this period out yet.");
+            assert!(!genres.pictured && ranking(0).len() == 3);
+            // The library's cover for what it has, the archive's for the
+            // album it hasn't, and none for the artist it has no picture of.
+            wait_for("the pictures", || {
+                [ranking(0)[1].picture.size().width, ranking(0)[2].picture.size().width, ranking(1)[0].picture.size().width]
+                    .iter()
+                    .all(|width| *width > 0)
+            })
+            .await;
+            assert_eq!(ranking(0)[0].picture.size().width, 0, "b1 has no cover");
+            assert_eq!(ranking(1)[2].picture.size().width, 0);
+            let asked = || STATISTICS_ASKED.lock().unwrap().clone();
+            // The token goes to ListenBrainz and never to the archive.
+            assert_eq!(*ARCHIVE_AUTHORIZED.lock().unwrap(), [false]);
+            assert_eq!(
+                *STATISTICS_AUTHORIZED.lock().unwrap(),
+                ["token rob token"; 3]
+            );
+            assert_eq!(
+                asked(),
+                [
+                    "/1/stats/user/rob/release-groups?range=this_year&count=10",
+                    "/1/stats/user/rob/artists?range=this_year&count=10",
+                    "/1/stats/user/rob/genre-activity?range=this_year",
+                ]
+            );
+
+            // Another period keeps the lists until its own arrive.
+            assert!(comes_into_view(&again, "All time").await);
+            click(&again, "All time");
+            assert_eq!(again.get_stat_period(), 3);
+            assert!(again.get_stat_loading());
+            assert_eq!(places(0).len(), 3, "this year's albums stay meanwhile");
+            wait_for("all time", || !again.get_stat_loading()).await;
+            assert_eq!(places(0), [place(1, "Night Harbour", "480 plays", "album:a1")]);
+            assert_eq!(
+                places(2),
+                [
+                    place(1, "Folk", "30 plays", "genre:Folk"),
+                    place(2, "Shoegaze", "4 plays", ""),
+                ]
+            );
+            assert_eq!(again.get_stat_lists().row_data(1).unwrap().note, "Nothing was played in this period.");
+            assert_eq!(asked().len(), 6);
+
+            // A place in the library opens its page, and coming back to the
+            // home page doesn't ask again.
+            assert!(comes_into_view(&again, "1. Night Harbour, Mara Lind, 480 plays").await);
+            click(&again, "1. Night Harbour, Mara Lind, 480 plays");
+            wait_for("the album", || again.get_page() == Page::Album).await;
+            click(&again, "Back");
+            assert_eq!(again.get_page(), Page::Home);
+            idle(Duration::from_millis(250)).await;
+            assert_eq!(asked().len(), 6, "the lists are not asked for again");
+
+            // Another account's lists don't stay while its own are on the way.
+            again.set_listenbrainz_user("sue".into());
+            again.invoke_show_more();
+            assert_eq!(again.get_stat_lists().row_count(), 0);
+            wait_for("sue's lists", || !again.get_stat_loading()).await;
+            assert!(asked().last().unwrap().starts_with("/1/stats/user/sue/"));
+            assert_eq!(asked().len(), 9);
+
+            // Without the token there is no list, and nothing is asked.
+            store::forget_listenbrainz().await.unwrap();
+            again.set_listenbrainz_user("".into());
+            assert!(!comes_into_view(&again, "All time").await);
+            // The shelf's buttons below are in view again from the top.
+            scroll_page(&again, TOP_OF_PAGE);
+            assert_eq!(asked().len(), 9);
+
             // The shelf comes to rest with a tile at its left edge: Next and
             // Previous move a width, three tiles here, a drag on the nearest
             // tile, a fling on further, and a sideways scroll on to the next
@@ -5389,6 +5602,10 @@ mod tests {
             };
             store::save_listenbrainz(kept.clone()).await.unwrap();
             ui.set_listenbrainz_user("listener".into());
+            // Lists on their way when the account signs out don't keep the
+            // next sign in from loading its own.
+            ui.invoke_pick_stat_period(3);
+            assert!(ui.get_stat_loading());
             click(&ui, "Account");
             click(&ui, "Sign out");
             // Signing out keeps the server, and asks for the login alone.
@@ -5407,6 +5624,21 @@ mod tests {
             wait_for("the done step", || ui.get_step() == Step::Done).await;
             wait_for("the account saved", || !ui.get_busy()).await;
             assert_eq!(ui.get_listenbrainz_user(), "listener");
+            wait_for("the lists after signing in again", || {
+                ui.get_stat_lists().row_count() == 3 && !ui.get_stat_loading()
+            })
+            .await;
+            // The answer of the asks before signing out arrives too, and is
+            // not taken for this one's: the period is this year's again.
+            idle(Duration::from_millis(700)).await;
+            let first = |ui: &AppWindow| {
+                let albums = ui.get_stat_lists().row_data(0).unwrap().entries;
+                albums.row_data(0).unwrap().title
+            };
+            assert_eq!(first(&ui), "Sonatas (Deluxe)");
+            assert_eq!(ui.get_stat_period(), 2);
+            ui.invoke_show_more();
+            assert!(!ui.get_stat_loading());
             assert_eq!(token(store::load_listenbrainz().await), Some(kept.token));
             let signed_in_as = store::load().await.expect("saved").login;
             assert!(matches!(signed_in_as, Login::Password { ref username, .. } if username == "eve"));

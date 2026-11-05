@@ -1,5 +1,5 @@
 import { LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AlbumTile, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, Screen, SelectionBar, SettingsRow, Sidebar, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine }
 
@@ -1011,6 +1011,14 @@ export component AppWindow inherits Window {
     in property <[AlbumTile]> saved-stations;
     // The playlists ListenBrainz made for the user, for the home page.
     in property <[AlbumTile]> created-for-you;
+    // The user's most played albums, artists and genres on ListenBrainz for
+    // the period picked of `stat-periods`, for the home page; and whether
+    // they are those of an earlier period.
+    in property <[string]> stat-periods;
+    in property <int> stat-period;
+    in property <[RankedList]> stat-lists;
+    in property <bool> stat-loading;
+    callback pick-stat-period(index: int);
     // The genres page's genres, or on a genre's page those under it; and its
     // artists, those with the most of its albums first.
     in property <[AlbumTile]> genre-tiles;
@@ -1818,6 +1826,15 @@ export component AppWindow inherits Window {
                         tiles: root.saved-stations;
                         more: true;
                         see-all => { root.open("radio"); }
+                    }
+                    if root.page == Page.home && root.listenbrainz-user != "": ListeningStats {
+                        periods: root.stat-periods;
+                        period: root.stat-period;
+                        lists: root.stat-lists;
+                        stale: root.stat-loading;
+                        wide: scroll.visible-width >= 1000px;
+                        period-picked(index) => { root.pick-stat-period(index); }
+                        open(link) => { root.open(link); }
                     }
                     // The filter and sort controls go beside the heading, or
                     // under it in two rows when the page is too narrow.

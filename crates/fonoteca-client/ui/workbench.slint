@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, BottomBar, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, BottomBar, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, ListeningStats, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -52,9 +52,11 @@ export component Workbench inherits Window {
         "Quality picker",
         "Genre tiles and banner",
         "Bottom bar",
+        "Listening stats",
     ];
     property <int> current;
     property <int> bar-current: 2;
+    property <int> stat-period: 2;
     property <bool> long-text;
     property <bool> no-art;
     property <string> event;
@@ -1040,6 +1042,41 @@ export component Workbench inherits Window {
                                 root.bar-current = index;
                                 root.event = "bar " + index;
                             }
+                        }
+                    }
+
+                    if root.current == 20: Example {
+                        caption: "The user's most played on ListenBrainz: a period to pick, and a ranking each of albums, artists and genres; a place in the library opens its page, the others have no link; a ranking with nothing in it says why; side by side when wide";
+                        ListeningStats {
+                            periods: ["This week", "This month", "This year", "All time"];
+                            period: root.stat-period;
+                            wide: root.width >= 1000px;
+                            lists: [
+                                {
+                                    title: "Top albums",
+                                    pictured: true,
+                                    entries: [
+                                        { rank: 1, title: root.long-text ? root.long-title : "Night Harbour", detail: "Mara Lind", plays: "480 plays", picture: root.no-art ? root.none : @image-url("samples/cover-1.svg"), link: "album:1" },
+                                        { rank: 2, title: "Onwards System", detail: "Cell", plays: "452 plays", picture: root.none },
+                                        { rank: 3, title: "Seeker", detail: "Carbon Based Lifeforms", plays: "1 play", picture: root.none },
+                                    ],
+                                },
+                                {
+                                    title: "Top artists",
+                                    pictured: true,
+                                    round: true,
+                                    entries: [
+                                        { rank: 1, title: "Mara Lind", plays: "1569 plays", picture: root.no-art ? root.none : @image-url("samples/photo-1.svg"), link: "artist:1" },
+                                        { rank: 2, title: "Röyksopp", plays: "859 plays", picture: root.none },
+                                    ],
+                                },
+                                { title: "Top genres", note: "ListenBrainz hasn't worked this out yet." },
+                            ];
+                            period-picked(index) => {
+                                root.stat-period = index;
+                                root.event = "period " + index;
+                            }
+                            open(link) => { root.event = "open " + link; }
                         }
                     }
                 }

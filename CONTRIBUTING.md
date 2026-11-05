@@ -49,7 +49,11 @@ container, or use [Fonoteca](https://github.com/schotman-development/fonoteca).
   or another service. The browser preview, which has no secret store, is the
   one exception.
 - **No telemetry.** The app talks only to the servers the user signs in to,
-  and to ListenBrainz when the user gives it a token.
+  and to ListenBrainz when the user gives it a token. The one other service is
+  the Cover Art Archive: the home page's ListenBrainz statistics fetch the
+  covers of albums that aren't in the library from it, by MusicBrainz release
+  id, and send it no token. The archive serves them from archive.org. Nothing
+  else contacts it.
 - **The UI stays responsive.** Show the data first and the images after, and
   never blank what is already on screen while loading.
 

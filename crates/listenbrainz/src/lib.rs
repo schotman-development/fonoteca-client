@@ -9,6 +9,8 @@
 // ponytail: no pacing in here; the caller spaces calls with a timer that works
 // natively and in the browser, since std's clock doesn't exist on wasm.
 
+mod stats;
+
 use std::fmt;
 
 use reqwest::header::AUTHORIZATION;
@@ -24,6 +26,8 @@ pub const API_ROOT: &str = "https://api.listenbrainz.org/1/";
 
 /// The most listens one submit call takes.
 pub const MAX_LISTENS_PER_REQUEST: usize = 1000;
+
+pub use stats::{COVER_ART_ROOT, GenreActivity, Range, TopAlbum, TopArtist, TopGenre};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -292,10 +296,15 @@ async fn exchange(request: RequestBuilder) -> reqwest::Result<reqwest::Response>
 }
 
 async fn send<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
+    Ok(send_checked(request).await?.json().await?)
+}
+
+/// The response to `request` when ListenBrainz answered with a success.
+async fn send_checked(request: RequestBuilder) -> Result<reqwest::Response> {
     let response = exchange(request).await?;
     let status = response.status();
     if status.is_success() {
-        return Ok(response.json().await?);
+        return Ok(response);
     }
     if status.as_u16() == 429 {
         let reset_in = response
@@ -372,6 +381,72 @@ impl From<reqwest::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polls `call` once from a thread that never runs the runtime, as the
+    /// app's UI thread awaits its calls, and says how many requests the
+    /// server got a second later. Connecting checks the server's certificate,
+    /// which on Android can go online, so a call must go out on the
+    /// runtime's own threads.
+    #[cfg(not(target_family = "wasm"))]
+    fn requests_while_the_caller_is_busy<F: std::future::Future>(
+        call: impl FnOnce(Client, String) -> F,
+    ) -> usize {
+        use std::io::{Read, Write};
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _inside = runtime.handle().enter();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}/1/", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let _ = stream.read(&mut [0; 4096]);
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                );
+            }
+        });
+        let client = Client::with_root("token", &root).unwrap();
+        std::thread::spawn(move || runtime.block_on(std::future::pending::<()>()));
+        let mut call = Box::pin(call(client, root));
+        let mut caller = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(call.as_mut().poll(&mut caller).is_pending());
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        seen.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_call_goes_out_while_its_caller_is_busy() {
+        let sent =
+            requests_while_the_caller_is_busy(
+                |client, _| async move { client.validate_token().await },
+            );
+        assert_eq!(sent, 1, "the server got no call");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_statistic_goes_out_while_its_caller_is_busy() {
+        let sent = requests_while_the_caller_is_busy(|client, _| async move {
+            client.top_artists("rob", Range::AllTime, 5).await
+        });
+        assert_eq!(sent, 1, "the server got no call");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_cover_goes_out_while_its_caller_is_busy() {
+        let sent = requests_while_the_caller_is_busy(|client, root| async move {
+            client.cover_art(&root, "7c45", 42).await
+        });
+        assert_eq!(sent, 1, "the server got no call");
+    }
 
     #[test]
     fn user_names_are_escaped_in_paths() {
