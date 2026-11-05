@@ -8,7 +8,8 @@ use crate::media::ACTIVITY;
 /// Whether the phone is on its mobile network now. Where Android can't say,
 /// the phone counts as on wifi, which never costs the listener data.
 pub fn on_mobile_data() -> bool {
-    let (Some(activity), Ok(vm)) = (ACTIVITY.get(), JavaVM::singleton()) else {
+    let activity = ACTIVITY.read().unwrap();
+    let (Some(activity), Ok(vm)) = (activity.as_ref(), JavaVM::singleton()) else {
         return false;
     };
     let asked = vm.attach_current_thread(|env| {

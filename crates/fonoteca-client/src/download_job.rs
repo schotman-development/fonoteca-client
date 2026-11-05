@@ -6,7 +6,7 @@
 
 #[cfg(target_os = "android")]
 mod android {
-    use std::sync::OnceLock;
+    use std::sync::Mutex;
 
     use jni::objects::{JClass, JObject, JValue};
     use jni::{Env, JavaVM, NativeMethod, jni_sig, jni_str, native_method};
@@ -15,8 +15,8 @@ mod android {
     use crate::AppWindow;
     use crate::media::ACTIVITY;
 
-    /// The window the job's stop acts on.
-    static WINDOW: OnceLock<slint::Weak<AppWindow>> = OnceLock::new();
+    /// The window the job's stop acts on: that of the app's latest start.
+    static WINDOW: Mutex<Option<slint::Weak<AppWindow>>> = Mutex::new(None);
 
     // jni 0.22's macro calls an atomic method that newer Rust renamed.
     #[allow(deprecated)]
@@ -24,8 +24,8 @@ mod android {
         static fn downloads_stopped(),
     };
 
-    /// Hands MainActivity.downloadsStopped its Rust side. Runs once, as the
-    /// app starts.
+    /// Hands MainActivity.downloadsStopped its Rust side. Runs as the app
+    /// starts.
     pub fn init(env: &mut Env, activity: &JObject) -> jni::errors::Result<()> {
         let class = env.get_object_class(activity)?;
         // Safety: STOPPED's macro checked its function against its signature.
@@ -34,7 +34,7 @@ mod android {
     }
 
     pub fn wire(ui: &AppWindow) {
-        let _ = WINDOW.set(ui.as_weak());
+        *WINDOW.lock().unwrap() = Some(ui.as_weak());
     }
 
     /// Starts the job for about `bytes` of downloading, over an unmetered
@@ -82,7 +82,8 @@ mod android {
     }
 
     fn call(f: impl FnOnce(&mut Env, &JObject) -> jni::errors::Result<()>) {
-        let (Some(activity), Ok(vm)) = (ACTIVITY.get(), JavaVM::singleton()) else {
+        let activity = ACTIVITY.read().unwrap();
+        let (Some(activity), Ok(vm)) = (activity.as_ref(), JavaVM::singleton()) else {
             return;
         };
         // The job is a convenience: downloading goes on without it.
@@ -96,7 +97,7 @@ mod android {
         _env: &mut Env<'local>,
         _class: JClass<'local>,
     ) -> jni::errors::Result<()> {
-        if let Some(window) = WINDOW.get() {
+        if let Some(window) = WINDOW.lock().unwrap().clone() {
             let _ = window.upgrade_in_event_loop(|ui| ui.invoke_stop_downloads());
         }
         Ok(())

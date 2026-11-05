@@ -3,7 +3,7 @@
 //! playing with the screen off. Those buttons, a headset's and a watch's
 //! come back as the bar's.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, RwLock};
 
 use jni::objects::{Global, JClass, JObject, JValue};
 use jni::sys::{jdouble, jint};
@@ -12,10 +12,11 @@ use slint::ComponentHandle;
 
 use crate::AppWindow;
 
-/// The activity, whose Java side runs the service.
-pub(crate) static ACTIVITY: OnceLock<Global<JObject<'static>>> = OnceLock::new();
-/// The window the buttons act on.
-static WINDOW: OnceLock<slint::Weak<AppWindow>> = OnceLock::new();
+/// The activity, whose Java side runs the service, and the window the
+/// buttons act on: those of the app's latest start. Android may start it
+/// again in the same process, with a new activity, once the last one went.
+pub(crate) static ACTIVITY: RwLock<Option<Global<JObject<'static>>>> = RwLock::new(None);
+static WINDOW: Mutex<Option<slint::Weak<AppWindow>>> = Mutex::new(None);
 
 /// The buttons, numbered as PlaybackService.java numbers them.
 const PLAY: jint = 0;
@@ -31,17 +32,17 @@ const COMMAND: NativeMethod = native_method! {
 };
 
 /// Keeps the activity for later calls and hands MainActivity.command its
-/// Rust side. Runs once, as the app starts.
+/// Rust side. Runs as the app starts.
 pub fn init(env: &mut Env, activity: &JObject) -> jni::errors::Result<()> {
     let class = env.get_object_class(activity)?;
     // Safety: COMMAND's macro checked its function against its signature.
     unsafe { env.register_native_methods(&class, &[COMMAND])? };
-    let _ = ACTIVITY.set(env.new_global_ref(activity)?);
+    *ACTIVITY.write().unwrap() = Some(env.new_global_ref(activity)?);
     Ok(())
 }
 
 pub fn wire(ui: &AppWindow) {
-    let _ = WINDOW.set(ui.as_weak());
+    *WINDOW.lock().unwrap() = Some(ui.as_weak());
 }
 
 /// Shows `title` by `artists` as playing or paused, `seconds` into
@@ -75,7 +76,8 @@ pub fn hide() {
 }
 
 fn call(f: impl FnOnce(&mut Env, &JObject) -> jni::errors::Result<()>) {
-    let (Some(activity), Ok(vm)) = (ACTIVITY.get(), JavaVM::singleton()) else {
+    let activity = ACTIVITY.read().unwrap();
+    let (Some(activity), Ok(vm)) = (activity.as_ref(), JavaVM::singleton()) else {
         return;
     };
     // The notification is a convenience: playing goes on without it.
@@ -91,7 +93,7 @@ fn command<'local>(
     button: jint,
     seconds: jdouble,
 ) -> jni::errors::Result<()> {
-    let Some(window) = WINDOW.get() else {
+    let Some(window) = WINDOW.lock().unwrap().clone() else {
         return Ok(());
     };
     let _ = window.upgrade_in_event_loop(move |ui| match button {

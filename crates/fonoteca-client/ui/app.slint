@@ -1255,6 +1255,10 @@ export component AppWindow inherits Window {
     // Said when a signed-in library opens, for what keeps its state on the
     // server, such as the play queue.
     callback library-started();
+    // Said once the window's event loop has ended. On Android that is as the
+    // activity goes, while the process may live on and start the app again
+    // in it with a new one.
+    callback event-loop-ended();
     callback toggle-pause();
     callback previous-track();
     callback next-track();

@@ -101,7 +101,8 @@ fn bits_of(sample: SampleFormat) -> Option<i32> {
 /// reported and counts as the system saying nothing: playing goes on through
 /// its mixer.
 fn call<T>(what: &str, f: impl FnOnce(&mut Env, &JObject) -> jni::errors::Result<T>) -> Option<T> {
-    let (Some(activity), Ok(vm)) = (ACTIVITY.get(), JavaVM::singleton()) else {
+    let activity = ACTIVITY.read().unwrap();
+    let (Some(activity), Ok(vm)) = (activity.as_ref(), JavaVM::singleton()) else {
         return None;
     };
     match vm.attach_current_thread(|env| f(env, activity)) {

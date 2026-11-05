@@ -111,6 +111,11 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move || restore(&weak.unwrap(), &browser, &playing)
     });
+    // A player left behind would play on beside the next start's.
+    ui.on_event_loop_ended({
+        let playing = playing.clone();
+        move || playing.borrow_mut().player = None
+    });
     ui.on_play_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |row| {

@@ -392,7 +392,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_family = "wasm"))]
     let _runtime = runtime.enter();
 
-    start()?.run()?;
+    let ui = start()?;
+    ui.run()?;
+    #[cfg(not(target_family = "wasm"))]
+    ui.invoke_event_loop_ended();
     Ok(())
 }
 
@@ -6368,6 +6371,10 @@ mod tests {
             .await;
             // It is shown the player on each tick while there is one.
             assert!(play::testing::scrobbler_calls().0 > 0);
+            // The event loop's end, as on Android when the activity goes and
+            // the process stays, lets the player go.
+            ui.invoke_event_loop_ended();
+            assert!(play::testing::player_status().is_none());
             play::testing::clear(&ui);
 
             // A song with a waveform shows it as the seek bar, and one without

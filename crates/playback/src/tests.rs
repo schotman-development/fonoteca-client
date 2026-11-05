@@ -1018,6 +1018,17 @@ fn a_queue_without_the_track_heard_plays_the_first_after_it_that_stayed() {
 }
 
 #[test]
+fn skips_faster_than_tracks_open_leave_only_the_last_ones_audio() {
+    let (mut decoder, shared, _) = decoder_of(&["a", "b", "c", "d", "e"]);
+    decoder.open(0, 0.0, None);
+    assert_eq!(decode_until(&mut decoder, &shared, 1), ["a"]);
+    for _ in 0..3 {
+        decoder.handle(Command::Next);
+    }
+    assert_eq!(decode_until(&mut decoder, &shared, 2), ["d", "e"]);
+}
+
+#[test]
 fn repeat_plays_a_track_again_or_the_queue_round() {
     let (mut decoder, shared, fetched) = decoder_of(&["a", "b"]);
     decoder.repeat = Repeat::One;
