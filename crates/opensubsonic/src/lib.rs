@@ -138,6 +138,11 @@ impl Client {
         })
     }
 
+    /// The server's address, which with a user name tells accounts apart.
+    pub fn address(&self) -> &str {
+        self.rest.as_str()
+    }
+
     /// Whether the server listed `extension` the last time
     /// [`Client::get_open_subsonic_extensions`] was called.
     pub fn supports(&self, extension: &str) -> bool {

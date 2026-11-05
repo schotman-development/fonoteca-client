@@ -13,6 +13,7 @@ mod eq_graph;
 #[cfg(not(target_family = "wasm"))]
 mod headphones;
 mod logo_ink;
+mod loves;
 #[cfg(target_os = "android")]
 mod media;
 #[cfg(target_os = "android")]
@@ -1053,6 +1054,12 @@ mod tests {
                     );
                 }
             }
+        } else if target == "/1/feedback/recording-feedback" {
+            r#"{"status":"ok"}"#.to_owned()
+        } else if target.starts_with("/1/feedback/user/joe/get-feedback") {
+            format!(
+                r#"{{"count":1,"offset":0,"total_count":1,"feedback":[{{"user_id":"joe","recording_msid":null,"score":1,"recording_mbid":"{FAMILIAR_RECORDING}","track_metadata":{{"artist_name":"Nils Frahm","track_name":"Familiar"}}}}]}}"#
+            )
         } else {
             return reply(
                 "404 Not Found",
@@ -1062,6 +1069,9 @@ mod tests {
         };
         json(&body)
     }
+
+    /// The recording ListenBrainz's stand-in has joe love.
+    const FAMILIAR_RECORDING: &str = "31dad9e2-25fc-48aa-8c01-72c3729f53a1";
 
     /// The radio directory: two stations with the most votes, 65 of jazz
     /// with the server's Jazz first, one of rock, none of other genres, one
@@ -1431,6 +1441,8 @@ mod tests {
                 r#""searchResult3":{{"song":[{}]}}"#,
                 songs.join(",")
             ))
+        } else if request.contains("/rest/getStarred2") {
+            ok(r#""starred2":{"song":[]}"#)
         } else if request.contains("/rest/getPlaylists") {
             let road_trip = if MOVED.load(Relaxed) {
                 road_trip_now().replace(
@@ -5593,6 +5605,31 @@ mod tests {
             ui.invoke_show_more();
             wait_for("the shelf again", || ui.get_created_for_you().row_count() == 3).await;
             assert_eq!(ui.get_page_problem(), "");
+
+            // A heart set in the app syncs with ListenBrainz: it sends the
+            // hearts it can and stars the song of a love the server lacks,
+            // whose heart then shows on the page, with the rows still there.
+            ui.invoke_open("createdfor:daily".into());
+            wait_for("the playlist to heart", || {
+                ui.get_tracks().row_count() == 4 && !ui.get_created_for_matching()
+            })
+            .await;
+            assert!(!ui.get_tracks().row_data(0).unwrap().loved);
+            ui.invoke_toggle_love(1);
+            wait_for("the loved song starred", || {
+                STARRED.lock().unwrap().iter().any(|id| id == "lb1")
+            })
+            .await;
+            wait_for("its heart shown", || ui.get_tracks().row_data(0).unwrap().loved).await;
+            assert_eq!(ui.get_tracks().row_count(), 4);
+            assert!(
+                LISTENBRAINZ_ASKED
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|asked| asked.starts_with("GET /1/feedback/user/joe/get-feedback"))
+            );
+
             store::forget_listenbrainz().await.unwrap();
             ui.invoke_open("settings".into());
 

@@ -45,6 +45,7 @@ pub(crate) mod created_for;
 mod stats;
 #[cfg(test)]
 pub use stats::TEST_ROOTS as LISTENBRAINZ_ROOTS;
+pub(crate) mod matching;
 
 /// The newest albums on the home page.
 const RECENT: usize = 24;
@@ -173,6 +174,9 @@ pub struct Browser {
     /// The song of each track row.
     songs: Vec<Child>,
     created_for: created_for::State,
+    /// The library's songs found for ListenBrainz's tracks this session.
+    found: matching::Found,
+    loves: crate::loves::State,
     /// The album or playlist on screen, when one is, for downloading it.
     album: Option<AlbumID3>,
     playlist: Option<Playlist>,
@@ -364,6 +368,7 @@ fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
     load_playlists(ui, browser);
     load_tags(ui, browser);
     load_me(ui, browser);
+    crate::loves::sync(ui, browser);
     open(ui, browser, "home".into());
     ui.invoke_library_started();
     #[cfg(not(target_family = "wasm"))]
@@ -385,6 +390,7 @@ pub fn reconnect(ui: &AppWindow, browser: &Shared, client: Client) {
     load_playlists(ui, browser);
     load_tags(ui, browser);
     load_me(ui, browser);
+    crate::loves::sync(ui, browser);
     ui.invoke_library_started();
     #[cfg(not(target_family = "wasm"))]
     crate::downloads::resume(ui, browser);
@@ -7271,15 +7277,60 @@ fn love(
         } else {
             client.unstar(&[&id], &[], &[]).await
         };
-        if let (Err(e), Some(ui)) = (starred, weak.upgrade()) {
-            undo(&ui, &browser);
-            ui.invoke_song_loved(id.as_str().into(), !loved);
-            if browser.borrow().visit == visit {
-                ui.set_page_problem(format!("Your server didn't take that: {e}").into());
+        let Some(ui) = weak.upgrade() else { return };
+        match starred {
+            Ok(()) => crate::loves::sync(&ui, &browser),
+            Err(e) => {
+                undo(&ui, &browser);
+                ui.invoke_song_loved(id.as_str().into(), !loved);
+                if browser.borrow().visit == visit {
+                    ui.set_page_problem(format!("Your server didn't take that: {e}").into());
+                }
             }
         }
     })
     .expect("the event loop is running");
+}
+
+/// Shows the songs a sync with ListenBrainz starred and unstarred as
+/// loved and not, on the page on screen and the sheet of the song playing,
+/// without drawing either anew. Nothing is shown for a server the app has
+/// since left.
+pub(crate) fn show_synced_hearts(
+    ui: &AppWindow,
+    browser: &Shared,
+    client: &Arc<Client>,
+    starred: &[String],
+    unstarred: &[String],
+) {
+    let is_current = (browser.borrow().client.as_ref()).is_some_and(|now| Arc::ptr_eq(now, client));
+    if !is_current {
+        return;
+    }
+    let changes = starred
+        .iter()
+        .map(|id| (id, true))
+        .chain(unstarred.iter().map(|id| (id, false)));
+    for (id, loved) in changes {
+        let mut b = browser.borrow_mut();
+        mark_loved(&mut b, ui.get_page(), id, loved);
+        for row in (0..b.songs.len()).filter(|&row| b.songs[row].id == *id) {
+            if let Some(mut track) = b.tracks.row_data(row) {
+                track.loved = loved;
+                b.tracks.set_row_data(row, track);
+            }
+        }
+        drop(b);
+        ui.invoke_song_loved(id.as_str().into(), loved);
+    }
+}
+
+pub(crate) fn loves_state(browser: &Shared) -> std::cell::RefMut<'_, crate::loves::State> {
+    std::cell::RefMut::map(browser.borrow_mut(), |b| &mut b.loves)
+}
+
+pub(crate) fn found(browser: &Shared) -> matching::Found {
+    browser.borrow().found.clone()
 }
 
 /// Loves or unloves a song that plays, which no table of the page holds a

@@ -132,6 +132,29 @@ pub fn save_waiting_listens(listens: &[listenbrainz::Listen]) {
     }
 }
 
+const KEPT_LOVES: &str = "synced-loves";
+
+/// What ListenBrainz and the server agreed on at the last sync of hearts,
+/// for this ListenBrainz user and server account.
+pub fn kept_loves(account: &str) -> crate::loves::Kept {
+    let mut all = all_kept_loves();
+    all.remove(account).unwrap_or_default()
+}
+
+pub fn save_kept_loves(account: &str, kept: &crate::loves::Kept) {
+    let mut all = all_kept_loves();
+    all.insert(account.to_owned(), kept.clone());
+    if let Ok(json) = serde_json::to_string(&all) {
+        write(KEPT_LOVES, &json);
+    }
+}
+
+fn all_kept_loves() -> HashMap<String, crate::loves::Kept> {
+    read(KEPT_LOVES)
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
+
 /// What the radio directory had for a saved station the server has no
 /// picture of: the picture's address and bytes, or nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,13 +222,13 @@ pub fn save_station_logos(logos: &HashMap<String, Logo>) {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     since.map_or(0, |since| since.as_secs())
 }
 
 #[cfg(target_family = "wasm")]
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     (js_sys::Date::now() / 1000.0) as u64
 }
 

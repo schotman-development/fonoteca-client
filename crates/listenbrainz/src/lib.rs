@@ -29,6 +29,9 @@ pub const MAX_LISTENS_PER_REQUEST: usize = 1000;
 
 pub use stats::{COVER_ART_ROOT, GenreActivity, Range, TopAlbum, TopArtist, TopGenre};
 
+/// How many feedback items [`Client::loved_recordings`] asks for at once.
+const FEEDBACK_PAGE: u32 = 100;
+
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// What ListenBrainz keeps of a track played.
@@ -106,6 +109,17 @@ pub struct Feedback {
     pub score: Score,
     /// When the feedback was given, in seconds since 1970.
     pub created: Option<i64>,
+    /// What ListenBrainz knows of the recording, when it was asked to say.
+    #[serde(default)]
+    pub track_metadata: Option<FeedbackTrack>,
+}
+
+/// The name of a recording that has feedback.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FeedbackTrack {
+    pub artist_name: String,
+    pub track_name: String,
+    pub release_name: Option<String>,
 }
 
 /// One page of [`Client::user_feedback`].
@@ -216,8 +230,9 @@ impl Client {
         send::<IgnoredAny>(self.authorized(request)).await.map(drop)
     }
 
-    /// A page of `user`'s feedback. `score` picks loves or hates; `None` or
-    /// [`Score::Clear`] returns both. `count` defaults to 25, at most 1000.
+    /// A page of `user`'s feedback, with the recordings' names. `score` picks
+    /// loves or hates; `None` or [`Score::Clear`] returns both. `count`
+    /// defaults to 25, at most 1000.
     pub async fn user_feedback(
         &self,
         user: &str,
@@ -234,6 +249,7 @@ impl Client {
             ),
             ("count", count.map(|c| c.to_string())),
             ("offset", offset.map(|o| o.to_string())),
+            ("metadata", Some("true".to_owned())),
         ]
         .into_iter()
         .filter_map(|(name, value)| Some((name, value?)))
@@ -243,6 +259,23 @@ impl Client {
             .get(self.url(&["feedback", "user", user, "get-feedback"]))
             .query(&query);
         send(self.authorized(request)).await
+    }
+
+    /// Every recording `user` loves, page after page.
+    pub async fn loved_recordings(&self, user: &str) -> Result<Vec<Feedback>> {
+        let mut loves = Vec::new();
+        loop {
+            let offset = u32::try_from(loves.len()).expect("fewer loves than u32 counts");
+            let page = self
+                .user_feedback(user, Some(Score::Love), Some(FEEDBACK_PAGE), Some(offset))
+                .await?;
+            let is_last = page.feedback.is_empty()
+                || loves.len() + page.feedback.len() >= page.total_count as usize;
+            loves.extend(page.feedback);
+            if is_last {
+                return Ok(loves);
+            }
+        }
     }
 
     /// `user`'s feedback on each of these recordings. Recordings without
