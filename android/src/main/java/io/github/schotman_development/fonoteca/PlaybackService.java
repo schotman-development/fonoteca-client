@@ -5,10 +5,13 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.graphics.drawable.Icon;
+import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -22,7 +25,8 @@ import android.os.Looper;
  * background app that has no foreground service, and shows what plays in a
  * notification and on the lock screen. Its media session takes their
  * buttons, a headset's and a watch's, and hands them to Rust
- * (src/media.rs) through MainActivity.command.
+ * (src/media.rs) through MainActivity.command. It pauses too when Android
+ * is about to move the sound to the speaker.
  */
 public class PlaybackService extends Service {
     // The buttons, as src/media.rs numbers them.
@@ -42,6 +46,17 @@ public class PlaybackService extends Service {
     private static PlaybackService running;
 
     private MediaSession session;
+
+    /**
+     * Android's word, before it moves the sound, that headphones or a
+     * Bluetooth or USB output went: it pauses as the pause button does.
+     */
+    private final BroadcastReceiver becomingNoisy = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            MainActivity.command(PAUSE, 0);
+        }
+    };
 
     /** A track as the notification shows it, its times in milliseconds. */
     static final class Playing {
@@ -120,6 +135,7 @@ public class PlaybackService extends Service {
             }
         });
         session.setActive(true);
+        registerReceiver(becomingNoisy, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
     }
 
     @Override
@@ -147,6 +163,7 @@ public class PlaybackService extends Service {
     @Override
     public void onDestroy() {
         running = null;
+        unregisterReceiver(becomingNoisy);
         session.release();
         super.onDestroy();
     }

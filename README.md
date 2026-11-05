@@ -130,6 +130,12 @@ starts it on Linux.
 On Linux, saving the sign-in needs a Secret Service, such as GNOME Keyring,
 KWallet or KeePassXC. Without one, you sign in again on every start.
 
+On Linux the app needs the PipeWire (0.3.53 or later), ALSA, FFmpeg and
+fontconfig libraries to start (`libpipewire-0.3-0` and `libasound2` among
+them, on Debian and Ubuntu), though not PipeWire itself running. Where it runs, the app lists
+every output PipeWire has, Bluetooth included, beside ALSA's direct ones to
+the hardware; elsewhere, ALSA's outputs.
+
 ## Servers
 
 Any server that speaks the [OpenSubsonic API](https://opensubsonic.netlify.app)
@@ -147,8 +153,9 @@ covers.
 Install Rust with [rustup](https://rustup.rs); `rust-toolchain.toml` picks the
 toolchain. On Linux, Slint also needs `pkg-config` and fontconfig's development
 files (`libfontconfig-dev` on Debian and Ubuntu), and playback needs FFmpeg (built
-and tested with 7.1), ALSA and clang (`libavcodec-dev libavformat-dev libavfilter-dev
-libavutil-dev libswresample-dev libasound2-dev libclang-dev`).
+and tested with 7.1), PipeWire, ALSA and clang (`libavcodec-dev libavformat-dev
+libavfilter-dev libavutil-dev libswresample-dev libpipewire-0.3-dev libasound2-dev
+libclang-dev`).
 
 ```sh
 cargo run

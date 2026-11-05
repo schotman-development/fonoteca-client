@@ -62,6 +62,7 @@
               ffmpeg
               pkgs.alsa-lib
               pkgs.fontconfig
+              pkgs.pipewire
             ];
             # The tests need a music server and a sound card; they run in
             # development.

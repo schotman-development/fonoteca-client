@@ -893,6 +893,100 @@ fn the_output_is_given_back_when_the_player_quits() {
     assert!(system.released.load(Relaxed) >= 1);
 }
 
+/// Waits for the output thread of `player` to have found its device, or
+/// none.
+fn device_settled(player: &Player) {
+    let started = std::time::Instant::now();
+    while {
+        let ring = player.shared.ring.lock().unwrap();
+        ring.device.is_none() && ring.problem.is_none()
+    } {
+        assert!(started.elapsed().as_secs() < 10, "the output thread starts");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn whatever_plays_after_the_device_went_finds_it_again() {
+    let starts: [fn(&Player); 3] = [
+        |player| player.play(vec![track(Gain::default())], 0, 0.0),
+        |player| player.jump(0),
+        |player| player.set_paused(false),
+    ];
+    for start in starts {
+        let player = Player::new(None, Box::new(|_, _| Err("Not here.".into())));
+        device_settled(&player);
+        let generation = {
+            let mut ring = player.shared.ring.lock().unwrap();
+            ring.paused = true;
+            ring.device_lost = true;
+            ring.generation
+        };
+        start(&player);
+        {
+            let ring = player.shared.ring.lock().unwrap();
+            assert_eq!(ring.generation, generation + 1);
+            assert!(!ring.paused);
+        }
+        player.set_paused(true);
+        assert!(player.shared.ring.lock().unwrap().paused);
+    }
+}
+
+#[test]
+fn playing_on_after_the_device_went_opens_the_track_again_where_it_was() {
+    let silence = vec![0; 2 * 44_100 * 4];
+    let player = Player::new(None, Box::new(move |_, _| Ok(wav(44_100, 2, 16, &silence))));
+    player.requeue(vec![track(Gain::default())], Vec::new());
+    let started = std::time::Instant::now();
+    let wait_for = |done: &dyn Fn(&output::Ring) -> bool, what: &str| {
+        while !done(&player.shared.ring.lock().unwrap()) {
+            assert!(started.elapsed().as_secs() < 10, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    wait_for(
+        &|ring| ring.requeues == 1 && (ring.device.is_some() || ring.problem.is_some()),
+        "the player starts",
+    );
+    let before = vec![Step {
+        text: "before the device went".into(),
+        quality: Quality::Lossless,
+    }];
+    {
+        let mut ring = player.shared.ring.lock().unwrap();
+        ring.segments.push_back(Segment {
+            track: 0,
+            format: Format {
+                rate: 44_100,
+                channels: 2,
+                sample: I16,
+            },
+            data: VecDeque::new(),
+            ended: false,
+            start: 2 * 44_100,
+            played: 0,
+            path: before.clone(),
+        });
+        ring.paused = true;
+        ring.device_lost = true;
+    }
+    player.set_paused(false);
+    // Opened again for the device found now, or stopped there without one.
+    wait_for(
+        &|ring| {
+            ring.segments.iter().all(|segment| segment.path != before)
+                && ring.stopped.or(ring.heard()).is_some()
+        },
+        "the track opens again",
+    );
+    let ring = player.shared.ring.lock().unwrap();
+    let (track, seconds) = ring.stopped.or(ring.heard()).unwrap();
+    assert_eq!(track, 0);
+    assert!(seconds >= 2.0, "from {seconds} s");
+    assert!(!ring.paused);
+}
+
 #[test]
 fn the_signal_path_says_who_carries_the_audio() {
     let dac = output::Device {
@@ -1586,7 +1680,8 @@ fn plays_bit_perfect_and_gapless_through_alsa_loopback() {
 
     let _card = LOOPBACK.lock().unwrap_or_else(|e| e.into_inner());
 
-    let host = cpal::default_host();
+    // Not PipeWire's, which is the default where it runs.
+    let host = cpal::host_from_id(cpal::HostId::Alsa).unwrap();
     let card = |pcm: &str| {
         let id: cpal::DeviceId = format!("alsa:{pcm}").parse().unwrap();
         host.device_by_id(&id)
@@ -1725,4 +1820,161 @@ fn opens_the_device_in_each_tracks_own_rate() {
         })
         .collect();
     assert_eq!(opened, [(0, true), (1, true)], "{seen:?}");
+}
+
+/// Played on after the device went, the device found again is no longer
+/// lost. Needs what the tests above need.
+#[test]
+#[ignore]
+fn a_device_found_again_is_no_longer_lost() {
+    let _card = LOOPBACK.lock().unwrap_or_else(|e| e.into_inner());
+    let player = Player::new(
+        Some("alsa:hw:CARD=Loopback,DEV=0".into()),
+        Box::new(|_, _| Err("Not here.".into())),
+    );
+    device_settled(&player);
+    {
+        let mut ring = player.shared.ring.lock().unwrap();
+        ring.paused = true;
+        ring.device_lost = true;
+    }
+    player.set_paused(false);
+    device_settled(&player);
+    // Asserted with the lock let go, so that a failure can't poison it for
+    // the player's drop.
+    let (found, lost, problem) = {
+        let ring = player.shared.ring.lock().unwrap();
+        (
+            ring.device.is_some(),
+            ring.device_lost,
+            ring.problem.clone(),
+        )
+    };
+    assert!(found, "{problem:?}");
+    assert!(!lost);
+}
+
+/// A device chosen after the one playing went is found at once, and what
+/// played stays paused until play is pressed. Needs what the tests above
+/// need.
+#[test]
+#[ignore]
+fn a_device_chosen_after_a_loss_is_found_and_stays_paused() {
+    let _card = LOOPBACK.lock().unwrap_or_else(|e| e.into_inner());
+    let player = Player::new(
+        Some("alsa:hw:CARD=Loopback,DEV=0".into()),
+        Box::new(|_, _| Err("Not here.".into())),
+    );
+    device_settled(&player);
+    {
+        let mut ring = player.shared.ring.lock().unwrap();
+        ring.paused = true;
+        ring.device_lost = true;
+        ring.problem = Some("Loopback is unavailable.".into());
+    }
+    player.set_device(Some("alsa:hw:CARD=Loopback,DEV=1".into()));
+    device_settled(&player);
+    // As above, asserted with the lock let go.
+    let (found, lost, paused, problem) = {
+        let ring = player.shared.ring.lock().unwrap();
+        (
+            ring.device.is_some(),
+            ring.device_lost,
+            ring.paused,
+            ring.problem.clone(),
+        )
+    };
+    assert!(found, "{problem:?}");
+    assert!(!lost, "{problem:?}");
+    assert!(paused);
+}
+
+/// A device asked for by name is played on while it is listed, and one not
+/// listed gives way to the system's, which is asked for from then on. Needs
+/// what the tests above need, and a system output: where the loopback is the
+/// only card, ALSA's default pointed at it, as
+/// `pcm.!default { type plug slave.pcm "hw:Loopback,0" }` in
+/// /etc/asound.conf does.
+#[test]
+#[ignore]
+fn a_device_listed_is_played_on_and_one_gone_gives_way_to_the_systems() {
+    let _card = LOOPBACK.lock().unwrap_or_else(|e| e.into_inner());
+    let asked_for_once_found = |wanted: &str| {
+        let player = Player::new(
+            Some(wanted.into()),
+            Box::new(|_, _| Err("Not here.".into())),
+        );
+        device_settled(&player);
+        let status = player.status();
+        assert_eq!(status.problem, None, "{wanted}");
+        status.output
+    };
+    let loopback = "alsa:hw:CARD=Loopback,DEV=0";
+    let system = system_output(&devices());
+    assert!(
+        system.is_some() && system.as_deref() != Some(loopback),
+        "the system's is another: {system:?}"
+    );
+    assert_eq!(asked_for_once_found(loopback).as_deref(), Some(loopback));
+    assert_eq!(asked_for_once_found("alsa:hw:CARD=Gone,DEV=0"), system);
+}
+
+/// With none asked for, it plays on the system's output: ALSA's default,
+/// even where ALSA doesn't list it by name, as with
+/// `defaults.namehint.showall off`. Needs what the test above needs, with
+/// that line in /etc/asound.conf too.
+#[test]
+#[ignore]
+fn the_systems_output_plays_where_alsa_does_not_list_its_default() {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use std::sync::Mutex;
+
+    let _card = LOOPBACK.lock().unwrap_or_else(|e| e.into_inner());
+    let host = cpal::host_from_id(cpal::HostId::Alsa).unwrap();
+    let by_name = |pcm: &str| host.device_by_id(&format!("alsa:{pcm}").parse().unwrap());
+    assert!(
+        by_name("default").is_none(),
+        "ALSA lists its default by name"
+    );
+
+    let recorded = Arc::new(Mutex::new(Vec::<i32>::new()));
+    let capture = by_name("hw:CARD=Loopback,DEV=1")
+        .expect("no loopback: is snd-aloop loaded?")
+        .build_input_stream::<i32, _, _>(
+            cpal::StreamConfig {
+                channels: 2,
+                sample_rate: 48_000,
+                buffer_size: cpal::BufferSize::Default,
+            },
+            {
+                let recorded = recorded.clone();
+                move |data, _| recorded.lock().unwrap().extend_from_slice(data)
+            },
+            |e| panic!("capture failed: {e}"),
+            None,
+        )
+        .expect("capture opens at 48 kHz 32-bit");
+    capture.play().unwrap();
+
+    let fetch: Fetch = Box::new(|_: &Track, _: f64| Ok(wav(48_000, 2, 16, &ramp(12_000, 2, 16))));
+    let player = Player::new(None, fetch);
+    player.play(vec![track(Gain::default())], 0, 0.0);
+    let started = std::time::Instant::now();
+    while !player.status().ended {
+        let status = player.status();
+        assert_eq!(status.problem, None);
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "still playing: {status:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    drop(capture);
+
+    assert_eq!(player.status().output.as_deref(), Some("alsa:default"));
+    assert!(
+        recorded.lock().unwrap().iter().any(|&sample| sample != 0),
+        "nothing reached the loopback"
+    );
 }

@@ -10,3 +10,11 @@ publish = false
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 cpal = "0.18"
 ffmpeg-next = { version = "9", default-features = false, features = ["codec", "filter", "format"] }
+
+# PipeWire names every output, Bluetooth too, and keeps a stream on the one it
+# was opened on, and says which it plays on by default; a card's controls tell
+# of headphones plugged in or pulled out.
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.11"
+cpal = { version = "0.18", features = ["pipewire"] }
+pipewire = "0.10"

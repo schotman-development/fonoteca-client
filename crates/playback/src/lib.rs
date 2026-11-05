@@ -22,8 +22,12 @@ mod dsp;
 mod output;
 #[cfg(not(target_family = "wasm"))]
 mod outputs;
+#[cfg(target_os = "linux")]
+mod pipewire_default;
 #[cfg(any(target_family = "wasm", test))]
 mod silent;
+#[cfg(not(target_family = "wasm"))]
+mod switches;
 
 #[cfg(not(target_family = "wasm"))]
 use std::collections::VecDeque;
@@ -45,7 +49,7 @@ pub use download::{Download, Fill, live as live_download, new as download, open 
 #[cfg(not(target_family = "wasm"))]
 pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
 #[cfg(not(target_family = "wasm"))]
-pub use output::{SystemMixer, devices};
+pub use output::{SystemMixer, devices, system_output};
 #[cfg(not(target_family = "wasm"))]
 pub use outputs::OutputDevice;
 
@@ -197,6 +201,9 @@ pub struct Status {
     /// How many of the queue's changes the player has made. Until it has
     /// made all that were asked, `index` counts in the queue as it was.
     pub requeues: u64,
+    /// The device asked for, by cpal id: outside Android, once found, the
+    /// one found in place of one that wasn't there.
+    pub output: Option<String>,
 }
 
 /// Fetches a track from the given seconds into it: starts its download and
@@ -308,7 +315,7 @@ impl Player {
         {
             // Playing from now on, before the decoder gets to it.
             let mut ring = self.shared.ring.lock().unwrap();
-            ring.paused = false;
+            ring.unpause();
             ring.idle = false;
             ring.segments.clear();
             ring.loading = Some((start, seconds));
@@ -326,7 +333,7 @@ impl Player {
 
     /// Plays the queue's `index`th track from its start.
     pub fn jump(&self, index: usize) {
-        self.shared.ring.lock().unwrap().paused = false;
+        self.shared.ring.lock().unwrap().unpause();
         self.shared.changed.notify_all();
         self.send(Command::Jump(index));
     }
@@ -347,9 +354,22 @@ impl Player {
         self.send(Command::Stop);
     }
 
+    /// Pauses or plays on. After the device went away, playing on is on the
+    /// device found then.
     pub fn set_paused(&self, paused: bool) {
-        self.shared.ring.lock().unwrap().paused = paused;
+        let device_found_again = {
+            let mut ring = self.shared.ring.lock().unwrap();
+            if paused {
+                ring.paused = true;
+                false
+            } else {
+                ring.unpause()
+            }
+        };
         self.shared.changed.notify_all();
+        if device_found_again {
+            self.send(Command::Reopen);
+        }
     }
 
     pub fn set_leveling(&self, leveling: Leveling) {
@@ -365,15 +385,13 @@ impl Player {
         self.send(Command::Dsp(dsp));
     }
 
-    /// Plays on the device with this cpal id, or the system's default.
+    /// Plays on the device with this cpal id, or the system's default; outside
+    /// Android, on the system's default too while that device isn't there.
     pub fn set_device(&self, device: Option<String>) {
         {
             let mut ring = self.shared.ring.lock().unwrap();
             ring.wanted = device;
-            ring.generation += 1;
-            // The decoder waits for the new one's formats, not the old one's.
-            ring.device = None;
-            ring.problem = None;
+            ring.find_device_again();
         }
         self.shared.changed.notify_all();
         self.send(Command::Reopen);
@@ -402,6 +420,7 @@ impl Player {
             skipped: ring.shown_skip().cloned(),
             stopped: ring.stopped,
             requeues: ring.requeues,
+            output: ring.wanted.clone(),
         }
     }
 }

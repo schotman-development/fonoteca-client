@@ -4373,20 +4373,38 @@ mod tests {
                 // The sound device is chosen from the sheet, wide, narrow and
                 // on a phone: the one in use is marked, the choice is kept as
                 // the settings once kept it, and opening the menu lists the
-                // devices again.
+                // devices again. There is no system default to choose: with
+                // none chosen, the system's own device is, by name.
+                let speakers = "alsa:hw:CARD=PCH,DEV=0";
                 let dac = "alsa:hw:CARD=DAC,DEV=0";
                 let merged_away = "alsa:plughw:CARD=DAC,DEV=0";
-                let fake_devices = || {
+                let fake_devices_beside = |system: Option<&str>| {
                     play::testing::show_devices(
                         &ui,
-                        vec![playback::OutputDevice {
-                            id: dac.into(),
-                            name: "USB DAC".into(),
-                            detail: "hw:CARD=DAC,DEV=0".into(),
-                            title: "USB DAC (hw:CARD=DAC,DEV=0)".into(),
-                            same_as: vec![merged_away.into()],
-                        }],
+                        vec![
+                            playback::OutputDevice {
+                                id: speakers.into(),
+                                name: "Speakers".into(),
+                                detail: "hw:CARD=PCH,DEV=0".into(),
+                                title: "Speakers (hw:CARD=PCH,DEV=0)".into(),
+                                same_as: Vec::new(),
+                            },
+                            playback::OutputDevice {
+                                id: dac.into(),
+                                name: "USB DAC".into(),
+                                detail: "hw:CARD=DAC,DEV=0".into(),
+                                title: "USB DAC (hw:CARD=DAC,DEV=0)".into(),
+                                same_as: vec![merged_away.into()],
+                            },
+                        ],
+                        system.map(str::to_owned),
                     );
+                };
+                let fake_devices = || fake_devices_beside(Some(speakers));
+                let choose_saved = |device: Option<&str>| {
+                    let mut saved = crate::prefs::load();
+                    saved.output_device = device.map(str::to_owned);
+                    crate::prefs::save(&saved);
                 };
                 let icons = ui.global::<Icons>();
                 let marked = || -> Vec<bool> {
@@ -4401,9 +4419,12 @@ mod tests {
                 for (width, height) in [(1100.0, 760.0), (700.0, 760.0), (400.0, 760.0)] {
                     ui.window().set_size(slint::LogicalSize::new(width, height));
                     idle(Duration::from_millis(400)).await;
+                    choose_saved(None);
                     fake_devices();
-                    assert_eq!(marked(), [true, false]);
-                    assert_eq!(ui.get_output_name(), "System default", "{width}px");
+                    assert_eq!(listed(), ["Speakers", "USB DAC"], "{width}px");
+                    assert_eq!(marked(), [true, false], "{width}px");
+                    assert_eq!(ui.get_output_name(), "Speakers (hw:CARD=PCH,DEV=0)", "{width}px");
+                    assert_eq!(crate::prefs::load().output_device.as_deref(), Some(speakers), "{width}px");
                     if width == 1100.0 {
                         let picker = button(&ui, "Sound device");
                         let (position, size) = (picker.absolute_position(), picker.size());
@@ -4437,21 +4458,29 @@ mod tests {
                     fake_devices();
                     assert_eq!(marked(), [false, true], "{width}px");
                     click(&ui, "Sound device");
-                    click(&ui, "System default");
-                    assert_eq!(crate::prefs::load().output_device, None, "{width}px");
-                    assert_eq!(marked().first(), Some(&true), "{width}px");
+                    click(&ui, "Speakers, hw:CARD=PCH,DEV=0");
+                    assert_eq!(crate::prefs::load().output_device.as_deref(), Some(speakers), "{width}px");
+                    assert_eq!(marked(), [true, false], "{width}px");
                     wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
                 }
                 // A choice saved as a route that was folded into another is
                 // that other.
-                let mut saved = crate::prefs::load();
-                saved.output_device = Some(merged_away.into());
-                crate::prefs::save(&saved);
+                choose_saved(Some(merged_away));
                 fake_devices();
                 assert_eq!(marked(), [false, true]);
                 assert_eq!(ui.get_output_name(), "USB DAC (hw:CARD=DAC,DEV=0)");
-                saved.output_device = None;
-                crate::prefs::save(&saved);
+                assert_eq!(crate::prefs::load().output_device.as_deref(), Some(merged_away));
+                // One saved that isn't there now gives way to the system's.
+                choose_saved(Some("alsa:hw:CARD=Gone,DEV=0"));
+                fake_devices();
+                assert_eq!(marked(), [true, false]);
+                assert_eq!(crate::prefs::load().output_device.as_deref(), Some(speakers));
+                // A system's not listed is no choice, nor is another in its place.
+                choose_saved(None);
+                fake_devices_beside(Some("alsa:default"));
+                assert_eq!(marked(), [false, false]);
+                assert_eq!(ui.get_output_name(), "");
+                assert_eq!(crate::prefs::load().output_device, None);
                 ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
                 idle(Duration::from_millis(400)).await;
                 click(&ui, "Aurora");

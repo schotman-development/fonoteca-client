@@ -2,8 +2,10 @@
 //! call them. Android lists every route its audio system has, so one speaker
 //! shows up several times under names made for programs; ALSA's routes to one
 //! card differ in what they do to the sound, so those stay as they are.
+//! PipeWire names each output it mixes for, so beside it only ALSA's routes
+//! straight to the hardware, which go around it, are worth listing.
 
-use cpal::{DeviceDescription, DeviceType, InterfaceType};
+use cpal::{DeviceDescription, DeviceDirection, DeviceType, InterfaceType};
 
 /// An output to choose from: its `name` and a short `detail` to tell it from
 /// others of the name, and `title`, which says all of that in one line.
@@ -41,11 +43,63 @@ struct Output {
 
 const ANDROID_HOST_PREFIX: &str = "aaudio:";
 const ALSA_HOST_PREFIX: &str = "alsa:";
+const PIPEWIRE_HOST_PREFIX: &str = "pipewire:";
 
-/// The outputs to choose from, once each, in the host's order.
+/// PipeWire's stand-ins for whichever output is the default, which follow
+/// it to another output and don't say which one they are on.
+const PIPEWIRE_STAND_INS: [&str; 2] = ["pipewire:sink_default", "pipewire:output_default"];
+
+/// The outputs to choose from, once each, in the hosts' order.
 pub(crate) fn list(found: Vec<Found>) -> Vec<OutputDevice> {
-    let outputs = found.into_iter().map(Output::from).collect();
+    let outputs = worth_listing(found).into_iter().map(Output::from).collect();
     distinct(outputs).into_iter().map(describe).collect()
+}
+
+/// Whether the device id is a stand-in for the system's default rather
+/// than an output of its own.
+pub(crate) fn is_stand_in(id: &str) -> bool {
+    PIPEWIRE_STAND_INS.contains(&id)
+}
+
+/// The output among those `listed` that PipeWire's stand-in plays on:
+/// `default_sink`, the node PipeWire plays on by default, where it is
+/// listed, or else the first.
+pub(crate) fn behind_the_stand_in(
+    default_sink: Option<&str>,
+    listed: &[OutputDevice],
+) -> Option<String> {
+    let default = default_sink.map(|name| format!("{PIPEWIRE_HOST_PREFIX}{name}"));
+    listed
+        .iter()
+        .find(|output| Some(&output.id) == default.as_ref())
+        .or(listed.first())
+        .map(|output| output.id.clone())
+}
+
+/// Whether a device id is the hardware itself rather than a sound server or a
+/// plugin that converts.
+pub(crate) fn exclusive(id: &str) -> bool {
+    id.split_once(':')
+        .is_some_and(|(_, pcm)| pcm.starts_with("hw:"))
+}
+
+/// With PipeWire there, its outputs and ALSA's to the hardware; PipeWire
+/// lists programs' streams and its stand-ins too, which are no outputs, and
+/// cpal gives its outputs as able to record what they play as well.
+fn worth_listing(found: Vec<Found>) -> Vec<Found> {
+    let pipewire = found
+        .iter()
+        .any(|found| found.id.starts_with(PIPEWIRE_HOST_PREFIX));
+    found
+        .into_iter()
+        .filter(|found| {
+            if found.id.starts_with(PIPEWIRE_HOST_PREFIX) {
+                found.description.direction() == DeviceDirection::Duplex && !is_stand_in(&found.id)
+            } else {
+                !pipewire || exclusive(&found.id)
+            }
+        })
+        .collect()
 }
 
 impl From<Found> for Output {
@@ -131,6 +185,8 @@ fn describe(output: Output) -> OutputDevice {
     let (name, detail, title) = if output.id.starts_with(ANDROID_HOST_PREFIX) {
         let (name, detail) = android_words(&output);
         (name.clone(), detail, name)
+    } else if output.id.starts_with(PIPEWIRE_HOST_PREFIX) {
+        (output.name.clone(), String::new(), output.name)
     } else {
         // Routes to one card are told apart by their pcm id alone.
         let pcm = output
@@ -419,6 +475,99 @@ mod tests {
                 assert!(!text.contains("aaudio") && !text.contains('['), "{text}");
             }
         }
+    }
+
+    fn pipewire(id: &str, name: &str, direction: DeviceDirection) -> Found {
+        Found {
+            id: format!("pipewire:{id}"),
+            name: name.to_owned(),
+            description: DeviceDescriptionBuilder::new(name)
+                .direction(direction)
+                .build(),
+            safe_speaker: false,
+        }
+    }
+
+    fn alsa(pcm: &str) -> Found {
+        found(
+            &format!("alsa:{pcm}"),
+            "HDA Intel PCH, ALC3246 Analog",
+            DeviceType::Unknown,
+            InterfaceType::Unknown,
+            "",
+        )
+    }
+
+    /// What cpal lists on a laptop with Bluetooth headphones on, while a
+    /// browser plays.
+    fn laptop_with_pipewire() -> Vec<Found> {
+        vec![
+            pipewire("sink_default", "default_sink", DeviceDirection::Duplex),
+            pipewire("output_default", "default_output", DeviceDirection::Output),
+            pipewire(
+                "alsa_output.pci-0000_00_1f.3.analog-stereo",
+                "Built-in Audio Analog Stereo",
+                DeviceDirection::Duplex,
+            ),
+            pipewire(
+                "alsa_input.pci-0000_00_1f.3.analog-stereo",
+                "Built-in Audio Analog Stereo",
+                DeviceDirection::Input,
+            ),
+            pipewire(
+                "bluez_output.AA_BB_CC_DD_EE_FF.1",
+                "WH-1000XM4",
+                DeviceDirection::Duplex,
+            ),
+            pipewire("Firefox", "Firefox", DeviceDirection::Output),
+            alsa("hw:CARD=PCH,DEV=0"),
+            alsa("plughw:CARD=PCH,DEV=0"),
+            alsa("pipewire"),
+            alsa("default"),
+        ]
+    }
+
+    #[test]
+    fn beside_pipewires_outputs_only_alsas_to_the_hardware_are_listed() {
+        assert_eq!(
+            ids(laptop_with_pipewire()),
+            [
+                "pipewire:alsa_output.pci-0000_00_1f.3.analog-stereo",
+                "pipewire:bluez_output.AA_BB_CC_DD_EE_FF.1",
+                "alsa:hw:CARD=PCH,DEV=0",
+            ]
+        );
+    }
+
+    #[test]
+    fn behind_pipewires_stand_in_is_its_default_sink_not_the_first_listed() {
+        let listed = list(laptop_with_pipewire());
+        let first = Some("pipewire:alsa_output.pci-0000_00_1f.3.analog-stereo");
+        assert_eq!(
+            behind_the_stand_in(Some("bluez_output.AA_BB_CC_DD_EE_FF.1"), &listed).as_deref(),
+            Some("pipewire:bluez_output.AA_BB_CC_DD_EE_FF.1")
+        );
+        assert_eq!(behind_the_stand_in(None, &listed).as_deref(), first);
+        assert_eq!(behind_the_stand_in(Some("gone"), &listed).as_deref(), first);
+    }
+
+    #[test]
+    fn without_pipewire_alsa_lists_every_route() {
+        let routes = ["hw:CARD=PCH,DEV=0", "plughw:CARD=PCH,DEV=0", "default"];
+        assert_eq!(
+            ids(routes.map(alsa).into()),
+            routes.map(|pcm| format!("alsa:{pcm}"))
+        );
+    }
+
+    #[test]
+    fn a_pipewire_output_goes_by_the_name_pipewire_gives_it() {
+        let listed = list(laptop_with_pipewire());
+        assert_eq!(listed[1].name, "WH-1000XM4");
+        assert_eq!(listed[1].detail, "");
+        assert_eq!(listed[1].title, "WH-1000XM4");
+        assert!(is_stand_in("pipewire:output_default"));
+        assert!(!is_stand_in(&listed[1].id));
     }
 
     #[test]

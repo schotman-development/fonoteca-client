@@ -85,6 +85,9 @@ struct Playing {
     /// What names each of `devices` beside the button that opens their menu.
     #[cfg(not(target_family = "wasm"))]
     device_titles: Vec<SharedString>,
+    /// The device the player last said it plays on, by cpal id.
+    #[cfg(not(target_family = "wasm"))]
+    output: Option<String>,
     tick: Timer,
     #[cfg(not(target_family = "wasm"))]
     scrobbler: scrobble::Scrobbler,
@@ -291,9 +294,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             let p = playing.borrow();
             let device = p.devices.get(index as usize).cloned().flatten();
             mark_device(&weak.unwrap(), &p, index as usize);
-            let mut saved = prefs::load();
-            saved.output_device = device.clone();
-            prefs::save(&saved);
+            save_output(device.clone());
             if let Some(player) = &p.player {
                 player.set_device(device);
             }
@@ -491,41 +492,78 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     });
 }
 
+/// Android follows its own routes, and pauses when one goes as it says it
+/// is about to move the sound to the speaker. Elsewhere a device is always
+/// chosen by name, so that its loss is seen rather than the system moving
+/// the sound to another.
+#[cfg(not(target_family = "wasm"))]
+const SYSTEM_DEFAULT_LISTED: bool = cfg!(target_os = "android");
+
 /// Puts the sound devices there are now in the now playing sheet's menu, with
 /// the one chosen marked. Looking for them can take a moment, so it happens
 /// off the event loop.
 #[cfg(not(target_family = "wasm"))]
 fn list_devices(ui: &AppWindow, playing: &Shared) {
-    let found = tokio::task::spawn_blocking(playback::devices);
+    let found = tokio::task::spawn_blocking(|| {
+        let found = playback::devices();
+        let system = (!SYSTEM_DEFAULT_LISTED)
+            .then(|| playback::system_output(&found))
+            .flatten();
+        (found, system)
+    });
     let (weak, playing) = (ui.as_weak(), playing.clone());
     slint::spawn_local(async move {
-        let Ok(found) = found.await else { return };
+        let Ok((found, system)) = found.await else {
+            return;
+        };
         let Some(ui) = weak.upgrade() else { return };
-        show_devices(&ui, &playing, found);
+        show_devices(&ui, &playing, found, system);
     })
     .expect("the event loop is running");
 }
 
-/// The `found` devices after the system's default, with the one chosen
-/// marked; a choice saved as a route that was folded into another is that
-/// other.
+/// The `found` devices, after the system's default on Android, with the one
+/// chosen marked; a choice saved as a route that was folded into another is
+/// that other. With none saved or the one saved not there now, the
+/// system's is the choice: its default on Android, elsewhere the `system`
+/// device, saved as the choice where it is listed.
 #[cfg(not(target_family = "wasm"))]
-fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<OutputDevice>) {
+fn show_devices(
+    ui: &AppWindow,
+    playing: &Shared,
+    found: Vec<OutputDevice>,
+    system: Option<String>,
+) {
     let saved = prefs::load().output_device;
-    let mut devices = vec![None];
-    let mut titles = vec![SharedString::from("System default")];
-    let mut entries = vec![(SharedString::from("System default"), SharedString::new())];
-    let mut chosen = 0;
+    let mut devices = Vec::new();
+    let mut titles = Vec::new();
+    let mut entries = Vec::new();
+    let (mut saved_at, mut system_at) = (None, None);
+    if SYSTEM_DEFAULT_LISTED {
+        system_at = Some(entries.len());
+        devices.push(None);
+        titles.push(SharedString::from("System default"));
+        entries.push((SharedString::from("System default"), SharedString::new()));
+    }
     for device in found {
         let is_saved = saved
             .as_ref()
             .is_some_and(|id| *id == device.id || device.same_as.contains(id));
         if is_saved {
-            chosen = entries.len();
+            saved_at = Some(entries.len());
+        }
+        if system.as_ref() == Some(&device.id) {
+            system_at = Some(entries.len());
         }
         entries.push((device.name.into(), device.detail.into()));
         titles.push(device.title.into());
         devices.push(Some(device.id));
+    }
+    let chosen = saved_at.or(system_at);
+    if saved_at.is_none()
+        && let Some(Some(device)) = chosen.and_then(|at| devices.get(at))
+    {
+        save_output(Some(device.clone()));
     }
     let icons = ui.global::<Icons>();
     let menu: Vec<MenuEntry> = entries
@@ -535,15 +573,28 @@ fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<OutputDevice>) {
             id: index.to_string().into(),
             label,
             detail,
-            icon: device_icon(&icons, index == chosen),
+            icon: device_icon(&icons, chosen == Some(index)),
             ..Default::default()
         })
         .collect();
     ui.set_output_devices(ModelRc::new(VecModel::from(menu)));
-    ui.set_output_name(titles[chosen].clone());
+    ui.set_output_name(
+        chosen
+            .and_then(|at| titles.get(at))
+            .cloned()
+            .unwrap_or_default(),
+    );
     let mut p = playing.borrow_mut();
     p.devices = devices;
     p.device_titles = titles;
+}
+
+/// Keeps `device` as the one chosen, by cpal id.
+#[cfg(not(target_family = "wasm"))]
+fn save_output(device: Option<String>) {
+    let mut saved = prefs::load();
+    saved.output_device = device;
+    prefs::save(&saved);
 }
 
 /// Moves the menu's mark, and the name beside the button, to the device
@@ -979,6 +1030,16 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     if due {
         save(browser, &p, playing, status.index, status.position);
         p.saved = Some((state.0, state.1, status.position));
+    }
+    // Outside Android it plays on the system's device in place of one not
+    // there, which is the choice from then on.
+    #[cfg(not(target_family = "wasm"))]
+    if !SYSTEM_DEFAULT_LISTED && status.output.is_some() && status.output != p.output {
+        p.output = status.output.clone();
+        if prefs::load().output_device != status.output {
+            save_output(status.output.clone());
+            list_devices(ui, playing);
+        }
     }
     ui.set_playing(true);
     ui.set_playing_paused(status.paused || status.ended);
@@ -1678,10 +1739,11 @@ pub(crate) mod testing {
         HANDLES.with(|handles| handles.borrow().clone().expect("the player is wired"))
     }
 
-    /// Lists `found` as the sound devices there are.
-    pub(crate) fn show_devices(ui: &AppWindow, found: Vec<OutputDevice>) {
+    /// Lists `found` as the sound devices there are, `system` the one the
+    /// system plays on.
+    pub(crate) fn show_devices(ui: &AppWindow, found: Vec<OutputDevice>, system: Option<String>) {
         let (_, playing) = handles();
-        super::show_devices(ui, &playing, found);
+        super::show_devices(ui, &playing, found, system);
     }
 
     /// Queues `songs` and shows the `index`th, as when the player moves on.
