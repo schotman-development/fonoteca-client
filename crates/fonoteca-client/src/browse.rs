@@ -1571,9 +1571,10 @@ fn sections_of(b: &Browser) -> Vec<(String, &str, &str)> {
     )
 }
 
-/// The sidebar's entries, as links, labels and groups: the home page and the
-/// radio, the library's pages, with the tags, composers and compositions
-/// where the server has them, and every playlist, those in folders too.
+/// The sidebar's entries, as links, labels and groups: the home page, genres,
+/// tags where the server has them, and the radio, the library's pages, with
+/// the composers and compositions where the server has them, and every
+/// playlist, those in folders too.
 fn sections(
     playlists: &[Playlist],
     compositions: bool,
@@ -1584,7 +1585,6 @@ fn sections(
         ("albums", "Albums", true),
         ("artists", "Artists", true),
         ("tracks", "Tracks", true),
-        ("tags", "Tags", tags),
         ("composers", "Composers", compositions),
         ("compositions", "Compositions", compositions),
         ("folders", "Folders", true),
@@ -1597,11 +1597,14 @@ fn sections(
         (link, playlist.name.as_str(), "Playlists")
     });
     [
-        ("home".to_owned(), "Home", "Browse"),
-        ("genres".to_owned(), "Genres", "Browse"),
-        ("radio".to_owned(), "Radio", "Browse"),
+        ("home", "Home", true),
+        ("genres", "Genres", true),
+        ("tags", "Tags", tags),
+        ("radio", "Radio", true),
     ]
     .into_iter()
+    .filter(|&(.., shown)| shown)
+    .map(|(link, label, _)| (link.to_owned(), label, "Browse"))
     .chain(downloads.then(|| ("downloads".to_owned(), "Downloads", "Browse")))
     .chain(library)
     .chain([("playlists".to_owned(), "Playlists", "Playlists")])
@@ -1818,7 +1821,7 @@ fn bar_section(b: &Browser) -> i32 {
     let page = link.split_once(':').map_or(link.as_str(), |(page, _)| page);
     let entry = match page {
         "home" | "createdfor" => "home",
-        "browse" | "genres" | "genre" | "radio" | "stations" => "browse",
+        "browse" | "genres" | "genre" | "tags" | "tag" | "radio" | "stations" => "browse",
         "settings" | "setting" => "settings",
         "account" => return -1,
         _ => "library",
@@ -1840,7 +1843,7 @@ fn nav_entries(
         .filter(|(link, ..)| {
             link != "home"
                 && !link.starts_with("playlist:")
-                && matches!(link.as_str(), "genres" | "radio") == browse
+                && matches!(link.as_str(), "genres" | "tags" | "radio") == browse
         })
         .map(|(link, title, _)| NavEntry {
             title: (*title).into(),
@@ -8457,8 +8460,8 @@ mod tests {
                 ("playlist:p3".to_owned(), "Zed"),
             ]
         );
-        let library = sections(&playlists, false, true, false);
-        assert!(library.iter().any(|(link, ..)| link == "tags"));
+        let with_tags = sections(&playlists, false, true, false);
+        assert!(with_tags.iter().any(|(link, ..)| link == "tags"));
         let inside: Vec<&str> = placed(&playlists, Some(&folders), Some("f1"))
             .into_iter()
             .map(|item| match item {
@@ -8563,6 +8566,27 @@ mod tests {
             .map(|(_, label, _)| label)
             .collect();
         assert_eq!(kept[..4], ["Home", "Genres", "Radio", "Downloads"]);
+    }
+
+    #[test]
+    fn tags_in_browse_after_genres_where_the_server_has_them() {
+        let entries = sections(&[], false, true, true);
+        let browse: Vec<&str> = entries
+            .iter()
+            .filter(|(.., group)| *group == "Browse")
+            .map(|(_, label, _)| *label)
+            .collect();
+        assert_eq!(browse, ["Home", "Genres", "Tags", "Radio", "Downloads"]);
+        assert!(
+            entries
+                .iter()
+                .all(|(_, label, group)| *label != "Tags" || *group == "Browse")
+        );
+        assert!(
+            sections(&[], false, false, true)
+                .iter()
+                .all(|(link, ..)| link != "tags")
+        );
     }
 
     #[test]

@@ -6597,8 +6597,14 @@ mod tests {
             })
             .await;
             let sections = texts(ui.get_sections());
-            let tracks = sections.iter().position(|s| s == "Tracks").unwrap();
-            assert_eq!(sections[tracks + 1], "Tags");
+            let genres = sections.iter().position(|s| s == "Genres").unwrap();
+            assert_eq!(sections[genres + 1..genres + 3], ["Tags", "Radio"]);
+            let groups = texts(ui.get_section_groups());
+            assert_eq!(groups[genres + 1], "Browse", "Tags is in Browse");
+            let browse_links: Vec<_> = ui.get_browse_links().iter().map(|e| e.link).collect();
+            let library_links: Vec<_> = ui.get_library_links().iter().map(|e| e.link).collect();
+            assert!(browse_links.iter().any(|link| link == "tags"), "{browse_links:?}");
+            assert!(!library_links.iter().any(|link| link == "tags"), "{library_links:?}");
             let playlists = sections.iter().rposition(|s| s == "Playlists").unwrap();
             assert_eq!(sections[playlists + 1..playlists + 3], ["Road Trip", "Empty"]);
             assert!(!sections.contains(&"Trips".to_owned()), "it is a folder");
@@ -6705,7 +6711,7 @@ mod tests {
             // The tags page has every tag under the one it is in. Those
             // refused at sign-in and on the page come with Try again.
             ORGANIZE_WRITES.lock().unwrap().clear();
-            ui.invoke_show_section((tracks + 1) as i32);
+            ui.invoke_show_section((genres + 1) as i32);
             assert_eq!(ui.get_page(), Page::Tags);
             wait_for("the failed tags", || ui.get_page_problem() != "").await;
             TAGS_DOWN.store(false, Relaxed);
@@ -6730,6 +6736,7 @@ mod tests {
             ui.invoke_open("tag:t1".into());
             assert_eq!(ui.get_page(), Page::Tag);
             assert_eq!(lit(&ui), "Tags");
+            assert_eq!(ui.get_bar_section(), 1, "a tag's page lights Browse");
             wait_for("the tag's tracks", || ui.get_track_lines().row_count() == 2).await;
             assert_eq!(ui.get_header_title(), "Mood");
             assert_eq!(ui.get_header_names().row_data(0).unwrap().label, "Calm");
