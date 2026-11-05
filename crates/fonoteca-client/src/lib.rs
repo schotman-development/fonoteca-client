@@ -31,6 +31,8 @@ mod queue;
 #[cfg(not(target_family = "wasm"))]
 mod queue_drag;
 #[cfg(not(target_family = "wasm"))]
+mod radio;
+#[cfg(not(target_family = "wasm"))]
 mod scrobble;
 #[cfg(not(target_family = "wasm"))]
 mod sound;
@@ -2761,7 +2763,7 @@ mod tests {
             );
             assert_eq!(shelf(2).tiles.row_count(), 12);
             let tile = shelf(0).tiles.row_data(0).unwrap();
-            assert_eq!((tile.title.as_str(), tile.link.as_str()), ("Wave", ""));
+            assert_eq!((tile.title.as_str(), tile.link.as_str()), ("Wave", "station:shelf:0:0"));
             assert_eq!(tile.names.row_data(0).unwrap().label, "Netherlands");
             // Pictures come for the tiles in view.
             ui.invoke_station_shelf_in_view(0, 0, 0);
@@ -2857,6 +2859,50 @@ mod tests {
             let kept = crate::prefs::station_logos();
             assert_eq!(kept.len(), 1);
             assert_eq!(kept["http://news.example.org/live.mp3"].bytes().unwrap(), PNG);
+            // A tile plays its station in place of a queue: live, with no
+            // length or other tracks, and nothing of it is saved as the
+            // server's queue or scrobbled.
+            assert_eq!(saved(0).link, "station:saved:0");
+            assert_eq!(ui.get_station_shelves().row_data(0).unwrap().tiles.row_data(0).unwrap().link, "station:shelf:0:0");
+            let saves_before = SAVES.lock().unwrap().len();
+            let looks_before = play::testing::scrobbler_calls().0;
+            ui.invoke_play_station(saved(0).link);
+            wait_for("the station on the bar", || ui.get_playing_live()).await;
+            assert!(ui.get_playing());
+            assert_eq!(ui.get_playing_title(), "Jazz");
+            assert_eq!(ui.get_playing_names().row_data(0).unwrap().label, "Live radio");
+            assert_eq!(ui.get_playing_duration(), 0.0);
+            assert_eq!(ui.get_playing_album().link, "");
+            assert_eq!(
+                play::testing::tuned(),
+                Some(("Jazz".to_owned(), "https://stream.example.org/jazz".to_owned()))
+            );
+            assert!(play::testing::queued_ids().0.is_empty());
+            wait_for("the scrobbler to look", || play::testing::scrobbler_calls().0 > looks_before + 1).await;
+            assert_eq!(SAVES.lock().unwrap().len(), saves_before, "no queue saved");
+            // A directory station plays from its resolved stream.
+            ui.invoke_play_station("station:shelf:0:0".into());
+            wait_for("Wave", || ui.get_playing_title() == "Wave").await;
+            assert_eq!(
+                play::testing::tuned().map(|(_, stream)| stream),
+                Some("https://s1.example.org/listen".to_owned())
+            );
+            // So does a station of the curated catalogue, by its stream.
+            let curated_tile = curated(0).tiles.row_data(0).unwrap();
+            assert_eq!(curated_tile.link, "station:catalogue:0:0");
+            ui.invoke_play_station(curated_tile.link);
+            wait_for("a catalogue station", || ui.get_playing_title() == curated_tile.title).await;
+            assert!(play::testing::tuned().is_some_and(|(_, stream)| stream.starts_with("https://")));
+            // A song taken up after it puts the song back on the bar.
+            let queued = opensubsonic::Child {
+                id: "r1".into(),
+                title: "Song".into(),
+                ..Default::default()
+            };
+            play::testing::show_song(&ui, vec![queued], 0);
+            assert!(!ui.get_playing_live());
+            play::testing::clear(&ui);
+            assert_eq!(play::testing::tuned(), None);
             ui.set_notice("".into());
             // Anyone may see them, but only admins change them.
             // The settings page asks the server anew what they may do; nor

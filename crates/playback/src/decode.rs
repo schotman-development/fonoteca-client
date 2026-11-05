@@ -8,7 +8,7 @@ use ffmpeg_next::{
     ChannelLayout, Error, Packet, Rational, codec, decoder, ffi, filter, format, media,
 };
 
-use crate::download::Download;
+use crate::download::{Download, Failure};
 use crate::output::{Kind, bit_perfect, choose, upsampled};
 use crate::{Dsp, Format, Leveling, Quality, Step, Track};
 
@@ -20,6 +20,9 @@ pub(crate) struct Decoding {
     graph: filter::Graph,
     pub format: Format,
     pub path: Vec<Step>,
+    /// A live stream, which has no place to seek to.
+    pub live: bool,
+    failure: Failure,
     /// Frames of output still to drop after a seek, to start where asked
     /// rather than where the file's last seek point was; and the time asked
     /// for, until the first frame shows how far off that is.
@@ -37,6 +40,18 @@ pub(crate) enum Stop {
     /// the decoder; the step can be tried again.
     Interrupted,
     Failed(String),
+}
+
+impl Stop {
+    /// What a failed read of the download is: FFmpeg only says it was an I/O
+    /// error, and the download knows why.
+    fn of_read(error: Error, failure: &Failure) -> Self {
+        match (error, failure.reason()) {
+            (Error::Exit, _) => Stop::Interrupted,
+            (_, Some(reason)) => Stop::Failed(reason),
+            (error, None) => error.into(),
+        }
+    }
 }
 
 impl From<Error> for Stop {
@@ -62,8 +77,11 @@ impl Decoding {
         abort: impl FnMut() -> bool + Send + 'static,
     ) -> Result<Self, Stop> {
         let probing = download.probing();
+        let live = download.is_live();
+        let failure = download.failure();
         let io = StreamIo::from_read_seek(download)?;
-        let input = format::input_from_stream_with_interrupt(io, None, None, abort)?;
+        let input = format::input_from_stream_with_interrupt(io, None, None, abort)
+            .map_err(|e| Stop::of_read(e, &failure))?;
         drop(probing);
         let stream = input
             .streams()
@@ -225,6 +243,8 @@ impl Decoding {
             graph,
             format: out,
             path,
+            live,
+            failure,
             skip: 0,
             seeked_to: None,
             draining: false,
@@ -265,7 +285,7 @@ impl Decoding {
                 Ok(true)
             }
             Ok(()) | Err(Error::InvalidData) => Ok(true),
-            Err(Error::Eof) => {
+            Err(error) if self.is_end_of_track(&error) => {
                 self.draining = true;
                 let _ = self.decoder.send_eof();
                 self.receive(out)?;
@@ -273,8 +293,14 @@ impl Decoding {
                 self.drain(out)?;
                 Ok(false)
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(Stop::of_read(e, &self.failure)),
         }
+    }
+
+    /// Whether `error` is the demuxer running out of track. A download that
+    /// failed did not run out; it broke off, whatever FFmpeg calls it.
+    pub(crate) fn is_end_of_track(&self, error: &Error) -> bool {
+        matches!(error, Error::Eof) && self.failure.reason().is_none()
     }
 
     fn receive(&mut self, out: &mut Vec<u8>) -> Result<(), Stop> {

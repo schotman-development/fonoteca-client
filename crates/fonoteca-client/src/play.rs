@@ -19,6 +19,7 @@ use playback::{Gain, Leveling, OutputDevice, Player, Quality, Repeat, Step, Trac
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
+use crate::radio;
 use crate::{
     AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, offline, prefs, quality,
     queue_drag, scrobble, sound, waveform,
@@ -41,6 +42,9 @@ const LINE_COVER_SIZE: f32 = 40.0;
 /// playing on.
 // ponytail: a fixed window; page through it once queues that long need reordering.
 const QUEUE_SHOWN: usize = 100;
+/// What the line under a station's name says.
+const LIVE_RADIO: &str = "Live radio";
+
 /// How many rows of the songs played before the one playing the sheet lists.
 const PREVIOUS_SHOWN: usize = 50;
 
@@ -50,6 +54,10 @@ struct Playing {
     /// The songs queued; the one the bar shows and the steps it shows for
     /// it.
     queue: Queue,
+    /// The radio station that plays in place of a queue, which is empty
+    /// then: a station is live, with no length, nothing before or after it
+    /// and no song to love, tag or scrobble.
+    station: Option<Tuned>,
     shown: Option<usize>,
     path: Vec<Step>,
     /// How many of the queue's changes the player was handed. Until it has
@@ -73,6 +81,12 @@ struct Playing {
     device_titles: Vec<SharedString>,
     tick: Timer,
     scrobbler: scrobble::Scrobbler,
+}
+
+/// A station playing, and the picture of it that was on its tile.
+struct Tuned {
+    station: radio::Station,
+    cover: Image,
 }
 
 type Shared = Rc<RefCell<Playing>>;
@@ -105,6 +119,15 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             play(&ui, &browser, &playing, songs, start);
         }
     });
+    ui.on_play_station({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |link| {
+            let ui = weak.unwrap();
+            if let Some((station, cover)) = browse::tile_station(&ui, &browser, &link) {
+                tune(&ui, &browser, &playing, station, cover);
+            }
+        }
+    });
     ui.on_toggle_pause({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move || {
@@ -118,7 +141,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
                 // Short of the queue's end it goes on where it stopped; played
                 // to its end, the queue starts over.
                 let (start, seconds) = status.stopped.unwrap_or((0, 0.0));
-                player.play(tracks(&p.queue), start, seconds);
+                player.play(queued_tracks(&p), start, seconds);
             } else {
                 player.set_paused(!status.paused);
             }
@@ -127,6 +150,9 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     ui.on_previous_track({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move || {
+            if playing.borrow().station.is_some() {
+                return;
+            }
             resume(&weak.unwrap(), &browser, &playing, true);
             playing.borrow().player.iter().for_each(Player::previous)
         }
@@ -134,6 +160,9 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     ui.on_next_track({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move || {
+            if playing.borrow().station.is_some() {
+                return;
+            }
             resume(&weak.unwrap(), &browser, &playing, true);
             playing.borrow().player.iter().for_each(Player::next)
         }
@@ -141,6 +170,11 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     ui.on_seek({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |seconds| {
+            // A live stream has no place to seek to, whoever asks: the
+            // lock screen's slider too.
+            if playing.borrow().station.is_some() {
+                return;
+            }
             let seconds = f64::from(seconds);
             if let Some(at) = playing.borrow_mut().resume.as_mut() {
                 at.1 = seconds;
@@ -622,12 +656,11 @@ fn begin(
     let Some(client) = browse::client(browser).filter(|_| start < queue.len()) else {
         return;
     };
-    let mut p = playing.borrow_mut();
-    let device = prefs::load().output_device;
     // Each queue gets a player with the client signed in now. The last one
     // lets the device go first, since a device played on directly can only
     // be open once.
-    p.player = None;
+    playing.borrow_mut().player = None;
+    let device = prefs::load().output_device;
     let player = new_player(device, fetch(client, browse::downloads(browser)));
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
     player.set_repeat(REPEAT[ui.get_repeat().clamp(0, 2) as usize]);
@@ -635,13 +668,57 @@ fn begin(
     player.play(tracks(&queue), start, seconds);
     // Before any of it is heard: a track starts once some of it is in.
     player.set_paused(paused);
+    adopt(ui, browser, playing, player, queue, None);
+}
+
+/// Plays the radio `station` in place of what played, from now.
+fn tune(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    station: radio::Station,
+    cover: Image,
+) {
+    playing.borrow_mut().player = None;
+    let device = prefs::load().output_device;
+    let fetch = radio::fetch(station.stream.clone(), cache(), browse::USER_AGENT);
+    let player = new_player(device, fetch);
+    player.set_dsp(sound::dsp());
+    player.play(vec![radio::track(&station)], 0, 0.0);
+    adopt(
+        ui,
+        browser,
+        playing,
+        player,
+        Queue::default(),
+        Some(Tuned { station, cover }),
+    );
+}
+
+/// Has `player` play `queue`, or else the `station`, with the bar showing
+/// it from the start.
+fn adopt(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    player: Player,
+    queue: Queue,
+    station: Option<Tuned>,
+) {
+    let mut p = playing.borrow_mut();
     p.player = Some(player);
     p.queue = queue;
+    p.station = station;
     p.requeued = 0;
     p.resume = None;
     p.saved = None;
     p.shown = None;
     p.path.clear();
+    // A station is on the bar at once: the player may have given up by the
+    // first look (without a sound device), which shows no song to put there.
+    if let Some(tuned) = &p.station {
+        show_station(ui, browser, tuned);
+    }
     let (weak, pages, ticked) = (ui.as_weak(), browser.clone(), playing.clone());
     p.tick.start(TimerMode::Repeated, TICK, move || {
         if let Some(ui) = weak.upgrade() {
@@ -746,6 +823,7 @@ fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     p.player = None;
     p.tick.stop();
     p.queue = Queue::default();
+    p.station = None;
     p.resume = None;
     p.shown = None;
     p.saved = None;
@@ -818,7 +896,9 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         return;
     }
     p.shown = status.index;
-    if let Some(index) = status.index {
+    if let Some(tuned) = &p.station {
+        show_station(ui, browser, tuned);
+    } else if let Some(index) = status.index {
         show_song(ui, browser, &p, playing, index);
     }
     list_queue(ui, browser, &mut p, playing);
@@ -841,6 +921,28 @@ fn shown_song_id(p: &Playing) -> Option<String> {
         .map(|song| song.id.clone())
 }
 
+/// Puts the station on the bar and the now playing page, as live: its name
+/// and logo, with no length, album or song to act on.
+fn show_station(ui: &AppWindow, browser: &browse::Shared, tuned: &Tuned) {
+    ui.set_playing_live(true);
+    ui.set_playing_title(tuned.station.name.as_str().into());
+    ui.set_playing_movement("".into());
+    ui.set_playing_movement_place("".into());
+    let line = Name {
+        label: LIVE_RADIO.into(),
+        link: SharedString::new(),
+    };
+    ui.set_playing_names(ModelRc::new(VecModel::from(vec![line])));
+    ui.set_playing_album(Name::default());
+    ui.set_playing_loved(false);
+    ui.set_playing_shown(ui.get_playing_shown() + 1);
+    ui.set_playing_duration(0.0);
+    ui.set_playing_waveform("".into());
+    ui.set_playing_cover(tuned.cover.clone());
+    ui.set_playing_art(tuned.cover.clone());
+    browse::stop_playing_motion(browser);
+}
+
 /// Puts the `index`th song of the queue on the bar and the now playing
 /// page, with its cover once it comes.
 fn show_song(
@@ -853,6 +955,7 @@ fn show_song(
     let Some(song) = p.queue.get(index) else {
         return;
     };
+    ui.set_playing_live(false);
     let work_line = browse::work_line(|at| p.queue.get(at), index);
     ui.set_playing_title(
         work_line
@@ -1099,6 +1202,9 @@ fn artists_and_length(song: &Child, seconds: Option<i64>) -> String {
 /// Tells Android what plays, for its notification and lock screen.
 #[cfg(target_os = "android")]
 fn announce(p: &Playing, index: Option<usize>, paused: bool, seconds: f64) {
+    if let Some(tuned) = &p.station {
+        return crate::media::show(&tuned.station.name, LIVE_RADIO, !paused, 0.0, 0.0);
+    }
     let Some(song) = index.and_then(|index| p.queue.get(index)) else {
         return crate::media::hide();
     };
@@ -1118,6 +1224,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         p.player = None;
         p.tick.stop();
         p.queue = Queue::default();
+        p.station = None;
         p.resume = None;
         p.shown = None;
         p.saved = None;
@@ -1181,7 +1288,9 @@ fn save(
     index: Option<usize>,
     seconds: f64,
 ) {
-    let Some(client) = browse::client(browser).filter(|_| !p.queue_refused) else {
+    // A station is no queue to keep: the one saved stays for the next start.
+    let Some(client) = browse::client(browser).filter(|_| !p.queue_refused && p.station.is_none())
+    else {
         return;
     };
     let current = match index.and_then(|index| p.queue.get(index)) {
@@ -1292,6 +1401,14 @@ fn seed() -> u64 {
 
 fn tracks(queue: &Queue) -> Vec<Track> {
     queue.songs().map(track).collect()
+}
+
+/// What the player plays: the station, else the queue's songs.
+fn queued_tracks(p: &Playing) -> Vec<Track> {
+    match &p.station {
+        Some(tuned) => vec![radio::track(&tuned.station)],
+        None => tracks(&p.queue),
+    }
 }
 
 fn track(song: &Child) -> Track {
@@ -1521,6 +1638,15 @@ pub(crate) mod testing {
             .join()
             .unwrap()
             .expect("fetched")
+    }
+
+    /// The name and stream of the station playing, if one is.
+    pub(crate) fn tuned() -> Option<(String, String)> {
+        let (_, playing) = handles();
+        let p = playing.borrow();
+        p.station
+            .as_ref()
+            .map(|tuned| (tuned.station.name.clone(), tuned.station.stream.clone()))
     }
 
     /// How often the scrobbler was shown the player and asked to flush.

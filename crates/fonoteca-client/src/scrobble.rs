@@ -508,6 +508,24 @@ mod tests {
     }
 
     #[test]
+    fn a_live_station_has_no_song_and_is_never_counted() {
+        let mut tracker = Tracker::default();
+        let station = Heard {
+            song: None,
+            duration: None,
+            position: 0.0,
+            paused: false,
+        };
+        for minute in 0..30 {
+            let heard = Heard {
+                position: f64::from(minute) * 60.0,
+                ..station
+            };
+            assert_eq!(tracker.observe(START + heard.position, &heard), None);
+        }
+    }
+
+    #[test]
     fn playing_on_with_the_phone_asleep_is_heard_though_the_looks_are_late() {
         // Looks a minute apart, the position keeping up with the clock.
         let mut tracker = Tracker::default();

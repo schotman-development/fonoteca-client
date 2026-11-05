@@ -3678,6 +3678,8 @@ export component PlayerControls inherits VerticalLayout {
     in property <bool> paused;
     in property <float> position;
     in property <float> duration;
+    // A live stream: only play and pause, with no position.
+    in property <bool> live;
     in property <string> waveform;
     in property <bool> shuffled;
     in property <int> repeat;
@@ -3691,22 +3693,22 @@ export component PlayerControls inherits VerticalLayout {
     property <length> side: Screen.width < 360px ? Theme.phone-target : 56px;
     spacing: 8px;
 
-    SeekRow {
+    if !root.live: SeekRow {
         position: root.position;
         duration: root.duration;
         waveform: root.waveform;
         seek(seconds) => { root.seek(seconds); }
     }
     HorizontalLayout {
-        alignment: space-between;
-        ShuffleButton {
+        alignment: root.live ? center : space-between;
+        if !root.live: ShuffleButton {
             cross-axis-self-alignment: center;
             width: root.side;
             icon-size: 28px;
             shuffled: root.shuffled;
             clicked => { root.toggle-shuffle(); }
         }
-        IconButton {
+        if !root.live: IconButton {
             cross-axis-self-alignment: center;
             width: root.side;
             icon-size: 32px;
@@ -3722,7 +3724,7 @@ export component PlayerControls inherits VerticalLayout {
             paused: root.paused;
             clicked => { root.toggle-pause(); }
         }
-        IconButton {
+        if !root.live: IconButton {
             cross-axis-self-alignment: center;
             width: root.side;
             icon-size: 32px;
@@ -3731,7 +3733,7 @@ export component PlayerControls inherits VerticalLayout {
             label: "Next";
             clicked => { root.next(); }
         }
-        RepeatButton {
+        if !root.live: RepeatButton {
             cross-axis-self-alignment: center;
             width: root.side;
             icon-size: 28px;
@@ -4049,6 +4051,8 @@ export component PlayerBar inherits Rectangle {
     in property <bool> paused;
     in property <float> position;
     in property <float> duration;
+    // A live stream: no previous, next, shuffle, repeat or position.
+    in property <bool> live;
     in property <string> waveform;
     // The signal path's light, by its name and from 0 to 3, or -1 for none.
     in property <string> quality;
@@ -4119,14 +4123,14 @@ export component PlayerBar inherits Rectangle {
                 font-size: Theme.small;
             }
         }
-        if !Screen.phone: ShuffleButton {
+        if !Screen.phone && !root.live: ShuffleButton {
             cross-axis-self-alignment: center;
             width: root.side;
             icon-size: 24px;
             shuffled: root.shuffled;
             clicked => { root.toggle-shuffle(); }
         }
-        if !Screen.phone: IconButton {
+        if !Screen.phone && !root.live: IconButton {
             cross-axis-self-alignment: center;
             width: root.side;
             icon-size: 24px;
@@ -4142,7 +4146,7 @@ export component PlayerBar inherits Rectangle {
             paused: root.paused;
             clicked => { root.toggle-pause(); }
         }
-        IconButton {
+        if !root.live: IconButton {
             cross-axis-self-alignment: center;
             width: Screen.phone ? Theme.phone-target : root.side;
             icon-size: 24px;
@@ -4151,14 +4155,14 @@ export component PlayerBar inherits Rectangle {
             label: "Next";
             clicked => { root.next(); }
         }
-        if !Screen.phone: RepeatButton {
+        if !Screen.phone && !root.live: RepeatButton {
             cross-axis-self-alignment: center;
             width: root.side;
             icon-size: 24px;
             repeat: root.repeat;
             clicked => { root.cycle-repeat(); }
         }
-        if !Screen.phone: SeekRow {
+        if !Screen.phone && !root.live: SeekRow {
             cross-axis-self-alignment: center;
             horizontal-stretch: 1;
             preferred-width: 380px;

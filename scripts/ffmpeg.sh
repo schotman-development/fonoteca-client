@@ -54,8 +54,8 @@ cd ffmpeg-$version
   --disable-programs --disable-doc --disable-autodetect --enable-zlib \
   --disable-avdevice --disable-swscale --disable-network --disable-everything \
   --enable-decoder=flac,alac,mp3,mp3float,aac,aac_latm,vorbis,opus,wavpack,ape,tta,wmav1,wmav2,wmalossless,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,pcm_u8 \
-  --enable-demuxer=flac,mov,mp3,ogg,wav,w64,aiff,wv,ape,tta,matroska,dsf,iff,asf,aac \
-  --enable-parser=flac,mpegaudio,aac,vorbis,opus \
+  --enable-demuxer=flac,mov,mp3,ogg,wav,w64,aiff,wv,ape,tta,matroska,dsf,iff,asf,aac,mpegts \
+  --enable-parser=flac,mpegaudio,aac,aac_latm,vorbis,opus \
   --enable-filter=abuffer,abuffersink,aresample,aformat,volume,anull,equalizer,lowshelf,highshelf,lowpass,highpass,crossfeed \
   > "$work/configure.log"
 grep -q "License: LGPL version 2.1 or later" "$work/configure.log"

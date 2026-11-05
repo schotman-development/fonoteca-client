@@ -1187,6 +1187,379 @@ fn a_seek_into_a_download_of_unknown_length_does_not_wait_for_the_rest() {
     );
 }
 
+const PACKET_BYTES: usize = 188;
+const PMT_PID: u16 = 0x100;
+const AUDIO_PID: u16 = 0x101;
+/// What a transport stream's program map calls MP3, AAC in ADTS frames and
+/// AAC in LATM.
+const MPEG_AUDIO_STREAM_TYPE: u8 = 0x03;
+const ADTS_STREAM_TYPE: u8 = 0x0F;
+const LATM_STREAM_TYPE: u8 = 0x11;
+/// A transport stream counts 90 kHz ticks. A layer 3 frame is 1152 samples
+/// at 44.1 kHz, an AAC frame 1024.
+const TICKS_PER_FRAME: u64 = 1152 * 90_000 / 44_100;
+const TICKS_PER_AAC_FRAME: u64 = 1024 * 90_000 / 44_100;
+
+fn mpeg_crc(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(u32::MAX, |mut crc, &byte| {
+        crc ^= u32::from(byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 1 << 31 != 0 {
+                crc << 1 ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
+        }
+        crc
+    })
+}
+
+/// One 188-byte packet of `pid` carrying `payload`, padded with stuffing
+/// in its adaptation field when short.
+fn ts_packet(pid: u16, starts_unit: bool, counter: u8, payload: &[u8]) -> Vec<u8> {
+    let room = PACKET_BYTES - 4;
+    let mut packet = vec![
+        0x47,
+        (u8::from(starts_unit) << 6) | (pid >> 8) as u8,
+        pid as u8,
+    ];
+    if payload.len() == room {
+        packet.push(0x10 | counter);
+    } else {
+        packet.push(0x30 | counter);
+        let stuffing = room - payload.len();
+        packet.push((stuffing - 1) as u8);
+        if stuffing > 1 {
+            packet.push(0);
+            packet.resize(packet.len() + stuffing - 2, 0xFF);
+        }
+    }
+    packet.extend_from_slice(payload);
+    packet
+}
+
+/// A table section as a transport stream carries it: after a pointer, with
+/// its length and CRC.
+fn ts_section(table_id: u8, body: &[u8]) -> Vec<u8> {
+    let length = body.len() + 4;
+    let mut section = vec![table_id, 0xB0 | (length >> 8) as u8, length as u8];
+    section.extend_from_slice(body);
+    section.extend_from_slice(&mpeg_crc(&section).to_be_bytes());
+    let mut payload = vec![0];
+    payload.extend(section);
+    payload
+}
+
+/// `frames` silent MP3 frames as an MPEG transport stream segment, as an
+/// HLS station serves them, starting `first_frame` frames into the stream.
+fn ts_segment(first_frame: u64, frames: usize) -> Vec<u8> {
+    transport_stream(
+        MPEG_AUDIO_STREAM_TYPE,
+        &[silent_mp3(frames)],
+        first_frame * TICKS_PER_FRAME,
+        0,
+    )
+}
+
+/// Each of `audio` of `stream_type` as a packet of one transport stream
+/// segment, the first due at `ticks` and each `ticks_between` after the one
+/// before.
+fn transport_stream(stream_type: u8, audio: &[Vec<u8>], ticks: u64, ticks_between: u64) -> Vec<u8> {
+    let mut counters = [0u8; 3];
+    let mut out = Vec::new();
+    let mut put = |out: &mut Vec<u8>, which: usize, pid, first, payload: &[u8]| {
+        out.extend(ts_packet(pid, first, counters[which], payload));
+        counters[which] = (counters[which] + 1) % 16;
+    };
+    let pat = ts_section(
+        0,
+        &[
+            0,
+            1,
+            0xC1,
+            0,
+            0,
+            0,
+            1,
+            0xE0 | (PMT_PID >> 8) as u8,
+            PMT_PID as u8,
+        ],
+    );
+    put(&mut out, 0, 0, true, &pat);
+    let pmt = ts_section(
+        2,
+        &[
+            0,
+            1,
+            0xC1,
+            0,
+            0,
+            0xE0 | (AUDIO_PID >> 8) as u8,
+            AUDIO_PID as u8,
+            0xF0,
+            0,
+            stream_type,
+            0xE0 | (AUDIO_PID >> 8) as u8,
+            AUDIO_PID as u8,
+            0xF0,
+            0,
+        ],
+    );
+    put(&mut out, 1, PMT_PID, true, &pmt);
+    for (n, audio) in audio.iter().enumerate() {
+        let ticks = ticks + n as u64 * ticks_between;
+        let mut pes = vec![0, 0, 1, 0xC0];
+        pes.extend(((audio.len() + 8) as u16).to_be_bytes());
+        pes.extend([0x80, 0x80, 5]);
+        pes.extend([
+            0x21 | ((ticks >> 29) & 0x0E) as u8,
+            (ticks >> 22) as u8,
+            0x01 | ((ticks >> 14) & 0xFE) as u8,
+            (ticks >> 7) as u8,
+            0x01 | ((ticks << 1) & 0xFE) as u8,
+        ]);
+        pes.extend(audio);
+        for (n, chunk) in pes.chunks(PACKET_BYTES - 4).enumerate() {
+            put(&mut out, 2, AUDIO_PID, n == 0, chunk);
+        }
+    }
+    out
+}
+
+/// The raw data block of one silent AAC-LC mono frame: a single channel
+/// element with no bands coded.
+const SILENT_AAC_BLOCK: [u8; 4] = [0x00, 0x00, 0x00, 0x07];
+
+/// `frames` silent AAC-LC frames of 44.1 kHz mono, each in an ADTS header.
+fn silent_adts(frames: usize) -> Vec<u8> {
+    const HEADER_BYTES: usize = 7;
+    let length = HEADER_BYTES + SILENT_AAC_BLOCK.len();
+    let mut frame = vec![
+        0xFF,
+        0xF1,
+        // AAC-LC, 44.1 kHz, then the top bit of one channel.
+        0x50,
+        0x40 | (length >> 11) as u8,
+        (length >> 3) as u8,
+        ((length & 7) << 5) as u8 | 0x1F,
+        0xFC,
+    ];
+    frame.extend(SILENT_AAC_BLOCK);
+    frame.repeat(frames)
+}
+
+/// Bits written one after the other, the last byte padded with zeros.
+#[derive(Default)]
+struct Bits {
+    bytes: Vec<u8>,
+    used: usize,
+}
+
+impl Bits {
+    fn put(&mut self, count: usize, value: u32) {
+        for bit in (0..count).rev() {
+            if self.used.is_multiple_of(8) {
+                self.bytes.push(0);
+            }
+            *self.bytes.last_mut().unwrap() |= (((value >> bit) & 1) as u8) << (7 - self.used % 8);
+            self.used += 1;
+        }
+    }
+}
+
+/// `frames` silent AAC-LC frames as LATM in LOAS, each with its stream
+/// configuration, as a station that sends AAC this way does.
+fn silent_latm(frames: usize) -> Vec<u8> {
+    let mut mux = Bits::default();
+    mux.put(1, 0); // the configuration follows
+    mux.put(1, 0); // audio mux version
+    mux.put(1, 1); // all streams have the same time framing
+    mux.put(6, 0); // one sub-frame
+    mux.put(4, 0); // one program
+    mux.put(3, 0); // one layer
+    mux.put(5, 2); // AAC-LC
+    mux.put(4, 4); // 44.1 kHz
+    mux.put(4, 1); // one channel
+    mux.put(3, 0); // GASpecificConfig: no frame length flag, core coder or extension
+    mux.put(3, 0); // frame length type: variable
+    mux.put(8, 0xFF); // buffer fullness: variable
+    mux.put(2, 0); // no other data, no CRC
+    mux.put(8, SILENT_AAC_BLOCK.len() as u32);
+    for byte in SILENT_AAC_BLOCK {
+        mux.put(8, u32::from(byte));
+    }
+    let mut frame = Bits::default();
+    frame.put(11, 0x2B7); // the LOAS sync word
+    frame.put(13, mux.bytes.len() as u32);
+    frame.bytes.extend(mux.bytes);
+    frame.bytes.repeat(frames)
+}
+
+/// The 16-bit stereo frames a decoder makes of everything that came out.
+fn frames_of(out: &[u8]) -> usize {
+    out.len() / 4
+}
+
+#[test]
+fn a_live_stream_of_transport_stream_segments_decodes_as_one_stream() {
+    let segments = [ts_segment(0, 12), ts_segment(12, 12), ts_segment(24, 12)];
+    let (download, mut fill) =
+        download::live(&std::env::temp_dir().join("playback-tests"), 1 << 20).unwrap();
+    // Each segment as it was fetched, one after the other.
+    for segment in &segments {
+        assert!(fill.append(segment));
+    }
+    fill.finish();
+    let (out, decoding) = decode(
+        download,
+        Gain::default(),
+        Leveling::Off,
+        &device(&[44_100], &[I16]),
+        None,
+    );
+    assert!(decoding.live);
+    assert_eq!(decoding.format.rate, 44_100);
+    // 36 frames of 1152 samples; the decoder holds back a frame or two at
+    // either end.
+    let decoded = frames_of(&out);
+    assert!(
+        (34 * 1152..=36 * 1152).contains(&decoded),
+        "{decoded} frames of {}",
+        36 * 1152
+    );
+    let path: Vec<&str> = decoding
+        .path
+        .iter()
+        .map(|step| step.text.as_str())
+        .collect();
+    assert_eq!(path[0], "MP3 44.1 kHz");
+    assert_eq!(decoding.path[0].quality, Quality::Low);
+}
+
+#[test]
+fn a_live_stream_of_aac_in_a_transport_stream_decodes() {
+    type Silence = fn(usize) -> Vec<u8>;
+    let streams: [(u8, Silence); 2] = [
+        (ADTS_STREAM_TYPE, silent_adts),
+        (LATM_STREAM_TYPE, silent_latm),
+    ];
+    for (stream_type, silent) in streams {
+        let (download, mut fill) =
+            download::live(&std::env::temp_dir().join("playback-tests"), 1 << 20).unwrap();
+        // A packet of its own for each frame, as stations send AAC.
+        let packets: Vec<Vec<u8>> = (0..30).map(|_| silent(1)).collect();
+        let segment = transport_stream(stream_type, &packets, 0, TICKS_PER_AAC_FRAME);
+        assert!(fill.append(&segment));
+        fill.finish();
+        let (out, decoding) = decode(
+            download,
+            Gain::default(),
+            Leveling::Off,
+            &device(&[44_100], &[I16]),
+            None,
+        );
+        assert!(decoding.live);
+        assert_eq!(decoding.format.rate, 44_100, "type {stream_type:#x}");
+        let decoded = frames_of(&out);
+        assert!(
+            (29 * 1024..=30 * 1024).contains(&decoded),
+            "type {stream_type:#x}: {decoded} frames of {}",
+            30 * 1024
+        );
+        assert!(
+            decoding.path[0].text.starts_with("AAC"),
+            "{:?}",
+            decoding.path
+        );
+    }
+}
+
+#[test]
+fn why_a_live_stream_broke_off_is_what_the_player_says() {
+    let (mut decoder, shared, _) = decoder_of(&["station"]);
+    decoder.fetch = Box::new(|_: &Track, _: f64| {
+        let (download, mut fill) =
+            download::live(&std::env::temp_dir().join("playback-tests"), 1 << 20).unwrap();
+        assert!(fill.append(&ts_segment(0, 12)));
+        fill.fail("The station stopped answering: no more.".into());
+        Ok(download)
+    });
+    decoder.open(0, 0.0, None);
+    decode_until(&mut decoder, &shared, 2);
+    assert_eq!(
+        shared.ring.lock().unwrap().skipped,
+        Some((0, "The station stopped answering: no more.".into()))
+    );
+}
+
+#[test]
+fn the_end_of_a_download_that_failed_is_not_the_end_of_the_track() {
+    let (download, mut fill) =
+        download::live(&std::env::temp_dir().join("playback-tests"), 1 << 20).unwrap();
+    assert!(fill.append(&silent_mp3(400)));
+    let _ = ffmpeg_next::init();
+    let decoding = Decoding::open(
+        download,
+        &track(Gain::default()),
+        Leveling::Off,
+        &Dsp::default(),
+        &device(&[44_100], &[I16]),
+        &[],
+        || false,
+    )
+    .unwrap_or_else(|_| panic!("opens"));
+    let end = ffmpeg_next::Error::Eof;
+    assert!(decoding.is_end_of_track(&end));
+    fill.fail("The station stopped answering: cut off.".into());
+    assert!(
+        !decoding.is_end_of_track(&end),
+        "FFmpeg may call a read that failed the end"
+    );
+    assert!(!decoding.is_end_of_track(&ffmpeg_next::Error::InvalidData));
+}
+
+#[test]
+fn a_live_stream_is_joined_where_it_is_and_fetched_again_rather_than_sought() {
+    let (mut decoder, shared, _) = decoder_of(&["station"]);
+    let fetched = Arc::new(std::sync::Mutex::new(Vec::new()));
+    decoder.fetch = Box::new({
+        let fetched = fetched.clone();
+        move |_: &Track, seconds: f64| {
+            fetched.lock().unwrap().push(seconds);
+            let (download, mut fill) =
+                download::live(&std::env::temp_dir().join("playback-tests"), 1 << 20).unwrap();
+            assert!(fill.append(&ts_segment(0, 40)));
+            fill.finish();
+            Ok(download)
+        }
+    });
+    decoder.open(0, 0.0, None);
+    decode_until(&mut decoder, &shared, 1);
+    shared.ring.lock().unwrap().segments[0].played = 5 * 44_100;
+    // A change of sound processing opens what plays again, where it is.
+    decoder.handle(Command::Dsp(Dsp {
+        headroom: 3.0,
+        ..Dsp::default()
+    }));
+    assert_eq!(*fetched.lock().unwrap(), [0.0, 5.0], "fetched again");
+    let ring = shared.ring.lock().unwrap();
+    assert_eq!(
+        ring.segments[0].start, 0,
+        "it has no place of its own to seek to"
+    );
+}
+
+#[test]
+fn only_a_download_that_is_not_live_plays_on_from_where_it_was() {
+    let folder = std::env::temp_dir().join("playback-tests");
+    let (whole, mut fill) = download::new(&folder, Some(1)).unwrap();
+    fill.append(b"x");
+    fill.finish();
+    assert!(plays_from(&whole, 0.0));
+    let (live, _fill) = download::live(&folder, 16).unwrap();
+    assert!(!plays_from(&live, 0.0));
+}
+
 /// The loopback card, which one test at a time plays on.
 static LOOPBACK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

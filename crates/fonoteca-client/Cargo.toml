@@ -20,6 +20,7 @@ slint = "1.18"
 flate2 = "1.1"
 keyring-core = "1"
 playback = { path = "../playback" }
+radiostream = { path = "../radiostream" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

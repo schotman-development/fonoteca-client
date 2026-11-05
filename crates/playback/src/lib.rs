@@ -23,7 +23,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 pub use cpal::SampleFormat;
-pub use download::{Download, Fill, new as download, open as open_file};
+pub use download::{Download, Fill, live as live_download, new as download, open as open_file};
 pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
 pub use output::{SystemMixer, devices};
 pub use outputs::OutputDevice;
@@ -716,7 +716,11 @@ impl Decoder {
             }
         };
         let opened = download.map_err(Stop::Failed).and_then(|download| {
-            let into_download = seconds - download.starts_at().unwrap_or(0.0);
+            // A live stream is joined where it is.
+            let into_download = match download.is_live() {
+                true => 0.0,
+                false => seconds - download.starts_at().unwrap_or(0.0),
+            };
             let spare = download
                 .reader()
                 .map_err(|e| Stop::Failed(format!("The track couldn't be read back: {e}")))?;
@@ -871,11 +875,12 @@ impl Decoder {
 /// on to there. One whose source began it part way does from where it began,
 /// and once all of it has arrived from any later point too: a seek in it then
 /// leaves no gap, where fetching it again from there leaves one of 50 to
-/// 100 ms.
+/// 100 ms. A live stream plays from where it is now, so it is fetched again.
 fn plays_from(download: &Download, seconds: f64) -> bool {
-    download
-        .starts_at()
-        .is_none_or(|start| start == seconds || (start < seconds && download.complete()))
+    !download.is_live()
+        && download
+            .starts_at()
+            .is_none_or(|start| start == seconds || (start < seconds && download.complete()))
 }
 
 fn segment(track: usize, decoding: &Decoding, seconds: f64) -> Segment {
@@ -884,7 +889,11 @@ fn segment(track: usize, decoding: &Decoding, seconds: f64) -> Segment {
         format: decoding.format,
         data: VecDeque::new(),
         ended: false,
-        start: (seconds * f64::from(decoding.format.rate)) as u64,
+        start: if decoding.live {
+            0
+        } else {
+            (seconds * f64::from(decoding.format.rate)) as u64
+        },
         played: 0,
         path: decoding.path.clone(),
     }

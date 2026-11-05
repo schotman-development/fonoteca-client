@@ -781,6 +781,20 @@ export component Workbench inherits Window {
                                 { text: "Exclusive: USB DAC (44100 Hz 24-bit, 2 channels)", quality: 3 },
                             ];
                         }
+                        PlayerBar {
+                            cover: root.albums[3].cover;
+                            title: root.long-text ? root.long-title : "Radio 3";
+                            names: [{ label: "Live radio", link: "" }];
+                            paused: root.player-paused;
+                            live: true;
+                            quality: "Low quality";
+                            level: 0;
+                            path: [
+                                { text: "AAC 48 kHz", quality: 0 },
+                                { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
+                            ];
+                            toggle-pause => { root.player-paused = !root.player-paused; }
+                        }
                     }
 
                     if root.current == 16: Example {
@@ -874,6 +888,25 @@ export component Workbench inherits Window {
                             seek(seconds) => { root.player-position = seconds; }
                             toggle-shuffle => { root.player-shuffled = !root.player-shuffled; }
                             cycle-repeat => { root.player-repeat = mod(root.player-repeat + 1, 3); }
+                        }
+                        // A live station: no album, no position, only play.
+                        NowPlaying {
+                            active: true;
+                            available: root.long-text ? 400px : 900px;
+                            cover: root.albums[3].cover;
+                            title: root.long-text ? root.long-title : "Radio 3";
+                            names: [{ label: "Live radio", link: "" }];
+                            quality: "Low quality";
+                            level: 0;
+                            path: [
+                                { text: "AAC 48 kHz", quality: 0 },
+                                { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
+                            ];
+                        }
+                        PlayerControls {
+                            paused: root.player-paused;
+                            live: true;
+                            toggle-pause => { root.player-paused = !root.player-paused; }
                         }
                         OutputPicker {
                             output-devices: root.long-text ? root.many-devices : root.output-devices;

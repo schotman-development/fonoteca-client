@@ -1040,6 +1040,8 @@ export component AppWindow inherits Window {
     in property <bool> playing-paused;
     in property <float> playing-position;
     in property <float> playing-duration;
+    // A live radio station plays: no length, no seeking, no other track.
+    in property <bool> playing-live;
     in property <string> playing-waveform;
     in property <string> playing-quality;
     in property <int> playing-level: -1;
@@ -1354,6 +1356,8 @@ export component AppWindow inherits Window {
     // The same for the catalogue's shelves.
     callback catalogue-shelf-in-view(shelf: int, first: int, last: int);
     callback save-catalogue-station(shelf: int, index: int);
+    // A station's tile, by its link, is clicked: it plays.
+    callback play-station(link: string);
     callback toggle-language(index: int);
 
     property <Asking> asking;
@@ -1826,6 +1830,7 @@ export component AppWindow inherits Window {
                         tiles: root.saved-stations;
                         more: true;
                         see-all => { root.open("radio"); }
+                        open(link) => { root.play-station(link); }
                     }
                     if root.page == Page.home && root.listenbrainz-user != "": ListeningStats {
                         periods: root.stat-periods;
@@ -2219,6 +2224,7 @@ export component AppWindow inherits Window {
                         more: true;
                         entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
                         see-all => { root.open(root.genre-radio.link); }
+                        open(link) => { root.play-station(link); }
                         activated(index) => { root.save-station(root.genre-radio.shelf, index); }
                         in-view(first, last) => { root.station-shelf-in-view(root.genre-radio.shelf, first, last); }
                     }
@@ -2308,6 +2314,7 @@ export component AppWindow inherits Window {
                         view-top: -scroll.content-y - self.y;
                         view-height: scroll.visible-height;
                         entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
+                        open(link) => { root.play-station(link); }
                         activated(index) => { root.save-station(-1, index); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                     }
@@ -3009,6 +3016,7 @@ export component AppWindow inherits Window {
                                 { id: "edit", label: "Edit", icon: Icons.pencil },
                                 { id: "delete", label: "Delete", icon: Icons.trash, danger: true },
                             ] : [];
+                            open(link) => { root.play-station(link); }
                             activated(index, id) => {
                                 root.ask-station(id == "edit" ? Asking.edit-station : Asking.delete-station, root.station-rows[index]);
                             }
@@ -3017,6 +3025,7 @@ export component AppWindow inherits Window {
                             title: shelf.title;
                             tiles: shelf.tiles;
                             entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
+                            open(link) => { root.play-station(link); }
                             activated(index) => { root.save-catalogue-station(shelf.shelf, index); }
                             in-view(first, last) => { root.catalogue-shelf-in-view(shelf.shelf, first, last); }
                         }
@@ -3026,6 +3035,7 @@ export component AppWindow inherits Window {
                             more: true;
                             entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
                             see-all => { root.open(shelf.link); }
+                            open(link) => { root.play-station(link); }
                             activated(index) => { root.save-station(shelf.shelf, index); }
                             in-view(first, last) => { root.station-shelf-in-view(shelf.shelf, first, last); }
                         }
@@ -3055,6 +3065,7 @@ export component AppWindow inherits Window {
                     paused: root.playing-paused;
                     position: root.playing-position;
                     duration: root.playing-duration;
+                    live: root.playing-live;
                     waveform: root.playing-waveform;
                     quality: root.playing-quality;
                     level: root.playing-level;
@@ -3246,13 +3257,13 @@ export component AppWindow inherits Window {
                             text: "Now playing";
                             clicked => { root.show-now-playing(); }
                         }
-                        if !root.queue-open: Button {
+                        if !root.queue-open && !root.playing-live: Button {
                             text: "Queue";
                             clicked => { root.show-queue(); }
                         }
                         // What plays gets the menu a song gets in a table,
                         // less what queues or selects it.
-                        if !root.queue-open: TrackMenu {
+                        if !root.queue-open && !root.playing-live: TrackMenu {
                             line: {
                                 title: root.playing-title,
                                 loved: root.playing-loved,
@@ -3284,8 +3295,9 @@ export component AppWindow inherits Window {
                             accessible-label: "Now playing";
                             back => { root.close-now-playing(); }
                             escape => { root.close-now-playing(); }
-                            // A swipe up past the controls opens the queue.
-                            pushable: true;
+                            // A swipe up past the controls opens the queue, when
+                            // there is one.
+                            pushable: !root.playing-live;
                             pushed => { root.show-queue(); }
                             content-width: sheet-scroll.visible-width;
                             content-height: sheet-end.y - sheet-stage.spacing + sheet-stage.padding-bottom;
@@ -3323,6 +3335,7 @@ export component AppWindow inherits Window {
                                             paused: root.playing-paused;
                                             position: root.playing-position;
                                             duration: root.playing-duration;
+                                            live: root.playing-live;
                                             waveform: root.playing-waveform;
                                             shuffled: root.shuffled;
                                             repeat: root.repeat;

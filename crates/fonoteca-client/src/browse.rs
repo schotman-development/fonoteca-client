@@ -92,7 +92,7 @@ const SHELF_STATIONS: u32 = 12;
 const GENRE_STATIONS: u32 = 60;
 const GENRE_IN_LANGUAGE: u32 = 100;
 /// How the app names itself to the radio directory.
-const USER_AGENT: &str = concat!("fonoteca-client/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT: &str = concat!("fonoteca-client/", env!("CARGO_PKG_VERSION"));
 /// Tiles added to the albums or artists page at a time.
 const TILES_AT_ONCE: usize = 100;
 /// Albums asked for at a time while the library loads, and at most how many,
@@ -5187,7 +5187,12 @@ fn fill_shelf(
 /// with the pictures it showed asked for again; one with no stations goes.
 fn show_shelf(browser: &Shared, shelf: usize, id: &str, stations: Vec<Station>) {
     let mut b = browser.borrow_mut();
-    let tiles: Vec<AlbumTile> = stations.iter().map(|s| station_tile(&b, s)).collect();
+    let tiles: Vec<AlbumTile> = (stations.iter().enumerate())
+        .map(|(row, s)| AlbumTile {
+            link: format!("{STATION_LINK}shelf:{shelf}:{row}").into(),
+            ..station_tile(&b, s)
+        })
+        .collect();
     let model = b.shelf_model.clone();
     let shown = model.iter().position(|row| row.shelf as usize == shelf);
     let at = (model.iter())
@@ -5371,11 +5376,18 @@ fn more_stations(ui: &AppWindow, browser: &Shared) {
                 let mut seen = HashSet::new();
                 merge(&[], &b.genre_stations, &mut seen);
                 let stations = merge(&lists, &rest, &mut seen);
-                let tiles: Vec<_> = stations
-                    .iter()
-                    .map(|s| {
+                let before = b.genre_stations.len();
+                let tiles: Vec<_> = (stations.iter().enumerate())
+                    .map(|(row, s)| {
                         let favicon = Some(s.favicon.clone()).filter(|f| !f.is_empty());
-                        (station_tile(&b, s), favicon)
+                        let link = format!("{STATION_LINK}genre:{}", before + row).into();
+                        (
+                            AlbumTile {
+                                link,
+                                ..station_tile(&b, s)
+                            },
+                            favicon,
+                        )
                     })
                     .collect();
                 b.genre_stations.extend(stations);
@@ -5476,8 +5488,11 @@ fn show_catalogue(ui: &AppWindow, browser: &Shared) {
                 link: "".into(),
                 shelf: shelf as i32,
                 tiles: ModelRc::new(VecModel::from(
-                    (found.stations.iter())
-                        .map(|&place| catalogue_tile(&b, &b.catalogue[place], size))
+                    (found.stations.iter().enumerate())
+                        .map(|(row, &place)| AlbumTile {
+                            link: format!("{STATION_LINK}catalogue:{shelf}:{row}").into(),
+                            ..catalogue_tile(&b, &b.catalogue[place], size)
+                        })
                         .collect::<Vec<_>>(),
                 )),
             })
@@ -5592,6 +5607,78 @@ fn save_catalogue_station(ui: &AppWindow, browser: &Shared, shelf: usize, index:
     });
 }
 
+/// The address a directory station streams from: the stream itself, with
+/// playlists and redirects followed, else the one the station gave.
+fn stream_address(station: &Station) -> &str {
+    match station.url_resolved.as_str() {
+        "" => &station.url,
+        resolved => resolved,
+    }
+}
+
+/// The start of a station tile's link: playing it, rather than going to a
+/// page. What follows says where the station is: `saved:<row>` among the
+/// server's, `shelf:<shelf>:<row>` or `genre:<row>` among the directory's, and
+/// `catalogue:<shelf>:<row>` among the curated catalogue's.
+const STATION_LINK: &str = "station:";
+
+/// The station a tile's link names, with the picture the tile shows.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn tile_station(
+    ui: &AppWindow,
+    browser: &Shared,
+    link: &str,
+) -> Option<(crate::radio::Station, slint::Image)> {
+    let mut place = link.strip_prefix(STATION_LINK)?.split(':');
+    let kind = place.next()?;
+    let mut number = || place.next()?.parse::<usize>().ok();
+    let b = browser.borrow();
+    let (name, stream, tile) = match kind {
+        "saved" => {
+            let row = number()?;
+            let station = b.server_stations.get(row)?;
+            let tile = b.saved.row_data(row);
+            (station.name.clone(), station.stream_url.clone(), tile)
+        }
+        "shelf" => {
+            let (shelf, row) = (number()?, number()?);
+            let station = b.shelves.get(&shelf)?.get(row)?;
+            let shown = b.shelf_model.iter().find(|s| s.shelf as usize == shelf);
+            let tile = shown.and_then(|s| s.tiles.row_data(row));
+            (
+                station.name.trim().to_owned(),
+                stream_address(station).to_owned(),
+                tile,
+            )
+        }
+        "catalogue" => {
+            let (shelf, row) = (number()?, number()?);
+            let place = *b.catalogue_shelves.get(shelf)?.stations.get(row)?;
+            let station = b.catalogue.get(place)?;
+            let shown = b.catalogue_model.iter().find(|s| s.shelf as usize == shelf);
+            let tile = shown.and_then(|s| s.tiles.row_data(row));
+            (
+                station.name.trim().to_owned(),
+                station.stream_url.clone(),
+                tile,
+            )
+        }
+        "genre" => {
+            let row = number()?;
+            let station = b.genre_stations.get(row)?;
+            let tile = ui.get_tiles().row_data(row);
+            (
+                station.name.trim().to_owned(),
+                stream_address(station).to_owned(),
+                tile,
+            )
+        }
+        _ => return None,
+    };
+    let station = crate::radio::Station { name, stream };
+    Some((station, tile.map(|tile| tile.cover).unwrap_or_default()))
+}
+
 /// Saves a station of a shelf, or of the genre page when `shelf` is -1, on
 /// the server, unless the server has its stream already.
 fn save_station(ui: &AppWindow, browser: &Shared, shelf: i32, index: usize) {
@@ -5605,10 +5692,7 @@ fn save_station(ui: &AppWindow, browser: &Shared, shelf: i32, index: usize) {
     };
     let Some(station) = station else { return };
     let name = station.name.trim().to_owned();
-    let stream = match station.url_resolved.as_str() {
-        "" => station.url.clone(),
-        resolved => resolved.to_owned(),
-    };
+    let stream = stream_address(&station).to_owned();
     let saved = browser
         .borrow()
         .server_stations
@@ -5695,6 +5779,7 @@ fn show_saved(ui: &AppWindow, browser: &Shared, stations: Vec<InternetRadioStati
                         .into_iter()
                         .collect(),
                 ),
+                link: format!("{STATION_LINK}saved:{row}").into(),
                 logo: true,
                 ..AlbumTile::default()
             };
