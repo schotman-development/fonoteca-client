@@ -1535,7 +1535,7 @@ export component AppWindow inherits Window {
     // more.
     property <bool> phone: root.width < 600px;
     property <bool> bottom-bar-shown: root.phone && root.virtual-keyboard-size.height <= 0;
-    property <length> bottom-bar-height: root.bottom-bar-shown ? 80px : 0;
+    property <length> bottom-bar-height: root.bottom-bar-shown ? Theme.bar-height : 0;
     // What a phone covers at the bottom: its navigation bar, or the keyboard
     // when that is open, which the pages and forms stay above.
     property <length> bottom-inset: max(root.safe-area-insets.bottom, root.virtual-keyboard-size.height);

@@ -3793,7 +3793,7 @@ mod tests {
             assert_eq!(row(6), ("IV. Allegro", to(&[]), 0, true, false));
             // On a phone the rows wrap, and the page still scrolls to the end
             // of the last one, above the bottom bar.
-            let bottom_bar = 80.0;
+            let bottom_bar = 64.0;
             let window = ui.window();
             window.set_size(slint::LogicalSize::new(360.0, 640.0));
             window.dispatch_event(WindowEvent::PointerScrolled {

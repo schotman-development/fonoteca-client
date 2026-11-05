@@ -37,7 +37,8 @@ export global Theme {
 
     out property <length> gap: 16px;
     out property <length> radius: 6px;
-    // The bar over the pages, as high as the logo over the sidebar beside it.
+    // The bar over the pages, as high as the logo over the sidebar beside it, and
+    // the phone's bottom bar.
     out property <length> bar-height: 64px;
 
     out property <brush> danger: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
@@ -2805,8 +2806,8 @@ export component Sidebar inherits Rectangle {
     }
 }
 
-// One destination of the BottomBar: its icon in a pill that lights when it is
-// the current one, and its name under it.
+// One destination of the BottomBar: its icon over its name, the current one
+// lit the way the sidebar lights its entry, with a rounded fill.
 component BarItem inherits Pressable {
     in property <string> text;
     in property <string> icon;
@@ -2817,26 +2818,25 @@ component BarItem inherits Pressable {
     // Equal widths, whatever the names measure bold or plain.
     preferred-width: 0;
     horizontal-stretch: 1;
+    height: Theme.phone-target;
 
+    Rectangle {
+        border-radius: Theme.radius;
+        background: root.current ? Theme.hover : root.hovered ? Theme.hover.transparentize(50%) : transparent;
+    }
     VerticalLayout {
         alignment: center;
-        spacing: 4px;
+        spacing: 2px;
         HorizontalLayout {
             alignment: center;
-            Rectangle {
-                width: 56px;
-                height: 32px;
-                border-radius: 16px;
-                background: root.current ? Theme.accent.transparentize(75%) : root.hovered ? Theme.hover : transparent;
-                Path {
-                    width: 24px;
-                    height: 24px;
-                    viewbox-width: 24;
-                    viewbox-height: 24;
-                    commands: root.icon;
-                    stroke: root.current ? Theme.text : Theme.muted;
-                    stroke-width: 1.75px;
-                }
+            Path {
+                width: Theme.phone-icon;
+                height: Theme.phone-icon;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: root.icon;
+                stroke: root.current ? Theme.text : Theme.muted;
+                stroke-width: 1.75px;
             }
         }
         Text {
@@ -2851,21 +2851,21 @@ component BarItem inherits Pressable {
 }
 
 // The navigation of a phone, along the bottom of the window in the place of
-// the sidebar: Material 3's navigation bar, 80px high, each entry its
-// icon and name, the current one's icon in a pill.
+// the sidebar: the sidebar's entries as icon over name, in a bar as high as
+// the top bar.
 export component BottomBar inherits Rectangle {
     in property <[NavEntry]> entries;
     in property <int> current;
     callback selected(index: int);
 
-    height: 80px;
+    height: Theme.bar-height;
     background: Theme.surface;
     accessible-role: navigation;
     accessible-label: "Main";
 
     HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
+        padding: (Theme.bar-height - Theme.phone-target) / 2;
+        spacing: 4px;
         for entry[i] in root.entries: BarItem {
             text: entry.title;
             icon: entry.icon;
