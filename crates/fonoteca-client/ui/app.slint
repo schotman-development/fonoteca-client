@@ -120,6 +120,9 @@ export struct Track {
     work-tracks: int,
     // Whether all of them are selected.
     work-selected: bool,
+    // Whether the row above the work's row is selected too; its row below is,
+    // whenever the work's is.
+    work-joined-above: bool,
     // A movement, under its work's row.
     part: bool,
     // A work's only track on the album, a row as strong as a work's.
@@ -127,8 +130,11 @@ export struct Track {
     // The page a click on the row opens: a composition's, or on its page a
     // performance's album. Empty on albums and playlists.
     link: string,
-    // Whether its song is selected.
+    // Whether its song is selected, and whether the row above and the row
+    // below it are too, as a run of rows is outlined as one.
     selected: bool,
+    joined-above: bool,
+    joined-below: bool,
 }
 
 // A page's own title: on a phone Material's Headline Medium, the title of
@@ -2084,6 +2090,8 @@ export component AppWindow inherits Window {
                                 lovable: false;
                                 strong: true;
                                 selected: track.work-selected;
+                                joined-above: track.work-joined-above;
+                                joined-below: true;
                                 selecting: root.selected-tiles > 0;
                                 playable: root.can-play;
                                 open(link) => { root.open(link); }
@@ -2103,6 +2111,8 @@ export component AppWindow inherits Window {
                                 part: track.part;
                                 downloaded: track.downloaded;
                                 selected: track.selected;
+                                joined-above: track.joined-above;
+                                joined-below: track.joined-below;
                                 selecting: root.selected-tiles > 0;
                                 playlists: root.playlist-targets;
                                 removable: root.page == Page.playlist && root.playlist-editable;
@@ -2233,6 +2243,8 @@ export component AppWindow inherits Window {
                             lovable: false;
                             downloaded: track.downloaded;
                             selected: track.selected;
+                            joined-above: track.joined-above;
+                            joined-below: track.joined-below;
                             selecting: root.selected-tiles > 0;
                             playable: root.can-play;
                             downloadable: root.can-download && root.may-download;

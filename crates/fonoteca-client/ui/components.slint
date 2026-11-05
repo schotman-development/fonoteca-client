@@ -1192,6 +1192,25 @@ export component PersonTile inherits Pressable {
     }
 }
 
+// The tint and outline of a selected row. The outline runs on past the row
+// where a neighbour is selected, and is cut off there, so selected rows next
+// to each other read as one block.
+component SelectedRowOutline inherits Rectangle {
+    in property <bool> joined-above;
+    in property <bool> joined-below;
+
+    clip: true;
+    Rectangle {
+        property <length> past: Theme.radius + 2px;
+        y: root.joined-above ? -self.past : 0;
+        height: parent.height + (root.joined-above ? self.past : 0) + (root.joined-below ? self.past : 0);
+        border-radius: Theme.radius;
+        border-width: 2px;
+        border-color: Theme.accent;
+        background: Theme.accent.transparentize(85%);
+    }
+}
+
 // A track, or on a classical album a work: a work's row is strong, and the
 // rows of its movements under it are parts, indented. Its names are its
 // composers, `split` of them, then its performers.
@@ -1226,6 +1245,9 @@ export component TrackRow inherits Pressable {
     // a click selects rather than plays.
     in property <bool> selected;
     in property <bool> selecting;
+    // Whether the rows above and below it are selected too.
+    in property <bool> joined-above;
+    in property <bool> joined-below;
     callback open(link: string);
     callback toggle-love();
     // With Shift held, everything from the row last picked to this one.
@@ -1248,11 +1270,13 @@ export component TrackRow inherits Pressable {
     }
     context-clicked => { root.select(root.shift); }
 
+    if root.selected: SelectedRowOutline {
+        joined-above: root.joined-above;
+        joined-below: root.joined-below;
+    }
     Rectangle {
         border-radius: Theme.radius;
-        border-width: root.selected ? 2px : 0;
-        border-color: Theme.accent;
-        background: root.selected ? Theme.accent.transparentize(85%) : root.hovered ? Theme.hover : transparent;
+        background: !root.selected && root.hovered ? Theme.hover : transparent;
     }
     HorizontalLayout {
         padding: 8px;
@@ -1747,19 +1771,9 @@ export component TrackLineRow inherits Rectangle {
     accessible-item-selectable: root.selecting;
     accessible-item-selected: root.line.selected;
 
-    // The outline runs on past the row where a neighbour is selected, and is
-    // cut off there, so selected rows next to each other read as one block.
-    if root.line.selected: Rectangle {
-        clip: true;
-        Rectangle {
-            property <length> past: Theme.radius + 2px;
-            y: root.joined-above ? -self.past : 0;
-            height: parent.height + (root.joined-above ? self.past : 0) + (root.joined-below ? self.past : 0);
-            border-radius: Theme.radius;
-            border-width: 2px;
-            border-color: Theme.accent;
-            background: Theme.accent.transparentize(85%);
-        }
+    if root.line.selected: SelectedRowOutline {
+        joined-above: root.joined-above;
+        joined-below: root.joined-below;
     }
 
     // The row's content sits in it, so the row stays hovered over its links.

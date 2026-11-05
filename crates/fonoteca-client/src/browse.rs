@@ -1092,21 +1092,60 @@ fn select_work(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
 }
 
 /// Shows on every track row whether its song is selected, and on a work's
-/// row whether all of the work's songs are, whichever way they were picked.
+/// row whether all of the work's songs are, whichever way they were picked;
+/// and for each such row on screen, the neighbours it is selected with, so
+/// that a run of them is outlined as one.
 fn show_track_selection(b: &Browser) {
     let is_selected = |song: &Child| b.selected.contains(&song_link(song));
+    let mut rows = Vec::new();
     for row in 0..b.tracks.row_count() {
-        let (Some(mut track), Some(song)) = (b.tracks.row_data(row), b.songs.get(row)) else {
+        let (Some(track), Some(song)) = (b.tracks.row_data(row), b.songs.get(row)) else {
             continue;
         };
         let work = &b.songs[row..(row + track.work_tracks as usize).min(b.songs.len())];
         let work_selected = !work.is_empty() && work.iter().all(is_selected);
-        if track.selected != is_selected(song) || track.work_selected != work_selected {
-            track.selected = is_selected(song);
-            track.work_selected = work_selected;
-            b.tracks.set_row_data(row, track);
+        rows.push((row, track, is_selected(song), work_selected));
+    }
+    // A work's row is on screen above its first movement.
+    let on_screen: Vec<bool> = rows
+        .iter()
+        .flat_map(|(_, track, selected, work_selected)| {
+            let heading = (track.work_tracks > 0).then_some(*work_selected);
+            heading.into_iter().chain([*selected])
+        })
+        .collect();
+    let mut joins = joined(&on_screen).into_iter();
+    for (row, track, selected, work_selected) in rows {
+        let work_joined_above = track.work_tracks > 0 && joins.next().unwrap_or_default().0;
+        let (joined_above, joined_below) = joins.next().unwrap_or_default();
+        let shown = Track {
+            selected,
+            work_selected,
+            joined_above,
+            joined_below,
+            work_joined_above,
+            ..track.clone()
+        };
+        if shown != track {
+            b.tracks.set_row_data(row, shown);
         }
     }
+}
+
+/// For each of `selected` rows in a column, whether the row above it and the
+/// row below it are selected as well; none of a row that isn't selected.
+fn joined(selected: &[bool]) -> Vec<(bool, bool)> {
+    (0..selected.len())
+        .map(|at| {
+            let next_to = |other: Option<usize>| {
+                other.is_some_and(|other| selected.get(other) == Some(&true))
+            };
+            (
+                selected[at] && next_to(at.checked_sub(1)),
+                selected[at] && next_to(Some(at + 1)),
+            )
+        })
+        .collect()
 }
 
 /// Says how many tiles and rows are selected, and where the playlists among
@@ -7873,6 +7912,93 @@ mod tests {
         b.tracks.set_row_data(0, Track::default());
         show_track_selection(&b);
         assert!(!shown(&b).1);
+    }
+
+    #[test]
+    fn selected_rows_next_to_each_other_join_and_a_gap_splits_them() {
+        let (no, yes) = ((false, false), true);
+        assert_eq!(joined(&[]), []);
+        assert_eq!(joined(&[true]), [no]);
+        assert_eq!(
+            joined(&[true, true, true, false, true]),
+            [(false, yes), (yes, yes), (yes, false), no, no]
+        );
+    }
+
+    #[test]
+    fn a_selected_work_joins_its_movements_and_the_rows_around_them() {
+        let songs: Vec<Child> = ["a", "b", "c", "d", "a"]
+            .iter()
+            .map(|id| {
+                serde_json::from_str(&format!(r#"{{"id":"{id}","isDir":false,"title":"t"}}"#))
+                    .unwrap()
+            })
+            .collect();
+        let links: Vec<String> = songs.iter().map(song_link).collect();
+        let mut b = Browser::default();
+        // A song on its own, a work of two movements, a song on its own, and
+        // the first song again.
+        b.tracks.set_vec(vec![
+            Track::default(),
+            Track {
+                work_tracks: 2,
+                ..Track::default()
+            },
+            Track::default(),
+            Track::default(),
+            Track::default(),
+        ]);
+        b.songs = songs;
+        let joins = |b: &Browser| -> Vec<(bool, bool)> {
+            b.tracks
+                .iter()
+                .map(|track| (track.joined_above, track.joined_below))
+                .collect()
+        };
+        let work_above = |b: &Browser| b.tracks.row_data(1).unwrap().work_joined_above;
+        // The work's songs and the song above it, which is on the last row
+        // too: the work's row joins the song above, and the first movement
+        // joins the work's row.
+        pick_all(&mut b, &links[1..3]);
+        pick(&mut b, &links, 0, false);
+        show_track_selection(&b);
+        assert_eq!(
+            joins(&b),
+            [
+                (false, true),
+                (true, true),
+                (true, false),
+                (false, false),
+                (false, false)
+            ]
+        );
+        assert!(work_above(&b));
+        // With nothing selected above it, the work's row starts the block.
+        pick(&mut b, &links, 0, false);
+        show_track_selection(&b);
+        assert_eq!(
+            joins(&b),
+            [
+                (false, false),
+                (true, true),
+                (true, false),
+                (false, false),
+                (false, false)
+            ]
+        );
+        assert!(!work_above(&b));
+        // Letting the first movement go leaves the work unselected, so the
+        // second movement stands alone.
+        pick(&mut b, &links, 1, false);
+        show_track_selection(&b);
+        assert_eq!(joins(&b), [(false, false); 5]);
+        // A first movement alone does not make the work selected, so it joins
+        // nothing.
+        pick(&mut b, &links, 2, false);
+        pick(&mut b, &links, 1, false);
+        show_track_selection(&b);
+        assert_eq!(joins(&b), [(false, false); 5]);
+        assert!(!work_above(&b));
     }
 
     #[test]
