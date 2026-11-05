@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+mod answers;
 #[cfg(any(target_os = "android", test))]
 mod back;
 #[cfg(target_os = "android")]
@@ -340,6 +341,20 @@ fn remove_downloads(ui: &AppWindow, browser: &browse::Shared) -> bool {
     }
 }
 
+/// Forgets the pages' answers kept for the account before it goes. When they
+/// can't be removed it says so and stays signed in.
+fn forget_answers(ui: &AppWindow, browser: &browse::Shared) -> bool {
+    match browse::forget_answers(browser) {
+        Ok(()) => true,
+        Err(e) => {
+            let note =
+                format!("Not signed out: the pages kept on this device couldn't be removed: {e}");
+            ui.set_saved_note(note.into());
+            false
+        }
+    }
+}
+
 /// Stops the library and clears what the screens know of the account.
 fn signed_out(ui: &AppWindow, browser: &browse::Shared) {
     browse::stop(browser);
@@ -617,7 +632,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             if ui.get_busy() {
                 return;
             }
-            if !remove_downloads(&ui, &browser) {
+            if !remove_downloads(&ui, &browser) || !forget_answers(&ui, &browser) {
                 return;
             }
             let browser = browser.clone();
@@ -637,7 +652,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             if ui.get_busy() {
                 return;
             }
-            if !remove_downloads(&ui, &browser) {
+            if !remove_downloads(&ui, &browser) || !forget_answers(&ui, &browser) {
                 return;
             }
             let browser = browser.clone();
@@ -764,6 +779,14 @@ mod tests {
     /// The fields of the one album, without its braces.
     const ALBUM: &str = r#""id":"a1","name":"Night Harbour","artist":"Mara Lind","artistId":"r1","coverArt":"al-a1","songCount":2,"duration":470,"created":"2021-01-01T00:00:00Z","year":2021,"genre":"Folk""#;
 
+    /// The first album's fields as the server has them now.
+    fn album_now() -> String {
+        match ALBUM_RENAMED.load(Relaxed) {
+            true => ALBUM.replace("Night Harbour", "Night Harbour (Remastered)"),
+            false => ALBUM.to_owned(),
+        }
+    }
+
     /// Road Trip's fields as the server has them now.
     fn road_trip_now() -> String {
         if ROAD_TRIP_EDITED.load(Relaxed) {
@@ -857,6 +880,15 @@ mod tests {
     /// but its first part.
     static LISTS: AtomicUsize = AtomicUsize::new(0);
     static LATER_DOWN: AtomicBool = AtomicBool::new(false);
+    /// Every call the server was asked, as `PLAYLIST_WRITES` has them.
+    static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// While set, the first album and the first saved station were renamed
+    /// elsewhere, and the album's notes rewritten.
+    static ALBUM_RENAMED: AtomicBool = AtomicBool::new(false);
+    /// While set, the album page's answer takes a while to come.
+    static SLOW_ALBUM: AtomicBool = AtomicBool::new(false);
+    /// While set, each part of the library takes a while to come.
+    static SLOW_LISTS: AtomicBool = AtomicBool::new(false);
     /// How many hearts were refused: every unstar, and the symphony's star.
     static REFUSED: AtomicUsize = AtomicUsize::new(0);
     /// While set, the server takes only an artist's name for their top
@@ -914,9 +946,43 @@ mod tests {
     /// Whether Road Trip has been edited on the server since: changed later,
     /// and Rope and Anchor in place of Fugue.
     static ROAD_TRIP_EDITED: AtomicBool = AtomicBool::new(false);
+    /// Whether a playlist named Later Jams for joe was made elsewhere.
+    static LATER_JAMS_ELSEWHERE: AtomicBool = AtomicBool::new(false);
+    /// Whether the station Wave was saved elsewhere.
+    static WAVE_ELSEWHERE: AtomicBool = AtomicBool::new(false);
     /// Whether the server converts what `stream` asks for, or sends the
     /// original (FLAC) as Fonoteca does.
     static STREAM_CONVERTS: AtomicBool = AtomicBool::new(false);
+
+    /// Where the pages' answers are kept for `username` on `server`.
+    fn answers_kept_for(server: &str, username: &str) -> std::path::PathBuf {
+        let auth = Auth::Password {
+            username: username.into(),
+            password: String::new(),
+        };
+        let account = Client::new(server, auth)
+            .unwrap()
+            .account(&prefs::answers_salt());
+        answers::file(&account).unwrap()
+    }
+
+    /// How many times the server was asked for `method`.
+    fn times_asked(method: &str) -> usize {
+        let call = format!("{method} ");
+        let asked = ASKED.lock().unwrap();
+        asked
+            .iter()
+            .filter(|asked| asked.starts_with(&call))
+            .count()
+    }
+
+    /// Whether the server was asked for `method` after the last `write`.
+    fn asked_after(write: &str, method: &str) -> bool {
+        let (write, method) = (format!("{write} "), format!("{method} "));
+        let asked = ASKED.lock().unwrap();
+        let last = |call: &str| asked.iter().rposition(|asked| asked.starts_with(call));
+        last(&method) > last(&write)
+    }
 
     /// A request's method and its arguments but the credentials.
     fn write_of(request: &str) -> String {
@@ -1245,6 +1311,7 @@ mod tests {
                 .find_map(|param| param.strip_prefix(name)?.strip_prefix('='))
         };
         let id = param("id");
+        ASKED.lock().unwrap().push(write_of(request));
         if request.contains("getOpenSubsonicExtensions") {
             let by_id = if NAMES_ONLY.load(Relaxed) {
                 ""
@@ -1324,13 +1391,16 @@ mod tests {
             if LATER_DOWN.load(Relaxed) && number("offset").unwrap_or(0) > 0 {
                 return reply("503 Service Unavailable", "text/plain", b"down");
             }
+            if SLOW_LISTS.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(300));
+            }
             LISTS.fetch_add(1, Relaxed);
             let album = |n: u32| {
                 format!(
                     r#"{{"id":"a{n}","name":"Other {n}","coverArt":"al-a{n}","songCount":0,"duration":0,"created":"2020-01-01T00:00:00Z"}}"#
                 )
             };
-            let albums: Vec<String> = std::iter::once(format!("{{{ALBUM}}}"))
+            let albums: Vec<String> = std::iter::once(format!("{{{}}}", album_now()))
                 .chain((2..=600).map(album))
                 .chain([
                     r#"{"id":"b1","name":"Sonatas","artist":"Bach Ensemble","musicBrainzId":"RG-SONATAS","year":2010,"songCount":0,"duration":0,"created":"2022-01-01T00:00:00Z"}"#.to_owned(),
@@ -1369,9 +1439,11 @@ mod tests {
                 )
             }
         } else if request.contains("/rest/getAlbumInfo2") {
-            ok(
-                r#""albumInfo":{"notes":"Recorded at sea &amp; on land.<br/><a href=\"https://example.org\">Read more</a>"}"#,
-            )
+            let notes = r#""albumInfo":{"notes":"Recorded at sea &amp; on land.<br/><a href=\"https://example.org\">Read more</a>"}"#;
+            match ALBUM_RENAMED.load(Relaxed) {
+                true => ok(&notes.replace("Recorded", "Remastered")),
+                false => ok(notes),
+            }
         } else if request.contains("/rest/getArtistInfo2") {
             ok(
                 r#""artistInfo2":{"biography":"<p>Mara Lind sings.</p>","similarArtist":[{"id":"r2","name":"Ove Strand"},{"id":"","name":"Nobody Here"}]}"#,
@@ -1395,7 +1467,18 @@ mod tests {
             ok(&format!(r#""album":{{{CLASSICAL}}}"#))
         } else if request.contains("/rest/getAlbum") {
             let songs = r#"[{"id":"s1","isDir":false,"title":"Harbour Lights","track":1,"discNumber":1,"duration":252,"starred":"2024-01-01T00:00:00Z","artists":[{"id":"r1","name":"Mara Lind"}]},{"id":"s2","isDir":false,"title":"Rope and Anchor","track":1,"discNumber":2,"duration":218,"artist":"Mara Lind","artistId":"r1"}]"#;
-            ok(&format!(r#""album":{{{ALBUM},"song":{songs}}}"#))
+            let songs = if STARRED.lock().unwrap().contains(&"s2".to_owned()) {
+                songs.replace(
+                    r#""title":"Rope and Anchor","#,
+                    r#""title":"Rope and Anchor","starred":"2024-02-01T00:00:00Z","#,
+                )
+            } else {
+                songs.to_owned()
+            };
+            if SLOW_ALBUM.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            ok(&format!(r#""album":{{{},"song":{songs}}}"#, album_now()))
         } else if request.contains("/rest/getSong") && id == Some("t1") {
             ok(&format!(r#""song":{HARBOUR_LIGHTS}"#))
         } else if request.contains("/rest/getIndexes") {
@@ -1420,7 +1503,8 @@ mod tests {
             ))
         } else if request.contains("/rest/getArtist") {
             ok(&format!(
-                r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{ALBUM}}}]}}"#
+                r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{}}}]}}"#,
+                album_now()
             ))
         } else if request.contains("/rest/search3") && param("query").is_some_and(|q| !q.is_empty())
         {
@@ -1469,8 +1553,14 @@ mod tests {
             } else {
                 road_trip
             };
+            let later_jams = match LATER_JAMS_ELSEWHERE.load(Relaxed) {
+                true => {
+                    r#",{"id":"p9","name":"Later Jams for joe","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z"}"#
+                }
+                false => "",
+            };
             ok(&format!(
-                r#""playlists":{{"playlist":[{{{road_trip}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}}]}}"#
+                r#""playlists":{{"playlist":[{{{road_trip}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}}{later_jams}]}}"#
             ))
         } else if request.contains("/rest/getPlaylist") && id == Some("p2") {
             ok(
@@ -1486,10 +1576,19 @@ mod tests {
             ok(
                 r#""radioCatalogue":{"internetRadioStation":[{"id":"rc-canal.xspf","name":"Canal","streamUrl":"https://catalogue.example.org/canal","homePageUrl":"https://canal.example.org/","coverArt":"rc-canal.xspf","countryCode":"NL","languageCodes":["nl"],"genres":["jazz"]},{"id":"rc-jazz.xspf","name":"Jazz","streamUrl":"https://stream.example.org/jazz","coverArt":"rc-jazz.xspf","countryCode":"NL","languageCodes":["nl"],"genres":["jazz"]},{"id":"rc-berlin.xspf","name":"Berlin","streamUrl":"https://catalogue.example.org/berlin","coverArt":"rc-berlin.xspf","countryCode":"DE","languageCodes":["de"],"genres":["news"]}]}"#,
             )
-        } else if request.contains("/rest/getInternetRadioStations") {
+        } else if request.contains("/rest/getInternetRadioStations") && ALBUM_RENAMED.load(Relaxed)
+        {
             ok(
-                r#""internetRadioStations":{"internetRadioStation":[{"id":"r1","name":"Jazz","streamUrl":"https://stream.example.org/jazz","homePageUrl":"https://radio.example.org/","coverArt":"ir-r1"},{"id":"r2","name":"News","streamUrl":"http://news.example.org/live.mp3"}]}"#,
+                r#""internetRadioStations":{"internetRadioStation":[{"id":"r1","name":"Jazz FM","streamUrl":"https://stream.example.org/jazz"}]}"#,
             )
+        } else if request.contains("/rest/getInternetRadioStations") {
+            let wave = match WAVE_ELSEWHERE.load(Relaxed) {
+                true => r#",{"id":"r3","name":"Wave","streamUrl":"https://s1.example.org/listen"}"#,
+                false => "",
+            };
+            ok(&format!(
+                r#""internetRadioStations":{{"internetRadioStation":[{{"id":"r1","name":"Jazz","streamUrl":"https://stream.example.org/jazz","homePageUrl":"https://radio.example.org/","coverArt":"ir-r1"}},{{"id":"r2","name":"News","streamUrl":"http://news.example.org/live.mp3"}}{wave}]}}"#
+            ))
         } else if ["create", "update", "delete"]
             .iter()
             .any(|change| request.contains(&format!("/rest/{change}InternetRadioStation")))
@@ -2807,6 +2906,21 @@ mod tests {
                 radio_writes().last().unwrap(),
                 "createInternetRadioStation name=Wave&streamUrl=https%3A%2F%2Fs1.example.org%2Flisten&homepageUrl=https%3A%2F%2Fs1.example.org%2F"
             );
+            // One saved elsewhere since the saved stations were asked for
+            // isn't saved twice: the server is asked.
+            // Asked again after the save, which keeps the two.
+            wait_for("the stations as they are", || {
+                asked_after("createInternetRadioStation", "getInternetRadioStations")
+            })
+            .await;
+            idle(Duration::from_millis(100)).await;
+            let sent = radio_writes().len();
+            WAVE_ELSEWHERE.store(true, Relaxed);
+            ui.invoke_save_station(0, 0);
+            wait_for("the station found", || ui.get_notice() == "Wave is saved already.").await;
+            assert_eq!(radio_writes().len(), sent);
+            wait_for("the stations anew", || ui.get_saved_stations().row_count() == 3).await;
+            WAVE_ELSEWHERE.store(false, Relaxed);
             ui.invoke_save_station(4, 0);
             assert_eq!(ui.get_notice(), "Jazz is saved already.");
             // The curated catalogue is shelved by the device's country, then
@@ -2872,14 +2986,16 @@ mod tests {
             // pictures, else the directory's.
             click(&ui, "Home");
             wait_for("the saved stations", || ui.get_saved_stations().row_count() == 2).await;
+            wait_for("the artists counted", || {
+                ui.get_stats().iter().any(|stat| stat.label == "Artists" && stat.value != "…")
+            })
+            .await;
             let saved = |row| ui.get_saved_stations().row_data(row).unwrap();
             assert_eq!(saved(0).title, "Jazz");
             assert_eq!(saved(0).names.row_data(0).unwrap().label, "radio.example.org");
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Radio);
-            // Waited for off the home page, which would otherwise have the
-            // artists loaded before the artists page below fails. News is
-            // found by name and told from another News by its stream.
+            // News is found by name and told from another News by its stream.
             wait_for("Jazz's picture", || saved(0).cover.size().width > 0).await;
             wait_for("News's picture", || saved(1).cover.size().width > 0).await;
             // The device keeps the directory's picture, not the server's.
@@ -2962,15 +3078,15 @@ mod tests {
             sort(0, false);
             wait_for("all albums again", || ui.get_tiles().row_count() == 100).await;
 
-            // The artists arrive at once, and Try again asks again when they
-            // don't. They show a page at a time, in the server's order.
+            // The artists arrive at once, kept since the home page asked for
+            // them, with the server down too. They show a page at a time, in
+            // the server's order.
             DOWN.store(true, Relaxed);
             click(&ui, "Artists");
-            wait_for("the failed artists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Artists);
-            DOWN.store(false, Relaxed);
-            ui.invoke_show_more();
             wait_for("the artists", || ui.get_tiles().row_count() == 100).await;
+            assert_eq!(ui.get_page_problem(), "");
+            DOWN.store(false, Relaxed);
             assert!(ui.get_more_tiles());
             let tile = ui.get_tiles().row_data(0).unwrap();
             assert_eq!(
@@ -3227,6 +3343,7 @@ mod tests {
             ui.invoke_select_track(0, false);
             ui.invoke_select_track(1, false);
             assert_eq!(ui.get_selected_tiles(), 2);
+            let playlists_asked = times_asked("getPlaylist");
             ui.invoke_remove_from_playlist(0);
             assert_eq!(ui.get_selected_tiles(), 1, "the song taken off is no longer picked");
             assert_eq!(ui.get_tracks().row_count(), 1);
@@ -3238,6 +3355,47 @@ mod tests {
             })
             .await;
             wait_for("the playlist again", || ui.get_tracks().row_count() == 2).await;
+            assert!(times_asked("getPlaylist") > playlists_asked, "not the one kept from before");
+            // Changed elsewhere within the hour, the playlist shows as kept,
+            // and a track taken off there by its place is looked for in the
+            // server's first: another song is there now, so none is taken off.
+            ui.invoke_open("playlists".into());
+            ROAD_TRIP_EDITED.store(true, Relaxed);
+            let playlists_asked = times_asked("getPlaylist");
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the playlist kept", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(times_asked("getPlaylist"), playlists_asked, "kept within the hour");
+            assert_eq!(ui.get_tracks().row_data(1).unwrap().title, "Fugue");
+            PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_remove_from_playlist(1);
+            assert_eq!(ui.get_tracks().row_count(), 1);
+            wait_for("the playlist as the server has it", || {
+                (ui.get_tracks().row_data(1)).is_some_and(|track| track.title == "Rope and Anchor")
+            })
+            .await;
+            assert!(writes().is_empty(), "nothing taken off");
+            assert_eq!(
+                ui.get_notice(),
+                "The playlist changed elsewhere, so nothing was taken off."
+            );
+            ui.set_notice("".into());
+            // Changed back elsewhere, its songs go in a playlist as the
+            // server has them, not as kept.
+            ROAD_TRIP_EDITED.store(false, Relaxed);
+            ui.invoke_open("playlists".into());
+            wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
+            PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_select_tile(0, false);
+            ui.invoke_add_selection_to_playlist("p1".into());
+            wait_for("the playlist's songs added", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["updatePlaylist playlistId=p1&songIdToAdd=s1&songIdToAdd=s9"]);
+            wait_for("the notice", || ui.get_notice() != "").await;
+            ui.set_notice("".into());
+            ui.invoke_open("playlist:p1".into());
+            wait_for("Road Trip as the server has it", || {
+                (ui.get_tracks().row_data(1)).is_some_and(|track| track.title == "Fugue")
+            })
+            .await;
             // A new name shows at once; one the server refuses goes back.
             ui.invoke_rename_playlist(" Drive ".into());
             assert_eq!(ui.get_header_title(), "Drive");
@@ -3380,6 +3538,7 @@ mod tests {
             assert!(!tracks.row_data(1).unwrap().loved);
             assert!(ui.get_can_go_back());
 
+            let albums = times_asked("getAlbum");
             click_heart(&ui, false);
             assert!(ui.get_tracks().row_data(1).unwrap().loved);
             wait_for("the star", || *STARRED.lock().unwrap() == ["s2"]).await;
@@ -3405,10 +3564,15 @@ mod tests {
                 "2021"
             );
 
+            let artists = times_asked("getArtist");
             click(&ui, "Back");
             wait_for("the album again", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Album);
             assert!(ui.get_can_go_forward());
+            // The star outdated the album kept: it is asked for again, and
+            // shows the song loved.
+            assert_eq!(times_asked("getAlbum"), albums + 1);
+            assert!(ui.get_tracks().row_data(1).unwrap().loved);
             click(&ui, "Forward");
             wait_for("the artist again", || ui.get_tiles().row_count() == 1).await;
             assert_eq!(ui.get_page(), Page::Artist);
@@ -3419,6 +3583,82 @@ mod tests {
             // A page opened from back in the history drops the pages ahead.
             click(&ui, "Back");
             wait_for("the album once more", || ui.get_tracks().row_count() == 2).await;
+            // Within the hour, pages seen before show what is kept, asking
+            // nothing.
+            assert_eq!(times_asked("getAlbum"), albums + 1);
+            assert_eq!(times_asked("getArtist"), artists);
+            // After it, they show it at once all the same, and what the
+            // server says takes its place when it comes, never blank.
+            let an_hour = opensubsonic::FRESH_FOR;
+            answers::LATER.store(an_hour, Relaxed);
+            ALBUM_RENAMED.store(true, Relaxed);
+            SLOW_ALBUM.store(true, Relaxed);
+            let only_tile = |title: &str| {
+                let tiles = ui.get_tiles();
+                tiles.row_count() == 1 && tiles.row_data(0).unwrap().title == title
+            };
+            click(&ui, "Forward");
+            wait_for("the artist as it is now", || only_tile("Night Harbour (Remastered)")).await;
+            click(&ui, "Back");
+            wait_for("the aged album", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_header_title(), "Night Harbour");
+            assert!(!ui.get_loading());
+            wait_for("the album as it is now", || {
+                ui.get_header_title() == "Night Harbour (Remastered)"
+            })
+            .await;
+            wait_for("its notes as they are now", || ui.get_about().starts_with("Remastered")).await;
+            assert_eq!(ui.get_tracks().row_count(), 2);
+            assert_eq!(times_asked("getAlbum"), albums + 2);
+            // What the server says once its page was left stays off the page
+            // on screen then.
+            answers::LATER.store(2 * an_hour, Relaxed);
+            ALBUM_RENAMED.store(false, Relaxed);
+            click(&ui, "Forward");
+            wait_for("the artist as it was", || only_tile("Night Harbour")).await;
+            click(&ui, "Back");
+            wait_for("the album aged again", || {
+                ui.get_header_title() == "Night Harbour (Remastered)"
+            })
+            .await;
+            click(&ui, "Mara Lind");
+            wait_for("the artist", || ui.get_page() == Page::Artist).await;
+            idle(Duration::from_millis(700)).await;
+            assert_eq!(ui.get_header_title(), "Mara Lind");
+            assert!(only_tile("Night Harbour"));
+            SLOW_ALBUM.store(false, Relaxed);
+            answers::LATER.store(0, Relaxed);
+            // Asked for anew, the home page's newest albums and saved
+            // stations show what was kept at once too, and then what the
+            // server says.
+            click(&ui, "Home");
+            let counted = |label: &str| {
+                (ui.get_stats().iter()).any(|stat| stat.label == label && stat.value != "…")
+            };
+            let named = |title: &str| ui.get_tiles().iter().any(|tile| tile.title == title);
+            let station = || ui.get_saved_stations().row_data(0).map(|row| row.title);
+            ui.invoke_refresh();
+            wait_for("the home page anew", || {
+                counted("Albums") && named("Night Harbour") && station().is_some()
+            })
+            .await;
+            ALBUM_RENAMED.store(true, Relaxed);
+            ui.invoke_refresh();
+            wait_for("the home page as it is now", || {
+                named("Night Harbour (Remastered)") && station().as_deref() == Some("Jazz FM")
+            })
+            .await;
+            ALBUM_RENAMED.store(false, Relaxed);
+            ui.invoke_refresh();
+            wait_for("the home page as it was", || {
+                named("Night Harbour") && station().as_deref() == Some("Jazz")
+            })
+            .await;
+            ui.invoke_back();
+            ui.invoke_back();
+            wait_for("the album, back past the artist", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(ui.get_page(), Page::Album);
+            let lists = LISTS.load(Relaxed);
             click(&ui, "Albums");
             assert_eq!(ui.get_tiles().row_count(), 100, "the library is kept");
             assert_eq!(LISTS.load(Relaxed), lists);
@@ -3469,12 +3709,32 @@ mod tests {
             idle(Duration::from_millis(200)).await;
             assert_eq!(LISTS.load(Relaxed), lists, "reaching the top on the way");
             scroll(100000.0);
+            // What was kept shows at once, and gives way to what the server
+            // says once that has all come.
+            ALBUM_RENAMED.store(true, Relaxed);
             pull(middle(&page), 100.0);
             wait_for("the library anew", || {
                 LISTS.load(Relaxed) == lists + 2 && ui.get_tiles().row_count() == 100
             })
             .await;
+            wait_for("the library as it is now", || named("Night Harbour (Remastered)")).await;
+            assert_eq!(ui.get_tiles().row_count(), 100);
+            ALBUM_RENAMED.store(false, Relaxed);
+            ui.invoke_refresh();
+            wait_for("the library as it was", || named("Night Harbour")).await;
             assert_eq!(ui.get_page(), Page::Albums);
+            // Asked again and saying nothing new, the server leaves the
+            // albums shown as they are, not drawn anew.
+            SLOW_LISTS.store(true, Relaxed);
+            let lists = LISTS.load(Relaxed);
+            ui.invoke_refresh();
+            idle(Duration::from_millis(100)).await;
+            let shown = ui.get_tiles();
+            assert_eq!(shown.row_count(), 100);
+            wait_for("the library asked again", || LISTS.load(Relaxed) == lists + 2).await;
+            idle(Duration::from_millis(300)).await;
+            assert!(ui.get_tiles() == shown, "drawn anew");
+            SLOW_LISTS.store(false, Relaxed);
             assert!(ui.get_can_go_back() && !ui.get_can_go_forward());
             // A finger's drag scrolls the page from its first touch on, the
             // page following the finger, and glides on when let go while
@@ -5034,6 +5294,9 @@ mod tests {
             wait_for("the tracks", || ui.get_track_lines().row_count() == 100).await;
 
             // A second start finds the saved account, with its server down.
+            let kept_answers = answers_kept_for(&server, "joe");
+            wait_for("the answers saved", || kept_answers.exists()).await;
+            let lists_kept = LISTS.load(Relaxed);
             DOWN.store(true, Relaxed);
             let rob = ListenBrainz {
                 token: "rob token".into(),
@@ -5062,6 +5325,7 @@ mod tests {
                     && stats(&again).iter().all(|(_, value)| value != "…")
             })
             .await;
+            assert_eq!(LISTS.load(Relaxed), lists_kept, "the library kept on this device");
             assert_eq!(again.get_offline(), "");
             assert_eq!(again.get_page(), Page::Home);
             assert_eq!(again.get_username(), "joe");
@@ -5778,6 +6042,18 @@ mod tests {
             assert_eq!(ui.get_page_problem(), "");
             assert!(!ui.get_tracks().row_data(0).unwrap().unavailable);
             assert_eq!(button(&ui, "Save to library").accessible_enabled(), Some(true));
+            // A playlist of its name made elsewhere since the playlists were
+            // asked for is found too: the server is asked.
+            LATER_JAMS_ELSEWHERE.store(true, Relaxed);
+            click(&ui, "Save to library");
+            wait_for("the name taken elsewhere said", || ui.get_notice() != "").await;
+            assert_eq!(
+                ui.get_notice(),
+                "You already have a playlist named Later Jams for joe, so nothing was saved."
+            );
+            assert_eq!(writes().len(), sent);
+            ui.set_notice("".into());
+            LATER_JAMS_ELSEWHERE.store(false, Relaxed);
             click(&ui, "Save to library");
             wait_for("the resumed playlist saved", || ui.get_notice() != "").await;
             assert_eq!(ui.get_notice(), "Saved Later Jams for joe with 1 of 1 tracks.");
@@ -5889,9 +6165,12 @@ mod tests {
             std::fs::create_dir_all(&downloads_folder).unwrap();
             std::fs::write(downloads_folder.join("marker"), b"x").unwrap();
             click(&ui, "Account");
+            let eves_answers = answers_kept_for(&server, "eve");
+            wait_for("eve's pages kept", || eves_answers.exists()).await;
             click(&ui, "Change server");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
             assert!(!downloads_folder.exists(), "the downloads went with the server");
+            assert!(!eves_answers.exists(), "the pages kept went with the server");
             assert_eq!(ui.get_address(), "");
             assert!(store::load().await.is_none());
             assert!(store::load_server().await.is_none());
@@ -6707,6 +6986,20 @@ mod tests {
             }
             wait_for("the drop on the heading", || !writes().is_empty()).await;
             assert_eq!(writes(), ["movePlaylist playlistId=p1&playlistFolderId="]);
+            // One shown in the folder already, but moved out elsewhere since,
+            // goes in all the same: the server is asked where it is.
+            wait_for("the places kept", || asked_after("movePlaylist", "getPlaylists")).await;
+            idle(Duration::from_millis(100)).await;
+            wait_for("the places shown", || tile_titles(&ui) == ["Trips", "Empty"]).await;
+            ORGANIZED.store(false, Relaxed);
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            ui.global::<Drag>().set_link("playlist:p1".into());
+            ui.invoke_drop_on_tile(0);
+            wait_for("the drop of one moved out", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["movePlaylist playlistId=p1&playlistFolderId=f1"]);
+            ORGANIZED.store(true, Relaxed);
+            ui.invoke_refresh();
+            wait_for("the places kept", || tile_titles(&ui) == ["Trips", "Empty"]).await;
 
             // The tags page has every tag under the one it is in. Those
             // refused at sign-in and on the page come with Try again.
@@ -6731,6 +7024,16 @@ mod tests {
             );
             let targets: Vec<String> = rows[2].targets.iter().map(|t| t.label.into()).collect();
             assert_eq!(targets, ["Top level", "Instrument"]);
+            // After the hour, the tags kept show at once and are asked for
+            // again.
+            let tags_asked = times_asked("getTags");
+            let now = answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            ui.invoke_open("setting:downloads".into());
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Tags);
+            assert_eq!(ui.get_tag_rows().row_count(), 3);
+            wait_for("the tags asked again", || times_asked("getTags") > tags_asked).await;
+            answers::LATER.store(now, Relaxed);
 
             // A tag's page lists its tracks and those of the tags in it.
             ui.invoke_open("tag:t1".into());
@@ -6779,9 +7082,15 @@ mod tests {
             assert!(ui.get_track_lines().row_count() == 2, "kept, not asked for again");
             // After a change to the tags elsewhere, it asks again.
             ui.invoke_open("tags".into());
+            idle(Duration::from_millis(100)).await;
             ORGANIZE_WRITES.lock().unwrap().clear();
+            let tags_asked = times_asked("getTags");
             ui.invoke_move_tag("t2".into(), "".into());
-            wait_for("the tag moved", || !writes().is_empty()).await;
+            // Done with once the tags are asked for again after it.
+            wait_for("the tag moved", || {
+                !writes().is_empty() && times_asked("getTags") > tags_asked
+            })
+            .await;
             assert_eq!(writes(), ["updateTag tagId=t2&parentId="]);
             ui.invoke_open("tag:t1".into());
             assert_eq!(ui.get_track_lines().row_count(), 0, "asked for again");
@@ -6978,14 +7287,16 @@ mod tests {
             assert_eq!(files(&kept.join("songs")), 2);
 
             // A downloaded playlist follows the server: on a visit to its page
-            // and when the playlists are listed, new songs come and those
-            // taken off go.
+            // and when the playlists are listed, an hour after they last were,
+            // new songs come and those taken off go.
+            let an_hour_on = || answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
             ui.invoke_remove_all_downloads();
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             download_page(&ui);
             wait_for("the playlist kept", || ui.get_download_state() == 2).await;
             ROAD_TRIP_EDITED.store(true, Relaxed);
+            an_hour_on();
             ui.invoke_open("albums".into());
             ui.invoke_open("playlist:p1".into());
             wait_for("the edited playlist", || ui.get_tracks().row_count() == 2 && ui.get_tracks().row_data(1).is_some_and(|t| t.title == "Rope and Anchor")).await;
@@ -6993,12 +7304,14 @@ mod tests {
             assert_eq!(files(&kept.join("songs")), 2, "Fugue was deleted");
             ui.invoke_remove_all_downloads();
             ROAD_TRIP_EDITED.store(false, Relaxed);
+            an_hour_on();
             ui.invoke_open("albums".into());
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist as it was", || ui.get_tracks().row_count() == 2 && ui.get_tracks().row_data(1).is_some_and(|t| t.title == "Fugue")).await;
             download_page(&ui);
             wait_for("kept as it was", || ui.get_download_state() == 2).await;
             ROAD_TRIP_EDITED.store(true, Relaxed);
+            an_hour_on();
             ui.invoke_open("playlists".into());
             let has_rope = || {
                 let songs = kept.join("songs").read_dir();
@@ -7076,7 +7389,11 @@ mod tests {
             ui.invoke_choose_download_limit(0);
             idle(Duration::from_millis(100)).await;
             assert_eq!(finishes(), before, "a pump during a fetch");
+            assert!(kept_answers.exists());
             ui.invoke_sign_out();
+            // The answers kept go with the account. The windows started
+            // beside this one keep their own until they close.
+            assert!(!kept_answers.exists());
             wait_for("the job ended", || finishes() > before).await;
             SLOW_DOWNLOAD.store(false, Relaxed);
             wait_for("the sign-in step after it", || ui.get_step() == Step::SignIn).await;
@@ -7092,8 +7409,10 @@ mod tests {
             // what that frees.
             ui.invoke_open("account".into());
             assert_eq!(ui.get_sign_out_frees(), "", "nothing is kept");
+            let albums = times_asked("getAlbum");
             ui.invoke_open("album:a1".into());
             wait_for("the album", || ui.get_tracks().row_count() == 2).await;
+            assert_eq!(times_asked("getAlbum"), albums + 1, "asked for anew");
             download_page(&ui);
             wait_for("the album kept", || ui.get_download_state() == 2).await;
             ui.invoke_open("account".into());

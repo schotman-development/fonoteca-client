@@ -154,10 +154,12 @@ impl Default for Stats {
 
 impl Stats {
     /// Forgets the indexes of the library and the artists, which are asked
-    /// for anew.
+    /// for anew or have changed, and matches the lists against them anew
+    /// when next shown.
     pub(super) fn forget_indexes(&mut self) {
         self.library_index = None;
         self.artist_index = None;
+        self.drawn = None;
     }
 }
 
@@ -837,10 +839,12 @@ mod tests {
         let mut stats = Stats {
             library_index: Some(LibraryIndex::new(&[album("a1", "Live", "Band")])),
             artist_index: Some(ArtistIndex::new(&[artist("r1", "Band")])),
+            drawn: Some((true, true)),
             ..Stats::default()
         };
         stats.forget_indexes();
         assert!(stats.library_index.is_none() && stats.artist_index.is_none());
+        assert_eq!(stats.drawn, None, "drawn anew");
     }
 
     #[test]

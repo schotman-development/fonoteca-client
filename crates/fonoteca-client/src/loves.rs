@@ -881,6 +881,45 @@ mod tests {
     }
 
     #[test]
+    fn the_hearts_a_sync_sets_forget_the_kept_pages_showing_them() {
+        // ListenBrainz now loves Familiar (s1) and no longer Ritual (s3).
+        let kept = Kept {
+            loved: set(&["r3"]),
+            songs: BTreeMap::from([("r3".to_owned(), "s3".to_owned())]),
+            ..Kept::default()
+        };
+        let pages = r#"{"format":1,"answers":{
+            "album a1":{"at":0,"shown":0,"text":"{\"album\":{\"song\":[{\"id\":\"s1\"}]}}"},
+            "playlist p1":{"at":0,"shown":0,"text":"{\"playlist\":{\"entry\":[{\"id\":\"s3\"}]}}"},
+            "album a2":{"at":0,"shown":0,"text":"{\"album\":{\"song\":[{\"id\":\"s4\"}]}}"}
+        }}"#;
+        let answers = Arc::new(opensubsonic::Answers::loading(|| NOW));
+        answers.load(Some(pages));
+        let (lb_address, _) = listenbrainz_with(vec![FAMILIAR], 200, &[]);
+        let lb_client = lb::Client::with_root("t", &format!("{lb_address}/1/")).unwrap();
+        let (address, _) = server_with(library(), vec!["s3"]);
+        let client = Client::new(&address, opensubsonic::Auth::None)
+            .unwrap()
+            .keeping_answers_in(answers.clone());
+        let found = Found::default();
+        let sides = Sides {
+            listenbrainz: &lb_client,
+            user: "joe",
+            server: &client,
+            found: &found,
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let outcome = runtime.block_on(reconcile(&sides, kept, NOW));
+        assert_eq!(
+            (outcome.starred, outcome.unstarred),
+            (vec!["s1".into()], vec!["s3".into()])
+        );
+        let left = answers.unsaved().expect("kept without the pages").json;
+        assert!(left.contains("album a2"));
+        assert!(!left.contains("album a1") && !left.contains("playlist p1"));
+    }
+
+    #[test]
     fn every_page_of_loves_is_read() {
         const NAMES: [&str; 3] = ["r1", "r3", "r2"];
         let loves: Vec<(&'static str, &'static str, &'static str)> = (0..205)

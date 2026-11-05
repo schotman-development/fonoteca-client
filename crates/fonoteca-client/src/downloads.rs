@@ -236,7 +236,7 @@ pub fn follow_playlists(
     for id in stale {
         let (client, weak, browser) = (client.clone(), ui.as_weak(), browser.clone());
         slint::spawn_local(async move {
-            let playlist = client.get_playlist(&id).await;
+            let playlist = client.asking_the_server().get_playlist(&id).await;
             let Some(ui) = weak.upgrade() else { return };
             match playlist {
                 Ok(playlist) => follow(&ui, &browser, Item::Playlist(playlist)),

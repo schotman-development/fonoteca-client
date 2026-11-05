@@ -132,6 +132,23 @@ pub fn save_waiting_listens(listens: &[listenbrainz::Listen]) {
     }
 }
 
+const ANSWERS_SALT: &str = "answers-salt";
+
+/// What the names of the files the pages' answers are kept in are made with:
+/// random and made once, so that a name can't confirm a guessed login.
+pub fn answers_salt() -> String {
+    let kept = read(ANSWERS_SALT).and_then(|json| serde_json::from_str(&json).ok());
+    if let Some(salt) = kept {
+        return salt;
+    }
+    let salt = opensubsonic::random_salt().expect("the system has randomness");
+    write(
+        ANSWERS_SALT,
+        &serde_json::to_string(&salt).expect("strings are JSON"),
+    );
+    salt
+}
+
 const KEPT_LOVES: &str = "synced-loves";
 
 /// What ListenBrainz and the server agreed on at the last sync of hearts,

@@ -14,18 +14,23 @@
 //! credentials only go to that address. The browser build
 //! is the exception: the browser follows redirects itself, so a 307 or 308 to
 //! another host gets the form body.
+//!
+//! A client can keep the answers pages read in [`Answers`], and hand them
+//! out from there while they are fresh.
 
+mod answers;
 mod api;
 mod model;
 #[cfg(test)]
 mod spec_examples;
 
+pub use answers::{Answers, FRESH_FOR};
 pub use api::*;
 pub use model::*;
 
 use std::fmt;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 
 use md5::{Digest, Md5};
 use reqwest::Url;
@@ -87,6 +92,13 @@ pub struct Client {
     password_method: AtomicU8,
     form_post: AtomicBool,
     extensions: Mutex<Vec<model::OpenSubsonicExtension>>,
+    /// Where the answers pages read are kept, if anywhere.
+    answers: Option<Arc<Answers>>,
+    /// Which kept answers are handed out, and whether an aged one was.
+    hands_out: HandsOut,
+    gave_aged: AtomicBool,
+    /// Whether an answer the server gave differed from the one kept.
+    heard_news: AtomicBool,
 }
 
 impl Client {
@@ -135,12 +147,81 @@ impl Client {
             password_method: AtomicU8::new(TOKEN),
             form_post: AtomicBool::new(false),
             extensions: Mutex::default(),
+            answers: None,
+            hands_out: HandsOut::Fresh,
+            gave_aged: AtomicBool::new(false),
+            heard_news: AtomicBool::new(false),
         })
     }
 
     /// The server's address, which with a user name tells accounts apart.
     pub fn address(&self) -> &str {
         self.rest.as_str()
+    }
+
+    /// Keeps the answers pages read in `answers`, and hands them out from
+    /// there while they are fresh.
+    pub fn keeping_answers_in(mut self, answers: Arc<Answers>) -> Self {
+        self.answers = Some(answers);
+        self
+    }
+
+    /// A client like this one, keeping answers in the same place, with notes
+    /// of its own about what it hands out. With `shows_aged` it hands out aged
+    /// answers too, for a page that shows them at once and then asks again
+    /// with a client without it, which asks the server for them.
+    pub fn reader(&self, shows_aged: bool) -> Self {
+        let hands_out = match shows_aged {
+            true => HandsOut::AgedToo,
+            false => HandsOut::Fresh,
+        };
+        self.handing_out(hands_out)
+    }
+
+    /// A client like this one that asks the server for every answer and
+    /// keeps it, for a change that must go by what the server has now.
+    pub fn asking_the_server(&self) -> Self {
+        self.handing_out(HandsOut::Nothing)
+    }
+
+    fn handing_out(&self, hands_out: HandsOut) -> Self {
+        let extensions = self.extensions.lock().map(|listed| listed.clone());
+        Self {
+            http: self.http.clone(),
+            rest: self.rest.clone(),
+            auth: self.auth.clone(),
+            password_method: AtomicU8::new(self.password_method.load(Relaxed)),
+            form_post: AtomicBool::new(self.form_post.load(Relaxed)),
+            extensions: Mutex::new(extensions.unwrap_or_default()),
+            answers: self.answers.clone(),
+            hands_out,
+            gave_aged: AtomicBool::new(false),
+            heard_news: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether this client handed out an aged answer.
+    pub fn gave_aged(&self) -> bool {
+        self.gave_aged.load(Relaxed)
+    }
+
+    /// Whether an answer this client asked the server for said something else
+    /// than the one kept.
+    pub fn heard_news(&self) -> bool {
+        self.heard_news.load(Relaxed)
+    }
+
+    /// The account this client signs in to, as a name for what is kept for
+    /// it: the same for the same server, login and `salt`, and saying none
+    /// of them. Without the salt, a [`random_salt`] the app keeps, a guessed
+    /// login can't be checked against the name.
+    pub fn account(&self, salt: &str) -> String {
+        let login = match &self.auth {
+            Auth::None => "",
+            Auth::ApiKey(key) => key,
+            Auth::Password { username, .. } => username,
+        };
+        hex(&Md5::digest(format!("{salt}\n{}\n{login}", self.rest)))
     }
 
     /// Whether the server listed `extension` the last time
@@ -270,7 +351,46 @@ impl Client {
         }
     }
 
+    /// Asks for `endpoint`, or hands out the answer kept for it while that is
+    /// fresh, or aged where this client shows aged ones. A call that changes
+    /// the server then forgets the kept answers it makes out of date.
     async fn json(&self, endpoint: &str, params: &Params) -> Result<Map<String, Value>> {
+        let Some(answers) = &self.answers else {
+            return self.ask(endpoint, params).await;
+        };
+        if !answers.is_loaded() {
+            let loading = answers.clone();
+            in_background(move || loading.wait_until_loaded()).await;
+        }
+        let Some(read) = answers::read_key(endpoint, &params.0) else {
+            let answer = self.ask(endpoint, params).await;
+            if let Some(search) = answers.called(endpoint, &params.0) {
+                let outdated = in_background(move || search.run()).await;
+                answers.forget_outdated(outdated);
+            }
+            return answer;
+        };
+        let found = match self.hands_out {
+            HandsOut::Nothing => None,
+            HandsOut::Fresh | HandsOut::AgedToo => answers.find(&read),
+        };
+        match found {
+            Some(found) if !found.aged => return Ok(found.answer),
+            Some(found) if self.hands_out == HandsOut::AgedToo => {
+                self.gave_aged.store(true, Relaxed);
+                return Ok(found.answer);
+            }
+            _ => {}
+        }
+        let writes = answers.writes();
+        let answer = self.ask(endpoint, params).await?;
+        if answers.keep(read, &answer, writes) {
+            self.heard_news.store(true, Relaxed);
+        }
+        Ok(answer)
+    }
+
+    async fn ask(&self, endpoint: &str, params: &Params) -> Result<Map<String, Value>> {
         match self.send(endpoint, params).await? {
             Body::Json(response) => Ok(response),
             Body::Binary(_) => Err(Error::Unexpected(format!(
@@ -308,6 +428,30 @@ impl Client {
             ))),
         }
     }
+}
+
+/// Which kept answers a client hands out instead of asking the server.
+#[derive(Clone, Copy, PartialEq)]
+enum HandsOut {
+    Fresh,
+    /// Aged ones too, for a page that shows them and then asks again.
+    AgedToo,
+    Nothing,
+}
+
+/// Runs `work`, which takes a while, on the runtime's blocking threads, so
+/// that the caller's, the app's UI thread, stays free.
+#[cfg(not(target_family = "wasm"))]
+async fn in_background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    tokio::task::spawn_blocking(work)
+        .await
+        .expect("the work doesn't panic")
+}
+
+/// The browser has no threads to spare, so `work` runs at once.
+#[cfg(target_family = "wasm")]
+async fn in_background<T>(work: impl FnOnce() -> T) -> T {
+    work()
 }
 
 /// Sends `request` from the runtime's threads. Connecting checks the
@@ -388,6 +532,15 @@ fn take<T: DeserializeOwned>(
 
 fn token(password: &str, salt: &str) -> String {
     hex(&Md5::digest(format!("{password}{salt}")))
+}
+
+/// 128 random bits, as hex.
+pub fn random_salt() -> Result<String> {
+    Ok(format!(
+        "{:016x}{:016x}",
+        getrandom::u64()?,
+        getrandom::u64()?
+    ))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -795,6 +948,117 @@ mod tests {
             log[0]
         );
         assert!(!log[0].contains("format="), "{}", log[0]);
+    }
+
+    #[tokio::test]
+    async fn kept_answers_are_handed_out_while_fresh() {
+        use std::sync::atomic::AtomicU64;
+        static NOW: AtomicU64 = AtomicU64::new(1000);
+        static NAME: Mutex<&str> = Mutex::new("Night Harbour");
+        let (server, log) = serve(|request| {
+            let name = *NAME.lock().unwrap();
+            json(&if request.contains("/rest/getAlbum?") {
+                format!(
+                    r#"{{"subsonic-response":{{"status":"ok","version":"1.16.1","album":{{"id":"a1","name":"{name}","songCount":1,"duration":1,"created":"2021-01-01T00:00:00Z","song":[{{"id":"s1","isDir":false,"title":"Song"}}]}}}}}}"#
+                )
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.to_owned()
+            })
+        });
+        let asked = || log.lock().unwrap().len();
+        let answers = Arc::new(Answers::new(|| NOW.load(Relaxed)));
+        let client = Client::new(&server, Auth::ApiKey("SECRET".into()))
+            .unwrap()
+            .keeping_answers_in(answers);
+
+        assert_eq!(
+            client.get_album("a1").await.unwrap().album.name,
+            "Night Harbour"
+        );
+        assert_eq!(asked(), 1);
+        client.get_album("a1").await.unwrap();
+        assert_eq!(asked(), 1, "a fresh answer is handed out");
+        client.get_cover_art("al-a1", None).await.unwrap_err();
+        client.get_cover_art("al-a1", None).await.unwrap_err();
+        assert_eq!(asked(), 3, "covers aren't kept");
+
+        NOW.store(1000 + FRESH_FOR, Relaxed);
+        *NAME.lock().unwrap() = "Day Harbour";
+        let reader = client.reader(true);
+        assert_eq!(
+            reader.get_album("a1").await.unwrap().album.name,
+            "Night Harbour"
+        );
+        assert!(reader.gave_aged());
+        assert_eq!(asked(), 3, "an aged answer shows at once");
+        let again = client.reader(false);
+        assert_eq!(
+            again.get_album("a1").await.unwrap().album.name,
+            "Day Harbour"
+        );
+        assert!(!again.gave_aged());
+        assert!(again.heard_news());
+        assert_eq!(asked(), 4);
+
+        let same = client.reader(false);
+        same.get_album("a1").await.unwrap();
+        assert!(!same.heard_news(), "fresh again");
+        client.star(&["s1"], &[], &[]).await.unwrap();
+        assert_eq!(asked(), 5);
+        client.get_album("a1").await.unwrap();
+        assert_eq!(asked(), 6, "a heart outdates the album it is on");
+        // One asked for anew is, though another is kept and fresh.
+        client.asking_the_server().get_album("a1").await.unwrap();
+        assert_eq!(asked(), 7);
+    }
+
+    #[tokio::test]
+    async fn calls_wait_for_the_answers_saved_to_be_read_back() {
+        let (server, log) = serve(|_| {
+            json(
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","album":{"id":"a1","name":"From the server","songCount":0,"duration":0,"created":"2021-01-01T00:00:00Z"}}}"#,
+            )
+        });
+        let first = Arc::new(Answers::new(|| 1000));
+        let client = Client::new(&server, Auth::None).unwrap();
+        let reading = client.keeping_answers_in(first.clone());
+        reading.get_album("a1").await.unwrap();
+        let saved = first
+            .unsaved()
+            .unwrap()
+            .json
+            .replace("From the server", "Kept");
+
+        let answers = Arc::new(Answers::loading(|| 1000));
+        let client = Client::new(&server, Auth::None).unwrap();
+        let client = client.keeping_answers_in(answers.clone());
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            answers.load(Some(&saved));
+        });
+        assert_eq!(client.get_album("a1").await.unwrap().album.name, "Kept");
+        assert_eq!(log.lock().unwrap().len(), 1, "asked the first time only");
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn accounts_are_named_by_server_login_and_salt_without_saying_them() {
+        let salt = random_salt().unwrap();
+        assert_eq!(salt.len(), 32);
+        let salted =
+            |server: &str, auth: Auth, salt: &str| Client::new(server, auth).unwrap().account(salt);
+        let account = |server: &str, auth: Auth| salted(server, auth, &salt);
+        let joe = account("https://music.example.org", password());
+        assert_eq!(joe, account("https://music.example.org/", password()));
+        assert_ne!(joe, account("https://other.example.org", password()));
+        let key = account("https://music.example.org", Auth::ApiKey("SECRET".into()));
+        assert_ne!(joe, key);
+        assert!(!key.contains("SECRET") && !joe.contains("joe"));
+        let other_install = random_salt().unwrap();
+        assert_ne!(
+            joe,
+            salted("https://music.example.org", password(), &other_install)
+        );
     }
 
     #[tokio::test]

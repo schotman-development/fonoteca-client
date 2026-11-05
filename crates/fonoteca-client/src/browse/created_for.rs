@@ -293,9 +293,11 @@ pub(super) fn save(ui: &AppWindow, browser: &Shared) {
     .expect("the event loop is running");
 }
 
-/// Makes the playlist unless the name is taken; whether it did.
+/// Makes the playlist unless the name is taken, as the server has the
+/// names now: those kept may be from up to an hour ago. Whether it did.
 async fn save_new(client: &Client, name: &str, ids: &[String]) -> opensubsonic::Result<bool> {
-    if is_taken(&client.get_playlists(None).await?.playlist, name) {
+    let playlists = client.asking_the_server().get_playlists(None).await?;
+    if is_taken(&playlists.playlist, name) {
         return Ok(false);
     }
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();

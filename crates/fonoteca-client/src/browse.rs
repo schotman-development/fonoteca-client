@@ -24,10 +24,11 @@ use image::{AnimationDecoder, Frame, Frames};
 #[cfg(not(target_family = "wasm"))]
 use opensubsonic::AlbumID3WithSongs;
 use opensubsonic::{
-    AlbumID3, AlbumListType, ArtistID3, CatalogueStation, Child, Client, Composer, Composition,
-    ExplicitStatus, GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate, ListOptions,
-    MediaType, Movement, Playlist, PlaylistFolder, PlaylistFolderUpdate, PlaylistUpdate,
-    PlaylistWithSongs, RadioStation, ScanStatus, SearchOptions, Span, Tag, TagUpdate, User,
+    AlbumID3, AlbumListType, Answers, ArtistID3, CatalogueStation, Child, Client, Composer,
+    Composition, ExplicitStatus, GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate,
+    ListOptions, MediaType, Movement, Playlist, PlaylistFolder, PlaylistFolderUpdate,
+    PlaylistUpdate, PlaylistWithSongs, RadioStation, ScanStatus, SearchOptions, Span, Tag,
+    TagUpdate, User,
 };
 use radiobrowser::Station;
 use slint::{
@@ -37,7 +38,7 @@ use slint::{
 
 use crate::{
     AlbumTile, AppWindow, ColumnChoice, Detail, Drag, Icons, Name, NavEntry, Page, Stat,
-    StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, catalogue,
+    StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, answers, catalogue,
     logo_ink, offline, prefs, zone,
 };
 
@@ -107,6 +108,12 @@ const SONGS_AT_MOST: usize = 200_000;
 const TYPING_PAUSE: Duration = Duration::from_millis(200);
 /// How long a notice, such as songs added to a playlist, stays up.
 const NOTICE_TIME: Duration = Duration::from_secs(3);
+/// How often the pages' answers are saved when they changed. The browser
+/// keeps them in memory only.
+#[cfg(not(any(test, target_family = "wasm")))]
+const SAVE_EVERY: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const SAVE_EVERY: Duration = Duration::from_millis(200);
 /// How long the radio page waits after a language is ticked before it asks
 /// for the shelves again, so ticking several asks once.
 const LANGUAGE_WAIT: Duration = Duration::from_millis(600);
@@ -165,6 +172,11 @@ struct PlayingMotion {
 #[derive(Default)]
 pub struct Browser {
     client: Option<Arc<Client>>,
+    /// The answers the pages read, kept for the account signed in, and what
+    /// saves them on this device as they change.
+    answers: Option<(String, Arc<Answers>)>,
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    saving: Timer,
     history: Vec<String>,
     at: usize,
     /// Counts the pages shown, so an answer for a page left behind is dropped.
@@ -346,6 +358,7 @@ pub fn start_offline(ui: &AppWindow, browser: &Shared, client: Client) {
 fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
     {
         let mut b = browser.borrow_mut();
+        let client = keep_answers(&mut b, client);
         b.client = Some(Arc::new(client));
         b.history.clear();
         b.offline = offline;
@@ -380,6 +393,7 @@ fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
 pub fn reconnect(ui: &AppWindow, browser: &Shared, client: Client) {
     {
         let mut b = browser.borrow_mut();
+        let client = keep_answers(&mut b, client);
         b.client = Some(Arc::new(client));
         b.offline = false;
         b.downloads.set_offline(false);
@@ -619,7 +633,37 @@ pub fn cover(
 /// Goes on with `client` instead, signed in anew after a password change,
 /// on the page on screen.
 pub fn swap(browser: &Shared, client: Client) {
-    browser.borrow_mut().client = Some(Arc::new(client));
+    let mut b = browser.borrow_mut();
+    let client = keep_answers(&mut b, client);
+    b.client = Some(Arc::new(client));
+}
+
+/// `client`, keeping the pages' answers for its account: read from this
+/// device the first time, and saved there as they change.
+fn keep_answers(b: &mut Browser, client: Client) -> Client {
+    let account = client.account(&prefs::answers_salt());
+    if b.answers.as_ref().is_none_or(|(kept, _)| *kept != account) {
+        let answers = answers::load(&account);
+        #[cfg(not(target_family = "wasm"))]
+        b.saving.start(TimerMode::Repeated, SAVE_EVERY, {
+            let (account, answers) = (account.clone(), answers.clone());
+            move || answers::save(&account, &answers)
+        });
+        b.answers = Some((account, answers));
+    }
+    let (_, answers) = b.answers.as_ref().expect("the answers were just kept");
+    client.keeping_answers_in(answers.clone())
+}
+
+/// Forgets the answers kept for the account signed in, on this device too,
+/// before it signs out.
+pub fn forget_answers(browser: &Shared) -> std::io::Result<()> {
+    let b = browser.borrow();
+    b.saving.stop();
+    match &b.answers {
+        Some((account, answers)) => answers::forget(account, answers),
+        None => Ok(()),
+    }
 }
 
 /// Whether the library is open: signed in, and not signed out since.
@@ -1328,6 +1372,10 @@ fn back_or_home(ui: &AppWindow, browser: &Shared) {
 fn refresh(ui: &AppWindow, browser: &Shared) {
     {
         let mut b = browser.borrow_mut();
+        // Shown at once, and asked for again.
+        if let Some((_, answers)) = &b.answers {
+            answers.age_all();
+        }
         // The orders index into the lists; the page shown sorts its own anew.
         b.view.clear();
         b.song_view.clear();
@@ -1917,22 +1965,24 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
 }
 
 /// Runs `task` for the page on screen, and drops its answer if that page has
-/// been left by then.
+/// been left by then. An aged answer shows at once, and then `task` runs
+/// again, asking the server.
 fn load<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
-    task: impl FnOnce(Arc<Client>) -> F,
-    done: impl FnOnce(&AppWindow, &Shared, T) + 'static,
+    task: impl Fn(Arc<Client>) -> F + 'static,
+    done: impl Fn(&AppWindow, &Shared, T) + 'static,
 ) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
     let visit = browser.borrow().visit;
-    let task = task(client);
+    let reader = Arc::new(client.reader(true));
+    let first = task(reader.clone());
     ui.set_loading(true);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let result = task.await;
+        let result = first.await;
         let Some(ui) = weak.upgrade() else { return };
         if browser.borrow().visit != visit {
             return;
@@ -1940,10 +1990,41 @@ fn load<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
         ui.set_loading(false);
         match result {
             Ok(value) => done(&ui, &browser, value),
-            Err(e) => ui.set_page_problem(e.to_string().into()),
+            Err(e) => return ui.set_page_problem(e.to_string().into()),
+        }
+        if reader.gave_aged() {
+            ask_again(weak, &browser, visit, &client, task, done).await;
         }
     })
     .expect("the event loop is running");
+}
+
+/// Runs `task` again after it showed aged answers, with a client that asks
+/// the server for them, and puts what it says in their place with `done`
+/// where it differs, unless the page has been left by then. When the server
+/// can't answer, the aged answers stay.
+async fn ask_again<T, F: Future<Output = opensubsonic::Result<T>>>(
+    weak: slint::Weak<AppWindow>,
+    browser: &Shared,
+    visit: i32,
+    client: &Client,
+    task: impl Fn(Arc<Client>) -> F,
+    done: impl Fn(&AppWindow, &Shared, T),
+) {
+    let asker = Arc::new(client.reader(false));
+    let answer = task(asker.clone()).await;
+    let Some(ui) = weak.upgrade() else { return };
+    let Ok(value) = answer else { return };
+    if !asker.heard_news() || browser.borrow().visit != visit {
+        return;
+    }
+    {
+        // The orders index into the lists; the page sorts its own anew.
+        let mut b = browser.borrow_mut();
+        b.view.clear();
+        b.song_view.clear();
+    }
+    done(&ui, browser, value);
 }
 
 /// Shows the library's counts and its newest albums on the home page, asking
@@ -2010,17 +2091,27 @@ fn show_home(ui: &AppWindow, browser: &Shared) {
             ));
         }
         ui.set_stats(ModelRc::new(VecModel::from(stats)));
-        if library.is_none() || b.tiles.row_count() > 0 {
-            return;
-        }
-        let newest = arranged(&b.library, "", 2, true);
-        newest
+        let Some(library) = library else { return };
+        let newest: Vec<_> = arranged(library, "", 2, true)
             .iter()
             .take(RECENT)
-            .map(|&i| album_tile(&b.library[i], album_names(&b.library[i])))
-            .collect()
+            .map(|&i| album_tile(&library[i], album_names(&library[i])))
+            .collect();
+        let shown = b.tiles.row_count() == newest.len()
+            && (b.tiles.iter().zip(&newest)).all(|(shown, (tile, _))| is_same_album(&shown, tile));
+        if shown {
+            return;
+        }
+        newest
     };
+    // A library asked for again may have others.
+    clear_tiles(ui, &mut browser.borrow_mut());
     add_tiles(ui, browser, tiles);
+}
+
+/// Whether two album tiles name the same album the same way.
+fn is_same_album(a: &AlbumTile, b: &AlbumTile) -> bool {
+    a.link == b.link && a.title == b.title && a.names.iter().eq(b.names.iter())
 }
 
 /// Shows the library on the albums page, asking for it first if it isn't all
@@ -2039,19 +2130,33 @@ fn albums(ui: &AppWindow, browser: &Shared) {
 /// Asks for every album, a page at a time, and arranges the albums page as
 /// they arrive. Sorting and filtering then need nothing from the server.
 fn load_library(ui: &AppWindow, browser: &Shared) {
+    ask_library(ui, browser, true);
+}
+
+/// Asks for the library as `load_library` says, showing aged answers at once
+/// where `shows_aged`, and then asking again without: those albums take the
+/// library's place once all have come, if any differ.
+fn ask_library(ui: &AppWindow, browser: &Shared, shows_aged: bool) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
+    let reader = client.reader(shows_aged);
     browser.borrow_mut().library_loading = true;
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
+        let mut asked_again = Vec::new();
         loop {
+            // Asked anew, it goes on from where the library stopped.
+            let asked = match shows_aged {
+                true => browser.borrow().library.len(),
+                false => asked_again.len(),
+            };
             let options = ListOptions {
                 size: Some(LIBRARY_AT_ONCE),
-                offset: Some(browser.borrow().library.len() as u32),
+                offset: Some(asked as u32),
                 ..ListOptions::default()
             };
-            let list = client
+            let list = reader
                 .get_album_list2(&AlbumListType::AlphabeticalByName, &options)
                 .await;
             let Some(ui) = weak.upgrade() else { return };
@@ -2072,26 +2177,46 @@ fn load_library(ui: &AppWindow, browser: &Shared) {
                 Ok(list) => list.album,
                 Err(e) => {
                     browser.borrow_mut().library_loading = false;
-                    if shown {
+                    // Asked again, the albums shown stay.
+                    if shown && shows_aged {
                         ui.set_loading(false);
                         ui.set_page_problem(e.to_string().into());
                     }
                     return;
                 }
             };
-            let done = {
+            let last = (list.len() as u32) < LIBRARY_AT_ONCE;
+            let done = last || asked + list.len() >= LIBRARY_AT_MOST;
+            let changed = {
                 let mut b = browser.borrow_mut();
-                let last = (list.len() as u32) < LIBRARY_AT_ONCE;
-                b.library.extend(list);
-                let done = last || b.library.len() >= LIBRARY_AT_MOST;
                 b.library_loading = !done;
-                b.library_loaded = done;
-                done
+                b.library_loaded |= done;
+                if shows_aged {
+                    // New, it shows as it arrives.
+                    b.library.extend(list);
+                    true
+                } else {
+                    // Asked again, it takes the library's place once all of
+                    // it is in, if any of it differs.
+                    asked_again.extend(list);
+                    let changed = done && reader.heard_news();
+                    if changed {
+                        // The orders and the stats' index point into the
+                        // library; they are made anew.
+                        b.view.clear();
+                        b.stats.forget_indexes();
+                        b.library = std::mem::take(&mut asked_again);
+                    }
+                    changed
+                }
             };
-            if shown {
+            if shown && changed {
                 arrange(&ui, &browser);
             }
             if done {
+                if reader.gave_aged() {
+                    ask_library(&ui, &browser, false);
+                }
                 return;
             }
         }
@@ -2119,6 +2244,9 @@ fn artists(ui: &AppWindow, browser: &Shared) {
                     .flat_map(|index| index.artist)
                     .collect();
                 b.artists_loaded = true;
+                // Asked again, they may differ from those the stats' index
+                // points into.
+                b.stats.forget_indexes();
             }
             arrange(ui, browser);
         },
@@ -2226,16 +2354,23 @@ fn compositions(ui: &AppWindow, browser: &Shared) {
 
 /// Asks for the playlists, for the sidebar and the playlists page.
 fn load_playlists(ui: &AppWindow, browser: &Shared) {
+    ask_playlists(ui, browser, true);
+}
+
+/// Asks for the playlists as `load_playlists` says, showing aged answers at
+/// once where `shows_aged`, and then asking again without.
+fn ask_playlists(ui: &AppWindow, browser: &Shared, shows_aged: bool) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
+    let reader = client.reader(shows_aged);
     browser.borrow_mut().playlists_loading = true;
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let answer = client.get_playlists(None).await;
+        let answer = reader.get_playlists(None).await;
         // The folders known stay when asking for them fails.
-        let folders = if client.supports(FOLDERS) {
-            client.get_playlist_folders(None).await.ok()
+        let folders = if reader.supports(FOLDERS) {
+            reader.get_playlist_folders(None).await.ok()
         } else {
             None
         };
@@ -2292,6 +2427,9 @@ fn load_playlists(ui: &AppWindow, browser: &Shared) {
         }
         #[cfg(not(target_family = "wasm"))]
         crate::downloads::follow_playlists(&ui, &browser, out_of_step);
+        if reader.gave_aged() {
+            ask_playlists(&ui, &browser, false);
+        }
     })
     .expect("the event loop is running");
 }
@@ -2873,6 +3011,14 @@ fn clear_lines(ui: &AppWindow, b: &mut Browser) {
     b.covers.clear();
     b.fetching = 0;
     ui.set_track_lines(ModelRc::from(b.lines.clone()));
+}
+
+/// Empties the page's tiles, for others to take their place.
+fn clear_tiles(ui: &AppWindow, b: &mut Browser) {
+    b.tiles = Rc::default();
+    b.covers.clear();
+    b.fetching = 0;
+    ui.set_tiles(ModelRc::from(b.tiles.clone()));
 }
 
 /// Asks for every song, a part at a time, with the empty search that
@@ -3475,16 +3621,22 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
         aside(
             ui,
             browser,
-            |client| async move { client.get_album_info2(&notes).await },
+            move |client| {
+                let notes = notes.clone();
+                async move { client.get_album_info2(&notes).await }
+            },
             |ui, _, info| show_about(ui, info.notes.as_deref()),
         );
     }
     load(
         ui,
         browser,
-        |client| async move {
-            let call = client.get_album(&id);
-            saved_or(offline, || kept.album(&id), call).await
+        move |client| {
+            let (id, kept) = (id.clone(), kept.clone());
+            async move {
+                let call = client.get_album(&id);
+                saved_or(offline, || kept.album(&id), call).await
+            }
         },
         |ui, browser, album| {
             let songs = album.song;
@@ -3589,7 +3741,10 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
     aside(
         ui,
         browser,
-        |client| async move { client.get_artist_info2(&info, None, None).await },
+        move |client| {
+            let info = info.clone();
+            async move { client.get_artist_info2(&info, None, None).await }
+        },
         |ui, _, info| {
             show_about(ui, info.biography.as_deref());
             ui.set_similar(names(info.similar_artist.iter().map(linked).collect()));
@@ -3606,7 +3761,10 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
     load(
         ui,
         browser,
-        |client| async move { client.get_artist(&id).await },
+        move |client| {
+            let id = id.clone();
+            async move { client.get_artist(&id).await }
+        },
         move |ui, browser, artist| {
             if !by_id {
                 top_songs(ui, browser, artist.artist.name.clone(), false);
@@ -3617,6 +3775,7 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
                 .map(|album| format!("album:{}", album.id))
                 .collect();
             header_image(ui, browser, artist.artist.cover_art);
+            clear_tiles(ui, &mut browser.borrow_mut());
             let tiles = artist.album.iter().map(|album| {
                 let year = album.year.map(|year| unlinked(year.to_string()));
                 album_tile(album, year.into_iter().collect())
@@ -3655,9 +3814,12 @@ fn playlist(ui: &AppWindow, browser: &Shared, id: String) {
     load(
         ui,
         browser,
-        |client| async move {
-            let call = client.get_playlist(&id);
-            saved_or(offline, || kept.playlist(&id), call).await
+        move |client| {
+            let (id, kept) = (id.clone(), kept.clone());
+            async move {
+                let call = client.get_playlist(&id);
+                saved_or(offline, || kept.playlist(&id), call).await
+            }
         },
         show_playlist,
     );
@@ -3670,13 +3832,16 @@ fn top_songs(ui: &AppWindow, browser: &Shared, artist: String, by_id: bool) {
     aside(
         ui,
         browser,
-        move |client| async move {
-            if by_id {
-                client
-                    .get_top_songs_by_artist_id(&artist, Some(TOP_SONGS))
-                    .await
-            } else {
-                client.get_top_songs(&artist, Some(TOP_SONGS)).await
+        move |client| {
+            let artist = artist.clone();
+            async move {
+                if by_id {
+                    client
+                        .get_top_songs_by_artist_id(&artist, Some(TOP_SONGS))
+                        .await
+                } else {
+                    client.get_top_songs(&artist, Some(TOP_SONGS)).await
+                }
             }
         },
         |_, browser, top| {
@@ -3691,22 +3856,26 @@ fn top_songs(ui: &AppWindow, browser: &Shared, artist: String, by_id: bool) {
 fn aside<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
     ui: &AppWindow,
     browser: &Shared,
-    task: impl FnOnce(Arc<Client>) -> F,
-    done: impl FnOnce(&AppWindow, &Shared, T) + 'static,
+    task: impl Fn(Arc<Client>) -> F + 'static,
+    done: impl Fn(&AppWindow, &Shared, T) + 'static,
 ) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
     let visit = browser.borrow().visit;
-    let task = task(client);
+    let reader = Arc::new(client.reader(true));
+    let first = task(reader.clone());
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let result = task.await;
+        let result = first.await;
         let Some(ui) = weak.upgrade() else { return };
-        if browser.borrow().visit == visit
-            && let Ok(value) = result
-        {
-            done(&ui, &browser, value);
+        if browser.borrow().visit != visit {
+            return;
+        }
+        let Ok(value) = result else { return };
+        done(&ui, &browser, value);
+        if reader.gave_aged() {
+            ask_again(weak, &browser, visit, &client, task, done).await;
         }
     })
     .expect("the event loop is running");
@@ -3871,7 +4040,10 @@ fn refresh_playlist(ui: &AppWindow, browser: &Shared, id: String) {
     aside(
         ui,
         browser,
-        |client| async move { client.get_playlist(&id).await },
+        move |client| {
+            let id = id.clone();
+            async move { client.get_playlist(&id).await }
+        },
         show_playlist,
     );
 }
@@ -4014,52 +4186,73 @@ fn move_playlist(ui: &AppWindow, browser: &Shared, target: String) {
 }
 
 /// Moves the playlists with these ids into the folder with id `target`, or
-/// to the top level for "", at once on screen. Those already there stay.
+/// to the top level for "", at once on screen. Those already there stay, as
+/// the server has them: those shown may be from up to an hour ago.
 fn move_playlists(ui: &AppWindow, browser: &Shared, ids: Vec<String>, target: String) {
-    let (ids, to, on_screen) = {
+    let (to, on_screen, shown_moving) = {
         let mut b = browser.borrow_mut();
         let to = match target.as_str() {
             "" => "the top level".to_owned(),
             folder => path(&folder_nodes(&b.playlist_folders), folder),
         };
-        let ids: Vec<String> = ids
-            .into_iter()
-            .filter(
-                |id| match b.playlists.iter_mut().find(|playlist| playlist.id == *id) {
-                    Some(playlist)
-                        if playlist.playlist_folder_id.as_deref().unwrap_or("") == target =>
-                    {
-                        false
-                    }
-                    Some(playlist) => {
-                        playlist.playlist_folder_id = Some(target.clone());
-                        true
-                    }
-                    None => true,
-                },
-            )
-            .collect();
+        let mut shown_moving = false;
+        for playlist in b
+            .playlists
+            .iter_mut()
+            .filter(|playlist| ids.contains(&playlist.id))
+        {
+            if !is_in_folder(playlist, &target) {
+                playlist.playlist_folder_id = Some(target.clone());
+                shown_moving = true;
+            }
+        }
         let on_screen = playlist_on_screen(&b).filter(|id| ids.contains(id));
-        (ids, to, on_screen)
+        (to, on_screen, shown_moving)
     };
-    if ids.is_empty() {
-        return;
+    if shown_moving {
+        sidebar(ui, browser);
+        playlist_moves(ui, &browser.borrow());
+        if ui.get_page() == Page::Playlists {
+            show_playlists(ui, browser);
+        }
     }
-    sidebar(ui, browser);
-    playlist_moves(ui, &browser.borrow());
-    if ui.get_page() == Page::Playlists {
-        show_playlists(ui, browser);
-    }
+    let moved = Rc::new(std::cell::Cell::new(false));
+    let moving = moved.clone();
     change_playlist(
         ui,
         browser,
         on_screen,
         |client| async move {
-            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let now = client
+                .asking_the_server()
+                .get_playlists(None)
+                .await?
+                .playlist;
+            let ids: Vec<&str> = (ids.iter())
+                .filter(|id| {
+                    !(now.iter())
+                        .any(|playlist| playlist.id == **id && is_in_folder(playlist, &target))
+                })
+                .map(String::as_str)
+                .collect();
+            if ids.is_empty() {
+                return Ok(());
+            }
+            moving.set(true);
             client.move_playlists(&ids, Some(&target), &[]).await
         },
-        move |ui, browser| notify(ui, browser, format!("Moved to {to}.")),
+        move |ui, browser| {
+            if moved.get() {
+                notify(ui, browser, format!("Moved to {to}."));
+            }
+        },
     );
+}
+
+/// Whether `playlist` is in the folder with id `folder`, or at the top level
+/// for "".
+fn is_in_folder(playlist: &Playlist, folder: &str) -> bool {
+    playlist.playlist_folder_id.as_deref().unwrap_or("") == folder
 }
 
 /// The playlist dropped, by id, which is then no longer in flight.
@@ -4139,36 +4332,53 @@ fn delete_playlist(ui: &AppWindow, browser: &Shared) {
 }
 
 /// Takes the `row`th track off the playlist on screen, at once on its page.
+/// The server takes it off by its place, and the page may show the playlist
+/// as it was kept up to an hour ago: when the server's has another song
+/// there, changed elsewhere since, nothing is taken off and the page shows
+/// the server's.
 fn remove_from_playlist(ui: &AppWindow, browser: &Shared, row: usize) {
     let Some(id) = playlist_on_screen(&browser.borrow()) else {
         return;
     };
-    {
+    let picked = {
         let mut b = browser.borrow_mut();
         if row >= b.songs.len() || row >= b.tracks.row_count() {
             return;
         }
-        let removed = song_link(&b.songs.remove(row));
+        let picked = b.songs.remove(row);
         b.tracks.remove(row);
+        let removed = song_link(&picked);
         // The same song may be on the playlist twice.
         if !b.songs.iter().any(|song| song_link(song) == removed) {
             b.selected.retain(|link| *link != removed);
         }
         show_selected(ui, &b);
-    }
-    let at = id.clone();
+        picked.id
+    };
+    let changed_elsewhere = Rc::new(std::cell::Cell::new(false));
+    let (at, changed) = (id.clone(), changed_elsewhere.clone());
     change_playlist(
         ui,
         browser,
         Some(id),
         |client| async move {
+            let now = client.asking_the_server().get_playlist(&at).await?;
+            if now.entry.get(row).is_none_or(|song| song.id != picked) {
+                changed.set(true);
+                return Ok(());
+            }
             let update = PlaylistUpdate {
                 song_indexes_to_remove: &[row as u32],
                 ..PlaylistUpdate::default()
             };
             client.update_playlist(&at, &update).await
         },
-        |_, _| {},
+        move |ui, browser| {
+            if changed_elsewhere.get() {
+                let text = "The playlist changed elsewhere, so nothing was taken off.";
+                notify(ui, browser, text.to_owned());
+            }
+        },
     );
 }
 
@@ -4225,8 +4435,11 @@ async fn songs_of(client: &Client, links: &[String]) -> opensubsonic::Result<Vec
         match kind {
             "song" => songs.push(id.to_owned()),
             "album" => songs.extend(client.get_album(id).await?.song.into_iter().map(|s| s.id)),
+            // As the server has it now, not as kept: it may have changed
+            // elsewhere.
             "playlist" => songs.extend(
                 client
+                    .asking_the_server()
                     .get_playlist(id)
                     .await?
                     .entry
@@ -4268,15 +4481,22 @@ pub fn notify(ui: &AppWindow, browser: &Shared, text: String) {
 /// Asks for the user's tags, on servers with them, and shows them wherever
 /// they are on screen.
 fn load_tags(ui: &AppWindow, browser: &Shared) {
+    ask_tags(ui, browser, true);
+}
+
+/// Asks for the tags as `load_tags` says, showing aged answers at once where
+/// `shows_aged`, and then asking again without.
+fn ask_tags(ui: &AppWindow, browser: &Shared, shows_aged: bool) {
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
     if !client.supports(TAGS) {
         return;
     }
+    let reader = client.reader(shows_aged);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let answer = client.get_tags().await;
+        let answer = reader.get_tags().await;
         let Some(ui) = weak.upgrade() else { return };
         let signed_in = browser
             .borrow()
@@ -4292,6 +4512,7 @@ fn load_tags(ui: &AppWindow, browser: &Shared) {
             ui.set_loading(false);
         }
         match answer {
+            Ok(_) if !shows_aged && !reader.heard_news() => return,
             Ok(tags) => {
                 let mut b = browser.borrow_mut();
                 b.tags = tags.tag;
@@ -4302,6 +4523,9 @@ fn load_tags(ui: &AppWindow, browser: &Shared) {
             Err(_) => return,
         }
         show_tags(&ui, &browser);
+        if reader.gave_aged() {
+            ask_tags(&ui, &browser, false);
+        }
     })
     .expect("the event loop is running");
 }
@@ -4778,13 +5002,16 @@ fn change_stations<F: Future<Output = opensubsonic::Result<()>> + 'static>(
     done: String,
     task: impl FnOnce(Arc<Client>) -> F,
 ) {
-    change(ui, browser, done, task, |ui, browser| {
-        if ui.get_page() == Page::Radio {
-            stations(ui, browser);
-        } else {
-            saved_stations(ui, browser);
-        }
-    });
+    change(ui, browser, done, task, show_stations_anew);
+}
+
+/// Asks for the saved stations again and shows them where they are on screen.
+fn show_stations_anew(ui: &AppWindow, browser: &Shared) {
+    if ui.get_page() == Page::Radio {
+        stations(ui, browser);
+    } else {
+        saved_stations(ui, browser);
+    }
 }
 
 /// Has the server make a change with `task`, then puts up `done` as a
@@ -5620,16 +5847,14 @@ fn save_catalogue_station(ui: &AppWindow, browser: &Shared, shelf: usize, index:
         place.map(|&place| b.catalogue[place].clone())
     };
     let Some(station) = station else { return };
-    if is_saved(&browser.borrow(), &station.stream_url) {
-        notify(ui, browser, format!("{} is saved already.", station.name));
-        return;
-    }
-    let done = format!("Saved {}.", station.name);
-    change_stations(ui, browser, done, |client| async move {
-        let homepage = station.home_page_url.as_deref().unwrap_or_default();
-        let saved = self::station(&station.name, &station.stream_url, homepage);
-        client.create_internet_radio_station(&saved).await
-    });
+    let homepage = station.home_page_url.unwrap_or_default();
+    save_new_station(
+        ui,
+        browser,
+        station.name,
+        vec![station.stream_url],
+        homepage,
+    );
 }
 
 /// The address a directory station streams from: the stream itself, with
@@ -5717,37 +5942,78 @@ fn save_station(ui: &AppWindow, browser: &Shared, shelf: i32, index: usize) {
     };
     let Some(station) = station else { return };
     let name = station.name.trim().to_owned();
-    let stream = stream_address(&station).to_owned();
-    let saved = browser
-        .borrow()
-        .server_stations
-        .iter()
-        .any(|saved| saved.stream_url == stream || saved.stream_url == station.url);
-    if saved {
-        notify(ui, browser, format!("{name} is saved already."));
-        return;
-    }
+    let streams = vec![stream_address(&station).to_owned(), station.url.clone()];
     let homepage = station.homepage.trim().to_owned();
-    let done = format!("Saved {name}.");
-    change_stations(ui, browser, done, |client| async move {
-        let station = self::station(&name, &stream, &homepage);
-        client.create_internet_radio_station(&station).await
-    });
+    save_new_station(ui, browser, name, streams, homepage);
 }
 
-/// The stations saved on the server, kept for Save to know them, and shown
-/// on the home page as a shelf. A server without radio stations shows none.
-fn saved_stations(ui: &AppWindow, browser: &Shared) {
+/// Saves a station on the server, streaming from the first of `streams`,
+/// unless the server has one streaming from any of them: as the server has
+/// them now, since those shown may be from up to an hour ago.
+fn save_new_station(
+    ui: &AppWindow,
+    browser: &Shared,
+    name: String,
+    streams: Vec<String>,
+    homepage: String,
+) {
+    let saved_already = format!("{name} is saved already.");
+    if streams_one(&browser.borrow().server_stations, &streams) {
+        return notify(ui, browser, saved_already);
+    }
     let Some(client) = browser.borrow().client.clone() else {
         return;
     };
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let Ok(list) = client.get_internet_radio_stations().await else {
+        let saved = client
+            .asking_the_server()
+            .get_internet_radio_stations()
+            .await;
+        let Some(ui) = weak.upgrade() else { return };
+        if saved.is_ok_and(|saved| streams_one(&saved.internet_radio_station, &streams)) {
+            notify(&ui, &browser, saved_already);
+            return show_stations_anew(&ui, &browser);
+        }
+        let done = format!("Saved {name}.");
+        change_stations(&ui, &browser, done, |client| async move {
+            let station = station(&name, &streams[0], &homepage);
+            client.create_internet_radio_station(&station).await
+        });
+    })
+    .expect("the event loop is running");
+}
+
+/// Whether one of the `saved` stations streams from one of `streams`.
+fn streams_one(saved: &[InternetRadioStation], streams: &[String]) -> bool {
+    (saved.iter()).any(|station| streams.contains(&station.stream_url))
+}
+
+/// The stations saved on the server, kept for Save to know them, and shown
+/// on the home page as a shelf. A server without radio stations shows none.
+fn saved_stations(ui: &AppWindow, browser: &Shared) {
+    ask_saved_stations(ui, browser, true);
+}
+
+/// Asks for the saved stations as `saved_stations` says, showing aged
+/// answers at once where `shows_aged`, and then asking again without.
+fn ask_saved_stations(ui: &AppWindow, browser: &Shared, shows_aged: bool) {
+    let Some(client) = browser.borrow().client.clone() else {
+        return;
+    };
+    let reader = client.reader(shows_aged);
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let Ok(list) = reader.get_internet_radio_stations().await else {
             return;
         };
         let Some(ui) = weak.upgrade() else { return };
-        show_saved(&ui, &browser, list.internet_radio_station);
+        if shows_aged || reader.heard_news() {
+            show_saved(&ui, &browser, list.internet_radio_station);
+        }
+        if reader.gave_aged() {
+            ask_saved_stations(&ui, &browser, false);
+        }
     })
     .expect("the event loop is running");
 }
@@ -5970,9 +6236,12 @@ fn song(ui: &AppWindow, browser: &Shared, id: String) {
     load(
         ui,
         browser,
-        |client| async move {
-            let call = client.get_song(&id);
-            saved_or(offline, || kept.song(&id), call).await
+        move |client| {
+            let (id, kept) = (id.clone(), kept.clone());
+            async move {
+                let call = client.get_song(&id);
+                saved_or(offline, || kept.song(&id), call).await
+            }
         },
         |ui, browser, song| {
             ui.set_header_title(song.title.as_str().into());
@@ -6053,25 +6322,28 @@ fn folders(ui: &AppWindow, browser: &Shared, link: String) {
     load(
         ui,
         browser,
-        |client| async move {
-            if let Some(tag) = tag {
-                let tag = client.get_tag(&tag).await?;
-                return Ok((tag.tag.name, tag.song));
+        move |client| {
+            let (tag, id) = (tag.clone(), id.clone());
+            async move {
+                if let Some(tag) = tag {
+                    let tag = client.get_tag(&tag).await?;
+                    return Ok((tag.tag.name, tag.song));
+                }
+                let Some(id) = id else {
+                    let indexes = client.get_indexes(None, None).await?;
+                    return Ok((
+                        "Folders".to_owned(),
+                        indexes.map(top_level).unwrap_or_default(),
+                    ));
+                };
+                let folder = client.get_music_directory(&id).await?;
+                Ok((folder.name, folder.child))
             }
-            let Some(id) = id else {
-                let indexes = client.get_indexes(None, None).await?;
-                return Ok((
-                    "Folders".to_owned(),
-                    indexes.map(top_level).unwrap_or_default(),
-                ));
-            };
-            let folder = client.get_music_directory(&id).await?;
-            Ok((folder.name, folder.child))
         },
         move |ui, browser, (name, entries)| {
             {
                 let mut b = browser.borrow_mut();
-                b.folder = link;
+                b.folder = link.clone();
                 b.folder_name = name.clone();
                 b.entries = entries;
             }
@@ -6121,7 +6393,10 @@ fn refresh_tag(ui: &AppWindow, browser: &Shared) {
     load(
         ui,
         browser,
-        |client| async move { client.get_tag(&id).await },
+        move |client| {
+            let id = id.clone();
+            async move { client.get_tag(&id).await }
+        },
         move |ui, browser, tag| {
             {
                 let mut b = browser.borrow_mut();
@@ -6162,13 +6437,16 @@ fn composer(ui: &AppWindow, browser: &Shared, id: String) {
     load(
         ui,
         browser,
-        |client| async move {
-            let composers = if known {
-                None
-            } else {
-                Some(client.get_composers().await?)
-            };
-            Ok((composers, client.get_compositions(Some(&wanted)).await?))
+        move |client| {
+            let wanted = wanted.clone();
+            async move {
+                let composers = if known {
+                    None
+                } else {
+                    Some(client.get_composers().await?)
+                };
+                Ok((composers, client.get_compositions(Some(&wanted)).await?))
+            }
         },
         move |ui, browser, (composers, compositions)| {
             let mut b = browser.borrow_mut();
@@ -6193,9 +6471,8 @@ fn composer(ui: &AppWindow, browser: &Shared, id: String) {
                 .iter()
                 .find(|composer| composer.id == id)
                 .and_then(|composer| composer.cover_art.clone());
-            for piece in &pieces {
-                b.tracks.push(composition_row(piece, Some(&id)));
-            }
+            let rows = pieces.iter().map(|piece| composition_row(piece, Some(&id)));
+            b.tracks.set_vec(rows.collect::<Vec<_>>());
             drop(b);
             header_image(ui, browser, picture);
         },
@@ -6208,7 +6485,10 @@ fn composition(ui: &AppWindow, browser: &Shared, id: String) {
     load(
         ui,
         browser,
-        |client| async move { client.get_composition(&id).await },
+        move |client| {
+            let id = id.clone();
+            async move { client.get_composition(&id).await }
+        },
         |ui, browser, composition| {
             let rows = performances(&composition.song);
             ui.set_header_title(composition.name.as_str().into());
@@ -6227,10 +6507,7 @@ fn composition(ui: &AppWindow, browser: &Shared, id: String) {
             let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
             ui.set_header_facts(facts.join(" · ").into());
             header_image(ui, browser, composition.cover_art);
-            let b = browser.borrow();
-            for row in rows {
-                b.tracks.push(row);
-            }
+            browser.borrow().tracks.set_vec(rows);
         },
     );
 }
