@@ -272,8 +272,23 @@ struct SubmitListens<'a, T> {
     payload: &'a [T],
 }
 
+/// Sends `request` from the runtime's threads. Connecting checks the
+/// server's certificate, which on Android can go online to see whether it
+/// was revoked, and the app awaits its calls on its UI thread.
+#[cfg(not(target_family = "wasm"))]
+async fn exchange(request: RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    tokio::spawn(request.send())
+        .await
+        .expect("the runtime outlives the app's calls")
+}
+
+#[cfg(target_family = "wasm")]
+async fn exchange(request: RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    request.send().await
+}
+
 async fn send<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
-    let response = request.send().await?;
+    let response = exchange(request).await?;
     let status = response.status();
     if status.is_success() {
         return Ok(response.json().await?);

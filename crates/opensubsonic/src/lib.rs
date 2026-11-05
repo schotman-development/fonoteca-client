@@ -233,7 +233,7 @@ impl Client {
     async fn send(&self, endpoint: &str, params: &Params) -> Result<Body> {
         loop {
             let (request, method) = self.request(endpoint, params)?;
-            let response = request.send().await?;
+            let response = exchange(request).await?;
             let status = response.status();
             let content_type = response
                 .headers()
@@ -303,6 +303,21 @@ impl Client {
             ))),
         }
     }
+}
+
+/// Sends `request` from the runtime's threads. Connecting checks the
+/// server's certificate, which on Android can go online to see whether it
+/// was revoked, and the app awaits its calls on its UI thread.
+#[cfg(not(target_family = "wasm"))]
+async fn exchange(request: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    tokio::spawn(request.send())
+        .await
+        .expect("the runtime outlives the app's calls")
+}
+
+#[cfg(target_family = "wasm")]
+async fn exchange(request: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    request.send().await
 }
 
 enum Body {
@@ -783,6 +798,27 @@ mod tests {
         let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
         assert!(matches!(client.ping().await, Err(Error::Status(307))));
         assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    /// The app awaits its calls on its UI thread, and on Android checking the
+    /// server's certificate can itself go online. So a call connects and
+    /// sends on the runtime's threads, not on its caller's.
+    #[test]
+    fn a_call_goes_out_while_its_caller_is_busy() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _inside = runtime.handle().enter();
+        let (server, log) =
+            serve(|_| json(r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#));
+        let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
+        std::thread::spawn(move || runtime.block_on(std::future::pending::<()>()));
+        let mut ping = Box::pin(client.ping());
+        let mut caller = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(ping.as_mut().poll(&mut caller).is_pending());
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert_eq!(log.lock().unwrap().len(), 1, "the server got no call");
     }
 
     #[tokio::test]

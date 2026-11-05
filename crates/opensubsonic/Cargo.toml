@@ -13,6 +13,9 @@ reqwest = { version = "0.13", features = ["form", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1", features = ["rt"] }
+
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 

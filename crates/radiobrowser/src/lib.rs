@@ -176,7 +176,7 @@ impl Client {
     /// A station's picture from `address`, or `None` when it is larger than
     /// half a megabyte.
     pub async fn logo(&self, address: &str) -> Result<Option<Vec<u8>>> {
-        let response = self.http.get(address).send().await?.error_for_status()?;
+        let response = exchange(self.http.get(address)).await?.error_for_status()?;
         if response
             .content_length()
             .is_some_and(|n| n > LOGO_BYTES as u64)
@@ -189,7 +189,22 @@ impl Client {
 }
 
 async fn get<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
-    Ok(request.send().await?.error_for_status()?.json().await?)
+    Ok(exchange(request).await?.error_for_status()?.json().await?)
+}
+
+/// Sends `request` from the runtime's threads. Connecting checks the
+/// server's certificate, which on Android can go online to see whether it
+/// was revoked, and the app awaits its calls on its UI thread.
+#[cfg(not(target_family = "wasm"))]
+async fn exchange(request: RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    tokio::spawn(request.send())
+        .await
+        .expect("the runtime outlives the app's calls")
+}
+
+#[cfg(target_family = "wasm")]
+async fn exchange(request: RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    request.send().await
 }
 
 #[derive(Debug)]

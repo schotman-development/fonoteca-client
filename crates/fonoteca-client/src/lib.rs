@@ -3608,6 +3608,9 @@ mod tests {
 
             ui.invoke_open("album:a2".into());
             wait_for("the classical album", || ui.get_tracks().row_count() == 7).await;
+            // The notes come in a call of their own, in either order with
+            // the tracks, and push the rows down: a click they land in misses.
+            wait_for("the album's notes", || !ui.get_about().is_empty()).await;
             // With Shift held, a click picks every row from the one picked
             // last to it.
             ui.invoke_select_track(0, false);
