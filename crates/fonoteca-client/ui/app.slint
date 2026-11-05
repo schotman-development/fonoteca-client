@@ -258,7 +258,7 @@ component GestureHint inherits Rectangle {
 // it's reached. The arrow keys, Page Up and Down, Home and End scroll it
 // when what has the keys doesn't take them; Escape goes to `escape`, and
 // Android's back button and gesture to `back` while there is a page to go
-// back to; with none they close the app.
+// back to; with none the app steps back as src/back.rs says.
 // A finger pulling the page down from its top asks for `refresh`; one
 // swiping in from the left edge for `back`, from the right edge for
 // `forward`. A mouse does neither, as its drags move playlists.
@@ -1190,6 +1190,8 @@ export component AppWindow inherits Window {
     callback open(link: string);
     callback back();
     callback forward();
+    // Back a page, or to Home when there is none to go back to.
+    callback back-or-home();
     // Shows the page on screen again, asked for anew.
     callback refresh();
     callback show-section(index: int);
@@ -3203,6 +3205,24 @@ export component AppWindow inherits Window {
     function open-from-now-playing(link: string) {
         root.close-now-playing();
         root.open(link);
+    }
+    // Android's back that nothing with the keys took: what is over the page
+    // closes, the top one first, else the page goes back, or to Home. On
+    // Home, as before the library opens, it does nothing.
+    public function step-back() {
+        if root.step != Step.done {
+            return;
+        }
+        if root.asking != Asking.nothing {
+            root.close-dialog();
+        } else if !root.docked && !root.phone && root.sidebar-open {
+            root.sidebar-open = false;
+            Input.refocus += 1;
+        } else if root.now-playing-open {
+            root.leave-sheet-page();
+        } else {
+            root.back-or-home();
+        }
     }
 
     // The frame cuts the sheet off where it slides in from and out to.

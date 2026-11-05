@@ -671,6 +671,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || step(&weak.unwrap(), &browser, 1)
     });
+    ui.on_back_or_home({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || back_or_home(&weak.unwrap(), &browser)
+    });
     ui.on_refresh({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || refresh(&weak.unwrap(), &browser)
@@ -1295,6 +1299,24 @@ fn step(ui: &AppWindow, browser: &Shared, by: isize) {
             Some(at) if at < b.history.len() => b.at = at,
             _ => return,
         }
+    }
+    ui.set_arrival(ui.get_arrival() + 1);
+    show(ui, browser);
+}
+
+/// Goes back a page, or with none to go back to, to the home page, put
+/// before the page on screen so that forward comes back to it. On the home
+/// page with nothing before it, stays.
+fn back_or_home(ui: &AppWindow, browser: &Shared) {
+    if browser.borrow().at > 0 {
+        return step(ui, browser, -1);
+    }
+    {
+        let mut b = browser.borrow_mut();
+        if b.history.first().is_none_or(|link| link == "home") {
+            return;
+        }
+        b.history.insert(0, "home".into());
     }
     ui.set_arrival(ui.get_arrival() + 1);
     show(ui, browser);

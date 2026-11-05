@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsetsController;
+import android.window.OnBackInvokedDispatcher;
 
 /**
  * The NativeActivity the app runs in, with the status bar's icons dark while
@@ -22,6 +23,36 @@ public class MainActivity extends NativeActivity {
 
     /** The user stopped the downloads' job: Rust's (src/download_job.rs), registered as the app starts. */
     static native void downloadsStopped();
+
+    /**
+     * Android's back: Rust's (src/back.rs), registered as the app starts.
+     * `offered` says the app was offered it as a key already.
+     */
+    static native void back(boolean offered);
+
+    /**
+     * From Rust's thread, once Slint has asked for back, which it does as a
+     * callback from Android 14. Where callbacks get back, as they always do
+     * from Android 16, the one added last goes first, and Slint's closes the
+     * app when nothing on screen takes the key; this one, added later, never
+     * does. A keyboard shown later still comes first, to close.
+     */
+    public void takeBack() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            return;
+        }
+        runOnUiThread(() -> getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> back(false)));
+    }
+
+    // Before Android 16, back comes to the app as a key first; one it didn't
+    // take comes here, which would close the app or send it to the
+    // background.
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        back(true);
+    }
 
     /**
      * Keeps the downloads going in the background (Android 14 and later) for

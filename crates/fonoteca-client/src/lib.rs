@@ -1,5 +1,7 @@
 slint::include_modules!();
 
+#[cfg(any(target_os = "android", test))]
+mod back;
 #[cfg(target_os = "android")]
 mod bit_perfect;
 mod browse;
@@ -417,6 +419,7 @@ fn android_main(app: slint::android::AndroidApp) {
         let activity =
             unsafe { jni::objects::JObject::from_raw(env, app.activity_as_ptr().cast()) };
         media::init(env, &activity)?;
+        back::init(env, &activity)?;
         download_job::init(env, &activity)
     })
     .expect("Android's media controls");
@@ -468,6 +471,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     #[cfg(target_os = "android")]
     {
         media::wire(&ui);
+        back::wire(&ui);
         download_job::wire(&ui);
     }
 
@@ -3600,6 +3604,12 @@ mod tests {
                 press(&ui, slint::platform::Key::Back);
                 assert!(!ui.get_now_playing_open(), "Back closes it");
                 assert!(page_has_the_keys(), "closing hands the page the keys");
+                // So does an Android back that nothing with the keys took.
+                click(&ui, "Now playing");
+                idle(Duration::from_millis(400)).await;
+                back::pressed(&ui, true);
+                assert!(!ui.get_now_playing_open(), "back closes it first");
+                assert_eq!(ui.get_page(), Page::Albums);
                 click(&ui, "Now playing");
                 idle(Duration::from_millis(400)).await;
                 press(&ui, slint::platform::Key::Escape);
@@ -5458,6 +5468,10 @@ mod tests {
             press(&ui, slint::platform::Key::Back);
             assert!(navigations().is_empty());
             assert_eq!(ui.get_page(), page);
+            click(&ui, "Menu");
+            back::pressed(&ui, true);
+            assert!(navigations().is_empty(), "back closes the drawer first");
+            assert_eq!(ui.get_page(), page);
             // A drawer left open when the window turns into a phone's stays
             // closed when it widens again.
             click(&ui, "Menu");
@@ -6878,6 +6892,25 @@ mod tests {
             assert_eq!(offline.get_page(), Page::Album, "no leaving the page");
             wait_for("the album from the server", || offline.get_tracks().row_count() == 2).await;
             assert_eq!(offline.get_username(), "joe");
+            // Android's back closes a dialog first, then goes back a page,
+            // and with none before, to Home, which forward leaves again. On
+            // Home it does nothing.
+            offline.invoke_ask_download("Album".into(), "".into());
+            assert!(offline.global::<Input>().get_modal());
+            back::pressed(&offline, true);
+            assert!(!offline.global::<Input>().get_modal(), "the dialog closes");
+            assert_eq!(offline.get_page(), Page::Album);
+            back::pressed(&offline, false);
+            assert_eq!(offline.get_page(), Page::Downloads);
+            back::pressed(&offline, false);
+            assert_eq!(offline.get_page(), Page::Home);
+            assert!(offline.get_can_go_forward());
+            let visit = offline.get_visit();
+            back::pressed(&offline, false);
+            back::pressed(&offline, true);
+            assert_eq!((offline.get_page(), offline.get_visit()), (Page::Home, visit));
+            offline.invoke_forward();
+            assert_eq!(offline.get_page(), Page::Downloads);
             let listed = |ui: &AppWindow| ui.get_sections().iter().any(|section| section == "Downloads");
             assert!(listed(&ui));
             ui.invoke_remove_all_downloads();
