@@ -17,6 +17,8 @@ pub struct Playlist {
     pub annotation: Option<String>,
     /// The algorithm that made it, when ListenBrainz made it.
     pub source_patch: Option<String>,
+    /// When it was made, as ISO 8601.
+    pub date: Option<String>,
     pub tracks: Vec<PlaylistTrack>,
 }
 
@@ -25,6 +27,24 @@ impl Playlist {
     /// heard.
     pub fn is_exploration(&self) -> bool {
         self.source_patch.as_deref() == Some(EXPLORATION_PATCH)
+    }
+
+    /// The day it was made, counted from 1970-01-01, to tell how many days
+    /// apart two playlists are.
+    pub fn day_number(&self) -> Option<i64> {
+        let mut parts = self.date.as_deref()?.get(..10)?.split('-');
+        let mut next = || parts.next()?.parse::<i64>().ok();
+        let (year, month, day) = (next()?, next()?, next()?);
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return None;
+        }
+        // Counts the days of whole years from March, when the leap day ends the year.
+        let year = if month <= 2 { year - 1 } else { year };
+        let era = year.div_euclid(400);
+        let year_of_era = year - era * 400;
+        let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+        Some(era * 146_097 + day_of_era - 719_468)
     }
 }
 
@@ -36,6 +56,8 @@ pub struct PlaylistTrack {
     pub artist: String,
     /// The names in that credit, one for each artist.
     pub artists: Vec<String>,
+    /// The MusicBrainz ID of each of `artists`, where ListenBrainz has it.
+    pub artist_mbids: Vec<Option<String>>,
     pub album: Option<String>,
     pub duration_ms: Option<u64>,
 }
@@ -55,6 +77,7 @@ struct JspfPlaylist {
     title: String,
     identifier: String,
     annotation: Option<String>,
+    date: Option<String>,
     #[serde(default)]
     extension: Extension,
     #[serde(default)]
@@ -117,6 +140,7 @@ struct Credits {
 #[derive(Deserialize)]
 pub(crate) struct Credit {
     pub(crate) artist_credit_name: String,
+    artist_mbid: Option<String>,
 }
 
 /// The last part of an address such as
@@ -137,6 +161,7 @@ impl From<Jspf> for Playlist {
             mbid: mbid_of(&jspf.identifier).unwrap_or_default(),
             title: jspf.title,
             annotation: jspf.annotation,
+            date: jspf.date,
             source_patch: jspf
                 .extension
                 .playlist
@@ -152,16 +177,19 @@ impl From<JspfTrack> for PlaylistTrack {
     fn from(track: JspfTrack) -> Self {
         let credits = track.extension.track.additional_metadata.artists;
         let artist = track.creator.unwrap_or_default();
-        let artists = if credits.is_empty() {
-            vec![artist.clone()]
+        let (artists, artist_mbids) = if credits.is_empty() {
+            (vec![artist.clone()], vec![None])
         } else {
-            credits.into_iter().map(|c| c.artist_credit_name).collect()
+            (credits.into_iter())
+                .map(|c| (c.artist_credit_name, c.artist_mbid))
+                .unzip()
         };
         PlaylistTrack {
             recording_mbid: track.identifier.first().and_then(|id| mbid_of(id)),
             title: track.title,
             artist,
             artists,
+            artist_mbids,
             album: track.album,
             duration_ms: track.duration,
         }
@@ -192,7 +220,7 @@ mod tests {
 
     const LIST: &str = r#"{"count":2,"offset":0,"playlist_count":2,"playlists":[
       {"playlist":{"title":"Daily Jams for rob","identifier":"https://listenbrainz.org/playlist/a9b9f76f-7e1f-427b-9244-68dcf26cb43f",
-        "annotation":"<p>Made for you</p>","track":[],
+        "annotation":"<p>Made for you</p>","date":"2026-11-04T23:02:06.186375+00:00","track":[],
         "extension":{"https://musicbrainz.org/doc/jspf#playlist":{"created_for":"rob",
           "additional_metadata":{"algorithm_metadata":{"source_patch":"daily-jams"}}}}}},
       {"playlist":{"title":"Weekly Exploration for rob","identifier":"https://listenbrainz.org/playlist/55f2a01f-3974-46ca-8461-a8a84886eba4",
@@ -210,6 +238,11 @@ mod tests {
             Some("<p>Made for you</p>")
         );
         assert_eq!(playlists[0].source_patch.as_deref(), Some("daily-jams"));
+        assert_eq!(
+            playlists[0].date.as_deref(),
+            Some("2026-11-04T23:02:06.186375+00:00")
+        );
+        assert_eq!(playlists[1].date, None);
         assert_eq!(playlists[1].annotation, None);
         assert!(playlists[1].tracks.is_empty());
     }
@@ -235,7 +268,7 @@ mod tests {
               "track":[{"title":"RITUAL","creator":"Jon Hopkins, 7RAYS & Ishq","album":"RITUAL","duration":194880,
                 "identifier":["https://musicbrainz.org/recording/31dad9e2-25fc-48aa-8c01-72c3729f53a1"],
                 "extension":{"https://musicbrainz.org/doc/jspf#track":{"additional_metadata":{"artists":[
-                  {"artist_credit_name":"Jon Hopkins","join_phrase":", "},{"artist_credit_name":"7RAYS"},{"artist_credit_name":"Ishq"}]}}}},
+                  {"artist_credit_name":"Jon Hopkins","artist_mbid":"a1","join_phrase":", "},{"artist_credit_name":"7RAYS"},{"artist_credit_name":"Ishq"}]}}}},
                {"title":"Bare","creator":"Someone"}]}}"#,
         )
         .unwrap();
@@ -246,9 +279,11 @@ mod tests {
         );
         assert_eq!(tracks[0].artist, "Jon Hopkins, 7RAYS & Ishq");
         assert_eq!(tracks[0].artists, ["Jon Hopkins", "7RAYS", "Ishq"]);
+        assert_eq!(tracks[0].artist_mbids, [Some("a1".to_owned()), None, None]);
         assert_eq!(tracks[0].duration_ms, Some(194880));
         assert_eq!(tracks[1].recording_mbid, None);
         assert_eq!(tracks[1].artists, ["Someone"]);
+        assert_eq!(tracks[1].artist_mbids, [None]);
     }
 
     #[test]

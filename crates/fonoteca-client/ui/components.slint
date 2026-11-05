@@ -87,6 +87,9 @@ export struct MenuEntry {
 
 // An album or artist on a grid or shelf, and the page it opens; a folder of
 // playlists, drawn as one.
+// What made a tile's playlist, which picks the colour over its picture.
+export enum KindTint { none, green, blue, red }
+
 export struct AlbumTile {
     title: string,
     names: [Name],
@@ -102,6 +105,8 @@ export struct AlbumTile {
     dark-plate: bool,
     // A catalogue station the server has saved already.
     saved: bool,
+    // A playlist ListenBrainz made, wide: the colour its kind has.
+    tint: KindTint,
 }
 
 export global Icons {
@@ -1977,19 +1982,30 @@ export component Shelf {
 export component GenreBanner inherits Rectangle {
     in property <image> picture;
     in property <string> name;
+    // A smaller line under the name.
+    in property <string> caption;
     in property <length> name-size: 28px;
     in property <bool> hovered;
+    // The tint's dark end, while the picture is on its way or where there is
+    // none.
+    in property <brush> backdrop: #1c1c2c;
+    // Over the picture, fading in with it.
+    in property <brush> wash: transparent;
 
     border-radius: Theme.radius;
     clip: true;
-    // The tint's dark end, while the picture is on its way or where there is
-    // none.
-    background: #1c1c2c;
-    Image {
+    background: root.backdrop;
+    art := Image {
         width: 100%;
         height: 100%;
         source: root.picture;
         image-fit: cover;
+        opacity: self.source.width > 0 ? 1 : 0;
+        animate opacity { duration: 400ms; }
+    }
+    Rectangle {
+        background: root.wash;
+        opacity: art.opacity;
     }
     Rectangle {
         background: root.hovered ? #00000026 : transparent;
@@ -2006,7 +2022,36 @@ export component GenreBanner inherits Rectangle {
             font-weight: 600;
             horizontal-alignment: center;
             wrap: word-wrap;
+            // A long name of its own keeps the caption in the tile.
+            max-lines: 2;
+            overflow: elide;
         }
+        if root.caption != "": Text {
+            text: root.caption;
+            color: #ffffffcc;
+            font-size: Theme.detail;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// The colours of a playlist ListenBrainz made, by what kind it is: green for
+// the weekly ones, red for the yearly, blue for the others.
+export global KindTints {
+    pure function dark(tint: KindTint) -> color {
+        return tint == KindTint.green ? #1f5a3a : tint == KindTint.red ? #6a2326 : #22427a;
+    }
+    pure function light(tint: KindTint) -> color {
+        return tint == KindTint.green ? #3f9b66 : tint == KindTint.red ? #b8454a : #3f78c4;
+    }
+    // Where there is no picture.
+    pure public function backdrop(tint: KindTint) -> brush {
+        return @linear-gradient(135deg, dark(tint) 0%, light(tint) 100%);
+    }
+    // Over a picture, which it dims.
+    pure public function wash(tint: KindTint) -> brush {
+        return dark(tint).with-alpha(0.6);
     }
 }
 
@@ -2016,11 +2061,17 @@ export component GenreTile inherits Pressable {
     in property <string> name;
     in property <string> albums;
     in property <length> name-size: 28px;
+    in property <string> caption;
+    in property <brush> backdrop: #1c1c2c;
+    in property <brush> wash: transparent;
     label: self.albums == "" ? self.name : self.name + ", " + self.albums;
 
     GenreBanner {
         picture: root.picture;
         name: root.name;
+        caption: root.caption;
+        backdrop: root.backdrop;
+        wash: root.wash;
         name-size: root.name-size;
         hovered: root.hovered;
     }
@@ -2182,6 +2233,8 @@ export component CoverShelf {
     in property <[AlbumTile]> tiles;
     in property <length> min-size: 200px;
     in property <bool> round;
+    // Wide tiles, two to one, each a banner with its title over it.
+    in property <bool> wide;
     in property <bool> selecting;
     // Each tile's menu, the same for all.
     in property <[MenuEntry]> entries;
@@ -2194,8 +2247,11 @@ export component CoverShelf {
     callback see-all();
 
     property <length> gap: Theme.gap;
-    property <int> columns: max(2, floor((self.width + self.gap) / (self.min-size + self.gap)));
+    property <int> columns: max(self.wide ? 1 : 2, floor((self.width + self.gap) / (self.min-size + self.gap)));
     property <length> size: (self.width - (self.columns - 1) * self.gap) / self.columns;
+    property <length> tile-height: self.wide ? self.size / 2 : probe.preferred-height;
+    property <[AlbumTile]> cover-tiles: self.wide ? [] : self.tiles;
+    property <[AlbumTile]> banner-tiles: self.wide ? self.tiles : [];
     property <length> pitch: self.size + self.gap;
     // The tile at the left edge, and the furthest one that can be.
     property <int> first;
@@ -2263,11 +2319,12 @@ export component CoverShelf {
         Landing.shelved = Landing.count;
     }
 
-    // Measures a tile's height at this width.
+    // Measures a tile's height at this width. A wide shelf has no use for it,
+    // and a square tile's height would add to the shelf's own.
     probe := CoverTile {
         visible: false;
         enabled: false;
-        size: root.size;
+        size: root.wide ? 1px : root.size;
         title: "Probe";
         names: [{ label: "Probe", link: "" }];
         entries: root.entries;
@@ -2323,7 +2380,7 @@ export component CoverShelf {
             }
         }
         swipe := SwipeGestureHandler {
-            height: probe.preferred-height;
+            height: root.tile-height;
             // Its ends take a drag too, which goes nowhere there, rather
             // than a tap on the tile under it.
             handle-swipe-left: root.last-first > 0;
@@ -2392,11 +2449,34 @@ export component CoverShelf {
                             }
                         ]
 
-                        for tile[i] in root.tiles: CoverTile {
+                        for tile[i] in root.banner-tiles: GenreTile {
                             x: i * root.pitch;
                             y: 0;
                             width: root.size;
-                            height: probe.preferred-height;
+                            height: root.tile-height;
+                            picture: tile.cover;
+                            name: tile.title;
+                            albums: tile.names.length > 0 ? tile.names[0].label : "";
+                            caption: self.albums;
+                            name-size: max(16px, min(32px, root.size / 10));
+                            backdrop: KindTints.backdrop(tile.tint);
+                            wash: KindTints.wash(tile.tint);
+                            // A tile reached with Tab slides into view.
+                            changed focused => {
+                                if self.focused && i < root.first {
+                                    root.rest-on(i, root.step);
+                                } else if self.focused && i >= root.first + root.columns {
+                                    root.rest-on(i - root.columns + 1, root.step);
+                                }
+                            }
+                            clicked => { root.open(tile.link); }
+                        }
+
+                        for tile[i] in root.cover-tiles: CoverTile {
+                            x: i * root.pitch;
+                            y: 0;
+                            width: root.size;
+                            height: root.tile-height;
                             size: root.size;
                             round: root.round;
                             logo: tile.logo;

@@ -54,7 +54,7 @@ fn shares_artist(song: &Child, track: &lb::PlaylistTrack) -> bool {
 /// Letters with their accents and their case taken off, and nothing else:
 /// "Beyoncé's Halo" and "beyonces halo" are the same. Spaces and
 /// punctuation go too, so a title differing only in them is the same.
-fn fold(text: &str) -> String {
+pub(super) fn fold(text: &str) -> String {
     const ACCENTED: [(&str, &str); 19] = [
         ("àáâãäåāăą", "a"),
         ("çćĉċč", "c"),
@@ -160,6 +160,7 @@ pub(super) mod fixtures {
             title: title.into(),
             artist: artist.into(),
             artists: vec![artist.into()],
+            artist_mbids: vec![None],
             album: None,
             duration_ms: None,
         }

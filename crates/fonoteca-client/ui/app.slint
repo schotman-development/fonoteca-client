@@ -2234,6 +2234,8 @@ export component AppWindow inherits Window {
                     if root.page == Page.home && root.created-for-you.length > 0: CoverShelf {
                         title: "Created for you";
                         tiles: root.created-for-you;
+                        wide: true;
+                        min-size: 300px;
                         open(link) => { root.open(link); }
                     }
                     if root.page == Page.home && root.saved-stations.length > 0: CoverShelf {

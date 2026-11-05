@@ -2204,7 +2204,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
     count_tracks(ui, browser);
     played::ask(ui, browser);
     saved_stations(ui, browser);
-    created_for::shelf(ui);
+    created_for::shelf(ui, browser);
     stats::ask(ui, browser);
     artists(ui, browser);
     if more {
@@ -3668,7 +3668,10 @@ fn typed_filter(ui: &AppWindow) -> Option<String> {
 /// again, and at least a page. On the home page, shows what has arrived.
 fn arrange(ui: &AppWindow, browser: &Shared) {
     match ui.get_page() {
-        Page::Home => return show_home(ui, browser),
+        Page::Home => {
+            show_home(ui, browser);
+            return created_for::banners(ui, browser);
+        }
         Page::Genres => return show_genres(ui, browser),
         Page::Genre => show_genre(ui, browser),
         Page::Search => return search::show_lists(ui, browser),

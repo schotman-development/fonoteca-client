@@ -6,6 +6,8 @@ mod back;
 #[cfg(target_os = "android")]
 mod bit_perfect;
 mod browse;
+#[cfg(target_family = "wasm")]
+mod browser_clock;
 mod catalogue;
 #[cfg(not(target_family = "wasm"))]
 mod download_job;
@@ -421,6 +423,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
     #[cfg(not(target_family = "wasm"))]
     let _runtime = runtime.enter();
+
+    #[cfg(target_family = "wasm")]
+    browser_clock::install();
 
     let ui = start()?;
     ui.run()?;
@@ -1048,7 +1053,19 @@ mod tests {
     /// What the flow test's ListenBrainz was asked, as each request's line
     /// and whether it carried the token "tok", and whether it is down.
     static LISTENBRAINZ_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// When each of those was asked.
+    static LISTENBRAINZ_AT: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
     static LISTENBRAINZ_DOWN: AtomicBool = AtomicBool::new(false);
+    /// Whether the stand-in answers for the playlist "later" after a pause, and
+    /// whether it has answered, to show a tile's banner before the last's tracks.
+    static LATER_SLOW: AtomicBool = AtomicBool::new(false);
+    static LATER_ANSWERED: AtomicBool = AtomicBool::new(false);
+    /// How long the stand-in takes to answer for the playlist "later" when it is slow.
+    const LATER_PAUSE: Duration = Duration::from_millis(900);
+    /// While set, the server gives Mara Lind another banner, after a pause,
+    /// and which banners it was asked for.
+    static BANNER_CHANGED: AtomicBool = AtomicBool::new(false);
+    static BANNERS_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// How many searches for a song by its title the server was asked, and
     /// whether it refuses them.
     static SEARCHES: AtomicUsize = AtomicUsize::new(0);
@@ -1127,12 +1144,19 @@ mod tests {
             .lock()
             .unwrap()
             .push(format!("{line} token={token}"));
+        LISTENBRAINZ_AT.lock().unwrap().push(Instant::now());
         if LISTENBRAINZ_DOWN.load(Relaxed) {
             return reply("503 Service Unavailable", "text/plain", b"down");
         }
         let playlist = |title: &str, id: &str, patch: &str, tracks: &str| {
+            // The weekly ones a week apart, the newest first.
+            let date = match id {
+                "later" => "2026-10-26T22:00:00+00:00",
+                "trip" => "2026-11-02T22:00:00+00:00",
+                _ => "2026-11-04T22:00:00+00:00",
+            };
             format!(
-                r#"{{"playlist":{{"title":"{title}","identifier":"https://listenbrainz.org/playlist/{id}","annotation":"<p>Made for joe</p>","track":[{tracks}],"extension":{{"https://musicbrainz.org/doc/jspf#playlist":{{"additional_metadata":{{"algorithm_metadata":{{"source_patch":"{patch}"}}}}}}}}}}}}"#
+                r#"{{"playlist":{{"title":"{title}","identifier":"https://listenbrainz.org/playlist/{id}","date":"{date}","annotation":"<p>Made for joe</p>","track":[{tracks}],"extension":{{"https://musicbrainz.org/doc/jspf#playlist":{{"additional_metadata":{{"algorithm_metadata":{{"source_patch":"{patch}"}}}}}}}}}}}}"#
             )
         };
         let track = |title: &str, artist: &str, mbid: Option<&str>| {
@@ -1171,7 +1195,8 @@ mod tests {
                 "Road Trip",
                 "trip",
                 "weekly-jams",
-                &track("Fugue", "Anna Bach", None),
+                // Two credits: the second is the library's artist with a banner.
+                r#"{"title":"Fugue","creator":"Anna Bach, Mara Lind","album":"Album","duration":200000,"extension":{"https://musicbrainz.org/doc/jspf#track":{"additional_metadata":{"artists":[{"artist_credit_name":"Anna Bach","join_phrase":", "},{"artist_credit_name":"Mara Lind","join_phrase":""}]}}}}"#,
             ),
             (
                 "Later Jams for joe",
@@ -1191,7 +1216,13 @@ mod tests {
             )
         } else if let Some(id) = target.strip_prefix("/1/playlist/") {
             match lists.iter().find(|list| list.1 == id) {
-                Some((title, id, patch, tracks)) => playlist(title, id, patch, tracks),
+                Some((title, id, patch, tracks)) => {
+                    if *id == "later" && LATER_SLOW.load(Relaxed) {
+                        std::thread::sleep(LATER_PAUSE);
+                        LATER_ANSWERED.store(true, Relaxed);
+                    }
+                    playlist(title, id, patch, tracks)
+                }
                 None => {
                     return reply(
                         "404 Not Found",
@@ -1685,6 +1716,12 @@ mod tests {
                 r#""directory":{"id":"d1","parent":"root","name":"Mara Lind","child":[{"id":"d2","parent":"d1","isDir":true,"title":"Night Harbour","coverArt":"al-a1"},{"id":"t1","parent":"d1","isDir":false,"title":"Harbour Lights","duration":252}]}"#,
             )
         } else if request.contains("/rest/getArtists") {
+            let changed = BANNER_CHANGED.load(Relaxed);
+            if changed {
+                // The playlists made for the user have come by then.
+                std::thread::sleep(LATER_PAUSE);
+            }
+            let banner = if changed { "ba-r1b" } else { "ba-r1" };
             let others: Vec<String> = (1..=120)
                 .map(|n| {
                     format!(
@@ -1693,7 +1730,7 @@ mod tests {
                 })
                 .collect();
             ok(&format!(
-                r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","musicBrainzId":"mb-anna","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","bannerArt":"ba-r1","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
+                r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","musicBrainzId":"mb-anna","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","bannerArt":"{banner}","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
                 others.join(",")
             ))
         } else if request.contains("/rest/getArtist?") && id == Some("o120") {
@@ -1929,6 +1966,9 @@ mod tests {
                 r#""playQueue":{{"current":"m2","position":61500,"username":"joe","changed":"2024-01-01T00:00:00Z","changedBy":"test","entry":[{entries}]}}"#
             ))
         } else if request.contains("/rest/getCoverArt") {
+            if let Some(banner) = id.filter(|id| id.starts_with("ba-")) {
+                BANNERS_ASKED.lock().unwrap().push(banner.to_owned());
+            }
             if COVERS.fetch_add(1, Relaxed) < 6 {
                 FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
             }
@@ -6698,6 +6738,7 @@ mod tests {
             store::save_listenbrainz(ListenBrainz { token: "tok".into(), user: "joe".into() })
                 .await
                 .unwrap();
+            LATER_SLOW.store(true, Relaxed);
             ui.invoke_open("home".into());
             wait_for("the Created for you shelf", || ui.get_created_for_you().row_count() == 3).await;
             let shelf: Vec<(String, String)> = (ui.get_created_for_you().iter())
@@ -6706,15 +6747,48 @@ mod tests {
             assert_eq!(
                 shelf,
                 [
-                    ("Daily Jams for joe, 2026-11-04 Wed".to_owned(), "createdfor:daily".to_owned()),
-                    ("Road Trip".to_owned(), "createdfor:trip".to_owned()),
-                    ("Later Jams for joe".to_owned(), "createdfor:later".to_owned())
+                    ("Daily Jams".to_owned(), "createdfor:daily".to_owned()),
+                    ("Weekly Jams".to_owned(), "createdfor:trip".to_owned()),
+                    ("Last Week's Jams".to_owned(), "createdfor:later".to_owned())
                 ]
             );
+            // Each tile keeps its playlist's own name beneath its kind's, except
+            // where they are the same.
+            let beneath = |row| ui.get_created_for_you().row_data(row).unwrap().names.row_data(0);
+            assert_eq!(beneath(0).unwrap().label, "Daily Jams for joe, 2026-11-04 Wed");
+            // The tracks of each decide the banner: the first has no artist the
+            // library knows, the second Anna Bach who has no banner and Mara
+            // Lind who has, the third Mara Lind again, whose banner the second
+            // has taken.
+            let covers = || -> Vec<bool> {
+                (ui.get_created_for_you().iter())
+                    .map(|tile| tile.cover.size().width > 0)
+                    .collect()
+            };
+            // The second tile has its banner while the third's playlist is
+            // still being fetched.
+            wait_for("the banner", || covers()[1]).await;
+            assert!(!LATER_ANSWERED.load(Relaxed));
+            wait_for("the last playlist", || LATER_ANSWERED.load(Relaxed)).await;
+            LATER_SLOW.store(false, Relaxed);
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(covers(), [false, true, false]);
             assert_eq!(
                 *LISTENBRAINZ_ASKED.lock().unwrap(),
-                ["GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true"]
+                [
+                    "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true",
+                    "GET /1/playlist/daily HTTP/1.1 token=true",
+                    "GET /1/playlist/trip HTTP/1.1 token=true",
+                    "GET /1/playlist/later HTTP/1.1 token=true"
+                ]
             );
+            // Each call about a call's spacing after the one before, as ListenBrainz
+            // asks: arrivals jitter by a few milliseconds, calls without the gate
+            // follow each other in one or two.
+            let asked_at = LISTENBRAINZ_AT.lock().unwrap().clone();
+            let spaced =
+                |pair: &[Instant]| pair[1] - pair[0] >= listenbrainz::STAND_IN_SPACING / 2;
+            assert!(asked_at.windows(2).all(spaced), "{asked_at:?}");
 
             // Home runs: the library's counts, the albums played last and
             // their artists, the newest albums, the listening stats, then the
@@ -6760,8 +6834,8 @@ mod tests {
             );
             assert_eq!(ui.get_header_facts(), "2 of 4 tracks in your library");
             let asked = LISTENBRAINZ_ASKED.lock().unwrap().clone();
-            assert_eq!(asked.len(), 2);
-            assert_eq!(asked[1], "GET /1/playlist/daily HTTP/1.1 token=true");
+            assert_eq!(asked.len(), 5);
+            assert_eq!(asked[4], "GET /1/playlist/daily HTTP/1.1 token=true");
             // A track the library has takes one search; one it hasn't, two.
             assert_eq!(SEARCHES.load(Relaxed), 6);
 
@@ -6879,10 +6953,33 @@ mod tests {
             })
             .await;
             assert_eq!(ui.get_created_for_you().row_count(), 0);
+            // The tracks of the shelf's playlists were fetched on its first showing
+            // and are not fetched again when it comes back.
+            let playlist_fetches = || {
+                (LISTENBRAINZ_ASKED.lock().unwrap().iter())
+                    .filter(|line| line.starts_with("GET /1/playlist/"))
+                    .count()
+            };
+            let fetched = playlist_fetches();
             LISTENBRAINZ_DOWN.store(false, Relaxed);
             ui.invoke_show_more();
             wait_for("the shelf again", || ui.get_created_for_you().row_count() == 3).await;
+            idle(Duration::from_millis(400)).await;
+            assert_eq!(playlist_fetches(), fetched);
             assert_eq!(ui.get_page_problem(), "");
+            // The new tiles have the banners of the tracks kept at once.
+            wait_for("the banner on coming back", || covers()[1]).await;
+            assert_eq!(covers(), [false, true, false]);
+            // The library's artists, asked for again, give the tile the banner
+            // they now have.
+            BANNER_CHANGED.store(true, Relaxed);
+            ui.invoke_refresh();
+            wait_for("the new banner asked for", || {
+                BANNERS_ASKED.lock().unwrap().iter().any(|banner| banner == "ba-r1b")
+            })
+            .await;
+            BANNER_CHANGED.store(false, Relaxed);
+            assert_eq!(playlist_fetches(), fetched);
 
             // A heart set in the app syncs with ListenBrainz: it sends the
             // hearts it can and stars the song of a love the server lacks,

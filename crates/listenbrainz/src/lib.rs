@@ -5,13 +5,14 @@
 //! Recordings are identified by their MusicBrainz recording ID, which
 //! OpenSubsonic servers such as Navidrome put in a song's `musicBrainzId`.
 //!
-//! ListenBrainz asks every client to make at most one call per second.
-// ponytail: no pacing in here; the caller spaces calls with a timer that works
-// natively and in the browser, since std's clock doesn't exist on wasm.
+//! ListenBrainz asks every client application to make at most one call per
+//! second, so every call waits its turn at one gate, [`pace`].
 
+mod pace;
 mod stats;
 
 use std::fmt;
+use std::time::Duration;
 
 use reqwest::header::AUTHORIZATION;
 use reqwest::{RequestBuilder, Url};
@@ -22,6 +23,9 @@ mod listens;
 mod playlist;
 
 pub use listens::{Around, Listened, ListensPage};
+#[cfg(target_family = "wasm")]
+pub use pace::use_browser_clock;
+pub use pace::{CALL_SPACING, STAND_IN_SPACING};
 pub use playlist::{Playlist, PlaylistTrack};
 
 pub const API_ROOT: &str = "https://api.listenbrainz.org/1/";
@@ -137,6 +141,26 @@ pub struct Client {
     http: reqwest::Client,
     root: Url,
     token: String,
+    /// How far apart this client's calls start.
+    spacing: Duration,
+}
+
+/// How far apart calls to the server at `root` start: ListenBrainz's own is
+/// asked one call a second of the whole app, and anything else is a
+/// stand-in.
+fn spacing_for(root: &Url) -> Duration {
+    let own = Url::parse(API_ROOT).expect("API_ROOT is a valid URL");
+    if root.host_str() == own.host_str() {
+        CALL_SPACING
+    } else {
+        STAND_IN_SPACING
+    }
+}
+
+/// A request that has yet to wait its turn.
+struct Call {
+    request: RequestBuilder,
+    spacing: Duration,
 }
 
 impl Client {
@@ -145,12 +169,16 @@ impl Client {
         Self::with_root(token, API_ROOT)
     }
 
-    /// A client for a server other than ListenBrainz's own, so that tests
-    /// never reach the real one. `root` ends in the API version.
+    /// A client for the API at `root`, which ends in the API version. A
+    /// server other than ListenBrainz's own is a stand-in, for tests that
+    /// must never reach the real one, and has the short spacing: ListenBrainz's
+    /// own is a second apart whichever way the client is made.
     pub fn with_root(token: impl Into<String>, root: &str) -> Result<Self> {
+        let root = Url::parse(root).expect("the root is a valid URL");
         Ok(Self {
             http: reqwest::Client::builder().build()?,
-            root: Url::parse(root).expect("the root is a valid URL"),
+            spacing: spacing_for(&root),
+            root,
             token: token.into(),
         })
     }
@@ -164,8 +192,11 @@ impl Client {
         url
     }
 
-    fn authorized(&self, request: RequestBuilder) -> RequestBuilder {
-        request.header(AUTHORIZATION, format!("Token {}", self.token))
+    fn authorized(&self, request: RequestBuilder) -> Call {
+        Call {
+            request: request.header(AUTHORIZATION, format!("Token {}", self.token)),
+            spacing: self.spacing,
+        }
     }
 
     /// The user name the token belongs to, or `None` when ListenBrainz
@@ -315,28 +346,45 @@ struct SubmitListens<'a, T> {
     payload: &'a [T],
 }
 
-/// Sends `request` from the runtime's threads. Connecting checks the
-/// server's certificate, which on Android can go online to see whether it
-/// was revoked, and the app awaits its calls on its UI thread.
+/// Sends `request` from the runtime's threads, after waiting `turn`'s
+/// spacing at the gate, if it has one. Connecting checks the server's
+/// certificate, which on Android can go online to see whether it was
+/// revoked, and the app awaits its calls on its UI thread. The wait is on
+/// the runtime's threads too, so a call goes out though its caller is busy.
 #[cfg(not(target_family = "wasm"))]
-async fn exchange(request: RequestBuilder) -> reqwest::Result<reqwest::Response> {
-    tokio::spawn(request.send())
-        .await
-        .expect("the runtime outlives the app's calls")
+async fn exchange(
+    request: RequestBuilder,
+    turn: Option<Duration>,
+) -> reqwest::Result<reqwest::Response> {
+    tokio::spawn(async move {
+        if let Some(spacing) = turn {
+            pace::wait_turn(spacing).await;
+        }
+        request.send().await
+    })
+    .await
+    .expect("the runtime outlives the app's calls")
 }
 
 #[cfg(target_family = "wasm")]
-async fn exchange(request: RequestBuilder) -> reqwest::Result<reqwest::Response> {
+async fn exchange(
+    request: RequestBuilder,
+    turn: Option<Duration>,
+) -> reqwest::Result<reqwest::Response> {
+    if let Some(spacing) = turn {
+        pace::wait_turn(spacing).await;
+    }
     request.send().await
 }
 
-async fn send<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
-    Ok(send_checked(request).await?.json().await?)
+async fn send<T: DeserializeOwned>(call: Call) -> Result<T> {
+    Ok(send_checked(call).await?.json().await?)
 }
 
-/// The response to `request` when ListenBrainz answered with a success.
-async fn send_checked(request: RequestBuilder) -> Result<reqwest::Response> {
-    let response = exchange(request).await?;
+/// The response to `call`, which waits its turn at the gate, when
+/// ListenBrainz answered with a success.
+async fn send_checked(call: Call) -> Result<reqwest::Response> {
+    let response = exchange(call.request, Some(call.spacing)).await?;
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -417,6 +465,33 @@ impl From<reqwest::Error> for Error {
 mod tests {
     use super::*;
 
+    /// What a call made by `client` waits at the gate, before its turn.
+    fn spacing_of(client: &Client) -> Duration {
+        client
+            .authorized(client.http.get(client.url(&["user", "rob", "playlists"])))
+            .spacing
+    }
+
+    #[test]
+    fn listenbrainzs_own_server_is_asked_a_second_apart_however_the_client_is_made() {
+        let clients = [
+            Client::new("t").unwrap(),
+            Client::with_root("t", API_ROOT).unwrap(),
+            Client::with_root("t", "https://api.listenbrainz.org/1").unwrap(),
+            Client::with_root("t", "https://api.listenbrainz.org:443/1/").unwrap(),
+        ];
+        for client in &clients {
+            assert!(spacing_of(client) >= CALL_SPACING, "{:?}", client.root);
+        }
+    }
+
+    #[test]
+    fn a_stand_in_is_asked_at_the_short_spacing() {
+        let stand_in = Client::with_root("t", "http://127.0.0.1:9/1/").unwrap();
+        assert_eq!(spacing_of(&stand_in), STAND_IN_SPACING);
+        assert!(STAND_IN_SPACING < CALL_SPACING);
+    }
+
     /// Polls `call` once from a thread that never runs the runtime, as the
     /// app's UI thread awaits its calls, and says how many requests the
     /// server got a second later. Connecting checks the server's certificate,
@@ -451,7 +526,14 @@ mod tests {
         let mut call = Box::pin(call(client, root));
         let mut caller = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(call.as_mut().poll(&mut caller).is_pending());
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // The call waits its turn at the gate, behind the other tests' calls,
+        // so give it time to leave rather than a fixed moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while seen.load(std::sync::atomic::Ordering::Relaxed) == 0
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         seen.load(std::sync::atomic::Ordering::Relaxed)
     }
 

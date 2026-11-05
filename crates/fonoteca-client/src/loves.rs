@@ -116,6 +116,7 @@ fn wanted(love: &lb::Feedback, recording: &str) -> Option<lb::PlaylistTrack> {
         title: named.track_name.clone(),
         artist: named.artist_name.clone(),
         artists: vec![named.artist_name.clone()],
+        artist_mbids: vec![None],
         album: named.release_name.clone(),
         duration_ms: None,
     })

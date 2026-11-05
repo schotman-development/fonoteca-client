@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, BottomBar, Button, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, ListeningStats, LyricsView, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, SignalPathLight, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, BottomBar, Button, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, KindTint, Link, Links, LinksLine, ListRow, ListeningStats, LyricsView, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, SignalPathLight, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -168,6 +168,13 @@ export component Workbench inherits Window {
         { title: "Folk", names: [{ label: "1 album", link: "" }], link: "genre:Folk" },
         { title: "Hip-hop", names: [{ label: "3 albums", link: "" }], cover: root.no-art ? root.none : @image-url("samples/banner-2.svg"), link: "genre:Hip-hop" },
         { title: "Blues", names: [{ label: "9 albums", link: "" }], cover: root.no-art ? root.none : @image-url("samples/banner-1.svg"), link: "genre:Blues" },
+    ];
+    property <[AlbumTile]> made-for: [
+        { title: "Weekly Jams", names: [{ label: "Weekly Jams for joe, week of 2026-11-02", link: "" }], tint: KindTint.green, cover: root.no-art ? root.none : @image-url("samples/banner-1.svg"), link: "createdfor:weekly" },
+        { title: root.long-text ? "Last Week's Jams, a name too long to fit its tile" : "Daily Jams", names: [{ label: "Daily Jams for joe, 2026-11-04 Wed", link: "" }], tint: KindTint.blue, link: "createdfor:daily" },
+        { title: "2025 Top Discoveries", names: [{ label: "Top Discoveries of 2025 for joe", link: "" }], tint: KindTint.red, cover: root.no-art ? root.none : @image-url("samples/banner-2.svg"), link: "createdfor:discoveries" },
+        { title: "2025 Missed Tracks", names: [{ label: "Top Missed Tracks of 2025 for joe", link: "" }], tint: KindTint.red, link: "createdfor:missed" },
+        { title: "LB Radio for country germany on easy mode", names: [{ label: "Made for joe on 2024-05-15", link: "" }], tint: KindTint.blue, link: "createdfor:radio" },
     ];
     property <image> photo-1: root.no-art ? root.none : @image-url("samples/photo-1.svg");
     property <image> photo-2: root.no-art ? root.none : @image-url("samples/photo-2.svg");
@@ -518,6 +525,16 @@ export component Workbench inherits Window {
                             tiles: root.grid;
                             open(link) => { root.event = "open " + link; }
                             select(index) => { root.event = "select tile " + index; }
+                        }
+                    }
+                    if root.current == 6: Example {
+                        caption: "Playlists made for you: wide tiles, a banner under the kind's tint where there is one, else the tint alone";
+                        CoverShelf {
+                            title: "Created for you";
+                            tiles: root.made-for;
+                            wide: true;
+                            min-size: 300px;
+                            open(link) => { root.event = "open " + link; }
                         }
                     }
                     if root.current == 6: Example {

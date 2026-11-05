@@ -193,7 +193,9 @@ impl Client {
                 release_mbid,
                 &format!("{caa_id}-{COVER_ART_WIDTH}.jpg"),
             ]);
-        let response = exchange(self.http.get(url)).await?.error_for_status()?;
+        let response = exchange(self.http.get(url), None)
+            .await?
+            .error_for_status()?;
         Ok(response.bytes().await?.to_vec())
     }
 }

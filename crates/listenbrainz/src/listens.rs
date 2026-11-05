@@ -97,6 +97,7 @@ impl From<Sent> for Listened {
         } else {
             vec![metadata.artist_name.clone()]
         };
+        let artist_mbids = vec![None; artists.len()];
         Listened {
             listened_at: sent.listened_at,
             track: PlaylistTrack {
@@ -104,6 +105,7 @@ impl From<Sent> for Listened {
                 title: metadata.track_name,
                 artist: metadata.artist_name,
                 artists,
+                artist_mbids,
                 album: metadata.release_name,
                 duration_ms: None,
             },
