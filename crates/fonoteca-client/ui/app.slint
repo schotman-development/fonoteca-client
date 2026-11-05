@@ -1843,7 +1843,6 @@ export component AppWindow inherits Window {
                         period: root.stat-period;
                         lists: root.stat-lists;
                         stale: root.stat-loading;
-                        wide: scroll.visible-width >= 1000px;
                         period-picked(index) => { root.pick-stat-period(index); }
                         open(link) => { root.open(link); }
                     }

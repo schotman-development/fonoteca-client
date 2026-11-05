@@ -1079,11 +1079,10 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 20: Example {
-                        caption: "The user's most played on ListenBrainz: a period to pick, and a ranking each of albums, artists and genres; a place in the library opens its page, the others have no link; a ranking with nothing in it says why; side by side when wide";
+                        caption: "The user's most played on ListenBrainz: a period to pick, and a ranking each of albums, artists and genres; a place in the library opens its page, the others have no link; three columns when three rows fit across, else two with the genres below, else one slide at a time with arrows and dots";
                         ListeningStats {
                             periods: ["This week", "This month", "This year", "All time"];
                             period: root.stat-period;
-                            wide: root.width >= 1000px;
                             lists: [
                                 {
                                     title: "Top albums",
@@ -1103,7 +1102,17 @@ export component Workbench inherits Window {
                                         { rank: 2, title: "Röyksopp", plays: "859 plays", picture: root.none },
                                     ],
                                 },
-                                { title: "Top genres", note: "ListenBrainz hasn't worked this out yet." },
+                                {
+                                    title: "Top genres",
+                                    note: "ListenBrainz hasn't worked this out yet.",
+                                    entries: [
+                                        { rank: 1, title: "Ambient", plays: "1234 plays" },
+                                        { rank: 2, title: "Electronic", plays: "987 plays" },
+                                        { rank: 3, title: "Shoegaze", plays: "654 plays" },
+                                        { rank: 4, title: "Folk", plays: "321 plays" },
+                                        { rank: 5, title: "Jazz", plays: "210 plays" },
+                                    ],
+                                },
                             ];
                             period-picked(index) => {
                                 root.stat-period = index;

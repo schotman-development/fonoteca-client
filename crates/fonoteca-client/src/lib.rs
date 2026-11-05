@@ -1208,7 +1208,10 @@ mod tests {
                 r#"{"payload":{"genre_activity":[
                 {"genre":"folk","hour":1,"listen_count":20},
                 {"genre":"folk","hour":9,"listen_count":10},
-                {"genre":"shoegaze","hour":9,"listen_count":4}]}}"#,
+                {"genre":"shoegaze","hour":9,"listen_count":4},
+                {"genre":"ambient","hour":9,"listen_count":3},
+                {"genre":"dub","hour":9,"listen_count":2},
+                {"genre":"drone","hour":9,"listen_count":1}]}}"#,
             ),
             _ => none(),
         }
@@ -1836,6 +1839,13 @@ mod tests {
             .is_some()
     }
 
+    /// A little longer than the stats' slides take to come to rest.
+    const SLIDE_GLIDE: Duration = Duration::from_millis(400);
+
+    /// A swipe for `drag`: its name, whether a finger makes it (else a mouse),
+    /// its path and how long it rests before letting go.
+    type Flick<'a> = (&'a str, bool, &'a [(u64, f32, f32)], u64);
+
     /// A scroll far enough up to reach the top of any page.
     const TOP_OF_PAGE: f32 = 100_000.0;
 
@@ -1844,6 +1854,16 @@ mod tests {
     fn scroll_page(ui: &AppWindow, delta_y: f32) {
         ui.window().dispatch_event(WindowEvent::PointerScrolled {
             position: slint::LogicalPosition::new(600.0, 400.0),
+            delta_x: 0.0,
+            delta_y,
+        });
+    }
+
+    /// Scrolls the page by `delta_y` at once, with the pointer `x` across the
+    /// window.
+    fn scroll_page_at(ui: &AppWindow, x: f32, delta_y: f32) {
+        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(x, 400.0),
             delta_x: 0.0,
             delta_y,
         });
@@ -5148,6 +5168,9 @@ mod tests {
                 [
                     place(1, "Folk", "30 plays", "genre:Folk"),
                     place(2, "Shoegaze", "4 plays", ""),
+                    place(3, "Ambient", "3 plays", ""),
+                    place(4, "Dub", "2 plays", ""),
+                    place(5, "Drone", "1 play", ""),
                 ]
             );
             assert_eq!(again.get_stat_lists().row_data(1).unwrap().note, "Nothing was played in this period.");
@@ -5162,6 +5185,124 @@ mod tests {
             assert_eq!(again.get_page(), Page::Home);
             idle(Duration::from_millis(250)).await;
             assert_eq!(asked().len(), 6, "the lists are not asked for again");
+
+            // By the page's own width, not the window's: where three rows
+            // don't fit across, albums and artists are side by side over the
+            // genres in two columns of their own, and where two don't, the
+            // lists are slides, one at a time. At 900 the docked sidebar
+            // leaves the page too narrow for two.
+            let (night, folk) = ("1. Night Harbour, Mara Lind, 480 plays", "1. Folk, 30 plays");
+            let genres = [folk, "2. Shoegaze, 4 plays", "3. Ambient, 3 plays", "4. Dub, 2 plays", "5. Drone, 1 play"];
+            // A slide next to the shown one is partly in the window, so a
+            // row counts as shown when its middle is.
+            let sees = |label: &str| {
+                let width = again.window().size().to_logical(again.window().scale_factor()).width;
+                find(&again, label).is_some_and(|row| (0.0..width).contains(&middle(&row).x))
+            };
+            let at = |label: &str| find(&again, label).unwrap().absolute_position();
+            let near = |a: f32, b: f32| (a - b).abs() < 1.0;
+            let show_at = async |width: f32| {
+                again.window().set_size(slint::LogicalSize::new(width, 900.0));
+                idle(Duration::from_millis(300)).await;
+                assert!(comes_into_view(&again, night).await);
+                // Far enough on that the rows below it are in view too.
+                scroll_page(&again, -300.0);
+                idle(Duration::from_millis(100)).await;
+            };
+            show_at(1500.0).await;
+            assert!(sees(folk) && !sees("Next ranking"), "three columns need no arrows");
+            let (albums, first, rows) = (at(night), at(folk), genres.map(at));
+            assert!(first.x > albums.x && near(first.y, albums.y), "genres beside the albums");
+            assert!(rows.windows(2).all(|pair| near(pair[0].x, pair[1].x) && pair[1].y > pair[0].y), "in one column");
+            show_at(1100.0).await;
+            assert!(sees(folk) && !sees("Next ranking"), "two columns need no arrows");
+            let (albums, first, rows) = (at(night), at(folk), genres.map(at));
+            assert!(near(first.x, albums.x) && first.y > albums.y, "genres under the albums");
+            // Filled top to bottom: 1 to 3 on the left, 4 and 5 on the right.
+            let (left, right) = (&rows[..3], &rows[3..]);
+            assert!(left.windows(2).all(|pair| near(pair[0].x, pair[1].x) && pair[1].y > pair[0].y), "1 to 3 down the left");
+            assert!(near(right[0].x, right[1].x) && right[0].x > left[0].x, "4 and 5 on the right");
+            assert!(near(right[0].y, left[0].y) && near(right[1].y, left[1].y), "starting level with 1");
+            show_at(900.0).await;
+            assert!(!sees(folk) && sees("Next ranking"), "too narrow for two columns");
+
+            // On a phone, the arrows and dots change the slide, and the
+            // arrow at either end is disabled.
+            again.window().set_size(slint::LogicalSize::new(400.0, 800.0));
+            idle(Duration::from_millis(300)).await;
+            // A scroll at 600 is outside a window this narrow.
+            scroll_page_at(&again, 200.0, TOP_OF_PAGE);
+            for _ in 0..40 {
+                if sees(night) {
+                    break;
+                }
+                idle(Duration::from_millis(30)).await;
+                scroll_page_at(&again, 200.0, -150.0);
+            }
+            assert!(sees(night), "the lists come into view");
+            // The dots are under the rows.
+            scroll_page_at(&again, 200.0, -300.0);
+            idle(Duration::from_millis(100)).await;
+            let enabled = |label: &str| button(&again, label).accessible_enabled();
+            let dots = || ["Top albums", "Top artists", "Top genres"].map(|title| button(&again, title).accessible_item_selected() == Some(true));
+            assert_eq!(dots(), [true, false, false]);
+            assert_eq!(enabled("Previous ranking"), Some(false));
+            assert_eq!(enabled("Next ranking"), Some(true));
+            click(&again, "Next ranking");
+            wait_for("the artists", || !sees(night)).await;
+            assert_eq!(enabled("Previous ranking"), Some(true));
+            assert_eq!(dots(), [false, true, false]);
+            click(&again, "Next ranking");
+            wait_for("the genres", || sees(folk)).await;
+            assert_eq!(enabled("Next ranking"), Some(false));
+            assert_eq!(dots(), [false, false, true]);
+            click(&again, "Previous ranking");
+            wait_for("the artists again", || !sees(folk)).await;
+            assert_eq!(dots(), [false, true, false]);
+            click(&again, "Top genres");
+            wait_for("the genres by its dot", || sees(folk)).await;
+            assert_eq!(dots(), [false, false, true]);
+            click(&again, "Top albums");
+            wait_for("the albums by its dot", || sees(night)).await;
+            idle(SLIDE_GLIDE).await;
+            assert_eq!(enabled("Previous ranking"), Some(false));
+            assert_eq!(dots(), [true, false, false]);
+
+            // A swipe moves one slide, whether a mouse's drag or a finger's,
+            // quick or slow, and opens no row under it.
+            let (touch, finger) = (again.global::<Input>().get_touch(), again.global::<Input>().get_finger());
+            let flicks: [Flick; 5] = [
+                ("a mouse's drag", false, &[(40, -60.0, 0.0), (40, -120.0, 0.0), (40, -200.0, 0.0)], 40),
+                ("a quick flick", true, &[(8, -60.0, 0.0), (8, -120.0, 0.0), (8, -200.0, 0.0)], 8),
+                ("a flick of 90ms", true, &[(0, -30.0, 0.0), (45, -120.0, 0.0)], 45),
+                ("a flick in steps", true, &[(30, -33.0, 0.0), (30, -66.0, 0.0), (30, -100.0, 0.0)], 0),
+                ("a slow short swipe", true, &[(40, -35.0, 0.0), (40, -70.0, 0.0)], 60),
+            ];
+            for (name, by_finger, path, rest) in flicks {
+                again.global::<Input>().set_touch(by_finger);
+                again.global::<Input>().set_finger(by_finger);
+                drag(&again, middle(&button(&again, night)), path, rest).await;
+                wait_for(name, || !sees(night)).await;
+                assert_eq!(again.get_page(), Page::Home, "{name} opened nothing");
+                assert_eq!(enabled("Previous ranking"), Some(true), "{name} moved one slide");
+                assert_eq!(enabled("Next ranking"), Some(true), "{name} moved only one");
+                assert_eq!(dots(), [false, true, false], "{name} lit the second dot");
+                click(&again, "Previous ranking");
+                wait_for("the albums back", || sees(night)).await;
+                idle(SLIDE_GLIDE).await;
+            }
+            // A drag too short to count, or the wrong way at the start,
+            // stays where it is.
+            drag(&again, middle(&button(&again, night)), &[(40, -20.0, 0.0), (40, -30.0, 0.0)], 60).await;
+            idle(Duration::from_millis(400)).await;
+            assert!(sees(night) && again.get_page() == Page::Home);
+            drag(&again, middle(&button(&again, night)), &[(40, 60.0, 0.0), (40, 120.0, 0.0)], 60).await;
+            idle(Duration::from_millis(400)).await;
+            assert!(sees(night), "the first slide has none before it");
+            again.global::<Input>().set_touch(touch);
+            again.global::<Input>().set_finger(finger);
+            again.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(300)).await;
 
             // Another account's lists don't stay while its own are on the way.
             again.set_listenbrainz_user("sue".into());
