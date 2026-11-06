@@ -1,7 +1,7 @@
 //! Parses every JSON example on the spec pages of the calls and types this
 //! crate covers. `spec-examples/` holds them, copied from
 //! <https://github.com/opensubsonic/open-subsonic-api> at be131fb44a48 (the
-//! play queue's at c1fd43f) under its Apache-2.0 license. Eleven examples had JSON typos (trailing or missing
+//! play queue's and scrobble's at c1fd43f) under its Apache-2.0 license. Eleven examples had JSON typos (trailing or missing
 //! commas, an extra brace); their copies fix only those.
 //!
 //! Left out: the getIndexes and indexes examples, which give numbers and
@@ -96,6 +96,7 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
         | "star"
         | "unstar"
         | "setRating"
+        | "scrobble"
         | "createInternetRadioStation"
         | "updateInternetRadioStation"
         | "deleteInternetRadioStation"

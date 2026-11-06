@@ -953,6 +953,12 @@ mod tests {
     /// Whether the server converts what `stream` asks for, or sends the
     /// original (FLAC) as Fonoteca does.
     static STREAM_CONVERTS: AtomicBool = AtomicBool::new(false);
+    /// The plays the server was told of, as `PLAYLIST_WRITES` has them, and
+    /// how often it was asked for the albums played last: none until it
+    /// was told of a play, then the first album and one by Anna Bach and
+    /// Mara Lind.
+    static SCROBBLES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static RECENT_ASKS: AtomicUsize = AtomicUsize::new(0);
 
     /// Where the pages' answers are kept for `username` on `server`.
     fn answers_kept_for(server: &str, username: &str) -> std::path::PathBuf {
@@ -1386,6 +1392,16 @@ mod tests {
             ok(
                 r#""tag":{"id":"t1","name":"Mood","songCount":2,"song":[{"id":"s1","isDir":false,"title":"Harbour Lights","duration":252,"tagIds":["t1"]},{"id":"s9","isDir":false,"title":"Fugue","duration":218,"tagIds":["t2"]}]}"#,
             )
+        } else if request.contains("/rest/getAlbumList2") && param("type") == Some("recent") {
+            RECENT_ASKS.fetch_add(1, Relaxed);
+            let played = if SCROBBLES.lock().unwrap().is_empty() {
+                String::new()
+            } else {
+                format!(
+                    r#"{{{ALBUM}}},{{"id":"a9","name":"Duets","artists":[{{"id":"r3","name":"Anna Bach"}},{{"id":"r1","name":"Mara Lind"}}],"coverArt":"al-a9","songCount":0,"duration":0,"created":"2020-01-01T00:00:00Z"}}"#
+                )
+            };
+            ok(&format!(r#""albumList2":{{"album":[{played}]}}"#))
         } else if request.contains("/rest/getAlbumList2") {
             let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
             if LATER_DOWN.load(Relaxed) && number("offset").unwrap_or(0) > 0 {
@@ -1683,6 +1699,9 @@ mod tests {
         } else if request.contains("/rest/startScan") {
             SCANNING.store(true, Relaxed);
             ok(r#""scanStatus":{"scanning":true,"count":3}"#)
+        } else if request.contains("/rest/scrobble?") {
+            SCROBBLES.lock().unwrap().push(write_of(request));
+            json(OK)
         } else if request.contains("/rest/savePlayQueue") {
             SAVES.lock().unwrap().push(write_of(request));
             if SAVE_DOWN.swap(false, Relaxed) {
@@ -1937,6 +1956,21 @@ mod tests {
             .find_first()
             .is_some()
     }
+
+    /// How far down the window the text `label` is, while it is shown.
+    fn text_top(ui: &AppWindow, label: &str) -> Option<f32> {
+        let label = label.to_owned();
+        ui.root_element()
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Text)
+            .match_predicate(move |text| text.accessible_label().is_some_and(|l| l == label))
+            .find_first()
+            .map(|text| text.absolute_position().y)
+    }
+
+    /// A window tall enough for all of Home, whose queries skip what is
+    /// outside the window.
+    const ALL_OF_HOME: slint::LogicalSize = slint::LogicalSize::new(1100.0, 3000.0);
 
     /// A little longer than the stats' slides take to come to rest.
     const SLIDE_GLIDE: Duration = Duration::from_millis(400);
@@ -5901,6 +5935,69 @@ mod tests {
             assert!(find(&ui, "Menu").is_none());
             assert_eq!(navigations(), ["Library"]);
 
+            // Home has no shelves of what was played last while the server
+            // knows of no plays.
+            ui.window().set_size(ALL_OF_HOME);
+            let asks = RECENT_ASKS.load(Relaxed);
+            ui.invoke_open("home".into());
+            wait_for("the albums played last", || RECENT_ASKS.load(Relaxed) > asks).await;
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(ui.get_played_albums().row_count(), 0);
+            assert_eq!(ui.get_played_artists().row_count(), 0);
+            assert!(text_top(&ui, "Recently added").is_some());
+            assert_eq!(text_top(&ui, "Last played albums"), None);
+            assert_eq!(text_top(&ui, "Last listened artists"), None);
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+
+            // A song heard for half its length, when ListenBrainz counts a
+            // listen, is told to the server once, as played from when it
+            // began, and not before. No player is left from the steps before,
+            // whose looks at nothing playing would end the song's play.
+            play::testing::clear(&ui);
+            let harbour: opensubsonic::Child = serde_json::from_str(
+                r#"{"id":"t1","isDir":false,"title":"Harbour Lights","albumId":"a1","duration":2}"#,
+            )
+            .unwrap();
+            let since_1970 = || std::time::UNIX_EPOCH.elapsed().unwrap().as_millis();
+            let began = since_1970();
+            for position in [0.0, 0.4, 0.8] {
+                play::testing::hear(&harbour, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            assert!(SCROBBLES.lock().unwrap().is_empty(), "told before half of it played");
+            play::testing::hear(&harbour, 1.2);
+            wait_for("the play told", || !SCROBBLES.lock().unwrap().is_empty()).await;
+            play::testing::hear(&harbour, 1.6);
+            idle(Duration::from_millis(200)).await;
+            let told = SCROBBLES.lock().unwrap().clone();
+            assert_eq!(told.len(), 1, "{told:?}");
+            let time: u128 = (told[0].strip_prefix("scrobble id=t1&time="))
+                .unwrap_or_else(|| panic!("{told:?}"))
+                .parse()
+                .unwrap();
+            assert!(time <= began + 100 && time + 1000 > began, "played from {time}, began {began}");
+
+            // The next visit to Home, within the hour the empty list asked
+            // for above is kept, asks the server again and shows it: the
+            // albums played last, then their artists, each once, in that
+            // order, as the library has them.
+            let asks = RECENT_ASKS.load(Relaxed);
+            ui.invoke_open("albums".into());
+            ui.invoke_open("home".into());
+            wait_for("the albums played last asked again", || RECENT_ASKS.load(Relaxed) > asks).await;
+            wait_for("the albums played last", || ui.get_played_albums().row_count() == 2).await;
+            let tile_links = |tiles: slint::ModelRc<AlbumTile>| -> Vec<String> {
+                tiles.iter().map(|tile| tile.link.into()).collect()
+            };
+            assert_eq!(tile_links(ui.get_played_albums()), ["album:a1", "album:a9"]);
+            assert_eq!(tile_links(ui.get_played_artists()), ["artist:r1", "artist:r3"]);
+            let first_artist = || ui.get_played_artists().row_data(0).unwrap();
+            assert_eq!(first_artist().title, "Mara Lind");
+            assert_eq!(first_artist().names.row_data(0).unwrap().label, "1 album");
+            wait_for("her picture", || first_artist().cover.size().width > 0).await;
+            // Off Home again, which the steps below open anew.
+            ui.invoke_open("albums".into());
+
             // Without a token the home page has no "Created for you" shelf and
             // ListenBrainz is not asked; a playlist page says why it is empty.
             let listenbrainz_root = format!("{}/1/", serve(listenbrainz));
@@ -5939,6 +6036,28 @@ mod tests {
                 *LISTENBRAINZ_ASKED.lock().unwrap(),
                 ["GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true"]
             );
+
+            // Home runs: the library's counts, the albums played last and
+            // their artists, the newest albums, the listening stats, then the
+            // playlists made for the user and the saved stations.
+            ui.set_listenbrainz_user("joe".into());
+            ui.window().set_size(ALL_OF_HOME);
+            wait_for("the saved stations", || ui.get_saved_stations().row_count() > 0).await;
+            let sections = [
+                "ARTISTS",
+                "Last played albums",
+                "Last listened artists",
+                "Recently added",
+                "Your listening",
+                "Created for you",
+                "Saved stations",
+            ];
+            let tops: Vec<f32> = (sections.iter())
+                .map(|section| text_top(&ui, section).unwrap_or_else(|| panic!("no {section}")))
+                .collect();
+            assert!(tops.is_sorted(), "{tops:?}");
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            ui.set_listenbrainz_user("".into());
 
             // Every track is listed in ListenBrainz's order. The library's are
             // found by recording, or by title and artist whatever the accents,
@@ -6148,6 +6267,10 @@ mod tests {
             // The answer of the asks before signing out arrives too, and is
             // not taken for this one's: the period is this year's again.
             idle(Duration::from_millis(700)).await;
+            // The artists played last have the library's counts after a sign
+            // in too, whichever of the two lists arrived first.
+            let first_artist = ui.get_played_artists().row_data(0).unwrap();
+            assert_eq!(first_artist.names.row_data(0).unwrap().label, "1 album");
             let first = |ui: &AppWindow| {
                 let albums = ui.get_stat_lists().row_data(0).unwrap().entries;
                 albums.row_data(0).unwrap().title

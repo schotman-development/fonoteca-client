@@ -858,7 +858,8 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     let state = (status.index, status.paused || status.ended);
     let scrobbling = &mut *p;
     let song = status.index.and_then(|index| scrobbling.queue.get(index));
-    scrobbling.scrobbler.observe(song, status.position, state.1);
+    let server = browse::client(browser);
+    (scrobbling.scrobbler).observe(song, status.position, state.1, server);
     let last = p.saved;
     #[cfg(target_os = "android")]
     if last.map(|(index, paused, _)| (index, paused)) != Some(state) {
@@ -1652,6 +1653,14 @@ pub(crate) mod testing {
         p.station
             .as_ref()
             .map(|tuned| (tuned.station.name.clone(), tuned.station.stream.clone()))
+    }
+
+    /// Shows the scrobbler `song` playing, `position` seconds in, as the
+    /// player's ticks do.
+    pub(crate) fn hear(song: &Child, position: f64) {
+        let (browser, playing) = handles();
+        let server = browse::client(&browser);
+        (playing.borrow_mut().scrobbler).observe(Some(song), position, false, server);
     }
 
     /// How often the scrobbler was shown the player and asked to flush.

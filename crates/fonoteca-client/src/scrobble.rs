@@ -1,10 +1,12 @@
 //! Scrobbling to ListenBrainz while a token is set: tells it which track
 //! just began, and submits a listen once a track was heard long enough.
 //! Listens that can't be submitted yet wait in the preferences, and go out
-//! at the next listen and at the next start.
+//! at the next listen and at the next start. The server is told of each
+//! track heard long enough too, for the albums it lists as played last.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use listenbrainz::{AdditionalInfo, Client, Listen, TrackMetadata};
 use opensubsonic::Child;
@@ -159,8 +161,14 @@ impl Scrobbler {
         }
     }
 
-    /// Looks at what plays, `song` being the track playing.
-    pub fn observe(&mut self, song: Option<&Child>, position: f64, paused: bool) {
+    /// Looks at what plays, `song` being the track playing, on `server`.
+    pub fn observe(
+        &mut self,
+        song: Option<&Child>,
+        position: f64,
+        paused: bool,
+        server: Option<Arc<opensubsonic::Client>>,
+    ) {
         #[cfg(test)]
         {
             self.looks += 1;
@@ -169,6 +177,9 @@ impl Scrobbler {
         let Some(event) = self.tracker.observe(clock(), &heard) else {
             return;
         };
+        if let (Event::Due { started_at }, Some(song), Some(server)) = (&event, song, server) {
+            report(server, song.id.clone(), *started_at);
+        }
         let Some(track_metadata) = song.and_then(metadata) else {
             return;
         };
@@ -250,6 +261,17 @@ async fn client() -> Option<Client> {
     client
         .inspect_err(|e| eprintln!("ListenBrainz: no client: {e}"))
         .ok()
+}
+
+/// Tells `server` that `song` was played from `started_at`, in seconds since
+/// 1970. A play it misses is only missing from its counts and lists.
+fn report(server: Arc<opensubsonic::Client>, song: String, started_at: i64) {
+    slint::spawn_local(async move {
+        if let Err(e) = server.scrobble(&song, Some(started_at * 1000)).await {
+            eprintln!("The server missed the play of {song}: {e}");
+        }
+    })
+    .expect("the event loop is running");
 }
 
 /// A track just began. The listener only misses a stat when this fails.

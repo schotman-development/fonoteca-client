@@ -43,12 +43,13 @@ use crate::{
 };
 
 pub(crate) mod created_for;
+mod played;
 mod stats;
 #[cfg(test)]
 pub use stats::TEST_ROOTS as LISTENBRAINZ_ROOTS;
 pub(crate) mod matching;
 
-/// The newest albums on the home page.
+/// The newest albums on the home page, and the albums played last.
 const RECENT: usize = 24;
 /// The artists or albums a genre's shelves show before "See all".
 const SHELF: usize = 24;
@@ -298,6 +299,8 @@ pub struct Browser {
     saved: Rc<VecModel<AlbumTile>>,
     /// The user's most played on ListenBrainz, for the home page.
     stats: stats::Stats,
+    /// What the server lists as played last, for the home page.
+    played: played::Played,
     /// The radio directory once asked, its countries' names by code, its
     /// languages, each shelf's stations as they came, the shelves shown, the
     /// shelves asked for, each genre's place on the page, the shelves' tiles
@@ -2041,6 +2044,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
     if ask {
         load_library(ui, browser);
     }
+    played::ask(ui, browser);
     saved_stations(ui, browser);
     created_for::shelf(ui);
     stats::ask(ui, browser);
@@ -2055,6 +2059,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
 /// albums once the library has.
 fn show_home(ui: &AppWindow, browser: &Shared) {
     stats::show(ui, browser);
+    played::show(ui, browser);
     let icons = ui.global::<Icons>();
     let stat = |icon: SharedString, label: &str, n: Option<usize>| Stat {
         icon,

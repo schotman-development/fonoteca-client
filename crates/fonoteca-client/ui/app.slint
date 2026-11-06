@@ -1009,6 +1009,10 @@ export component AppWindow inherits Window {
     // The server's curated stations, shelved, to save from.
     in property <[StationShelf]> catalogue-shelves;
     in property <[AlbumTile]> saved-stations;
+    // The albums the server lists as played last and their artists, for the
+    // home page.
+    in property <[AlbumTile]> played-albums;
+    in property <[AlbumTile]> played-artists;
     // The playlists ListenBrainz made for the user, for the home page.
     in property <[AlbumTile]> created-for-you;
     // The user's most played albums, artists and genres on ListenBrainz for
@@ -1816,6 +1820,19 @@ export component AppWindow inherits Window {
                         stats: root.stats;
                         open(link) => { root.open(link); }
                     }
+                    if root.page == Page.home && root.played-albums.length > 0: CoverShelf {
+                        title: "Last played albums";
+                        tiles: root.played-albums;
+                        entries: root.can-play ? root.queue-entries : [];
+                        activated(index, id) => { root.queue-link(root.played-albums[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.home && root.played-artists.length > 0: CoverShelf {
+                        title: "Last listened artists";
+                        tiles: root.played-artists;
+                        round: true;
+                        open(link) => { root.open(link); }
+                    }
                     if root.page == Page.home && root.tiles.length > 0: CoverShelf {
                         title: "Recently added";
                         tiles: root.tiles;
@@ -1825,6 +1842,14 @@ export component AppWindow inherits Window {
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
+                    }
+                    if root.page == Page.home && root.listenbrainz-user != "": ListeningStats {
+                        periods: root.stat-periods;
+                        period: root.stat-period;
+                        lists: root.stat-lists;
+                        stale: root.stat-loading;
+                        period-picked(index) => { root.pick-stat-period(index); }
+                        open(link) => { root.open(link); }
                     }
                     if root.page == Page.home && root.created-for-you.length > 0: CoverShelf {
                         title: "Created for you";
@@ -1837,14 +1862,6 @@ export component AppWindow inherits Window {
                         more: true;
                         see-all => { root.open("radio"); }
                         open(link) => { root.play-station(link); }
-                    }
-                    if root.page == Page.home && root.listenbrainz-user != "": ListeningStats {
-                        periods: root.stat-periods;
-                        period: root.stat-period;
-                        lists: root.stat-lists;
-                        stale: root.stat-loading;
-                        period-picked(index) => { root.pick-stat-period(index); }
-                        open(link) => { root.open(link); }
                     }
                     // The filter and sort controls go beside the heading, or
                     // under it in two rows when the page is too narrow.

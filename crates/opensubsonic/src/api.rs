@@ -922,6 +922,16 @@ impl Client {
         .await
     }
 
+    /// Tells the server a song was played, from `time` in milliseconds since
+    /// 1970, or else now, for its play counts and the albums it lists as
+    /// played most recently.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/scrobble/>
+    pub async fn scrobble(&self, id: &str, time: Option<i64>) -> Result<()> {
+        self.call_unit("scrobble", Params::new().req("id", id).opt("time", time))
+            .await
+    }
+
     // Sonic similarity
 
     /// Songs that sound like this one, by audio analysis. Needs
