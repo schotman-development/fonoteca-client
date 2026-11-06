@@ -1213,6 +1213,33 @@ component SelectedRowOutline inherits Rectangle {
     }
 }
 
+// The album's cover in a row of the tracks table, or of a row that shows one
+// as it does; a folder's icon stands in until it has a cover.
+component LineCover inherits Rectangle {
+    in property <image> source;
+    in property <bool> folder;
+    border-radius: 3px;
+    background: Theme.hover;
+    clip: true;
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        image-fit: cover;
+    }
+    if root.folder && root.source.width == 0: Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 22px;
+        height: 22px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Icons.folder;
+        stroke: Theme.muted;
+        stroke-width: 1.5px;
+    }
+}
+
 // A track, or on a classical album a work: a work's row is strong, and the
 // rows of its movements under it are parts, indented. Its names are its
 // composers, `split` of them, then its performers.
@@ -1227,6 +1254,10 @@ export component TrackRow inherits Pressable {
     in property <string> performed;
     in property <bool> loved;
     in property <bool> lovable: true;
+    // Whether it shows its album's cover before its title, at the size of
+    // the tracks table's cover column.
+    in property <bool> covered;
+    in property <image> cover;
     // Whether its song is kept on this device.
     in property <bool> downloaded;
     in property <bool> strong;
@@ -1288,6 +1319,12 @@ export component TrackRow inherits Pressable {
     HorizontalLayout {
         padding: 8px;
         spacing: 12px;
+        if root.covered: LineCover {
+            cross-axis-self-alignment: center;
+            width: 42px;
+            height: 42px;
+            source: root.cover;
+        }
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
@@ -1827,30 +1864,12 @@ export component TrackLineRow inherits Rectangle {
                     accessible-checked: root.line.loved;
                     clicked => { root.toggle-love(); }
                 }
-                if column.cover: Rectangle {
+                if column.cover: LineCover {
                     y: (parent.height - self.height) / 2;
                     width: parent.width;
                     height: self.width;
-                    border-radius: 3px;
-                    background: Theme.hover;
-                    clip: true;
-                    Image {
-                        width: parent.width;
-                        height: parent.height;
-                        source: root.line.cover;
-                        image-fit: cover;
-                    }
-                    if root.line.folder && root.line.cover.width == 0: Path {
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                        width: 22px;
-                        height: 22px;
-                        viewbox-width: 24;
-                        viewbox-height: 24;
-                        commands: Icons.folder;
-                        stroke: Theme.muted;
-                        stroke-width: 1.5px;
-                    }
+                    source: root.line.cover;
+                    folder: root.line.folder;
                 }
                 if !column.heart && !column.cover && slot.plain: Text {
                     width: parent.width;

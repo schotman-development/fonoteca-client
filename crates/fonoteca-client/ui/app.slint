@@ -130,6 +130,8 @@ export struct Track {
     // The page a click on the row opens: a composition's, or on its page a
     // performance's album. Empty on albums and playlists.
     link: string,
+    // The cover of the album a performance is on.
+    cover: image,
     // Whether its song is selected, and whether the row above and the row
     // below it are too, as a run of rows is outlined as one.
     selected: bool,
@@ -2514,6 +2516,8 @@ export component AppWindow inherits Window {
                             years: track.years;
                             performed: track.performed;
                             strong: root.page != Page.composition;
+                            covered: root.page == Page.composition;
+                            cover: track.cover;
                             lovable: false;
                             enabled: track.link != "";
                             clicked => { root.open(track.link); }

@@ -203,7 +203,7 @@ pub struct Browser {
     offline: bool,
     /// The links of an artist's own albums, in the order their page shows.
     own_albums: Vec<String>,
-    /// Tile or tracks table rows whose covers are still to fetch, the rows on
+    /// Tile, tracks table or recording rows whose covers are still to fetch, the rows on
     /// screen or just below it, and how many fetches run.
     covers: BTreeMap<usize, String>,
     in_view: Range<usize>,
@@ -6504,7 +6504,8 @@ fn composition(ui: &AppWindow, browser: &Shared, id: String) {
             async move { client.get_composition(&id).await }
         },
         |ui, browser, composition| {
-            let rows = performances(&composition.song);
+            let (rows, covers): (Vec<Track>, Vec<Option<String>>) =
+                performances(&composition.song).into_iter().unzip();
             ui.set_header_title(composition.name.as_str().into());
             ui.set_header_names(names(
                 composition.composers.iter().map(composer_name).collect(),
@@ -6521,7 +6522,19 @@ fn composition(ui: &AppWindow, browser: &Shared, id: String) {
             let facts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
             ui.set_header_facts(facts.join(" · ").into());
             header_image(ui, browser, composition.cover_art);
-            browser.borrow().tracks.set_vec(rows);
+            {
+                // The rows show first and their covers follow, all of them in
+                // view as a page holds only a few recordings.
+                let mut b = browser.borrow_mut();
+                b.tracks.set_vec(rows);
+                b.in_view = 0..covers.len();
+                for (row, cover) in covers.into_iter().enumerate() {
+                    if let Some(cover) = cover {
+                        b.covers.insert(row, cover);
+                    }
+                }
+            }
+            fetch_covers(ui, browser);
         },
     );
 }
@@ -6531,7 +6544,7 @@ fn composition(ui: &AppWindow, browser: &Shared, id: String) {
 /// share, when and where they were recorded, and how long they last. Songs
 /// the server puts on no album have no row.
 // ponytail: one performance per album; split by performers if an album holds two.
-fn performances(songs: &[Child]) -> Vec<Track> {
+fn performances(songs: &[Child]) -> Vec<(Track, Option<String>)> {
     let mut albums: Vec<&Option<String>> = Vec::new();
     for song in songs {
         if !albums.contains(&&song.album_id) {
@@ -6556,7 +6569,7 @@ fn performances(songs: &[Child]) -> Vec<Track> {
                 String::new()
             };
             let first = &run[0];
-            Track {
+            let track = Track {
                 title: first.album.clone().unwrap_or_default().into(),
                 names: names(shared),
                 years: first
@@ -6573,7 +6586,8 @@ fn performances(songs: &[Child]) -> Vec<Track> {
                     .unwrap_or_default()
                     .into(),
                 ..Track::default()
-            }
+            };
+            (track, first.cover_art.clone())
         })
         .collect()
 }
@@ -7261,7 +7275,7 @@ fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<Str
 fn fetch_covers(ui: &AppWindow, browser: &Shared) {
     let size = if matches!(
         ui.get_page(),
-        Page::Tracks | Page::Compositions | Page::Folders | Page::Tag
+        Page::Tracks | Page::Compositions | Page::Composition | Page::Folders | Page::Tag
     ) {
         pixels(ui, LINE_COVER_SIZE)
     } else {
@@ -7275,13 +7289,15 @@ fn fetch_covers(ui: &AppWindow, browser: &Shared) {
         .min(COVERS_AT_ONCE);
     while b.fetching < wanted {
         b.fetching += 1;
-        let (tiles, lines) = (b.tiles.clone(), b.lines.clone());
+        let (tiles, lines, tracks) = (b.tiles.clone(), b.lines.clone(), b.tracks.clone());
         let (browser, visit) = (browser.clone(), b.visit);
         slint::spawn_local(async move {
             loop {
                 let (row, cover) = {
                     let mut b = browser.borrow_mut();
-                    let same = Rc::ptr_eq(&b.tiles, &tiles) && Rc::ptr_eq(&b.lines, &lines);
+                    let same = Rc::ptr_eq(&b.tiles, &tiles)
+                        && Rc::ptr_eq(&b.lines, &lines)
+                        && Rc::ptr_eq(&b.tracks, &tracks);
                     if b.visit != visit || !same {
                         return;
                     }
@@ -7302,6 +7318,9 @@ fn fetch_covers(ui: &AppWindow, browser: &Shared) {
                 } else if let Some(mut line) = lines.row_data(row) {
                     line.cover = image;
                     lines.set_row_data(row, line);
+                } else if let Some(mut track) = tracks.row_data(row) {
+                    track.cover = image;
+                    tracks.set_row_data(row, track);
                 }
             }
         })
