@@ -5,7 +5,7 @@ export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, 
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads, browse, library }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads, browse, library, search }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -270,6 +270,9 @@ component PageScroll inherits FocusScope {
     // Whether it takes the keys back when Input.refocus asks: the page
     // doesn't while the sheet is over it, nor the sheet once it is gone.
     in property <bool> active: true;
+    // Whether it takes the keys on arriving at a page: not where a field
+    // over it does, as the search's.
+    in property <bool> takes-keys: true;
     // Whether more may come below its end, as a long list's next hundred.
     in property <bool> open-ended;
     out property <length> visible-width: flick.width;
@@ -413,7 +416,7 @@ component PageScroll inherits FocusScope {
         Input.sliding = false;
     }
     changed arrival => {
-        if !Input.modal {
+        if !Input.modal && root.takes-keys {
             self.focus();
         }
     }
@@ -1031,6 +1034,22 @@ export component AppWindow inherits Window {
     // stations first.
     in property <[ColumnChoice]> language-choices;
     in property <[Track]> tracks;
+    // The search's field, and what it found besides the tracks: the server's
+    // artists and albums, the composers, compositions, playlists and saved
+    // stations whose names match, and the radio directory's stations; and
+    // whether every answer to the search shown is in.
+    in-out property <string> search-query;
+    in property <[AlbumTile]> found-artists;
+    in property <[AlbumTile]> found-albums;
+    in property <[AlbumTile]> found-composers;
+    in property <[Track]> found-works;
+    in property <[AlbumTile]> found-playlists;
+    in property <[AlbumTile]> found-stations;
+    in property <StationShelf> found-radio;
+    in property <bool> search-answered;
+    // Typing in the search's field, and Enter there.
+    callback search-typed();
+    callback search-now();
     // Whether this build plays music, and the track it plays, if any: as
     // PlayerBar shows it.
     in property <bool> can-play;
@@ -1596,14 +1615,42 @@ export component AppWindow inherits Window {
                 visible: !root.page-covered;
                 can-go-back: root.can-go-back;
                 can-go-forward: root.can-go-forward;
-                searchable: false;
                 menu: !root.docked && !root.phone;
                 phone: root.phone;
                 back => { root.back(); }
                 forward => { root.forward(); }
                 open-menu => { root.sidebar-open = true; }
+                search => { root.open("search"); }
                 settings => { root.open("settings"); }
                 account => { root.open("account"); }
+            }
+            // The search's field stays put over what it finds. It has the
+            // keys as the search opens, and Escape closes the search.
+            if root.page == Page.search: HorizontalLayout {
+                visible: !root.page-covered;
+                vertical-stretch: 0;
+                alignment: start;
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 8px;
+                padding-bottom: 16px;
+                LineEdit {
+                    preferred-width: 640px;
+                    placeholder-text: "Search";
+                    accessible-label: "Search for";
+                    enabled: !Input.modal;
+                    text <=> root.search-query;
+                    init => { self.focus(); }
+                    edited => { root.search-typed(); }
+                    accepted => { root.search-now(); }
+                    key-pressed(event) => {
+                        if event.text == Key.Escape {
+                            root.back-or-home();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
             }
             // A table page's heading, filter and the table's headings stay
             // put while the rows scroll, and follow them sideways. A
@@ -1758,6 +1805,7 @@ export component AppWindow inherits Window {
             scroll := PageScroll {
                 visible: !root.page-covered;
                 active: !root.now-playing-open;
+                takes-keys: root.page != Page.search;
                 visit: root.visit;
                 arrival: root.arrival;
                 can-go-back: root.can-go-back;
@@ -1769,6 +1817,8 @@ export component AppWindow inherits Window {
                 escape => {
                     if root.selected-tiles > 0 {
                         root.clear-selection();
+                    } else if root.page == Page.search {
+                        root.back-or-home();
                     }
                 }
                 open-ended: (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.stations || root.table) && root.more-tiles && root.page-problem == "";
@@ -2135,6 +2185,29 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // What the search found, kind by kind, each opening or
+                    // playing as it does on the other pages: its artists and
+                    // albums, its tracks as an album's, then its composers,
+                    // compositions, playlists and stations.
+                    if root.page == Page.search && root.found-artists.length > 0: CoverShelf {
+                        title: "Artists";
+                        tiles: root.found-artists;
+                        round: true;
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.search && root.found-albums.length > 0: CoverShelf {
+                        title: "Albums";
+                        tiles: root.found-albums;
+                        entries: root.can-play ? root.queue-entries : [];
+                        activated(index, id) => { root.queue-link(root.found-albums[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.search && root.tracks.length > 0: Text {
+                        text: "Tracks";
+                        font-size: Theme.heading;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
                     // An artist's top tracks, the artists like them, and a
                     // heading over their albums when the page has more.
                     if root.page == Page.artist && root.tracks.length > 0: Text {
@@ -2143,7 +2216,7 @@ export component AppWindow inherits Window {
                         font-weight: 600;
                         color: Theme.text;
                     }
-                    if root.page == Page.album || root.page == Page.playlist || root.page == Page.artist: VerticalLayout {
+                    if root.page == Page.album || root.page == Page.playlist || root.page == Page.artist || (root.page == Page.search && root.tracks.length > 0): VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
                             if track.work != "": TrackRow {
                                 title: track.work;
@@ -2201,6 +2274,54 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                    if root.page == Page.search && root.found-composers.length > 0: CoverShelf {
+                        title: "Composers";
+                        tiles: root.found-composers;
+                        round: true;
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.search && root.found-works.length > 0: VerticalLayout {
+                        Text {
+                            text: "Compositions";
+                            font-size: Theme.heading;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        for work in root.found-works: TrackRow {
+                            title: work.title;
+                            names: work.names;
+                            split: work.split;
+                            duration: work.duration;
+                            years: work.years;
+                            strong: true;
+                            lovable: false;
+                            enabled: work.link != "";
+                            clicked => { root.open(work.link); }
+                            open(link) => { root.open(link); }
+                        }
+                    }
+                    if root.page == Page.search && root.found-playlists.length > 0: CoverShelf {
+                        title: "Playlists";
+                        tiles: root.found-playlists;
+                        entries: root.can-play ? root.queue-entries : [];
+                        activated(index, id) => { root.queue-link(root.found-playlists[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.search && root.found-stations.length > 0: CoverShelf {
+                        title: "Saved stations";
+                        tiles: root.found-stations;
+                        open(link) => { root.play-station(link); }
+                    }
+                    if root.page == Page.search && root.found-radio.tiles.length > 0: CoverShelf {
+                        title: root.found-radio.title;
+                        tiles: root.found-radio.tiles;
+                        entries: root.may-administer ? [{ id: "save", label: "Save", icon: Icons.plus }] : [];
+                        open(link) => { root.play-station(link); }
+                        activated(index) => { root.save-station(root.found-radio.shelf, index); }
+                    }
+                    if root.page == Page.search && root.search-answered && root.found-artists.length == 0 && root.found-albums.length == 0 && root.tracks.length == 0 && root.found-composers.length == 0 && root.found-works.length == 0 && root.found-playlists.length == 0 && root.found-stations.length == 0 && root.found-radio.tiles.length == 0 && root.page-problem == "": Note {
+                        text: "Nothing matches.";
                     }
                     if root.page == Page.artist && root.similar.length > 0: VerticalLayout {
                         spacing: 8px;

@@ -595,7 +595,7 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 9: Example {
-                        caption: "Back is possible here, forward isn't; press Enter to search";
+                        caption: "Back is possible here, forward isn't; the magnifier opens the search";
                         Rectangle {
                             background: Theme.surface;
                             border-radius: Theme.radius;
@@ -603,7 +603,7 @@ export component Workbench inherits Window {
                                 can-go-back: true;
                                 back => { root.event = "back"; }
                                 forward => { root.event = "forward"; }
-                                search(query) => { root.event = "search " + query; }
+                                search => { root.event = "search"; }
                             }
                         }
                     }

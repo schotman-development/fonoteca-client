@@ -128,6 +128,7 @@ export global Icons {
     out property <string> close: "M6 6l12 12 M18 6L6 18";
     out property <string> plus: "M12 5v14 M5 12h14";
     out property <string> menu: "M4 7h16 M4 12h16 M4 17h16";
+    out property <string> search: "M10.5 17a6.5 6.5 0 1 1 0-13a6.5 6.5 0 1 1 0 13z M15.2 15.2L20 20";
     out property <string> grip: "M5 9h14 M5 15h14";
     out property <string> artist: "M9 12a4 4 0 1 1 0-8a4 4 0 1 1 0 8z M2 20c0-3.6 3.1-6 7-6c1.3 0 2.5.3 3.5.8 M19 18v-7l3 1 M19 18a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
     out property <string> album: "M12 21a9 9 0 1 1 0-18a9 9 0 1 1 0 18z M12 14a2 2 0 1 1 0-4a2 2 0 1 1 0 4z";
@@ -2880,20 +2881,18 @@ export component BottomBar inherits Rectangle {
     }
 }
 
-// Back and forward through the pages seen, search across the library, and at
-// the end the settings and the account. With `menu`, a button first that
-// opens the sidebar. On a `phone` the buttons are a finger's size and the
-// settings are on the bottom bar instead.
+// Back and forward through the pages seen, and at the end the search, the
+// settings and the account. With `menu`, a button first that opens the
+// sidebar. On a `phone` the buttons are a finger's size and the settings are
+// on the bottom bar instead, which puts the search beside the account.
 export component TopBar inherits HorizontalLayout {
     in property <bool> can-go-back;
     in property <bool> can-go-forward;
-    in property <bool> searchable: true;
     in property <bool> menu;
     in property <bool> phone;
-    in-out property <string> query;
     callback back();
     callback forward();
-    callback search(query: string);
+    callback search();
     callback open-menu();
     callback settings();
     callback account();
@@ -2938,13 +2937,14 @@ export component TopBar inherits HorizontalLayout {
         clicked => { root.forward(); }
     }
     Rectangle { }
-    if root.searchable: LineEdit {
-        horizontal-stretch: 0;
-        preferred-width: 280px;
-        placeholder-text: "Search";
-        accessible-label: "Search the library";
-        text <=> root.query;
-        accepted(text) => { root.search(text); }
+    IconButton {
+        cross-axis-self-alignment: center;
+        width: root.button-size;
+        height: root.button-size;
+        icon-size: root.icon-size;
+        icon: Icons.search;
+        label: "Search";
+        clicked => { root.search(); }
     }
     if !root.phone: IconButton {
         cross-axis-self-alignment: center;

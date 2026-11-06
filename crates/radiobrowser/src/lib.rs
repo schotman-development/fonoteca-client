@@ -162,6 +162,20 @@ impl Client {
         get(self.http.get(url).query(&query)).await
     }
 
+    /// Working stations whose name has `name` in it, whatever its case, most
+    /// votes first, at most `limit`.
+    pub async fn named_like(&self, name: &str, limit: u32) -> Result<Vec<Station>> {
+        let url = self.url(&["stations", "search"]);
+        let query = [
+            ("name", name.to_owned()),
+            ("order", "votes".to_owned()),
+            ("reverse", "true".to_owned()),
+            ("hidebroken", "true".to_owned()),
+            ("limit", limit.to_string()),
+        ];
+        get(self.http.get(url).query(&query)).await
+    }
+
     /// Every country with stations, with its name and code.
     pub async fn countries(&self) -> Result<Vec<Country>> {
         get(self.http.get(self.url(&["countries"]))).await

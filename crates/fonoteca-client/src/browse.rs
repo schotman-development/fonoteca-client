@@ -7,8 +7,8 @@
 //! servers with Fonoteca's compositions "composers", "compositions",
 //! "composer:<id>" or "composition:<id>", on servers with Fonoteca's tags
 //! "tags" and "tag:<id>", "genres", "genre:<name>" and a genre's albums or
-//! artists "albums:<genre>" or "artists:<genre>", "radio", "account",
-//! "settings" and its sections "setting:<name>".
+//! artists "albums:<genre>" or "artists:<genre>", "radio", "search",
+//! "account", "settings" and its sections "setting:<name>".
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -44,6 +44,7 @@ use crate::{
 
 pub(crate) mod created_for;
 mod played;
+mod search;
 mod stats;
 #[cfg(test)]
 pub use stats::TEST_ROOTS as LISTENBRAINZ_ROOTS;
@@ -187,6 +188,7 @@ pub struct Browser {
     /// The song of each track row.
     songs: Vec<Child>,
     created_for: created_for::State,
+    search: search::State,
     /// The library's songs found for ListenBrainz's tracks this session.
     found: matching::Found,
     loves: crate::loves::State,
@@ -279,7 +281,7 @@ pub struct Browser {
     /// shows, as indexes into `library` or `artists` in the page's order.
     filter: String,
     view: Vec<usize>,
-    /// Filters the albums or artists once typing pauses.
+    /// Filters the albums or artists, or searches, once typing pauses.
     typing: Timer,
     /// The links of the albums selected, in the order they were picked. They
     /// stay selected through sorting, filtering and other pages.
@@ -374,6 +376,7 @@ fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
     ui.set_composition_filter("".into());
     ui.set_track_filter("".into());
     ui.set_folder_filter("".into());
+    ui.set_search_query("".into());
     ui.set_roles("".into());
     ui.set_may_administer(true);
     ui.set_may_download(true);
@@ -688,6 +691,7 @@ pub fn stop(browser: &Shared) {
 
 pub fn wire(ui: &AppWindow, browser: &Shared) {
     stats::wire(ui, browser);
+    search::wire(ui, browser);
     let mut carried = DataTransfer::default();
     carried.set_plain_text("playlist".into());
     ui.global::<Drag>().set_data(carried);
@@ -1544,6 +1548,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Downloads);
             downloads_page(ui, browser);
         }
+        "search" => {
+            ui.set_page(Page::Search);
+            search::show_page(ui, browser);
+        }
         "browse" => ui.set_page(Page::Browse),
         "library" => ui.set_page(Page::Library),
         "settings" => ui.set_page(Page::Settings),
@@ -1863,8 +1871,8 @@ fn bar_entries(icons: &Icons) -> ModelRc<NavEntry> {
 }
 
 /// The bottom bar's entry of the page on screen, or -1 when it has none:
-/// the account's is on the top bar. Every page of the library, such as an
-/// album, belongs to Library.
+/// the account's and the search's are on the top bar. Every page of the
+/// library, such as an album, belongs to Library.
 fn bar_section(b: &Browser) -> i32 {
     let Some(link) = b.history.get(b.at) else {
         return -1;
@@ -1874,7 +1882,7 @@ fn bar_section(b: &Browser) -> i32 {
         "home" | "createdfor" => "home",
         "browse" | "genres" | "genre" | "tags" | "tag" | "radio" | "stations" => "browse",
         "settings" | "setting" => "settings",
-        "account" => return -1,
+        "account" | "search" => return -1,
         _ => "library",
     };
     BAR.iter()
@@ -3348,6 +3356,7 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
         Page::Home => return show_home(ui, browser),
         Page::Genres => return show_genres(ui, browser),
         Page::Genre => show_genre(ui, browser),
+        Page::Search => return search::show_lists(ui, browser),
         _ => {}
     }
     let (sort, descending) = (ui.get_album_sort(), ui.get_album_descending());
@@ -5519,18 +5528,25 @@ fn toggle_language(ui: &AppWindow, browser: &Shared, index: usize) {
         .start(TimerMode::SingleShot, LANGUAGE_WAIT, refill);
 }
 
+/// The tiles of a shelf of stations: the genre page's, the search's, or one
+/// the radio page shows.
+fn shelf_tiles(b: &Browser, shelf: usize) -> Option<ModelRc<AlbumTile>> {
+    if shelf == GENRE_RADIO {
+        return Some(ModelRc::from(b.genre_radio.clone()));
+    }
+    if shelf == search::RADIO {
+        return Some(ModelRc::from(b.search.radio.clone()));
+    }
+    let shown = b.shelf_model.iter().find(|row| row.shelf as usize == shelf);
+    shown.map(|row| row.tiles)
+}
+
 /// Fetches the pictures of a shelf's tiles in `rows`, the ones on screen,
 /// that haven't been asked for.
 fn shelf_logos(browser: &Shared, shelf: usize, rows: Range<usize>) {
     let (wanted, tiles) = {
         let mut b = browser.borrow_mut();
-        let tiles = if shelf == GENRE_RADIO {
-            Some(ModelRc::from(b.genre_radio.clone()))
-        } else {
-            let shown = b.shelf_model.iter().find(|row| row.shelf as usize == shelf);
-            shown.map(|row| row.tiles)
-        };
-        let (Some(tiles), Some(stations)) = (tiles, b.shelves.get(&shelf)) else {
+        let (Some(tiles), Some(stations)) = (shelf_tiles(&b, shelf), b.shelves.get(&shelf)) else {
             return;
         };
         let wanted: Vec<(usize, String)> = rows
@@ -5898,8 +5914,7 @@ pub(crate) fn tile_station(
         "shelf" => {
             let (shelf, row) = (number()?, number()?);
             let station = b.shelves.get(&shelf)?.get(row)?;
-            let shown = b.shelf_model.iter().find(|s| s.shelf as usize == shelf);
-            let tile = shown.and_then(|s| s.tiles.row_data(row));
+            let tile = shelf_tiles(&b, shelf).and_then(|tiles| tiles.row_data(row));
             (
                 station.name.trim().to_owned(),
                 stream_address(station).to_owned(),

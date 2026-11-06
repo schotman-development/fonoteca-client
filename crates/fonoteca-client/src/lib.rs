@@ -909,6 +909,8 @@ mod tests {
     static SLOW_MOTION: AtomicBool = AtomicBool::new(false);
     static MOTIONS_ASKED: AtomicUsize = AtomicUsize::new(0);
     static NO_WAVEFORM: AtomicBool = AtomicBool::new(false);
+    /// While set, the server has no Fonoteca compositions.
+    static NO_COMPOSITIONS: AtomicBool = AtomicBool::new(false);
     /// While set, the server converts a song from part way in.
     static TRANSCODE_OFFSET: AtomicBool = AtomicBool::new(false);
     /// While set, the server's genres are Fonoteca's first version, with no
@@ -1014,6 +1016,10 @@ mod tests {
     /// whether it refuses them.
     static SEARCHES: AtomicUsize = AtomicUsize::new(0);
     static SEARCH_DOWN: AtomicBool = AtomicBool::new(false);
+    /// What the global search asked the server and the radio directory for,
+    /// in turn.
+    static GLOBAL_SEARCHES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static STATION_SEARCHES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     /// The songs of the library the ListenBrainz playlists are matched
     /// against, by what a search for them starts with: two share a title, one
@@ -1051,6 +1057,28 @@ mod tests {
             .map(|(_, song)| *song)
             .collect();
         format!(r#""searchResult3":{{"song":[{}]}}"#, found.join(","))
+    }
+
+    /// What the global search finds on the server: Mara Lind, her album and
+    /// her song for "Mara", and for "harbour" after a while; for "slow"
+    /// another album, later still, which a search made meanwhile must never
+    /// show; nothing for anything else.
+    fn global_search(query: &str) -> String {
+        GLOBAL_SEARCHES.lock().unwrap().push(query.to_owned());
+        let hers = format!(
+            r#""artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","albumCount":1}}],"album":[{{{ALBUM}}}],"song":[{HARBOUR_LIGHTS}]"#
+        );
+        let (wait, found) = match query.to_lowercase().as_str() {
+            "mara" => (0, hers),
+            "harbour" => (300, hers),
+            "slow" => (
+                600,
+                r#""album":[{"id":"a9","name":"Slow Boat","songCount":1,"duration":60,"created":"2021-01-01T00:00:00Z"}]"#.to_owned(),
+            ),
+            _ => (0, String::new()),
+        };
+        std::thread::sleep(Duration::from_millis(wait));
+        format!(r#""searchResult3":{{{found}}}"#)
     }
 
     /// A stand-in for ListenBrainz's API, which knows joe: his three
@@ -1207,6 +1235,18 @@ mod tests {
             && target.contains("language=dutch&")
         {
             list(vec![station(200, "Dutch Jazz", "NL")])
+        } else if let Some(name) = target
+            .strip_prefix("/json/stations/search?name=")
+            .filter(|_| !target.contains("nameExact"))
+        {
+            let name = name.split('&').next().unwrap_or_default();
+            // Each search's station has a logo none before it had.
+            let n = {
+                let mut searches = STATION_SEARCHES.lock().unwrap();
+                searches.push(name.to_owned());
+                searches.len()
+            };
+            list(vec![station(300 + n, &format!("{name} FM"), "NL")])
         } else if target.starts_with("/json/stations/search?") && target.contains("name=News&") {
             // Another News first, whose picture doesn't come, then the
             // server's.
@@ -1339,6 +1379,11 @@ mod tests {
             } else {
                 r#"{"name":"fonotecaWaveform","versions":[1]},"#
             };
+            let compositions = if NO_COMPOSITIONS.load(Relaxed) {
+                ""
+            } else {
+                r#"{"name":"fonotecaCompositions","versions":[1]},"#
+            };
             let genre_versions = if OLD_GENRES.load(Relaxed) { "1" } else { "1,2" };
             let offset = if TRANSCODE_OFFSET.load(Relaxed) {
                 r#",{"name":"transcodeOffset","versions":[1]}"#
@@ -1346,7 +1391,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{{"name":"fonotecaCompositions","versions":[1]}},{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{{"name":"fonotecaArtistBanner","versions":[1]}},{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{{"name":"fonotecaArtistBanner","versions":[1]}},{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1522,6 +1567,8 @@ mod tests {
                 r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{}}}]}}"#,
                 album_now()
             ))
+        } else if request.contains("/rest/search3") && param("artistCount").is_none() {
+            ok(&global_search(param("query").unwrap_or_default()))
         } else if request.contains("/rest/search3") && param("query").is_some_and(|q| !q.is_empty())
         {
             if SEARCH_DOWN.load(Relaxed) {
@@ -3183,6 +3230,125 @@ mod tests {
             click(&ui, "Albums");
             assert_eq!(ui.get_tiles().row_count(), 100);
 
+            // The top bar's Search opens the search with the keys in its
+            // field. Typing asks the server and the radio directory once,
+            // when it pauses, for the artists, albums and tracks found and
+            // the directory's stations, which play.
+            click(&ui, "Search");
+            assert_eq!(ui.get_page(), Page::Search);
+            assert_eq!(ui.get_bar_section(), -1, "the search lights no section");
+            // The field is there once the page is drawn, after its changes.
+            idle(Duration::from_millis(50)).await;
+            ui.root_element().query_descendants().find_all();
+            let asked = || GLOBAL_SEARCHES.lock().unwrap().clone();
+            let asked_directory = || STATION_SEARCHES.lock().unwrap().clone();
+            for key in "Mara".chars() {
+                press(&ui, key.to_string());
+            }
+            assert_eq!(ui.get_search_query(), "Mara", "the field has the keys");
+            idle(Duration::from_millis(100)).await;
+            assert!(asked().is_empty(), "nothing asked before the pause");
+            wait_for("Mara FM", || ui.get_found_radio().tiles.row_count() == 1).await;
+            assert_eq!(asked(), ["Mara"]);
+            assert_eq!(asked_directory(), ["Mara"]);
+            assert_eq!(ui.get_page_problem(), "");
+            let link = |tiles: slint::ModelRc<AlbumTile>| tiles.row_data(0).unwrap().link.to_string();
+            assert_eq!(link(ui.get_found_artists()), "artist:r1");
+            assert_eq!(link(ui.get_found_albums()), "album:a1");
+            assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Harbour Lights");
+            assert!(ui.get_search_answered());
+            assert!(!ui.get_loading());
+            let station = || ui.get_found_radio().tiles.row_data(0).unwrap();
+            assert_eq!(station().title, "Mara FM");
+            wait_for("Mara FM's logo", || station().cover.size().width > 0).await;
+            ui.invoke_play_station(station().link);
+            wait_for("Mara FM playing", || ui.get_playing_title() == "Mara FM").await;
+            assert!(ui.get_playing_cover().size().width > 0, "its logo plays along");
+            play::testing::clear(&ui);
+            // Enter searches at once, without the pause; the saved stations
+            // are found by name.
+            for _ in 0..4 {
+                press(&ui, slint::platform::Key::Backspace);
+            }
+            assert_eq!(ui.get_search_query(), "", "the field still has the keys");
+            for key in "Jazz".chars() {
+                press(&ui, key.to_string());
+            }
+            press(&ui, slint::platform::Key::Return);
+            assert!(ui.get_loading(), "Enter asks at once");
+            assert_eq!(link(ui.get_found_stations()), "station:saved:0");
+            wait_for("Jazz FM", || ui.get_found_radio().tiles.row_data(0).unwrap().title == "Jazz FM").await;
+            // In the row Mara FM had, it has its own logo.
+            wait_for("Jazz FM's logo", || station().cover.size().width > 0).await;
+            assert_eq!(ui.get_found_albums().row_count(), 0);
+            idle(Duration::from_millis(400)).await;
+            assert_eq!(asked(), ["Mara", "Jazz"], "asked once each");
+            // On Fonoteca the composers and compositions are found by name.
+            let search_for = |query: &str| {
+                ui.set_search_query(query.into());
+                ui.invoke_search_now();
+            };
+            search_for(" Ludwig ");
+            wait_for("Beethoven", || ui.get_found_composers().row_count() == 1).await;
+            assert_eq!(link(ui.get_found_composers()), "composer:r9");
+            // The spaces around what is typed are left out.
+            wait_for("Ludwig answered", || ui.get_search_answered()).await;
+            assert_eq!(asked().last().map(String::as_str), Some("Ludwig"));
+            assert_eq!(asked_directory().last().map(String::as_str), Some("Ludwig"));
+            search_for("symphony");
+            wait_for("Symphony No. 5", || ui.get_found_works().row_count() == 1).await;
+            assert_eq!(ui.get_found_works().row_data(0).unwrap().link, "composition:w5");
+            wait_for("all of it answered", || ui.get_search_answered()).await;
+            // The answer to a search a later one took over from never shows.
+            search_for("slow");
+            wait_for("the slow search", || asked().last().is_some_and(|q| q == "slow")).await;
+            search_for("harbour");
+            wait_for("Harbour's album", || {
+                let albums: Vec<String> = ui.get_found_albums().iter().map(|tile| tile.link.into()).collect();
+                assert!(!albums.contains(&"album:a9".to_owned()), "the slow answer showed");
+                albums == ["album:a1"]
+            })
+            .await;
+            wait_for("Harbour answered", || ui.get_search_answered()).await;
+            assert_eq!(asked_directory().last().map(String::as_str), Some("harbour"));
+            assert!(!asked_directory().contains(&"slow".to_owned()));
+            // An album found opens its page; back on the search, what it
+            // found is there at once, and a track found plays as an album's.
+            // The window is tall enough for the albums' shelf.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 1500.0));
+            click(&ui, "Night Harbour");
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            assert_eq!(ui.get_page(), Page::Album);
+            wait_for("its tracks", || ui.get_tracks().row_count() > 0).await;
+            ui.invoke_back();
+            assert_eq!(ui.get_page(), Page::Search);
+            assert_eq!(ui.get_search_query(), "harbour");
+            assert_eq!(ui.get_found_albums().row_count(), 1);
+            assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Harbour Lights");
+            ui.invoke_play_tracks(0);
+            wait_for("Harbour Lights playing", || ui.get_playing_title() == "Harbour Lights").await;
+            assert_eq!(play::testing::queued_ids().0, ["t1"]);
+            play::testing::clear(&ui);
+            wait_for("searched again", || ui.get_search_answered()).await;
+            // Escape closes the search, from the page as from its field.
+            idle(Duration::from_millis(50)).await;
+            ui.root_element().query_descendants().find_all();
+            press(&ui, slint::platform::Key::Escape);
+            assert_eq!(ui.get_page(), Page::Albums);
+            // The field keeps the keys, a space too, which elsewhere scrolls
+            // the page, also when it is drawn before the page takes in that
+            // it arrived.
+            ui.set_search_query("".into());
+            click(&ui, "Search");
+            ui.root_element().query_descendants().find_all();
+            idle(Duration::from_millis(50)).await;
+            for key in "a b".chars() {
+                press(&ui, key.to_string());
+            }
+            assert_eq!(ui.get_search_query(), "a b", "the field kept the keys");
+            press(&ui, slint::platform::Key::Escape);
+            assert_eq!(ui.get_page(), Page::Albums, "Escape in the field");
+
             // The genres page has the server's genres, those most albums
             // carry first, each with a picture of the artist known for it
             // best, a banner, in the genres' tint. A genre's page has the
@@ -3345,6 +3511,12 @@ mod tests {
             ];
             assert_eq!(pictures[3..9], library.map(String::from));
             assert_eq!(pictures[9..12], ["", "", ""]);
+            // The search finds them by name.
+            ui.set_search_query("road".into());
+            ui.invoke_open("search".into());
+            let found = ui.get_found_playlists().row_data(0).unwrap();
+            assert_eq!((found.title.as_str(), found.link.as_str()), ("Road Trip", "playlist:p1"));
+            ui.invoke_back();
             ui.invoke_show_section(10);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
@@ -6323,6 +6495,12 @@ mod tests {
             ui.invoke_open("artist:r1".into());
             wait_for("her top songs by name", || ui.get_tracks().row_count() == 2).await;
             wait_for("the account saved", || !ui.get_busy()).await;
+            // Home was left before its composers came; the search asks for
+            // them itself.
+            ui.set_search_query("Ludwig".into());
+            ui.invoke_open("search".into());
+            wait_for("Beethoven found", || ui.get_found_composers().row_count() == 1).await;
+            ui.invoke_back();
 
             // Fonoteca converts a song from part way in, so a conversion
             // played from there is asked for from there; the original still
@@ -6962,6 +7140,7 @@ mod tests {
             NO_MOTION.store(true, Relaxed);
             NO_WAVEFORM.store(true, Relaxed);
             OLD_GENRES.store(true, Relaxed);
+            NO_COMPOSITIONS.store(true, Relaxed);
             ui.set_username("joe".into());
             ui.set_password("pw".into());
             click(&ui, "Sign in");
@@ -6980,6 +7159,18 @@ mod tests {
             wait_for("Jazz's subgenres", || ui.get_genre_tiles().row_count() == 1).await;
             assert_eq!(ui.get_about(), "");
             ui.invoke_back();
+            // The search has no composers or compositions and asks for none.
+            let calls = ASKED.lock().unwrap().len();
+            ui.set_search_query("Ludwig".into());
+            ui.invoke_open("search".into());
+            wait_for("the search answered", || ui.get_search_answered()).await;
+            idle(Duration::from_millis(200)).await;
+            assert_eq!(ui.get_found_composers().row_count(), 0);
+            assert_eq!(ui.get_found_works().row_count(), 0);
+            let since = ASKED.lock().unwrap()[calls..].to_vec();
+            assert!(!since.iter().any(|call| call.starts_with("getCompos")), "{since:?}");
+            ui.invoke_back();
+            NO_COMPOSITIONS.store(false, Relaxed);
             OLD_GENRES.store(false, Relaxed);
             NO_MOTION.store(false, Relaxed);
             play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
