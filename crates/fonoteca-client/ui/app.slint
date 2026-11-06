@@ -833,23 +833,25 @@ component StepButtons inherits VerticalLayout {
     }
 }
 
-// The albums page's Sort menu and direction.
+// An overview page's Sort menu and direction. The entries from
+// `descending-from` on start descending.
 component SortControls inherits HorizontalLayout {
+    in property <[string]> entries;
+    in property <int> descending-from;
     in-out property <int> sort;
     in-out property <bool> descending;
     callback sort-selected();
     spacing: 12px;
     Choice {
-        min-width: 96px;
+        // Its list is as wide as it is, and shows the longest entry whole.
+        min-width: 148px;
         horizontal-stretch: 0;
         enabled: !Input.modal;
         accessible-label: "Sort by";
-        // In the order browse.rs's `arranged` takes them.
-        model: ["Name", "Artist", "Recently added", "Year"];
+        model: root.entries;
         current-index <=> root.sort;
-        // Names start A to Z, dates newest first.
         selected => {
-            root.descending = root.sort >= 2;
+            root.descending = root.sort >= root.descending-from;
             root.sort-selected();
         }
     }
@@ -866,10 +868,13 @@ component SortControls inherits HorizontalLayout {
     }
 }
 
-// The albums page's filter, with the sort controls beside it or, when
-// `stacked`, under it.
-component AlbumControls inherits VerticalLayout {
+// An overview page's filter of `what` it lists, with the sort controls
+// beside it or, when `stacked`, under it.
+component OverviewControls inherits VerticalLayout {
+    in property <string> what;
     in property <bool> stacked;
+    in property <[string]> sort-entries;
+    in property <int> descending-from;
     in-out property <string> filter;
     in-out property <int> sort;
     in-out property <bool> descending;
@@ -879,11 +884,13 @@ component AlbumControls inherits VerticalLayout {
     HorizontalLayout {
         spacing: 12px;
         Filter {
-            what: "albums";
+            what: root.what;
             text <=> root.filter;
             edited => { root.filter-edited(); }
         }
         if !root.stacked: SortControls {
+            entries: root.sort-entries;
+            descending-from: root.descending-from;
             sort <=> root.sort;
             descending <=> root.descending;
             sort-selected => { root.sort-selected(); }
@@ -891,6 +898,8 @@ component AlbumControls inherits VerticalLayout {
     }
     if root.stacked: SortControls {
         alignment: start;
+        entries: root.sort-entries;
+        descending-from: root.descending-from;
         sort <=> root.sort;
         descending <=> root.descending;
         sort-selected => { root.sort-selected(); }
@@ -1212,9 +1221,18 @@ export component AppWindow inherits Window {
     // A short word on what was just done, such as songs added to a playlist.
     in property <string> notice;
     // The albums page's order, as the index into its Sort menu, its
-    // direction, and the filter typed on it.
+    // direction, and the filter typed on it; the same for the artists page.
     in-out property <int> album-sort;
     in-out property <bool> album-descending;
+    in-out property <int> artist-sort;
+    in-out property <bool> artist-descending;
+    // Their Sort menus' entries, in the order browse.rs takes them, and the
+    // first that starts descending: names start A to Z, dates newest first,
+    // plays most first.
+    property <[string]> album-sorts: ["Name", "Artist", "Recently added", "Year", "Most played"];
+    property <int> album-sorts-descending-from: 2;
+    property <[string]> artist-sorts: ["Name", "Most played"];
+    property <int> artist-sorts-descending-from: 1;
     in-out property <string> album-filter;
     in-out property <string> artist-filter;
     in-out property <string> composer-filter;
@@ -1232,6 +1250,7 @@ export component AppWindow inherits Window {
     callback show-section(index: int);
     callback show-more();
     callback sort-albums();
+    callback sort-artists();
     callback filter-albums();
     callback filter-artists();
     callback filter-composers();
@@ -1936,8 +1955,11 @@ export component AppWindow inherits Window {
                                 text: "Albums";
                                 vertical-alignment: center;
                             }
-                            if scroll.visible-width >= 600px: AlbumControls {
+                            if scroll.visible-width >= 600px: OverviewControls {
                                 horizontal-stretch: 0;
+                                what: "albums";
+                                sort-entries: root.album-sorts;
+                                descending-from: root.album-sorts-descending-from;
                                 filter <=> root.album-filter;
                                 sort <=> root.album-sort;
                                 descending <=> root.album-descending;
@@ -1945,8 +1967,11 @@ export component AppWindow inherits Window {
                                 sort-selected => { root.sort-albums(); }
                             }
                         }
-                        if scroll.visible-width < 600px: AlbumControls {
+                        if scroll.visible-width < 600px: OverviewControls {
                             stacked: true;
+                            what: "albums";
+                            sort-entries: root.album-sorts;
+                            descending-from: root.album-sorts-descending-from;
                             filter <=> root.album-filter;
                             sort <=> root.album-sort;
                             descending <=> root.album-descending;
@@ -1959,7 +1984,7 @@ export component AppWindow inherits Window {
                             open(link) => { root.open(link); }
                         }
                     }
-                    // Its filter too goes under the heading when narrow.
+                    // Its controls too go under the heading when narrow.
                     if root.page == Page.artists: VerticalLayout {
                         spacing: 12px;
                         HorizontalLayout {
@@ -1969,17 +1994,28 @@ export component AppWindow inherits Window {
                                 text: "Artists";
                                 vertical-alignment: center;
                             }
-                            if scroll.visible-width >= 600px: Filter {
-                                what: "artists";
+                            if scroll.visible-width >= 600px: OverviewControls {
                                 horizontal-stretch: 0;
-                                text <=> root.artist-filter;
-                                edited => { root.filter-artists(); }
+                                what: "artists";
+                                sort-entries: root.artist-sorts;
+                                descending-from: root.artist-sorts-descending-from;
+                                filter <=> root.artist-filter;
+                                sort <=> root.artist-sort;
+                                descending <=> root.artist-descending;
+                                filter-edited => { root.filter-artists(); }
+                                sort-selected => { root.sort-artists(); }
                             }
                         }
-                        if scroll.visible-width < 600px: Filter {
+                        if scroll.visible-width < 600px: OverviewControls {
+                            stacked: true;
                             what: "artists";
-                            text <=> root.artist-filter;
-                            edited => { root.filter-artists(); }
+                            sort-entries: root.artist-sorts;
+                            descending-from: root.artist-sorts-descending-from;
+                            filter <=> root.artist-filter;
+                            sort <=> root.artist-sort;
+                            descending <=> root.artist-descending;
+                            filter-edited => { root.filter-artists(); }
+                            sort-selected => { root.sort-artists(); }
                         }
                         if root.header-title != "": GenreFilter {
                             genre: root.header-title;

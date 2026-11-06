@@ -887,7 +887,7 @@ fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
 }
 
 /// Shows `scrobbler` what plays, `song` being the track playing, and logs
-/// it as played on this device once it counts.
+/// it as played on this device once it counts, when the server is told too.
 #[cfg(not(target_family = "wasm"))]
 fn observe(
     browser: &browse::Shared,
@@ -896,9 +896,14 @@ fn observe(
     position: f64,
     paused: bool,
 ) {
-    let counted = scrobbler.observe(song, position, paused, browse::client(browser));
+    let server = browse::client(browser);
+    let tells_server = server.is_some();
+    let counted = scrobbler.observe(song, position, paused, server);
     if let (Some(song), Some(listened_at)) = (song, counted) {
         browse::log_play(browser, song, listened_at);
+        if tells_server {
+            browse::told_play(browser);
+        }
     }
 }
 

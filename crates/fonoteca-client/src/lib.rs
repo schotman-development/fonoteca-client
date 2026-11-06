@@ -892,6 +892,8 @@ mod tests {
     static MOVED: AtomicBool = AtomicBool::new(false);
     /// While set, the flow test's server answers every request with an error.
     static DOWN: AtomicBool = AtomicBool::new(false);
+    /// Every call it turned down so, as `ASKED` has them.
+    static ASKED_WHILE_DOWN: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// While set, the server hangs up on every folder it is asked for, as
     /// one out of reach does.
     static FOLDERS_UNREACHABLE: AtomicBool = AtomicBool::new(false);
@@ -1422,6 +1424,7 @@ mod tests {
 
     fn flaky(request: &str) -> Vec<u8> {
         if DOWN.load(Relaxed) {
+            ASKED_WHILE_DOWN.lock().unwrap().push(write_of(request));
             reply("503 Service Unavailable", "text/plain", b"down")
         } else {
             subsonic(request)
@@ -1547,17 +1550,21 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(300));
             }
             LISTS.fetch_add(1, Relaxed);
+            let first = match SCROBBLES.lock().unwrap().is_empty() {
+                true => format!("{{{}}}", album_now()),
+                false => format!(r#"{{{},"playCount":5}}"#, album_now()),
+            };
             let album = |n: u32| {
                 format!(
                     r#"{{"id":"a{n}","name":"Other {n}","coverArt":"al-a{n}","songCount":0,"duration":0,"created":"2020-01-01T00:00:00Z"}}"#
                 )
             };
-            let albums: Vec<String> = std::iter::once(format!("{{{}}}", album_now()))
+            let albums: Vec<String> = std::iter::once(first)
                 .chain((2..=600).map(album))
                 .chain([
                     r#"{"id":"b1","name":"Sonatas","artist":"Bach Ensemble","musicBrainzId":"RG-SONATAS","year":2010,"songCount":0,"duration":0,"created":"2022-01-01T00:00:00Z"}"#.to_owned(),
-                    r#"{"id":"b3","name":"Variations on Bach","artist":"Anna Bach","year":0,"songCount":0,"duration":0,"created":"2023-01-01T00:00:00Z"}"#.to_owned(),
-                    r#"{"id":"b2","name":"partitas","artist":"Anna Bach","year":2010,"songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z"}"#.to_owned(),
+                    r#"{"id":"b3","name":"Variations on Bach","artist":"Anna Bach","year":0,"songCount":0,"duration":0,"playCount":3,"created":"2023-01-01T00:00:00Z"}"#.to_owned(),
+                    r#"{"id":"b2","name":"partitas","artist":"Anna Bach","year":2010,"songCount":0,"duration":0,"playCount":3,"created":"2024-01-01T00:00:00Z"}"#.to_owned(),
                 ])
                 .skip(number("offset").unwrap_or(0))
                 .take(number("size").unwrap_or(10))
@@ -1678,14 +1685,27 @@ mod tests {
             ok(&library_search(param("query").unwrap_or_default()))
         } else if request.contains("/rest/search3") {
             let number = |name: &str| param(name).and_then(|n| n.parse::<usize>().ok());
+            let plays_told = SCROBBLES.lock().unwrap().len();
+            let played = plays_told > 0;
             let song = |n: usize| {
-                if n == 1 {
+                if n == 1 && played {
+                    HARBOUR_LIGHTS.replace(r#""isDir":false"#, r#""isDir":false,"playCount":5"#)
+                } else if n == 1 {
                     HARBOUR_LIGHTS.to_owned()
                 } else if n == 2 {
                     // Also on the Road Trip playlist.
                     r#"{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}"#.to_owned()
                 } else {
-                    format!(r#"{{"id":"t{n}","isDir":false,"title":"Song {n}","duration":60}}"#)
+                    let plays = match n {
+                        // The second play told is Song 5's.
+                        5 if plays_told > 1 => r#","playCount":4"#,
+                        5 => r#","playCount":3"#,
+                        3 | 8 => r#","playCount":2"#,
+                        _ => "",
+                    };
+                    format!(
+                        r#"{{"id":"t{n}","isDir":false,"title":"Song {n}","duration":60{plays}}}"#
+                    )
                 }
             };
             let songs: Vec<String> = (1..=230)
@@ -2188,6 +2208,21 @@ mod tests {
         button(ui, label).invoke_accessible_default_action();
     }
 
+    /// Opens the page's Sort menu, moves its choice one entry along with
+    /// `key`, as the arrow keys do, and closes it.
+    async fn move_sort_choice(ui: &AppWindow, key: slint::platform::Key) {
+        ui.root_element()
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Combobox)
+            .match_predicate(|combo| combo.accessible_label().is_some_and(|l| l == "Sort by"))
+            .find_first()
+            .expect("no Sort menu")
+            .single_click(PointerEventButton::Left)
+            .await;
+        press(ui, key);
+        press(ui, slint::platform::Key::Return);
+    }
+
     /// The sidebar entry that is lit, or nothing.
     fn lit(ui: &AppWindow) -> String {
         (usize::try_from(ui.get_section()).ok())
@@ -2343,6 +2378,30 @@ mod tests {
             );
             assert!(store::load_listenbrainz().await.is_none());
 
+            // Most played, chosen from the artists' Sort menu, starts with
+            // the most played, is saved on this device, and asks for the
+            // library again, which that order needs.
+            click(&ui, "Artists");
+            let refused = |call: &str| {
+                let refused = ASKED_WHILE_DOWN.lock().unwrap();
+                refused.iter().filter(|asked| asked.starts_with(call)).count()
+            };
+            wait_for("the failed artists", || refused("getArtists") > 0).await;
+            let libraries_refused = refused("getAlbumList2");
+            move_sort_choice(&ui, slint::platform::Key::DownArrow).await;
+            assert_eq!((ui.get_artist_sort(), ui.get_artist_descending()), (1, true));
+            let saved = crate::prefs::load();
+            assert_eq!((saved.artist_sort, saved.artist_descending), (1, true));
+            wait_for("the library asked for again", || {
+                refused("getAlbumList2") > libraries_refused
+            })
+            .await;
+            // Name, chosen again, goes A to Z.
+            move_sort_choice(&ui, slint::platform::Key::UpArrow).await;
+            assert_eq!((ui.get_artist_sort(), ui.get_artist_descending()), (0, false));
+            let saved = crate::prefs::load();
+            assert_eq!((saved.artist_sort, saved.artist_descending), (0, false));
+
             // Showing the albums asks again, and Try again once more.
             click(&ui, "Albums");
             wait_for("the failed library", || ui.get_page_problem() != "").await;
@@ -2430,6 +2489,11 @@ mod tests {
                 (1, false, &["b2", "b3", "b1"]),
                 (2, false, &["b1", "b3", "b2"]),
                 (2, true, &["b2", "b3", "b1"]),
+                // Most played, ties by name either way, not in the server's
+                // order, and Sonatas, which the server has no count of,
+                // played 0 times.
+                (4, true, &["b2", "b3", "b1"]),
+                (4, false, &["b1", "b2", "b3"]),
             ] {
                 sort(order, descending);
                 wait_for("the sorted matches", || links(&ui) == ids(expected)).await;
@@ -5299,6 +5363,16 @@ mod tests {
             ui.invoke_sort_tracks(column(&ui, "Year"));
             assert_eq!(first(&ui), ["Harbour Lights", "Fugue", "Song 3"]);
             assert_eq!(sorted(&ui), [("Year".to_owned(), true)]);
+            // The plays sort the most first at first, ties by name either
+            // way, and songs the server has no count of played 0 times.
+            let plays = ui.get_track_choices().iter().position(|c| c.title == "Plays").unwrap() as i32;
+            ui.invoke_toggle_track_column(plays);
+            ui.invoke_sort_tracks(column(&ui, "Plays"));
+            assert_eq!(sorted(&ui), [("Plays".to_owned(), true)]);
+            assert_eq!(first(&ui), ["Song 5", "Song 3", "Song 8"]);
+            ui.invoke_sort_tracks(column(&ui, "Plays"));
+            assert_eq!(first(&ui), ["Fugue", "Harbour Lights", "Song 10"]);
+            ui.invoke_toggle_track_column(plays);
             // The heart follows its song through the sort.
             ui.invoke_sort_tracks(column(&ui, "Loved"));
             assert_eq!(first(&ui), ["Song 4", "Song 5", "Song 6"]);
@@ -5630,6 +5704,11 @@ mod tests {
                 user: "rob".into(),
             };
             store::save_listenbrainz(rob).await.unwrap();
+            // The most played, last in the Sort menus, come back too.
+            let mut saved = crate::prefs::load();
+            assert_eq!((saved.album_sort, saved.album_descending), (1, true));
+            (saved.album_sort, saved.artist_sort) = (4, 1);
+            crate::prefs::save(&saved);
             let again = start().unwrap();
             wait_for("the offline note", || again.get_offline() != "").await;
             assert_eq!(again.get_step(), Step::Done);
@@ -6141,8 +6220,9 @@ mod tests {
             let grid = |row: usize| x(tiles.row_data(row).unwrap().title.as_str());
             assert_eq!((grid(0), grid(1) - grid(0)), (left, pitch));
             // It picks up the preferences saved on this device.
-            assert_eq!(again.get_album_sort(), 1);
+            assert_eq!(again.get_album_sort(), 4);
             assert!(again.get_album_descending());
+            assert_eq!(again.get_artist_sort(), 1);
             click(&again, "Tracks");
             wait_for("the tracks", || again.get_track_lines().row_count() == 100).await;
             assert_eq!(titles(&again), titles(&ui));
@@ -6309,6 +6389,78 @@ mod tests {
             wait_for("her picture", || first_artist().cover.size().width > 0).await;
             // Off Home again, which the steps below open anew.
             ui.invoke_open("albums".into());
+
+            // The next visit to a page sorted by plays after a play shows its
+            // order as it was at once, then asks the server again and puts
+            // the play in place. An artist's plays are their albums'.
+            let (album_sort, album_descending) = (ui.get_album_sort(), ui.get_album_descending());
+            ui.invoke_open("artists".into());
+            ui.set_artist_sort(1);
+            ui.set_artist_descending(true);
+            ui.invoke_sort_artists();
+            assert_eq!(tile_links(ui.get_tiles())[..3], ["artist:r3", "artist:r1", "artist:o1"]);
+            wait_for("Mara Lind's play", || tile_links(ui.get_tiles())[0] == "artist:r1").await;
+            assert_eq!(tile_links(ui.get_tiles())[..3], ["artist:r1", "artist:r3", "artist:o1"]);
+            ui.set_artist_descending(false);
+            ui.invoke_sort_artists();
+            assert_eq!(tile_links(ui.get_tiles())[..3], ["artist:r3", "artist:o1", "artist:o2"]);
+            ui.set_artist_sort(0);
+            ui.set_artist_descending(true);
+            ui.invoke_sort_artists();
+            assert_eq!(tile_links(ui.get_tiles())[..3], ["artist:o120", "artist:o119", "artist:o118"]);
+            ui.invoke_open("albums".into());
+            ui.set_album_sort(4);
+            ui.set_album_descending(true);
+            ui.invoke_sort_albums();
+            assert_eq!(tile_links(ui.get_tiles())[..3], ["album:a1", "album:b2", "album:b3"]);
+            let top_titles = |ui: &AppWindow| -> Vec<String> {
+                (0..3).map(|row| cell(ui, row, 1)[0].0.clone()).collect()
+            };
+            ui.invoke_open("tracks".into());
+            wait_for("the tracks", || ui.get_track_lines().row_count() == 100).await;
+            ui.invoke_toggle_track_column(plays);
+            ui.invoke_sort_tracks(column(&ui, "Plays"));
+            assert_eq!(top_titles(&ui), ["Song 5", "Song 3", "Song 8"]);
+            ui.invoke_open("albums".into());
+            ui.invoke_open("tracks".into());
+            assert_eq!(top_titles(&ui), ["Song 5", "Song 3", "Song 8"]);
+            wait_for("Harbour Lights' play", || top_titles(&ui)[0] == "Harbour Lights").await;
+            assert_eq!(top_titles(&ui), ["Harbour Lights", "Song 5", "Song 3"]);
+            // A play that leaves the order as it is shows its count in place
+            // too, once the server is asked again. Its log is left out of
+            // the history's steps below as the first play's is.
+            let song_5: opensubsonic::Child = serde_json::from_str(
+                r#"{"id":"t5","isDir":false,"title":"Song 5","duration":2}"#,
+            )
+            .unwrap();
+            for position in [0.0, 0.4, 0.8] {
+                play::testing::hear(&song_5, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            play::testing::hear(&song_5, 1.2);
+            wait_for("Song 5's play told", || SCROBBLES.lock().unwrap().len() == 2).await;
+            wait_for("Song 5's play logged", || {
+                std::fs::read_to_string(plays_kept_for(&server, "joe"))
+                    .is_ok_and(|log| log.contains(r#""t5""#))
+            })
+            .await;
+            plays::forget(&joe).unwrap();
+            let plays_column = titles(&ui).iter().position(|title| title == "Plays").unwrap();
+            let song_5_plays = |ui: &AppWindow| cell(ui, 1, plays_column)[0].0.clone();
+            ui.invoke_open("artists".into());
+            ui.invoke_open("tracks".into());
+            assert_eq!(song_5_plays(&ui), "3");
+            wait_for("Song 5's second play", || song_5_plays(&ui) == "4").await;
+            assert_eq!(top_titles(&ui), ["Harbour Lights", "Song 5", "Song 3"]);
+            ui.invoke_toggle_track_column(plays);
+            ui.invoke_sort_tracks(column(&ui, "Year"));
+            ui.invoke_sort_tracks(column(&ui, "Year"));
+            assert_eq!(sorted(&ui), [("Year".to_owned(), true)]);
+            ui.set_artist_sort(0);
+            ui.set_artist_descending(false);
+            ui.set_album_sort(album_sort);
+            ui.set_album_descending(album_descending);
+            ui.invoke_sort_albums();
 
             // Without a token the home page has no "Created for you" shelf and
             // ListenBrainz is not asked; a playlist page says why it is empty.

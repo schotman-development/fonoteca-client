@@ -1,5 +1,5 @@
-//! Preferences kept on this device: how the albums, tracks, compositions and
-//! folders are sorted, which columns the tables show, the radio page's
+//! Preferences kept on this device: how the albums, artists, tracks,
+//! compositions and folders are sorted, which columns the tables show, the radio page's
 //! languages, the sound device, volume leveling and sound processing; and the pictures of saved stations the app found in the radio
 //! directory. They aren't secrets, so plain files in the system's settings
 //! folder keep them, and the browser preview its localStorage. Where neither
@@ -16,6 +16,9 @@ pub struct Prefs {
     /// The albums page's Sort menu entry and direction.
     pub album_sort: i32,
     pub album_descending: bool,
+    /// The same for the artists page.
+    pub artist_sort: i32,
+    pub artist_descending: bool,
     /// The headings of the tracks table's columns shown, none for the first
     /// choice; the heading of the column it is sorted by, and the direction.
     pub track_columns: Option<Vec<String>>,

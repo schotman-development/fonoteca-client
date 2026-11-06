@@ -2,8 +2,9 @@
 //! page seen before shows at once. An answer is fresh for an hour and handed
 //! out without asking the server. After that it is aged: handed out only to
 //! a page that shows it at once and then asks again. A call that changes the
-//! server forgets the answers it makes out of date. Past [`MOST_KEPT`], those
-//! shown longest ago are forgotten.
+//! server forgets the answers it makes out of date, or ages those it changes
+//! only the counts in. Past [`MOST_KEPT`], those shown longest ago are
+//! forgotten.
 //!
 //! Time comes from the clock the app hands in, and saving is up to the app:
 //! it gets the answers as JSON to save and hands them back at the next
@@ -270,6 +271,14 @@ impl Answers {
         if kept.answers.len() != before {
             kept.changes += 1;
         }
+        if let Change::Ages(reads) = change {
+            let an_hour_ago = (self.clock)().saturating_sub(FRESH_FOR);
+            let aged = (kept.answers.iter_mut()).filter(|(read, _)| read.starts_with(reads));
+            for (_, answer) in aged {
+                answer.at = an_hour_ago;
+            }
+            kept.changes += 1;
+        }
         if !change.names() {
             return None;
         }
@@ -387,6 +396,9 @@ enum Change {
     Reads(&'static str),
     /// Both of these.
     ReadsAndNaming(&'static str),
+    /// None, but the answers to the calls whose names start so are aged:
+    /// shown at once and asked for again.
+    Ages(&'static str),
 }
 
 impl Change {
@@ -405,6 +417,9 @@ impl Change {
             "createInternetRadioStation"
             | "updateInternetRadioStation"
             | "deleteInternetRadioStation" => Some(Self::Reads("getInternetRadioStations")),
+            // A play raises only the counts in the album lists, so they
+            // still show at once, and are asked for again.
+            "scrobble" => Some(Self::Ages("getAlbumList2")),
             _ => None,
         }
     }
@@ -413,7 +428,7 @@ impl Change {
     fn outdates_call(&self, read: &str) -> bool {
         match self {
             Self::Everything => true,
-            Self::Naming => false,
+            Self::Naming | Self::Ages(_) => false,
             Self::Reads(reads) | Self::ReadsAndNaming(reads) => read.starts_with(reads),
         }
     }
@@ -704,6 +719,21 @@ mod tests {
             assert!(answers.find(&stations).is_none(), "{change}");
             assert!(answers.find(&catalogue).is_some(), "{change}");
         }
+    }
+
+    #[test]
+    fn a_play_ages_the_album_lists_and_keeps_them() {
+        let library = key("getAlbumList2", &[("type", "alphabeticalByName")]);
+        let album = key("getAlbum", &[("id", "a1")]);
+        let answers = kept(&[(&library, r#"{"albumList2":{}}"#), (&album, "{}")]);
+        save(&answers);
+        call(&answers, "scrobble", &params(&[("id", "s1")]));
+        assert!(answers.find(&library).unwrap().aged);
+        assert!(
+            !answers.find(&album).unwrap().aged,
+            "its page shows no plays"
+        );
+        assert!(answers.unsaved().is_some(), "saved aged");
     }
 
     #[test]
