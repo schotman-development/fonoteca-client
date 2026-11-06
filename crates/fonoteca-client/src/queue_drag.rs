@@ -35,6 +35,15 @@ pub fn step_slot(parts: &[bool], from: usize, down: bool) -> Option<usize> {
     }
 }
 
+/// How many rows the song playing takes at the list's top: its own, and
+/// the movements under it when it is a work that is open.
+pub fn playing_rows(parts: &[bool]) -> usize {
+    match parts.split_first() {
+        Some((_, rest)) => 1 + rest.iter().take_while(|&&part| part).count(),
+        None => 0,
+    }
+}
+
 /// The row to move the `from`th row onto to put it in `slot`: it comes to
 /// stand after a row from before it, else before it.
 pub fn onto_row(from: i32, slot: i32) -> i32 {
@@ -104,6 +113,14 @@ mod tests {
             "not above the one playing"
         );
         assert_eq!(step_slot(&[false, false], 1, true), None);
+    }
+
+    #[test]
+    fn the_song_playing_takes_its_row_and_its_open_movements() {
+        assert_eq!(playing_rows(&LIST), 1);
+        assert_eq!(playing_rows(&[false, true, true, false, true]), 3);
+        assert_eq!(playing_rows(&[false]), 1);
+        assert_eq!(playing_rows(&[]), 0);
     }
 
     #[test]

@@ -3058,6 +3058,9 @@ component GripArea inherits TouchArea {
 export component QueueReorder {
     in property <[QueueLine]> lines;
     in property <length> row-height;
+    // The rows from `split` on sit `gap` lower, under a heading.
+    in property <int> split;
+    in property <length> gap;
     in property <length> view-top;
     in property <length> view-bottom;
     // The row being dragged, or -1.
@@ -3076,7 +3079,16 @@ export component QueueReorder {
     property <length> grab;
     property <length> ghost-y: clamp(root.pointer-y - root.absolute-position.y - root.grab, 0, max(0px, root.height - root.row-height));
     // The slot the row would land in, or -1 where that moves nothing.
-    property <int> slot: root.dragged < 0 ? -1 : root.slot-at(root.lines, root.dragged, (root.ghost-y + root.row-height / 2) / root.row-height);
+    property <int> slot: root.dragged < 0 ? -1 : root.slot-at(root.lines, root.dragged, root.rows-at(root.ghost-y + root.row-height / 2));
+
+    pure function row-y(row: int) -> length {
+        row * root.row-height + (row >= root.split ? root.gap : 0)
+    }
+    // How many rows down `y` is, the gap not counted.
+    pure function rows-at(y: length) -> float {
+        let split-y = root.split * root.row-height;
+        y <= split-y ? y / root.row-height : max(root.split, (y - root.gap) / root.row-height)
+    }
 
     public pure function draggable(row: int) -> bool {
         row > 0 && !root.lines[row].part && !(root.lines[row].work && root.lines[row].expanded)
@@ -3093,7 +3105,7 @@ export component QueueReorder {
     changed lines => { root.dragged = -1; }
 
     for line[row] in root.lines: Rectangle {
-        y: row * root.row-height;
+        y: root.row-y(row);
         width: root.width;
         height: root.row-height;
         grip := GripArea {
@@ -3153,7 +3165,7 @@ export component QueueReorder {
         }
     }
     if root.slot >= 0: Rectangle {
-        y: root.slot * root.row-height - self.height / 2;
+        y: root.row-y(root.slot) - self.height / 2;
         width: root.width;
         height: 3px;
         border-radius: 1.5px;

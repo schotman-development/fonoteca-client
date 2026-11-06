@@ -292,6 +292,10 @@ component PageScroll inherits FocusScope {
     // doesn't scroll sideways.
     in property <bool> pushable;
     callback pushed();
+    // Whether the page comes to rest at `halt-at` on its way up from below
+    // it, as the queue at what plays before the songs played before it.
+    in property <bool> halts;
+    in property <length> halt-at;
     horizontal-stretch: 1;
     vertical-stretch: 1;
     focus-on-click: false;
@@ -452,7 +456,23 @@ component PageScroll inherits FocusScope {
         }
         reject
     }
+    // Scrolled, dragged or flung up from below `halt-at`, the page stops
+    // there, and only the next scroll goes on past it. A finger that took
+    // the page below there holds it there until it lets go, and a scroll
+    // that comes within `halt-hold` of the stop is the one that stopped, as
+    // the wheel's ticks and a fling's frames are.
+    property <duration> halt-hold: 300ms;
+    property <duration> halted-at: -1s;
+    property <length> last-y;
+    pure function halting() -> bool {
+        root.last-y < root.halt-at || (root.taken && root.taken-at < root.halt-at) || animation-tick() - root.halted-at < root.halt-hold
+    }
     changed content-y => {
+        if root.halts && self.content-y > root.halt-at && root.halting() {
+            root.halted-at = animation-tick();
+            self.content-y = root.halt-at;
+        }
+        root.last-y = self.content-y;
         self.check-end();
     }
     changed content-height => {
@@ -653,6 +673,8 @@ component QueueList inherits Rectangle {
     // there are after those of `lines`.
     in property <int> earlier;
     in property <int> more;
+    // How many of `lines` what plays takes, set apart from the rest.
+    in property <int> playing-rows;
     // Whether what plays is paused, which its row says.
     in property <bool> paused;
     // Whether it takes the keys back when Input.refocus asks.
@@ -677,11 +699,18 @@ component QueueList inherits Rectangle {
     property <length> row-height: 56px;
     // The row that has the keys once the list is made anew after a move.
     property <int> focus-row: -1;
+    // Where the page is with what plays at its top, under its heading, and
+    // how far down the heading of the songs after it pushes them.
+    property <length> playing-at: -(heard.y + now-playing.y - queue-stage.padding-top);
+    property <length> up-next-gap: root.lines.length > root.playing-rows ? up-next.preferred-height : 0;
 
+    pure function row-y(row: int) -> length {
+        row * root.row-height + (row >= root.playing-rows ? root.up-next-gap : 0)
+    }
     // Scrolls to what plays, which has the songs played before it above,
     // out of view, to be scrolled up to.
     function snap-to-current() {
-        queue-scroll.content-y = -(queue-start.y - queue-stage.padding-top);
+        queue-scroll.content-y = root.playing-at;
     }
     init => { root.snap-to-current(); }
     changed asked => {
@@ -704,6 +733,8 @@ component QueueList inherits Rectangle {
         accessible-label: "Queue";
         back => { root.leave(); }
         escape => { root.leave(); }
+        halts: true;
+        halt-at: root.playing-at;
         content-width: queue-scroll.visible-width;
         content-height: queue-end.y - queue-stage.spacing + queue-stage.padding-bottom;
         queue-stage := VerticalLayout {
@@ -716,144 +747,169 @@ component QueueList inherits Rectangle {
             spacing: 24px;
             alignment: start;
             // Above what plays, out of view when the queue opens: what
-            // played before it.
-            if root.previous.length > 0: VerticalLayout {
-                SectionHeading { text: "Played"; }
-                if root.earlier > 0: Note {
-                    text: root.earlier == 1 ? "1 earlier" : root.earlier + " earlier";
-                    font-size: Theme.body;
-                }
-                // As high as its rows are, whatever the list has been made of
-                // by the time the sheet scrolls to what plays.
+            // played before it, with the room under it. Made even when
+            // nothing has played, folded away, as the snap to what plays
+            // measures the page as it is made, and what an `if` holds is
+            // only made once it is drawn.
+            heard := VerticalLayout {
                 Rectangle {
-                    height: root.previous.length * root.row-height;
-                    VerticalLayout {
-                        for line[row] in root.previous: ListRow {
-                            // Counted back from the row playing.
-                            property <int> at: row - root.previous.length;
-                            min-height: root.row-height;
-                            max-height: root.row-height;
-                            reserve: Screen.phone ? Theme.phone-target : 32px;
-                            title: line.title;
-                            link: "jump";
-                            details: line.details;
-                            cover: line.cover;
-                            covered: true;
-                            entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
-                            open => { root.jump(self.at); }
-                            opening => {
-                                self.entries = [];
-                                self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
-                                self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
-                                if line.album != "" {
-                                    self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
-                                }
-                                self.entries.push({ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true });
-                            }
-                            activated(id) => {
-                                if id == "play" {
-                                    root.jump(self.at);
-                                } else if id == "next" {
-                                    root.play-next(self.at);
-                                } else if id == "album" {
-                                    root.open(line.album);
-                                } else {
-                                    root.remove(self.at);
+                    visible: root.previous.length > 0;
+                    height: self.visible ? played.preferred-height + queue-stage.spacing : 0;
+                    played := VerticalLayout {
+                        y: 0;
+                        height: self.preferred-height;
+                        SectionHeading { text: "Played"; }
+                        Note {
+                            visible: root.earlier > 0;
+                            height: self.visible ? self.preferred-height : 0;
+                            text: root.earlier == 1 ? "1 earlier" : root.earlier + " earlier";
+                            font-size: Theme.body;
+                        }
+                        // As high as its rows are, whatever the list has been made of
+                        // by the time the sheet scrolls to what plays.
+                        Rectangle {
+                            height: root.previous.length * root.row-height;
+                            VerticalLayout {
+                                for line[row] in root.previous: ListRow {
+                                    // Counted back from the row playing.
+                                    property <int> at: row - root.previous.length;
+                                    min-height: root.row-height;
+                                    max-height: root.row-height;
+                                    reserve: Screen.phone ? Theme.phone-target : 32px;
+                                    title: line.title;
+                                    link: "jump";
+                                    details: line.details;
+                                    cover: line.cover;
+                                    covered: true;
+                                    entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
+                                    open => { root.jump(self.at); }
+                                    opening => {
+                                        self.entries = [];
+                                        self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
+                                        self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                                        if line.album != "" {
+                                            self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
+                                        }
+                                        self.entries.push({ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true });
+                                    }
+                                    activated(id) => {
+                                        if id == "play" {
+                                            root.jump(self.at);
+                                        } else if id == "next" {
+                                            root.play-next(self.at);
+                                        } else if id == "album" {
+                                            root.open(line.album);
+                                        } else {
+                                            root.remove(self.at);
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            // What plays is the row the page opens on, the played ones above.
-            queue-start := Rectangle {
-                height: root.lines.length * root.row-height;
-                VerticalLayout {
-                    for line[row] in root.lines: reordered := FocusScope {
-                        min-height: root.row-height;
-                        max-height: root.row-height;
-                        // A click on a row, beside its words and
-                        // buttons, gives it the keys to move it by.
-                        // Moved with the keys, the row has the keys
-                        // again where it lands.
-                        init => {
-                            if root.focus-row == row {
-                                root.focus-row = -1;
-                                self.focus();
+                // What plays is what the page opens on, under a heading of its
+                // own, the played ones above and those to come under theirs.
+                now-playing := VerticalLayout {
+                    SectionHeading { text: "Now playing"; }
+                    queue-start := Rectangle {
+                        height: root.lines.length * root.row-height + root.up-next-gap;
+                        up-next := SectionHeading {
+                            y: root.playing-rows * root.row-height;
+                            width: parent.width;
+                            height: self.preferred-height;
+                            visible: root.lines.length > root.playing-rows;
+                            text: "Up next";
+                        }
+                        for line[row] in root.lines: reordered := FocusScope {
+                            y: root.row-y(row);
+                            width: parent.width;
+                            height: root.row-height;
+                            // A click on a row, beside its words and
+                            // buttons, gives it the keys to move it by.
+                            // Moved with the keys, the row has the keys
+                            // again where it lands.
+                            init => {
+                                if root.focus-row == row {
+                                    root.focus-row = -1;
+                                    self.focus();
+                                }
+                            }
+                            key-pressed(event) => {
+                                if !event.modifiers.alt || !reorder.draggable(row) {
+                                    return reject;
+                                }
+                                if event.text != Key.UpArrow && event.text != Key.DownArrow {
+                                    return reject;
+                                }
+                                let down = event.text == Key.DownArrow;
+                                let slot = root.step-slot(root.lines, row, down);
+                                if slot >= 0 {
+                                    root.focus-row = down ? slot - 1 : slot;
+                                    root.move(row, slot);
+                                }
+                                accept
+                            }
+                            queued := ListRow {
+                                width: parent.width;
+                                height: parent.height;
+                                opacity: reorder.dragged == row ? 0.4 : 1;
+                                reserve: Screen.phone ? Theme.phone-target : 32px;
+                                title: line.title;
+                                link: row > 0 ? "jump" : "";
+                                details: line.details;
+                                cover: line.cover;
+                                covered: !line.part;
+                                depth: line.part ? 1 : 0;
+                                current: line.current;
+                                paused: root.paused;
+                                expandable: line.work;
+                                expanded: line.expanded;
+                                // All of them when opened; one so it shows.
+                                entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
+                                open => { root.jump(row); }
+                                toggled => { root.toggle-work(row); }
+                                opening => {
+                                    self.entries = [];
+                                    if row > 0 && !line.current {
+                                        self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
+                                    }
+                                    if row > 1 && !line.part {
+                                        self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                                    }
+                                    if line.album != "" {
+                                        self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
+                                    }
+                                    self.entries.push({ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true });
+                                }
+                                activated(id) => {
+                                    if id == "play" {
+                                        root.jump(row);
+                                    } else if id == "next" {
+                                        root.play-next(row);
+                                    } else if id == "album" {
+                                        root.open(line.album);
+                                    } else {
+                                        root.remove(row);
+                                    }
+                                }
                             }
                         }
-                        key-pressed(event) => {
-                            if !event.modifiers.alt || !reorder.draggable(row) {
-                                return reject;
-                            }
-                            if event.text != Key.UpArrow && event.text != Key.DownArrow {
-                                return reject;
-                            }
-                            let down = event.text == Key.DownArrow;
-                            let slot = root.step-slot(root.lines, row, down);
-                            if slot >= 0 {
-                                root.focus-row = down ? slot - 1 : slot;
-                                root.move(row, slot);
-                            }
-                            accept
-                        }
-                        queued := ListRow {
+                        reorder := QueueReorder {
                             width: parent.width;
                             height: parent.height;
-                            opacity: reorder.dragged == row ? 0.4 : 1;
-                            reserve: Screen.phone ? Theme.phone-target : 32px;
-                            title: line.title;
-                            link: row > 0 ? "jump" : "";
-                            details: line.details;
-                            cover: line.cover;
-                            covered: !line.part;
-                            depth: line.part ? 1 : 0;
-                            current: line.current;
-                            paused: root.paused;
-                            expandable: line.work;
-                            expanded: line.expanded;
-                            // All of them when opened; one so it shows.
-                            entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
-                            open => { root.jump(row); }
-                            toggled => { root.toggle-work(row); }
-                            opening => {
-                                self.entries = [];
-                                if row > 0 && !line.current {
-                                    self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
-                                }
-                                if row > 1 && !line.part {
-                                    self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
-                                }
-                                if line.album != "" {
-                                    self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
-                                }
-                                self.entries.push({ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true });
-                            }
-                            activated(id) => {
-                                if id == "play" {
-                                    root.jump(row);
-                                } else if id == "next" {
-                                    root.play-next(row);
-                                } else if id == "album" {
-                                    root.open(line.album);
-                                } else {
-                                    root.remove(row);
-                                }
+                            lines: root.lines;
+                            row-height: root.row-height;
+                            split: root.playing-rows;
+                            gap: root.up-next-gap;
+                            view-top: queue-scroll.absolute-position.y;
+                            view-bottom: queue-scroll.absolute-position.y + queue-scroll.visible-height;
+                            slot-at(lines, from, at) => { root.drop-slot(lines, from, at) }
+                            moved(from, slot) => { root.move(from, slot); }
+                            scroll(by) => {
+                                queue-scroll.content-y = clamp(queue-scroll.content-y + by, min(0, queue-scroll.visible-height - queue-scroll.content-height), 0);
                             }
                         }
-                    }
-                }
-                reorder := QueueReorder {
-                    width: parent.width;
-                    height: parent.height;
-                    lines: root.lines;
-                    row-height: root.row-height;
-                    view-top: queue-scroll.absolute-position.y;
-                    view-bottom: queue-scroll.absolute-position.y + queue-scroll.visible-height;
-                    slot-at(lines, from, at) => { root.drop-slot(lines, from, at) }
-                    moved(from, slot) => { root.move(from, slot); }
-                    scroll(by) => {
-                        queue-scroll.content-y = clamp(queue-scroll.content-y + by, min(0, queue-scroll.visible-height - queue-scroll.content-height), 0);
                     }
                 }
             }
@@ -862,7 +918,7 @@ component QueueList inherits Rectangle {
                 font-size: Theme.body;
             }
             // Room under the last rows for what plays to scroll up to the top.
-            Rectangle { height: max(0px, queue-scroll.visible-height - root.lines.length * root.row-height); }
+            Rectangle { height: max(0px, queue-scroll.visible-height - now-playing.preferred-height); }
             queue-end := Rectangle { height: 0; }
         }
     }
@@ -1343,6 +1399,9 @@ export component AppWindow inherits Window {
     callback now-playing-moving-changed(moving: bool);
     changed now-playing-moving => { root.now-playing-moving-changed(root.now-playing-moving); }
     in property <[QueueLine]> queue-lines;
+    // How many of them the song playing takes: its own, and the movements
+    // under it when it is a work that is open.
+    in property <int> queue-playing-rows;
     in property <int> queue-more;
     // The songs played before the one playing, as rows from the oldest, and
     // how many songs came before those. `playing-shown` counts the songs
@@ -3980,6 +4039,7 @@ export component AppWindow inherits Window {
                             active: root.now-playing-open && root.queue-open;
                             leave => { root.leave-sheet-page(); }
                             lines: root.queue-lines;
+                            playing-rows: root.queue-playing-rows;
                             previous: root.previous-lines;
                             earlier: root.queue-earlier;
                             more: root.queue-more;
@@ -4041,6 +4101,7 @@ export component AppWindow inherits Window {
                 active: false;
                 leave => { root.close-queue(); }
                 lines: root.queue-lines;
+                playing-rows: root.queue-playing-rows;
                 previous: root.previous-lines;
                 earlier: root.queue-earlier;
                 more: root.queue-more;

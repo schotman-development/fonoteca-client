@@ -1262,6 +1262,8 @@ fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing
     let model = Rc::new(VecModel::from(lines));
     let before_model = Rc::new(VecModel::from(before));
     ui.set_queue_lines(ModelRc::from(model.clone()));
+    let playing_rows = queue_drag::playing_rows(&parts(&ui.get_queue_lines()));
+    ui.set_queue_playing_rows(playing_rows as i32);
     ui.set_previous_lines(ModelRc::from(before_model.clone()));
     show_covers(ui, browser, p, playing, &p.listed, model);
     show_covers(ui, browser, p, playing, &p.previous, before_model);

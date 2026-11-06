@@ -7485,11 +7485,76 @@ mod tests {
             assert_eq!(ui.get_previous_lines().row_count(), 7);
             assert!(played("Track 7"), "back on what plays after the song changed");
             assert!(!played("Track 6"));
-            ui.window().dispatch_event(WindowEvent::PointerScrolled {
-                position: slint::LogicalPosition::new(550.0, 400.0),
-                delta_x: 0.0,
-                delta_y: 100000.0,
-            });
+            // What plays has a heading of its own, and so do the songs after
+            // it. Scrolled up from those, the queue stops at what plays, by
+            // the wheel and by a finger's drag or fling; only a scroll after
+            // that goes on to the songs played before.
+            let top_in_sight = |role: AccessibleRole, label: &str| {
+                let wanted = label.to_owned();
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(role)
+                    .match_predicate(move |e| e.accessible_label().is_some_and(|l| l == wanted))
+                    .find_first()
+                    .map(|e| e.absolute_position().y)
+            };
+            let tops = [
+                top_in_sight(AccessibleRole::Text, "Now playing"),
+                top_in_sight(AccessibleRole::ListItem, "Track 7"),
+                top_in_sight(AccessibleRole::Text, "Up next"),
+                top_in_sight(AccessibleRole::ListItem, "Track 8"),
+            ];
+            assert!(tops.iter().all(Option::is_some), "both headings in sight: {tops:?}");
+            assert!(tops.is_sorted(), "what plays between its heading and the next: {tops:?}");
+            let queue_top = top_in_sight(AccessibleRole::Main, "Queue");
+            assert!(queue_top.is_some_and(|top| tops[0] >= Some(top)), "its heading wholly in sight");
+            let longer: Vec<_> = (0..20).map(|n| song(&format!("Track {n}"), "a2")).collect();
+            play::testing::show_queue(&ui, longer, 6);
+            idle(Duration::from_millis(300)).await;
+            let wheel = |by: f32| {
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(550.0, 400.0),
+                    delta_x: 0.0,
+                    delta_y: by,
+                });
+            };
+            let stopped_at_what_plays = || played("Track 6") && !played("Track 5");
+            wheel(-100000.0);
+            idle(Duration::from_millis(400)).await;
+            assert!(!played("Track 6"), "down among the songs to come");
+            wheel(100000.0);
+            idle(Duration::from_millis(100)).await;
+            assert!(stopped_at_what_plays(), "the wheel stops at what plays");
+            wheel(100000.0);
+            idle(Duration::from_millis(100)).await;
+            assert!(stopped_at_what_plays(), "its next tick is the same scroll");
+            idle(Duration::from_millis(400)).await;
+            wheel(100000.0);
+            idle(Duration::from_millis(100)).await;
+            assert!(played("Track 0"), "a scroll after that goes on");
+            let input = ui.global::<Input>();
+            let on_a_row = slint::LogicalPosition::new(400.0, 120.0);
+            // Slow enough that the finger, not the time since the stop, holds it.
+            let slow_drag = [(0, 0.0, 6.0), (120, 0.0, 300.0), (400, 0.0, 450.0), (400, 0.0, 600.0)];
+            let fling = [(0, 0.0, 6.0), (16, 0.0, 60.0), (16, 0.0, 120.0)];
+            for (what, path, rest) in [("a drag", &slow_drag[..], 100), ("a fling", &fling[..], 0)] {
+                wheel(-100000.0);
+                idle(Duration::from_millis(400)).await;
+                assert!(!played("Track 6"), "down among the songs to come");
+                input.set_finger(true);
+                drag(&ui, on_a_row, path, rest).await;
+                idle(Duration::from_millis(1500)).await;
+                input.set_finger(false);
+                assert!(stopped_at_what_plays(), "{what} up stops at what plays");
+            }
+            input.set_finger(true);
+            drag(&ui, on_a_row, &slow_drag, 100).await;
+            idle(Duration::from_millis(1500)).await;
+            input.set_finger(false);
+            assert!(played("Track 0"), "the next drag goes on");
+            play::testing::show_queue(&ui, tracks.clone(), 7);
+            idle(Duration::from_millis(300)).await;
+            wheel(100000.0);
             idle(Duration::from_millis(100)).await;
             assert!(played("Track 0"), "left up among the songs played");
             // The down arrow and the Now playing button go back, one each way.
@@ -7599,6 +7664,26 @@ mod tests {
             let sonata = ui.get_queue_lines().row_data(0).unwrap();
             assert!(sonata.current && sonata.expanded, "the work holds the song playing");
             assert_eq!(sonata.details.as_str(), "Playing I (1 of 3)");
+            // The open work that plays has its movements under Now playing,
+            // above Up next.
+            let work_under_now_playing = |list: &str| {
+                let tops = [
+                    top_in_sight(AccessibleRole::Text, "Now playing"),
+                    top_in_sight(AccessibleRole::ListItem, "Sonata"),
+                    top_in_sight(AccessibleRole::ListItem, "III"),
+                    top_in_sight(AccessibleRole::Text, "Up next"),
+                    top_in_sight(AccessibleRole::ListItem, "solo"),
+                ];
+                assert!(tops.iter().all(Option::is_some), "all in sight on the {list}: {tops:?}");
+                assert!(tops.is_sorted(), "its movements under Now playing on the {list}: {tops:?}");
+            };
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(550.0, 400.0),
+                delta_x: 0.0,
+                delta_y: 100000.0,
+            });
+            idle(Duration::from_millis(100)).await;
+            work_under_now_playing("sheet");
             ui.window().dispatch_event(WindowEvent::PointerScrolled {
                 position: slint::LogicalPosition::new(550.0, 400.0),
                 delta_x: 0.0,
@@ -7665,6 +7750,7 @@ mod tests {
             // its place, while the pointer is down.
             let (window, left) = (ui.window(), PointerEventButton::Left);
             let from = grip_of("q1");
+            let q1_top = queue_row("q1").absolute_position().y;
             window.dispatch_event(WindowEvent::PointerPressed { position: from, button: left });
             let down_two = slint::LogicalPosition::new(from.x, from.y + 2.0 * row_height + 20.0);
             window.dispatch_event(WindowEvent::PointerMoved { position: slint::LogicalPosition::new(from.x, from.y + 6.0) });
@@ -7682,7 +7768,7 @@ mod tests {
             let held = copies("q1");
             assert_eq!(held.len(), 2, "the copy is drawn with the row");
             let copy_y = held.iter().map(|row| row.absolute_position().y).fold(f32::MIN, f32::max);
-            assert!((copy_y - (queue_row("q0").absolute_position().y + 3.0 * row_height + 20.0)).abs() < 0.5, "it follows the pointer");
+            assert!((copy_y - (q1_top + 2.0 * row_height + 20.0)).abs() < 0.5, "it follows the pointer");
             assert_eq!(titles(), ["q0", "q1", "q2", "q3", "q4"], "nothing moves before it is let go");
             window.dispatch_event(WindowEvent::PointerReleased { position: down_two, button: left });
             assert_eq!(titles(), ["q0", "q2", "q3", "q1", "q4"], "two places down");
@@ -7834,6 +7920,34 @@ mod tests {
             click(&ui, "Now playing");
             idle(Duration::from_millis(400)).await;
             assert!(ui.get_queue_open() && ui.get_now_playing_open(), "the page opens beside it");
+            // The panel too comes to what plays once songs have played
+            // before it, where it had none, and stops there on its way up.
+            let longer: Vec<_> = (0..20).map(|n| song(&format!("Track {n}"), "a2")).collect();
+            play::testing::show_queue(&ui, longer, 6);
+            idle(Duration::from_millis(300)).await;
+            let panel_wheel = |by: f32| {
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(890.0, 400.0),
+                    delta_x: 0.0,
+                    delta_y: by,
+                });
+            };
+            assert!(played("Track 6") && !played("Track 5"), "the panel opens on what plays");
+            panel_wheel(-100000.0);
+            idle(Duration::from_millis(400)).await;
+            assert!(!played("Track 6"), "down among the songs to come");
+            panel_wheel(100000.0);
+            idle(Duration::from_millis(100)).await;
+            assert!(played("Track 6") && !played("Track 5"), "the panel stops at what plays");
+            idle(Duration::from_millis(400)).await;
+            panel_wheel(100000.0);
+            idle(Duration::from_millis(100)).await;
+            assert!(played("Track 0"), "and goes on with the next scroll");
+            play::testing::play_page(&ui, pieces(), 0);
+            idle(Duration::from_millis(100)).await;
+            click(&ui, "Show the movements of Sonata");
+            idle(Duration::from_millis(100)).await;
+            work_under_now_playing("panel");
             click(&ui, "Queue");
             assert!(!ui.get_queue_open() && ui.get_now_playing_open(), "the bar's button closes it");
             click(&ui, "Queue");
