@@ -5,7 +5,7 @@ export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, 
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads, browse, library, search }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads, browse, library, search, history }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -921,6 +921,9 @@ export component AppWindow inherits Window {
     in property <string> signed-in;
     in property <string> listenbrainz-user;
     in property <string> saved-note;
+    // The history has ListenBrainz's listens only while it is connected.
+    callback listenbrainz-changed();
+    changed listenbrainz-user => { root.listenbrainz-changed(); }
 
     callback find-server();
     callback sign-in();
@@ -1185,6 +1188,10 @@ export component AppWindow inherits Window {
     in property <bool> created-for;
     in property <bool> created-for-matching;
     callback save-created-for();
+    // The links of the history's pages of newer and of older plays, ""
+    // for none.
+    in property <string> newer-listens;
+    in property <string> older-listens;
     property <[Name]> no-names;
     // Whether the server has playlist folders and tags. The playlist folder
     // or tag on screen, by id, and where it or the playlist on screen can
@@ -2221,7 +2228,9 @@ export component AppWindow inherits Window {
                         font-weight: 600;
                         color: Theme.text;
                     }
-                    if root.page == Page.album || root.page == Page.playlist || root.page == Page.artist || (root.page == Page.search && root.tracks.length > 0): VerticalLayout {
+                    if root.page == Page.history: Heading { text: "History"; }
+                    if root.page == Page.history && root.header-facts != "": Note { text: root.header-facts; }
+                    if root.page == Page.album || root.page == Page.playlist || root.page == Page.artist || root.page == Page.history || (root.page == Page.search && root.tracks.length > 0): VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
                             if track.work != "": TrackRow {
                                 title: track.work;
@@ -2327,6 +2336,24 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.search && root.search-answered && root.found-artists.length == 0 && root.found-albums.length == 0 && root.tracks.length == 0 && root.found-composers.length == 0 && root.found-works.length == 0 && root.found-playlists.length == 0 && root.found-stations.length == 0 && root.found-radio.tiles.length == 0 && root.page-problem == "": Note {
                         text: "Nothing matches.";
+                    }
+                    if root.page == Page.history && root.tracks.length == 0 && !root.loading && root.page-problem == "": Note { text: "Nothing played yet."; }
+                    if root.page == Page.history && (root.newer-listens != "" || root.older-listens != ""): HorizontalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        // Named apart from the player's Previous and Next.
+                        Button {
+                            text: "Previous";
+                            accessible-label: "Previous page";
+                            enabled: root.newer-listens != "" && !Input.modal;
+                            clicked => { root.open(root.newer-listens); }
+                        }
+                        Button {
+                            text: "Next";
+                            accessible-label: "Next page";
+                            enabled: root.older-listens != "" && !Input.modal;
+                            clicked => { root.open(root.older-listens); }
+                        }
                     }
                     if root.page == Page.artist && root.similar.length > 0: VerticalLayout {
                         spacing: 8px;
@@ -2550,7 +2577,7 @@ export component AppWindow inherits Window {
                     if root.page == Page.folders && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "Nothing here matches." : "This folder is empty."; }
                     if root.page == Page.tag && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "No tracks match." : "No tracks have this tag yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
-                    if (root.page == Page.home || root.created-for || root.page == Page.radio || root.page == Page.tags || root.page == Page.genres || root.page == Page.genre || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
+                    if (root.page == Page.home || root.created-for || root.page == Page.history || root.page == Page.radio || root.page == Page.tags || root.page == Page.genres || root.page == Page.genre || ((root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.stations || root.table) && (root.more-tiles || root.tiles.length == 0))) && root.page-problem != "" && !root.loading: HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Try again";

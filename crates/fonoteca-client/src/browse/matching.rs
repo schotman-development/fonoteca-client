@@ -23,7 +23,7 @@ pub(crate) struct Found(Rc<RefCell<HashMap<String, Option<Child>>>>);
 
 /// The library's song for `track` among `songs`, or none: the one with its
 /// recording ID, else the one with its title and an artist of it.
-fn pick<'a>(track: &lb::PlaylistTrack, songs: &'a [Child]) -> Option<&'a Child> {
+pub(super) fn pick<'a>(track: &lb::PlaylistTrack, songs: &'a [Child]) -> Option<&'a Child> {
     let recording = (track.recording_mbid.as_deref())
         .and_then(|mbid| songs.iter().find(|song| is_recording(song, mbid)));
     recording.or_else(|| {

@@ -27,6 +27,7 @@ mod offline;
 #[cfg(not(target_family = "wasm"))]
 mod opra;
 mod play;
+mod plays;
 mod prefs;
 #[cfg(not(target_family = "wasm"))]
 mod quality;
@@ -352,6 +353,20 @@ fn forget_answers(ui: &AppWindow, browser: &browse::Shared) -> bool {
     }
 }
 
+/// Forgets the plays logged on this device for the account before it goes.
+/// When they can't be removed it says so and stays signed in.
+fn forget_plays(ui: &AppWindow, browser: &browse::Shared) -> bool {
+    match browse::forget_plays(browser) {
+        Ok(()) => true,
+        Err(e) => {
+            let note =
+                format!("Not signed out: the plays logged on this device couldn't be removed: {e}");
+            ui.set_saved_note(note.into());
+            false
+        }
+    }
+}
+
 /// Stops the library and clears what the screens know of the account.
 fn signed_out(ui: &AppWindow, browser: &browse::Shared) {
     browse::stop(browser);
@@ -630,7 +645,10 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             if ui.get_busy() {
                 return;
             }
-            if !remove_downloads(&ui, &browser) || !forget_answers(&ui, &browser) {
+            if !remove_downloads(&ui, &browser)
+                || !forget_answers(&ui, &browser)
+                || !forget_plays(&ui, &browser)
+            {
                 return;
             }
             let browser = browser.clone();
@@ -650,7 +668,10 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
             if ui.get_busy() {
                 return;
             }
-            if !remove_downloads(&ui, &browser) || !forget_answers(&ui, &browser) {
+            if !remove_downloads(&ui, &browser)
+                || !forget_answers(&ui, &browser)
+                || !forget_plays(&ui, &browser)
+            {
                 return;
             }
             let browser = browser.clone();
@@ -963,16 +984,25 @@ mod tests {
     static SCROBBLES: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static RECENT_ASKS: AtomicUsize = AtomicUsize::new(0);
 
-    /// Where the pages' answers are kept for `username` on `server`.
-    fn answers_kept_for(server: &str, username: &str) -> std::path::PathBuf {
+    /// What names `username` on `server` on this device.
+    fn account_of(server: &str, username: &str) -> String {
         let auth = Auth::Password {
             username: username.into(),
             password: String::new(),
         };
-        let account = Client::new(server, auth)
+        Client::new(server, auth)
             .unwrap()
-            .account(&prefs::answers_salt());
-        answers::file(&account).unwrap()
+            .account(&prefs::answers_salt())
+    }
+
+    /// Where the pages' answers are kept for `username` on `server`.
+    fn answers_kept_for(server: &str, username: &str) -> std::path::PathBuf {
+        answers::file(&account_of(server, username)).unwrap()
+    }
+
+    /// Where the plays are logged for `username` on `server`.
+    fn plays_kept_for(server: &str, username: &str) -> std::path::PathBuf {
+        plays::file(&account_of(server, username)).unwrap()
     }
 
     /// How many times the server was asked for `method`.
@@ -1164,6 +1194,8 @@ mod tests {
                     );
                 }
             }
+        } else if let Some(query) = target.strip_prefix("/1/user/joe/listens?") {
+            listens_of_joe(query)
         } else if target == "/1/feedback/recording-feedback" {
             r#"{"status":"ok"}"#.to_owned()
         } else if target.starts_with("/1/feedback/user/joe/get-feedback") {
@@ -1182,6 +1214,64 @@ mod tests {
 
     /// The recording ListenBrainz's stand-in has joe love.
     const FAMILIAR_RECORDING: &str = "31dad9e2-25fc-48aa-8c01-72c3729f53a1";
+
+    /// How many listens joe has, and when he heard the last; they are ten
+    /// minutes apart.
+    const JOE_LISTENS: i64 = 150;
+    const JOE_LISTENED_LAST: i64 = 1_767_225_600;
+    const JOE_LISTENS_APART: i64 = 600;
+
+    /// When joe heard his `n`th listen, counting from the newest.
+    fn joe_listened_at(n: i64) -> i64 {
+        JOE_LISTENED_LAST - n * JOE_LISTENS_APART
+    }
+
+    /// A page of joe's listens, as ListenBrainz pages them: the newest, those
+    /// before `max_ts` or those just after `min_ts`, newest first. They are
+    /// of four tracks in turn: one the playlists above found by recording,
+    /// one the library has by title and artist that they didn't, one the
+    /// library lacks, and one ListenBrainz matched that they found by title
+    /// and artist.
+    fn listens_of_joe(query: &str) -> String {
+        let number = |name: &str| {
+            query.split('&').find_map(|param| {
+                param
+                    .strip_prefix(name)?
+                    .strip_prefix('=')?
+                    .parse::<i64>()
+                    .ok()
+            })
+        };
+        let all = (0..JOE_LISTENS).map(joe_listened_at);
+        let count = number("count").unwrap_or(25) as usize;
+        let page: Vec<i64> = match (number("max_ts"), number("min_ts")) {
+            (Some(before), _) => all.filter(|&at| at < before).take(count).collect(),
+            (None, Some(after)) => {
+                let mut newer: Vec<i64> = all.rev().filter(|&at| at > after).take(count).collect();
+                newer.reverse();
+                newer
+            }
+            (None, None) => all.take(count).collect(),
+        };
+        let listen = |at: i64| {
+            let metadata = match (JOE_LISTENED_LAST - at) / JOE_LISTENS_APART % 4 {
+                0 => format!(
+                    r#""track_name":"Familiar","artist_name":"Nils Frahm","additional_info":{{"recording_mbid":"{FAMILIAR_RECORDING}","tracknumber":3}}"#
+                ),
+                1 => r#""track_name":"Salt","artist_name":"Mara Lind","additional_info":{"recording_mbid":"00000000-0000-4000-8000-000000000005","artist_names":["Mara Lind"]}"#.to_owned(),
+                2 => r#""track_name":"Gone","artist_name":"Nobody""#.to_owned(),
+                _ => r#""track_name":"Cafe del Mar","artist_name":"Energy 52","mbid_mapping":{"artists":[{"artist_credit_name":"Energy 52"}]}"#.to_owned(),
+            };
+            format!(r#"{{"listened_at":{at},"user_name":"joe","track_metadata":{{{metadata}}}}}"#)
+        };
+        let listens: Vec<String> = page.iter().copied().map(listen).collect();
+        format!(
+            r#"{{"payload":{{"count":{},"user_id":"joe","latest_listen_ts":{JOE_LISTENED_LAST},"oldest_listen_ts":{},"listens":[{}]}}}}"#,
+            listens.len(),
+            joe_listened_at(JOE_LISTENS - 1),
+            listens.join(",")
+        )
+    }
 
     /// The radio directory: two stations with the most votes, 65 of jazz
     /// with the server's Jazz first, one of rock, none of other genres, one
@@ -3451,12 +3541,12 @@ mod tests {
 
             // The playlists were asked for on sign-in, while the server was
             // down. Their page asks again, and so does Try again.
-            assert_eq!(ui.get_sections().row_count(), 10);
+            assert_eq!(ui.get_sections().row_count(), 11);
             DOWN.store(true, Relaxed);
             click(&ui, "Playlists");
             wait_for("the failed playlists", || ui.get_page_problem() != "").await;
             assert_eq!(ui.get_page(), Page::Playlists);
-            assert_eq!(ui.get_section(), 9);
+            assert_eq!(ui.get_section(), 10);
             DOWN.store(false, Relaxed);
             click(&ui, "Try again");
             wait_for("the playlists", || ui.get_tiles().row_count() == 2).await;
@@ -3476,6 +3566,7 @@ mod tests {
                     "Home",
                     "Genres",
                     "Radio",
+                    "History",
                     "Albums",
                     "Artists",
                     "Tracks",
@@ -3493,6 +3584,7 @@ mod tests {
                     "Browse",
                     "Browse",
                     "Browse",
+                    "Browse",
                     "Library",
                     "Library",
                     "Library",
@@ -3507,10 +3599,11 @@ mod tests {
             // Each with its icon in front, but for the playlists.
             let icons = ui.global::<Icons>();
             let pictures = strings(ui.get_section_icons());
-            assert_eq!(pictures.len(), 12);
+            assert_eq!(pictures.len(), 13);
             assert_eq!(pictures[0], icons.get_home().as_str());
             assert_eq!(pictures[1], icons.get_genre().as_str());
             assert_eq!(pictures[2], icons.get_radio().as_str());
+            assert_eq!(pictures[3], icons.get_history().as_str());
             let library = [
                 icons.get_album(),
                 icons.get_artist(),
@@ -3519,18 +3612,18 @@ mod tests {
                 icons.get_composition(),
                 icons.get_folder(),
             ];
-            assert_eq!(pictures[3..9], library.map(String::from));
-            assert_eq!(pictures[9..12], ["", "", ""]);
+            assert_eq!(pictures[4..10], library.map(String::from));
+            assert_eq!(pictures[10..13], ["", "", ""]);
             // The search finds them by name.
             ui.set_search_query("road".into());
             ui.invoke_open("search".into());
             let found = ui.get_found_playlists().row_data(0).unwrap();
             assert_eq!((found.title.as_str(), found.link.as_str()), ("Road Trip", "playlist:p1"));
             ui.invoke_back();
-            ui.invoke_show_section(10);
+            ui.invoke_show_section(11);
             wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
-            assert_eq!(ui.get_section(), 10);
+            assert_eq!(ui.get_section(), 11);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
             // Each track with its artists, then its album.
@@ -4650,7 +4743,7 @@ mod tests {
             click(&ui, "Composers");
             wait_for("the composers", || ui.get_tiles().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Composers);
-            assert_eq!(ui.get_section(), 6);
+            assert_eq!(ui.get_section(), 7);
             let tile = ui.get_tiles().row_data(0).unwrap();
             assert_eq!(
                 (tile.title.as_str(), tile.link.as_str()),
@@ -5418,7 +5511,7 @@ mod tests {
             wait_for("the folders", || ui.get_track_lines().row_count() == 3).await;
             assert_eq!(ui.get_page(), Page::Folders);
             assert_eq!(ui.get_header_title(), "Folders");
-            assert_eq!(ui.get_section(), 8);
+            assert_eq!(ui.get_section(), 9);
             let entry = |ui: &AppWindow, row: usize| -> (String, String) {
                 let title = titles(ui).iter().position(|t| t == "Title").unwrap();
                 let line = ui.get_track_lines().row_data(row).unwrap();
@@ -5457,7 +5550,7 @@ mod tests {
             ui.invoke_clear_selection();
             click(&ui, "Mara Lind");
             wait_for("her folder", || ui.get_header_title() == "Mara Lind").await;
-            assert_eq!(ui.get_section(), 8, "a folder is among the folders");
+            assert_eq!(ui.get_section(), 9, "a folder is among the folders");
             assert_eq!(entry(&ui, 0), named("Night Harbour", "folder:d2"));
             assert_eq!(entry(&ui, 1), named("Harbour Lights", "song:t1"));
             // A folder shows its cover, as an album does.
@@ -6180,6 +6273,21 @@ mod tests {
                 .parse()
                 .unwrap();
             assert!(time <= began + 100 && time + 1000 > began, "played from {time}, began {began}");
+            // It is logged on this device too, as played from that time;
+            // the history's steps below start from an empty log.
+            let joe = account_of(&server, "joe");
+            wait_for("the play logged", || {
+                std::fs::read_to_string(plays_kept_for(&server, "joe"))
+                    .is_ok_and(|log| log.contains(r#""t1""#))
+            })
+            .await;
+            let logged = plays::read(&joe).await;
+            assert_eq!(logged.len(), 1, "{logged:?}");
+            assert_eq!(
+                (logged[0].id.as_str(), logged[0].listened_at as u128 * 1000),
+                ("t1", time)
+            );
+            plays::forget(&joe).unwrap();
 
             // The next visit to Home, within the hour the empty list asked
             // for above is kept, asks the server again and shows it: the
@@ -6433,6 +6541,161 @@ mod tests {
                     .any(|asked| asked.starts_with("GET /1/feedback/user/joe/get-feedback"))
             );
 
+            // The history is in Browse, right after Radio.
+            let browse_group = |ui: &AppWindow| -> Vec<String> {
+                (ui.get_sections().iter().zip(ui.get_section_groups().iter()))
+                    .filter(|(_, group)| group == "Browse")
+                    .map(|(label, _)| label.to_string())
+                    .collect()
+            };
+            let listed = browse_group(&ui);
+            let radio = listed.iter().position(|label| label == "Radio").unwrap();
+            assert_eq!(listed[radio + 1], "History");
+            assert!(ui.get_browse_links().iter().any(|entry| entry.link == "history"));
+            assert!(!ui.get_library_links().iter().any(|entry| entry.link == "history"));
+
+            // Its base is this device's own plays: one heard only here,
+            // after all of joe's listens, and one sent to ListenBrainz,
+            // which it has as one of his listens too.
+            let joes_plays = plays_kept_for(&server, "joe");
+            let here_only = opensubsonic::Child {
+                id: "here1".into(),
+                title: "Played Here".into(),
+                artist: Some("Mara Lind".into()),
+                ..opensubsonic::Child::default()
+            };
+            let sent = opensubsonic::Child {
+                id: "lb5".into(),
+                title: "Salt".into(),
+                artist: Some("Mara Lind".into()),
+                music_brainz_id: Some("00000000-0000-4000-8000-000000000005".into()),
+                ..opensubsonic::Child::default()
+            };
+            let joe = account_of(&server, "joe");
+            plays::append(&joe, &plays::Play::of(&sent, joe_listened_at(1))).unwrap();
+            plays::append(&joe, &plays::Play::of(&here_only, JOE_LISTENED_LAST + 60)).unwrap();
+            ui.set_listenbrainz_user("joe".into());
+            idle(Duration::from_millis(20)).await;
+
+            // Its first page has the newest hundred, the plays here among
+            // joe's listens. The plays here play at once; his listens are
+            // greyed and light up only once the whole page is looked up,
+            // so a search that fails leaves even a listen found before
+            // greyed; Try again goes on.
+            SEARCH_DOWN.store(true, Relaxed);
+            click(&ui, "History");
+            wait_for("the failed search said", || {
+                ui.get_page_problem().starts_with("Your server didn't answer")
+            })
+            .await;
+            assert_eq!(ui.get_page(), Page::History);
+            assert_eq!(lit(&ui), "History");
+            assert_eq!(ui.get_bar_section(), 1, "the history lights Browse");
+            assert_eq!(ui.get_tracks().row_count(), 100);
+            let available = |ui: &AppWindow| -> Vec<bool> {
+                ui.get_tracks().iter().map(|track| !track.unavailable).collect()
+            };
+            assert_eq!(available(&ui)[..4], [true, false, true, false]);
+            assert_eq!(available(&ui).iter().filter(|&&lit| lit).count(), 2);
+            assert_eq!(
+                LISTENBRAINZ_ASKED.lock().unwrap().last().unwrap(),
+                "GET /1/user/joe/listens?count=100 HTTP/1.1 token=true"
+            );
+            SEARCH_DOWN.store(false, Relaxed);
+            let searched = SEARCHES.load(Relaxed);
+            // The problem, Try again and the pages' buttons are under the
+            // hundred rows.
+            let to_the_end = |ui: &AppWindow| {
+                scroll_page(ui, -TOP_OF_PAGE);
+                idle(Duration::from_millis(50))
+            };
+            to_the_end(&ui).await;
+            click(&ui, "Try again");
+            // The plays here show first, alone, until ListenBrainz answers.
+            wait_for("the listens found", || {
+                ui.get_tracks().row_count() == 100
+                    && ui.get_tracks().row_data(1).is_some_and(|track| !track.unavailable)
+            })
+            .await;
+            assert_eq!((ui.get_page_problem().as_str(), ui.get_header_facts().as_str()), ("", ""));
+            let rows: Vec<(String, bool)> = (ui.get_tracks().iter())
+                .map(|track| (track.title.to_string(), track.unavailable))
+                .collect();
+            assert_eq!(rows.len(), 100);
+            assert_eq!(
+                rows[..6],
+                [
+                    ("Played Here".to_owned(), false),
+                    ("Familiar".to_owned(), false),
+                    ("Salt".to_owned(), false),
+                    ("Gone".to_owned(), true),
+                    ("Café del Mar".to_owned(), false),
+                    ("Familiar".to_owned(), false)
+                ]
+            );
+            // When it was heard, where other rows have how long they last.
+            assert!(!ui.get_tracks().row_data(0).unwrap().duration.contains(':'));
+            // A track matched before costs no search; one the library has,
+            // one; one it lacks, two; each once for the whole page. A play
+            // here takes none.
+            assert_eq!(SEARCHES.load(Relaxed) - searched, 3);
+            assert_eq!(button(&ui, "Gone").accessible_enabled(), Some(false));
+
+            // A row plays with the page's other rows the library has; the
+            // listens it lacks are left out.
+            click(&ui, "Café del Mar");
+            let (queued, _) = play::testing::queued_ids();
+            assert_eq!(queued.len(), 75);
+            assert_eq!(queued[..5], ["here1", "lb1", "lb5", "lb2", "lb1"]);
+            play::testing::clear(&ui);
+
+            // Next has what was heard before the oldest on the page, and
+            // Previous what was heard after the newest; neither is offered
+            // without.
+            to_the_end(&ui).await;
+            assert_eq!(button(&ui, "Previous page").accessible_enabled(), Some(false));
+            click(&ui, "Next page");
+            wait_for("the older listens found", || {
+                ui.get_tracks().row_count() == 51
+                    && ui.get_tracks().row_data(0).is_some_and(|track| !track.unavailable)
+            })
+            .await;
+            assert_eq!(
+                *LISTENBRAINZ_ASKED.lock().unwrap().last().unwrap(),
+                format!("GET /1/user/joe/listens?count=100&max_ts={} HTTP/1.1 token=true", joe_listened_at(98))
+            );
+            assert!(ui.get_tracks().row_data(3).unwrap().unavailable);
+            to_the_end(&ui).await;
+            assert_eq!(button(&ui, "Next page").accessible_enabled(), Some(false));
+            assert_eq!(button(&ui, "Previous page").accessible_enabled(), Some(true));
+            click(&ui, "Previous page");
+            wait_for("the newer listens found", || {
+                ui.get_tracks().row_count() == 100
+                    && ui.get_tracks().row_data(1).is_some_and(|track| !track.unavailable)
+            })
+            .await;
+            assert_eq!(
+                *LISTENBRAINZ_ASKED.lock().unwrap().last().unwrap(),
+                format!("GET /1/user/joe/listens?count=100&min_ts={} HTTP/1.1 token=true", joe_listened_at(99))
+            );
+            assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Played Here");
+            to_the_end(&ui).await;
+            assert_eq!(button(&ui, "Previous page").accessible_enabled(), Some(false));
+            assert_eq!(SEARCHES.load(Relaxed) - searched, 3, "the pages again take no search");
+
+            // Without the token the page keeps the plays here alone, and
+            // ListenBrainz isn't asked.
+            store::forget_listenbrainz().await.unwrap();
+            let asked = LISTENBRAINZ_ASKED.lock().unwrap().len();
+            ui.set_listenbrainz_user("".into());
+            wait_for("the plays here alone", || ui.get_tracks().row_count() == 2).await;
+            let rows: Vec<(String, bool)> = (ui.get_tracks().iter())
+                .map(|track| (track.title.to_string(), track.unavailable))
+                .collect();
+            assert_eq!(rows, [("Played Here".to_owned(), false), ("Salt".to_owned(), false)]);
+            assert_eq!(LISTENBRAINZ_ASKED.lock().unwrap().len(), asked);
+            assert!(browse_group(&ui).contains(&"History".to_owned()));
+
             store::forget_listenbrainz().await.unwrap();
             ui.invoke_open("settings".into());
 
@@ -6450,6 +6713,7 @@ mod tests {
             click(&ui, "Sign out");
             // Signing out keeps the server, and asks for the login alone.
             wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
+            assert!(!joes_plays.exists(), "the plays logged went with the account");
             assert_eq!(ui.get_username(), "");
             assert_eq!(ui.get_address(), server.as_str());
             assert!(store::load().await.is_none());
@@ -6494,10 +6758,15 @@ mod tests {
             click(&ui, "Account");
             let eves_answers = answers_kept_for(&server, "eve");
             wait_for("eve's pages kept", || eves_answers.exists()).await;
+            let eves_plays = plays_kept_for(&server, "eve");
+            let eve = account_of(&server, "eve");
+            plays::append(&eve, &plays::Play::of(&sent, 1)).unwrap();
+            assert!(eves_plays.exists());
             click(&ui, "Change server");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
             assert!(!downloads_folder.exists(), "the downloads went with the server");
             assert!(!eves_answers.exists(), "the pages kept went with the server");
+            assert!(!eves_plays.exists(), "the plays logged went with the server");
             assert_eq!(ui.get_address(), "");
             assert!(store::load().await.is_none());
             assert!(store::load_server().await.is_none());

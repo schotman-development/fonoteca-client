@@ -38,7 +38,7 @@ fn is_taken(playlists: &[opensubsonic::Playlist], name: &str) -> bool {
 }
 
 /// A song standing for a track the library doesn't have; it has no ID.
-fn missing_song(track: &lb::PlaylistTrack) -> Child {
+pub(super) fn missing_song(track: &lb::PlaylistTrack) -> Child {
     Child {
         title: track.title.clone(),
         artist: Some(track.artist.clone()),
@@ -58,7 +58,7 @@ pub(super) fn forget_missing(b: &mut Browser) {
 }
 
 /// The row of a track as listed, before and unless the library has it.
-fn missing_row(track: &lb::PlaylistTrack) -> Track {
+pub(super) fn missing_row(track: &lb::PlaylistTrack) -> Track {
     let credits = [Some(track.artist.clone()), track.album.clone()];
     Track {
         title: track.title.as_str().into(),

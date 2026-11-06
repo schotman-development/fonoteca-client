@@ -886,6 +886,22 @@ fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     ui.set_playing(false);
 }
 
+/// Shows `scrobbler` what plays, `song` being the track playing, and logs
+/// it as played on this device once it counts.
+#[cfg(not(target_family = "wasm"))]
+fn observe(
+    browser: &browse::Shared,
+    scrobbler: &mut scrobble::Scrobbler,
+    song: Option<&Child>,
+    position: f64,
+    paused: bool,
+) {
+    let counted = scrobbler.observe(song, position, paused, browse::client(browser));
+    if let (Some(song), Some(listened_at)) = (song, counted) {
+        browse::log_play(browser, song, listened_at);
+    }
+}
+
 /// Puts what the player says on the bar, or takes the bar down after a
 /// sign out.
 fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
@@ -908,8 +924,13 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     {
         let scrobbling = &mut *p;
         let song = status.index.and_then(|index| scrobbling.queue.get(index));
-        let server = browse::client(browser);
-        (scrobbling.scrobbler).observe(song, status.position, state.1, server);
+        observe(
+            browser,
+            &mut scrobbling.scrobbler,
+            song,
+            status.position,
+            state.1,
+        );
     }
     let last = p.saved;
     #[cfg(target_os = "android")]
@@ -1725,8 +1746,8 @@ pub(crate) mod testing {
     /// player's ticks do.
     pub(crate) fn hear(song: &Child, position: f64) {
         let (browser, playing) = handles();
-        let server = browse::client(&browser);
-        (playing.borrow_mut().scrobbler).observe(Some(song), position, false, server);
+        let mut p = playing.borrow_mut();
+        super::observe(&browser, &mut p.scrobbler, Some(song), position, false);
     }
 
     /// How often the scrobbler was shown the player and asked to flush.

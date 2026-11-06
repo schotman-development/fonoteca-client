@@ -162,32 +162,36 @@ impl Scrobbler {
     }
 
     /// Looks at what plays, `song` being the track playing, on `server`.
+    /// Says when it began once it was heard long enough, with a token or
+    /// without.
     pub fn observe(
         &mut self,
         song: Option<&Child>,
         position: f64,
         paused: bool,
         server: Option<Arc<opensubsonic::Client>>,
-    ) {
+    ) -> Option<i64> {
         #[cfg(test)]
         {
             self.looks += 1;
         }
         let heard = heard_of(song, position, paused);
-        let Some(event) = self.tracker.observe(clock(), &heard) else {
-            return;
+        let event = self.tracker.observe(clock(), &heard)?;
+        let listened_at = match event {
+            Event::Due { started_at } => Some(started_at),
+            Event::Started => None,
         };
-        if let (Event::Due { started_at }, Some(song), Some(server)) = (&event, song, server) {
-            report(server, song.id.clone(), *started_at);
+        if let (Some(started_at), Some(song), Some(server)) = (listened_at, song, server) {
+            report(server, song.id.clone(), started_at);
         }
-        let Some(track_metadata) = song.and_then(metadata) else {
-            return;
-        };
-        let outbox = self.outbox.clone();
-        slint::spawn_local(async move {
-            react(client().await, &outbox, event, track_metadata).await;
-        })
-        .expect("the event loop is running");
+        if let Some(track_metadata) = song.and_then(metadata) {
+            let outbox = self.outbox.clone();
+            slint::spawn_local(async move {
+                react(client().await, &outbox, event, track_metadata).await;
+            })
+            .expect("the event loop is running");
+        }
+        listened_at
     }
 
     /// Submits the listens waiting, if any.
@@ -744,6 +748,27 @@ mod tests {
         assert_eq!(
             after_restart.outbox.waiting.borrow().as_slice(),
             [listen(7)]
+        );
+    }
+
+    #[test]
+    fn a_play_heard_long_enough_is_counted_for_the_log_without_a_token_or_an_artist() {
+        let song: Child =
+            serde_json::from_str(r#"{"id": "1", "title": "T", "isDir": false, "duration": 1}"#)
+                .unwrap();
+        let mut scrobbler = Scrobbler::default();
+        let began = clock() as i64;
+        assert_eq!(scrobbler.observe(Some(&song), 0.0, false, None), None);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let counted = scrobbler.observe(Some(&song), 0.6, false, None);
+        assert!(
+            counted.is_some_and(|at| (at - began).abs() <= 1),
+            "{counted:?}"
+        );
+        assert_eq!(
+            scrobbler.observe(Some(&song), 0.7, false, None),
+            None,
+            "once"
         );
     }
 

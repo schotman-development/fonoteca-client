@@ -2,7 +2,8 @@
 //! and the history behind back and forward. A link is a page's address, such
 //! as "home", "albums", "artists", "tracks", "playlists", "album:<id>",
 //! "artist:<id>", "playlist:<id>" or "song:<id>", ListenBrainz's playlist
-//! "createdfor:<id>", the files' "folders" and
+//! "createdfor:<id>" and the listening history "history", the files'
+//! "folders" and
 //! "folder:<id>", on servers with playlist folders "playlists:<id>", on
 //! servers with Fonoteca's compositions "composers", "compositions",
 //! "composer:<id>" or "composition:<id>", on servers with Fonoteca's tags
@@ -43,6 +44,7 @@ use crate::{
 };
 
 pub(crate) mod created_for;
+mod listens;
 mod played;
 mod search;
 mod stats;
@@ -682,6 +684,30 @@ pub fn forget_answers(browser: &Shared) -> std::io::Result<()> {
     }
 }
 
+/// Logs `song` as played on this device for the account signed in, begun
+/// at `listened_at`.
+#[cfg(not(target_family = "wasm"))]
+pub fn log_play(browser: &Shared, song: &Child, listened_at: i64) {
+    if let Some(account) = account_key(&browser.borrow()) {
+        crate::plays::add(account, crate::plays::Play::of(song, listened_at));
+    }
+}
+
+/// Forgets the plays logged on this device for the account signed in,
+/// before it signs out.
+pub fn forget_plays(browser: &Shared) -> std::io::Result<()> {
+    match account_key(&browser.borrow()) {
+        Some(account) => crate::plays::forget(account),
+        None => Ok(()),
+    }
+}
+
+/// What names the account signed in on this device, without saying whose
+/// it is.
+fn account_key(b: &Browser) -> Option<&str> {
+    (b.answers.as_ref()).map(|(account, _)| account.as_str())
+}
+
 /// Whether the library is open: signed in, and not signed out since.
 pub fn started(browser: &Shared) -> bool {
     let b = browser.borrow();
@@ -747,6 +773,15 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_save_created_for({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || created_for::save(&weak.unwrap(), &browser)
+    });
+    ui.on_listenbrainz_changed({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || {
+            let ui = weak.unwrap();
+            if ui.get_page() == Page::History {
+                show(&ui, &browser);
+            }
+        }
     });
     ui.on_toggle_love({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -1506,6 +1541,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
             ui.set_page(Page::Playlist);
             created_for::open_page(ui, browser, id);
         }
+        "history" => {
+            ui.set_page(Page::History);
+            listens::open_page(ui, browser, &id);
+        }
         "song" => {
             ui.set_page(Page::Track);
             song(ui, browser, id);
@@ -1641,9 +1680,9 @@ fn sections_of(b: &Browser) -> Vec<(String, &str, &str)> {
 }
 
 /// The sidebar's entries, as links, labels and groups: the home page, genres,
-/// tags where the server has them, and the radio, the library's pages, with
-/// the composers and compositions where the server has them, and every
-/// playlist, those in folders too.
+/// tags where the server has them, the radio and the history, the library's
+/// pages, with the composers and compositions where the server has them,
+/// and every playlist, those in folders too.
 fn sections(
     playlists: &[Playlist],
     compositions: bool,
@@ -1670,6 +1709,7 @@ fn sections(
         ("genres", "Genres", true),
         ("tags", "Tags", tags),
         ("radio", "Radio", true),
+        ("history", "History", true),
     ]
     .into_iter()
     .filter(|&(.., shown)| shown)
@@ -1890,7 +1930,9 @@ fn bar_section(b: &Browser) -> i32 {
     let page = link.split_once(':').map_or(link.as_str(), |(page, _)| page);
     let entry = match page {
         "home" | "createdfor" => "home",
-        "browse" | "genres" | "genre" | "tags" | "tag" | "radio" | "stations" => "browse",
+        "browse" | "genres" | "genre" | "tags" | "tag" | "radio" | "stations" | "history" => {
+            "browse"
+        }
         "settings" | "setting" => "settings",
         "account" | "search" => return -1,
         _ => "library",
@@ -1912,7 +1954,7 @@ fn nav_entries(
         .filter(|(link, ..)| {
             link != "home"
                 && !link.starts_with("playlist:")
-                && matches!(link.as_str(), "genres" | "tags" | "radio") == browse
+                && matches!(link.as_str(), "genres" | "tags" | "radio" | "history") == browse
         })
         .map(|(link, title, _)| NavEntry {
             title: (*title).into(),
@@ -1979,6 +2021,7 @@ fn section_icon(icons: &Icons, link: &str) -> SharedString {
         "tags" => icons.get_tag(),
         "playlists" | "playlist" => SharedString::new(),
         "radio" => icons.get_radio(),
+        "history" => icons.get_history(),
         "genres" => icons.get_genre(),
         "downloads" => icons.get_download(),
         _ => icons.get_person(),
@@ -3460,6 +3503,9 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
     }
     if ui.get_created_for() {
         return created_for::resume(ui, browser);
+    }
+    if ui.get_page() == Page::History {
+        return show(ui, browser);
     }
     if ui.get_page() == Page::Stations {
         return more_stations(ui, browser);
@@ -8962,6 +9008,7 @@ mod tests {
                 "Home",
                 "Genres",
                 "Radio",
+                "History",
                 "Albums",
                 "Artists",
                 "Tracks",
@@ -8975,6 +9022,7 @@ mod tests {
                 "Home",
                 "Genres",
                 "Radio",
+                "History",
                 "Albums",
                 "Artists",
                 "Tracks",
@@ -8984,11 +9032,21 @@ mod tests {
                 "Playlists"
             ]
         );
-        let kept: Vec<&str> = sections(&[], false, false, true)
+        let kept: Vec<(&str, &str)> = sections(&[], false, false, true)
             .into_iter()
-            .map(|(_, label, _)| label)
+            .map(|(_, label, group)| (label, group))
+            .take_while(|&(_, group)| group == "Browse")
             .collect();
-        assert_eq!(kept[..4], ["Home", "Genres", "Radio", "Downloads"]);
+        assert_eq!(
+            kept,
+            [
+                ("Home", "Browse"),
+                ("Genres", "Browse"),
+                ("Radio", "Browse"),
+                ("History", "Browse"),
+                ("Downloads", "Browse")
+            ]
+        );
     }
 
     #[test]
@@ -8999,7 +9057,10 @@ mod tests {
             .filter(|(.., group)| *group == "Browse")
             .map(|(_, label, _)| *label)
             .collect();
-        assert_eq!(browse, ["Home", "Genres", "Tags", "Radio", "Downloads"]);
+        assert_eq!(
+            browse,
+            ["Home", "Genres", "Tags", "Radio", "History", "Downloads"]
+        );
         assert!(
             entries
                 .iter()

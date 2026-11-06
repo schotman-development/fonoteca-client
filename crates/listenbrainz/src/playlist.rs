@@ -115,8 +115,8 @@ struct Credits {
 }
 
 #[derive(Deserialize)]
-struct Credit {
-    artist_credit_name: String,
+pub(crate) struct Credit {
+    pub(crate) artist_credit_name: String,
 }
 
 /// The last part of an address such as

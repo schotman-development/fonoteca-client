@@ -1,6 +1,6 @@
 //! The [ListenBrainz](https://listenbrainz.readthedocs.io/en/latest/users/api/)
-//! calls: submit listens and the track playing now, love, hate or clear a
-//! recording, and read a user's feedback back.
+//! calls: submit listens and the track playing now, read a user's listens
+//! back, love, hate or clear a recording, and read a user's feedback back.
 //!
 //! Recordings are identified by their MusicBrainz recording ID, which
 //! OpenSubsonic servers such as Navidrome put in a song's `musicBrainzId`.
@@ -18,8 +18,10 @@ use reqwest::{RequestBuilder, Url};
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
+mod listens;
 mod playlist;
 
+pub use listens::{Around, Listened, ListensPage};
 pub use playlist::{Playlist, PlaylistTrack};
 
 pub const API_ROOT: &str = "https://api.listenbrainz.org/1/";
@@ -468,6 +470,15 @@ mod tests {
     fn a_statistic_goes_out_while_its_caller_is_busy() {
         let sent = requests_while_the_caller_is_busy(|client, _| async move {
             client.top_artists("rob", Range::AllTime, 5).await
+        });
+        assert_eq!(sent, 1, "the server got no call");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_page_of_listens_goes_out_while_its_caller_is_busy() {
+        let sent = requests_while_the_caller_is_busy(|client, _| async move {
+            client.listens("rob", Around::Newest, 100).await
         });
         assert_eq!(sent, 1, "the server got no call");
     }
