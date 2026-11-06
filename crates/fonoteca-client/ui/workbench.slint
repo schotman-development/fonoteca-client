@@ -2,7 +2,7 @@
 // cases that break layouts. Run with `cargo run --bin workbench`.
 
 import { CheckBox, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { AlbumTile, Artwork, BottomBar, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, ListeningStats, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
+import { AlbumTile, Artwork, BottomBar, Button, CoverGrid, CoverShelf, CoverTile, EqBandRow, DownloadButton, EqGraph, EqPoint, GenreBanner, GenreGrid, IconButton, Icons, Link, Links, LinksLine, ListRow, ListeningStats, LyricsView, MenuEntry, Name, NowPlaying, OutputPicker, PageHeader, PlayerControls, PathStep, PersonTile, PlayButton, PlayerBar, QualityPicker, QueueLine, QueueReorder, Screen, SelectionBar, SettingsRow, Shelf, Sidebar, SignalPathLight, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow } from "components.slint";
 
 component Example inherits VerticalLayout {
     in property <string> caption;
@@ -726,7 +726,63 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 14: Example {
-                        caption: "The track playing, the first with its waveform as the seek bar and the third with the plain bar: the light says how well it reaches the speakers, as Roon colours it, and opens the steps; a click anywhere on the bar but its controls opens the now playing sheet; a problem takes the artists' place, and the artists are no links; on a phone only play and next stay, without the position, shuffle and repeat";
+                        caption: "The track playing. On a desktop the bar holds it all: the cover and the album open the album, one chip per artist opens the artist, the controls sit over the position, and the light, the sound device, the sound processing, the lyrics, the heart, the menu, the queue and the page's own button follow, in two rows of four below 1000px of window; a station has no album, heart, menu or queue. Below it the bars of a phone and a tablet, the first with its waveform as the seek bar and the third with the plain bar: the light says how well it reaches the speakers, as Roon colours it, and opens the steps; a click anywhere on the bar but its controls opens the now playing sheet; a problem takes the artists' place, and the artists are no links; on a phone only play and next stay, without the position, shuffle and repeat";
+                        PlayerBar {
+                            full: true;
+                            has-sound: true;
+                            cover: root.no-art ? root.none : root.albums[0].cover;
+                            title: root.long-text ? root.long-title : "Symphony No. 5";
+                            movement: root.long-text ? root.long-title : "II. Andante con moto";
+                            movement-place: "2 of 4";
+                            names: root.long-text ? root.many : root.mara;
+                            album: { label: root.long-text ? root.long-title : "Aurora", link: "album:1" };
+                            loved: root.loved-1;
+                            playlists: [{ label: "Road Trip", link: "1" }];
+                            taggable: true;
+                            output-devices: root.output-devices;
+                            output-name: "USB DAC (hw:CARD=DAC,DEV=0)";
+                            paused: root.player-paused;
+                            position: root.player-position;
+                            duration: 271;
+                            waveform: root.waveform;
+                            quality: "Lossless";
+                            level: 3;
+                            path: [
+                                { text: "FLAC 96 kHz 24-bit", quality: 3 },
+                                { text: "Exclusive: USB DAC (96000 Hz 24-bit, 2 channels)", quality: 3 },
+                            ];
+                            shuffled: root.player-shuffled;
+                            repeat: root.player-repeat;
+                            open-playing => { root.event = "open playing"; }
+                            open(link) => { root.event = "open " + link; }
+                            toggle-love => { root.loved-1 = !root.loved-1; }
+                            choose-output(index) => { root.output-device = index; }
+                            sound-settings => { root.event = "sound settings"; }
+                            lyrics => { root.event = "lyrics"; }
+                            toggle-queue => { root.event = "queue"; }
+                            toggle-shuffle => { root.player-shuffled = !root.player-shuffled; }
+                            cycle-repeat => { root.player-repeat = mod(root.player-repeat + 1, 3); }
+                            toggle-pause => { root.player-paused = !root.player-paused; }
+                            previous => { root.event = "previous"; }
+                            next => { root.event = "next"; }
+                            seek(seconds) => { root.player-position = seconds; }
+                        }
+                        PlayerBar {
+                            full: true;
+                            has-sound: true;
+                            cover: root.albums[3].cover;
+                            title: root.long-text ? root.long-title : "Radio 3";
+                            names: [{ label: "Live radio", link: "" }];
+                            paused: root.player-paused;
+                            live: true;
+                            output-devices: root.output-devices;
+                            output-name: "System default";
+                            quality: "Low quality";
+                            level: 0;
+                            path: [{ text: "AAC 48 kHz", quality: 0 }];
+                            page-open: true;
+                            toggle-pause => { root.player-paused = !root.player-paused; }
+                        }
                         PlayerBar {
                             cover: root.albums[0].cover;
                             title: root.long-text ? root.long-title : "Northern Lights";
@@ -832,47 +888,24 @@ export component Workbench inherits Window {
                     }
 
                     if root.current == 16: Example {
-                        caption: "What plays, large: the cover, the title, the artists and the album as links, and the signal path, whose steps open from its light; on a narrow page the words go under the cover. The sound device menu opens from the button at the bottom, named beside it, with the long list of an ALSA host under the Long text switch. A phone's controls follow, then the queue's rows, the one playing on a tinted row with a bar, and play or pause on its cover, the song played before above it; a work queued whole is one row that opens to its movements";
+                        caption: "Now playing on a phone or a tablet, top to bottom: the close button, the cover as wide as the page, which opens the album, the title with the part that plays, the album, one chip per artist, the position and the controls; the signal path, whose steps open from its light, the sound device, named beside its button, with the long list of an ALSA host under the Long text switch, and the sound processing; the lyrics, the heart and the menu; the queue. The lyrics, or the note in their place. A station has only play. Then the queue's rows, the one playing on a tinted row with a bar, and play or pause on its cover, the song played before above it; a work queued whole is one row that opens to its movements";
+                        max-width: 600px;
                         HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
+                            alignment: center;
                             IconButton {
                                 icon: Icons.chevron-down;
                                 label: "Close now playing";
                             }
-                            Rectangle { horizontal-stretch: 1; }
-                            TrackMenu {
-                                line: {
-                                    title: "Northern Lights",
-                                    loved: root.loved-1,
-                                    album: { label: "Aurora", link: "album:1" },
-                                    artists: root.mara,
-                                };
-                                playlists: [{ label: "Road Trip", link: "1" }, { label: "Running", link: "2" }];
-                                taggable: true;
-                                selectable: false;
-                                open(link) => { root.event = "open " + link; }
-                                toggle-love => { root.loved-1 = !root.loved-1; }
-                                add-to-playlist(id) => { root.event = "add to playlist " + id; }
-                                tag => { root.event = "tag"; }
-                            }
                         }
                         NowPlaying {
                             active: true;
-                            available: root.long-text ? 400px : 900px;
-                            cover: root.albums[0].cover;
+                            available: root.long-text ? 280px : 360px;
+                            cover: root.no-art ? root.none : root.albums[0].cover;
                             title: root.long-text ? root.long-title : "Northern Lights";
                             movement: root.long-text ? root.long-title : "II. Andante";
                             movement-place: "2 of 3";
                             names: root.long-text ? root.many : root.mara;
-                            album: { label: "Aurora", link: "album:1" };
-                            quality: "High quality";
-                            level: 1;
-                            path: [
-                                { text: "FLAC 96 kHz 24-bit", quality: 3 },
-                                { text: "Resampled 96 kHz to 48 kHz", quality: 1 },
-                                { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
-                            ];
+                            album: { label: root.long-text ? root.long-title : "Aurora", link: "album:1" };
                             open(link) => { root.event = "open " + link; }
                         }
                         PlayerControls {
@@ -889,30 +922,90 @@ export component Workbench inherits Window {
                             toggle-shuffle => { root.player-shuffled = !root.player-shuffled; }
                             cycle-repeat => { root.player-repeat = mod(root.player-repeat + 1, 3); }
                         }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            SignalPathLight {
+                                cross-axis-self-alignment: center;
+                                quality: "High quality";
+                                level: 1;
+                                path: [
+                                    { text: "FLAC 96 kHz 24-bit", quality: 3 },
+                                    { text: "Resampled 96 kHz to 48 kHz", quality: 1 },
+                                    { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
+                                ];
+                                opens-upward: false;
+                            }
+                            OutputPicker {
+                                horizontal-stretch: 1;
+                                output-devices: root.long-text ? root.many-devices : root.output-devices;
+                                output-name: root.long-text ? "HDA Intel PCH, ALC3246 Analog (hw:CARD=PCH,DEV=0)" : "System default";
+                                list-devices => { root.event = "list devices"; }
+                                choose-output(index) => { root.output-device = index; }
+                            }
+                            IconButton {
+                                cross-axis-self-alignment: center;
+                                icon: Icons.sound;
+                                label: "Sound processing";
+                                clicked => { root.event = "sound settings"; }
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: space-between;
+                            IconButton {
+                                icon: Icons.lyrics;
+                                label: "Lyrics";
+                                clicked => { root.event = "lyrics"; }
+                            }
+                            IconButton {
+                                icon: Icons.heart;
+                                filled: root.loved-1;
+                                color: root.loved-1 ? Theme.accent : Theme.text;
+                                label: "Love Northern Lights";
+                                clicked => { root.loved-1 = !root.loved-1; }
+                            }
+                            TrackMenu {
+                                line: {
+                                    title: "Northern Lights",
+                                    loved: root.loved-1,
+                                    album: { label: "Aurora", link: "album:1" },
+                                    artists: root.mara,
+                                };
+                                playlists: [{ label: "Road Trip", link: "1" }, { label: "Running", link: "2" }];
+                                taggable: true;
+                                selectable: false;
+                                open(link) => { root.event = "open " + link; }
+                                toggle-love => { root.loved-1 = !root.loved-1; }
+                                add-to-playlist(id) => { root.event = "add to playlist " + id; }
+                                tag => { root.event = "tag"; }
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Queue";
+                                clicked => { root.event = "queue"; }
+                            }
+                        }
+                        LyricsView {
+                            available: 360px;
+                            lyrics: root.long-text ? root.long-title + "\n" + root.long-title : "Let the northern lights\nShow us the way home\n\nOver the frozen sea";
+                        }
+                        LyricsView {
+                            available: 360px;
+                            note: "No lyrics for this song.";
+                        }
                         // A live station: no album, no position, only play.
                         NowPlaying {
                             active: true;
-                            available: root.long-text ? 400px : 900px;
+                            available: root.long-text ? 280px : 360px;
                             cover: root.albums[3].cover;
                             title: root.long-text ? root.long-title : "Radio 3";
                             names: [{ label: "Live radio", link: "" }];
-                            quality: "Low quality";
-                            level: 0;
-                            path: [
-                                { text: "AAC 48 kHz", quality: 0 },
-                                { text: "Shared: Default (48000 Hz 32-bit float, 2 channels)", quality: 1 },
-                            ];
                         }
                         PlayerControls {
                             paused: root.player-paused;
                             live: true;
                             toggle-pause => { root.player-paused = !root.player-paused; }
-                        }
-                        OutputPicker {
-                            output-devices: root.long-text ? root.many-devices : root.output-devices;
-                            output-name: root.long-text ? "HDA Intel PCH, ALC3246 Analog (hw:CARD=PCH,DEV=0)" : "System default";
-                            list-devices => { root.event = "list devices"; }
-                            choose-output(index) => { root.output-device = index; }
                         }
                         VerticalLayout {
                             ListRow {

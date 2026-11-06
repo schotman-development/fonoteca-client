@@ -7830,6 +7830,56 @@ pub fn move_playing_motion(browser: &Shared, moving: bool) {
     }
 }
 
+/// Whether the server has Fonoteca's artist banners.
+pub fn offers_artist_banners(browser: &Shared) -> bool {
+    offers(&browser.borrow(), ARTIST_BANNER)
+}
+
+/// Hands `done` the banner of the artist `id` that plays, as wide as the
+/// window and no wider than a genre page's, or no picture for an artist
+/// without one, so the now playing page shows the album's cover in its
+/// place.
+pub fn playing_banner(
+    ui: &AppWindow,
+    browser: &Shared,
+    id: String,
+    done: impl FnOnce(&AppWindow, Image) + 'static,
+) {
+    let Some(client) = client(browser) else {
+        return;
+    };
+    let window = ui.window();
+    let width = window.size().to_logical(window.scale_factor()).width;
+    let size = pixels(ui, width.clamp(100.0, BANNER_SIZE));
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let listed = browser
+            .borrow()
+            .artists
+            .iter()
+            .find(|artist| artist.id == id)
+            .map(|artist| artist.banner_art.clone());
+        let banner = match listed {
+            Some(banner) => banner,
+            None => match client.get_artist(&id).await {
+                Ok(artist) => artist.artist.banner_art,
+                Err(problem) => {
+                    eprintln!("The banner of {id}: {problem}");
+                    None
+                }
+            },
+        };
+        let image = match banner.filter(|banner| !banner.is_empty()) {
+            Some(banner) => cover_art(&browser, None, banner, size).await.flatten(),
+            None => None,
+        };
+        if let Some(ui) = weak.upgrade() {
+            done(&ui, image.unwrap_or_default());
+        }
+    })
+    .expect("the event loop is running");
+}
+
 /// Drops the motion cover of the album that plays, as when nothing plays.
 pub fn stop_playing_motion(browser: &Shared) {
     let mut b = browser.borrow_mut();

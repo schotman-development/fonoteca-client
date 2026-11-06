@@ -145,6 +145,7 @@ export global Icons {
     out property <string> folder: "M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-15a1.5 1.5 0 0 1-1.5-1.5z";
     out property <string> tag: "M3 3.5h8.5l9 9-8 8-9-9z M8 9.5a1.5 1.5 0 1 1 0-3a1.5 1.5 0 1 1 0 3z";
     out property <string> queue: "M4 6h11 M4 11h11 M4 16h6 M14.5 13.5v7l6-3.5z";
+    out property <string> lyrics: "M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z M18.5 11a6.5 6.5 0 0 1-13 0 M12 17.5V21";
     out property <string> shuffle: "M3 7h3.5l10 10H21 M3 17h3.5l3-3 M14 10l2.5-3H21 M18.5 4.5L21 7l-2.5 2.5 M18.5 14.5L21 17l-2.5 2.5";
     out property <string> repeat: "M4 11V9.5A2.5 2.5 0 0 1 6.5 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-2.5 2.5H5 M8 20l-3-3 3-3";
     out property <string> repeat-one: "M4 11V9.5A2.5 2.5 0 0 1 6.5 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-2.5 2.5H5 M8 20l-3-3 3-3 M11 11l1.5-1v4.5";
@@ -3788,7 +3789,7 @@ export component PlayerControls inherits VerticalLayout {
 
 // The light of a signal path, by its quality's name or without it, which
 // opens the steps of the path in a popup.
-component SignalPathLight inherits Pressable {
+export component SignalPathLight inherits Pressable {
     in property <string> quality;
     in property <int> level;
     in property <[PathStep]> path;
@@ -3927,24 +3928,63 @@ component Ticker inherits Rectangle {
     }
 }
 
-// The title, artists and album of what plays, under the light of its signal
-// path, whose steps open from it.
+// A name as a pill that opens its page, as each artist of what plays does;
+// one without a page is a plain pill.
+component NameChip inherits Pressable {
+    in property <Name> name;
+    in property <length> pill;
+    label: self.name.label;
+    enabled: self.name.link != "";
+    // A finger's target is taller than the pill drawn in it.
+    min-height: Screen.phone ? Theme.phone-target : root.pill;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: root.pill;
+        border-radius: self.height / 2;
+        background: root.hovered ? Theme.hover : transparent;
+        border-width: 1px;
+        border-color: Theme.muted.transparentize(60%);
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.name.label;
+            font-size: Theme.small;
+            color: root.hovered || root.focused ? Theme.text : Theme.muted;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// One chip for each of `names`, a long list going on in the next row.
+export component NameChips inherits FlexboxLayout {
+    in property <[Name]> names;
+    in property <length> pill: Screen.phone ? 32px : 24px;
+    callback open(link: string);
+    spacing: 8px;
+
+    for name in root.names: NameChip {
+        name: name;
+        pill: root.pill;
+        clicked => { root.open(name.link); }
+    }
+}
+
+// The title of what plays with the part of it that plays, and its album and
+// its artists, which open their pages.
 component NowPlayingDetails inherits VerticalLayout {
     in property <string> title;
     in property <string> movement;
     in property <string> movement-place;
     in property <[Name]> names;
     in property <Name> album;
-    in property <string> quality;
-    in property <int> level;
-    in property <[PathStep]> path;
     // Whether the sheet is open, which the titles scroll only while.
     in property <bool> active;
     callback open(link: string);
-    // The lines under the title: Body Large on a phone, as the title there
-    // is a Headline Small.
-    property <length> second-size: Screen.phone ? Theme.body : Theme.heading;
-    spacing: 12px;
+    spacing: 8px;
     alignment: start;
 
     Ticker {
@@ -3956,35 +3996,28 @@ component NowPlayingDetails inherits VerticalLayout {
     if root.movement != "" || root.movement-place != "": Ticker {
         active: root.active;
         text: root.movement != "" && root.movement-place != "" ? root.movement + " · " + root.movement-place : root.movement + root.movement-place;
-        font-size: root.second-size;
+        font-size: Theme.body;
         text-color: Theme.muted;
     }
-    if root.names.length > 0: Links {
-        names: root.names;
-        font-size: root.second-size;
-        open(link) => { root.open(link); }
-    }
-    if root.album.link != "": Link {
-        text: root.album.label;
-        clicked => { root.open(root.album.link); }
-    }
-    if root.level >= 0: HorizontalLayout {
-        padding-top: 20px;
+    if root.album.link != "": HorizontalLayout {
         alignment: start;
-        SignalPathLight {
-            quality: root.quality;
-            level: root.level;
-            path: root.path;
-            opens-upward: false;
+        Link {
+            text: root.album.label;
+            clicked => { root.open(root.album.link); }
         }
+    }
+    if root.names.length > 0: NameChips {
+        names: root.names;
+        open(link) => { root.open(link); }
     }
 }
 
 // The sound device in use, named beside the button that opens the menu of the
-// outputs to play on.
+// outputs to play on, where there is room for the name.
 export component OutputPicker inherits HorizontalLayout {
     in property <[MenuEntry]> output-devices;
     in property <string> output-name;
+    in property <bool> named: true;
     callback list-devices();
     callback choose-output(index: int);
     alignment: center;
@@ -4001,7 +4034,7 @@ export component OutputPicker inherits HorizontalLayout {
         activated(id) => { root.choose-output(Math.floor(id.to-float())); }
     }
     // The name opens the menu too; the button stays the one a screen reader finds.
-    Text {
+    if root.named: Text {
         max-width: 240px;
         min-height: menu.height;
         text: root.output-name;
@@ -4016,8 +4049,8 @@ export component OutputPicker inherits HorizontalLayout {
     }
 }
 
-// What plays, large, for the now playing sheet: its cover, and its words
-// beside it on a wide page or under it on a narrow one.
+// What plays, large, on a phone's or a tablet's now playing page: its cover
+// as wide as the page, which opens its album, and its words under it.
 export component NowPlaying inherits VerticalLayout {
     // The page's width for it, which it can't read from its own: its
     // height follows from it.
@@ -4028,69 +4061,89 @@ export component NowPlaying inherits VerticalLayout {
     in property <string> movement-place;
     in property <[Name]> names;
     in property <Name> album;
-    in property <string> quality;
-    in property <int> level: -1;
-    in property <[PathStep]> path;
     in property <bool> active;
     callback open(link: string);
-    property <bool> narrow: root.available < 720px;
+    spacing: 24px;
 
-    if root.narrow: VerticalLayout {
-        spacing: 24px;
-        HorizontalLayout {
-            alignment: center;
-            Artwork {
-                size: min(root.available, 360px);
-                source: root.cover;
-            }
-        }
-        // Measured at its preferred width, the words would count as one line
-        // each, and what follows would be placed over the wrapped ones.
-        NowPlayingDetails {
-            preferred-width: root.available;
-            active: root.active;
-            title: root.title;
-            movement: root.movement;
-            movement-place: root.movement-place;
-            names: root.names;
-            album: root.album;
-            quality: root.quality;
-            level: root.level;
-            path: root.path;
-            open(link) => { root.open(link); }
-        }
-    }
-    if !root.narrow: HorizontalLayout {
-        spacing: 48px;
-        alignment: center;
+    Pressable {
+        width: root.available;
+        height: root.available;
+        label: "Album cover";
+        enabled: root.album.link != "";
+        clicked => { root.open(root.album.link); }
         Artwork {
-            size: min(root.available * 0.45, 400px);
+            size: root.available;
             source: root.cover;
         }
-        // A fixed width, so the cover sits where it does whatever the title.
-        NowPlayingDetails {
-            preferred-width: 480px;
-            active: root.active;
-            title: root.title;
-            movement: root.movement;
-            movement-place: root.movement-place;
-            names: root.names;
-            album: root.album;
-            quality: root.quality;
-            level: root.level;
-            path: root.path;
-            open(link) => { root.open(link); }
-        }
+    }
+    // Measured at its preferred width, the words would count as one line
+    // each, and what follows would be placed over the wrapped ones.
+    NowPlayingDetails {
+        preferred-width: root.available;
+        active: root.active;
+        title: root.title;
+        movement: root.movement;
+        movement-place: root.movement-place;
+        names: root.names;
+        album: root.album;
+        open(link) => { root.open(link); }
+    }
+}
+
+// The words of what plays, or a note in their place while they are on their
+// way or where there are none.
+export component LyricsView inherits VerticalLayout {
+    in property <string> lyrics;
+    in property <string> note;
+    // The width the lines wrap at, which it can't read from its own: its
+    // height follows from it.
+    in property <length> available;
+
+    if root.lyrics != "": Text {
+        preferred-width: root.available;
+        text: root.lyrics;
+        font-size: Theme.heading;
+        color: Theme.text;
+        wrap: word-wrap;
+    }
+    if root.lyrics == "": Text {
+        preferred-width: root.available;
+        text: root.note;
+        font-size: Theme.body;
+        color: Theme.muted;
+        wrap: word-wrap;
+        accessible-live-region: polite;
     }
 }
 
 // The track playing, under the pages: its cover, title and artists, the
 // buttons and position, and how well it reaches the speakers, whose steps
-// open from it. A problem takes the artists' place.
+// open from it. A problem takes the artists' place. On a desktop, `full`,
+// it holds all that a phone's now playing page does, whose page shows the
+// banner and the lyrics instead: the cover and the album open the album and
+// the artists their pages, and the bar has the part of a work that plays,
+// the sound device and processing, the lyrics, the heart, the song's menu,
+// the queue and the button that opens and closes the page.
 export component PlayerBar inherits Rectangle {
+    in property <bool> full;
     in property <image> cover;
     in property <string> title;
+    in property <string> movement;
+    in property <string> movement-place;
     in property <[Name]> names;
+    in property <Name> album;
+    in property <bool> loved;
+    // The playlists the song's menu adds to, and whether it tags.
+    in property <[Name]> playlists;
+    in property <bool> taggable;
+    in property <[MenuEntry]> output-devices;
+    in property <string> output-name;
+    // Whether what plays is heard, with a sound device and settings for it:
+    // not in the browser, which only shows what would play.
+    in property <bool> has-sound;
+    // Whether the now playing page is open, and the queue.
+    in property <bool> page-open;
+    in property <bool> queue-open;
     in property <bool> paused;
     in property <float> position;
     in property <float> duration;
@@ -4113,11 +4166,23 @@ export component PlayerBar inherits Rectangle {
     callback seek(seconds: float);
     callback toggle-shuffle();
     callback cycle-repeat();
+    callback open(link: string);
+    callback toggle-love();
+    callback add-to-playlist(id: string);
+    callback tag();
+    callback list-devices();
+    callback choose-output(index: int);
+    callback sound-settings();
+    callback lyrics();
+    callback toggle-queue();
     // A window this narrow, whose bar is under 760px once the sidebar is
     // docked, draws everything closer and smaller, play and pause the least.
     // The bar's own width can't say so: it follows from what it holds.
     property <bool> compact: !Screen.phone && Screen.width < 1000px;
     property <length> side: root.compact ? 36px : 40px;
+    // A full bar names the sound device only where its window is this wide.
+    property <bool> roomy: Screen.width >= 1400px;
+    property <string> part: root.movement != "" && root.movement-place != "" ? root.movement + " · " + root.movement-place : root.movement + root.movement-place;
 
     height: Screen.phone ? 72px : 80px;
     background: Theme.surface;
@@ -4129,7 +4194,7 @@ export component PlayerBar inherits Rectangle {
         label: "Now playing";
         clicked => { root.open-playing(); }
     }
-    HorizontalLayout {
+    if !root.full: HorizontalLayout {
         padding-left: root.compact ? 12px : 16px;
         padding-right: root.compact ? 12px : 16px;
         spacing: root.compact ? 6px : 12px;
@@ -4221,6 +4286,198 @@ export component PlayerBar inherits Rectangle {
             path: root.path;
             // A phone, or a bar this narrow, has room for the light only.
             dot-only: Screen.phone || root.compact;
+        }
+    }
+    if root.full: HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 16px;
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            min-width: 140px;
+            preferred-width: 320px;
+            spacing: 12px;
+            Pressable {
+                cross-axis-self-alignment: center;
+                width: 56px;
+                height: 56px;
+                label: "Album cover";
+                enabled: root.album.link != "";
+                clicked => { root.open(root.album.link); }
+                Artwork {
+                    size: 56px;
+                    source: root.cover;
+                }
+            }
+            // Long titles and names are cut short, so they don't size it; the
+            // artists that don't fit on one row are left out.
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.title;
+                        font-weight: 600;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                    if root.part != "": Text {
+                        text: root.part;
+                        font-size: Theme.small;
+                        color: Theme.muted;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                if root.album.link != "": HorizontalLayout {
+                    alignment: start;
+                    Link {
+                        text: root.album.label;
+                        font-size: Theme.small;
+                        clicked => { root.open(root.album.link); }
+                    }
+                }
+                if root.problem != "": Text {
+                    text: root.problem;
+                    font-size: Theme.small;
+                    color: Theme.danger;
+                    overflow: elide;
+                }
+                if root.problem == "" && root.names.length > 0: Rectangle {
+                    height: 22px;
+                    clip: true;
+                    NameChips {
+                        names: root.names;
+                        pill: 22px;
+                        open(link) => { root.open(link); }
+                    }
+                }
+            }
+        }
+        // The controls over the position.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            min-width: 200px;
+            preferred-width: 420px;
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 4px;
+                if !root.live: ShuffleButton {
+                    cross-axis-self-alignment: center;
+                    icon-size: 20px;
+                    shuffled: root.shuffled;
+                    clicked => { root.toggle-shuffle(); }
+                }
+                if !root.live: IconButton {
+                    cross-axis-self-alignment: center;
+                    icon-size: 20px;
+                    icon: Icons.previous;
+                    filled: true;
+                    label: "Previous";
+                    clicked => { root.previous(); }
+                }
+                PlayPauseButton {
+                    cross-axis-self-alignment: center;
+                    width: 40px;
+                    icon-size: 28px;
+                    paused: root.paused;
+                    clicked => { root.toggle-pause(); }
+                }
+                if !root.live: IconButton {
+                    cross-axis-self-alignment: center;
+                    icon-size: 20px;
+                    icon: Icons.next;
+                    filled: true;
+                    label: "Next";
+                    clicked => { root.next(); }
+                }
+                if !root.live: RepeatButton {
+                    cross-axis-self-alignment: center;
+                    icon-size: 20px;
+                    repeat: root.repeat;
+                    clicked => { root.cycle-repeat(); }
+                }
+            }
+            if !root.live: SeekRow {
+                position: root.position;
+                duration: root.duration;
+                waveform: root.waveform;
+                seek(seconds) => { root.seek(seconds); }
+            }
+        }
+        // In two rows of four where the window is narrow, else in one.
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: center;
+            FlexboxLayout {
+                width: root.compact ? 4 * 32px + 3 * self.spacing : self.preferred-width;
+                flex-wrap: root.compact ? FlexboxLayoutWrap.wrap : FlexboxLayoutWrap.no-wrap;
+                spacing: 4px;
+                cross-axis-alignment: center;
+                if root.quality != "": SignalPathLight {
+                    quality: root.quality;
+                    level: root.level;
+                    path: root.path;
+                    dot-only: !root.roomy;
+                }
+                if root.has-sound: OutputPicker {
+                    named: root.roomy;
+                    output-devices: root.output-devices;
+                    output-name: root.output-name;
+                    list-devices => { root.list-devices(); }
+                    choose-output(index) => { root.choose-output(index); }
+                }
+                if root.has-sound: IconButton {
+                    icon: Icons.sound;
+                    label: "Sound processing";
+                    clicked => { root.sound-settings(); }
+                }
+                if !root.live: IconButton {
+                    icon: Icons.lyrics;
+                    label: "Lyrics";
+                    clicked => { root.lyrics(); }
+                }
+                if !root.live: IconButton {
+                    icon: Icons.heart;
+                    filled: root.loved;
+                    color: root.loved ? Theme.accent : Theme.text;
+                    label: "Love " + root.title;
+                    accessible-checkable: true;
+                    accessible-checked: root.loved;
+                    clicked => { root.toggle-love(); }
+                }
+                if !root.live: TrackMenu {
+                    line: {
+                        title: root.title,
+                        loved: root.loved,
+                        album: root.album,
+                        artists: root.names,
+                    };
+                    playlists: root.playlists;
+                    taggable: root.taggable;
+                    selectable: false;
+                    open(link) => { root.open(link); }
+                    toggle-love => { root.toggle-love(); }
+                    add-to-playlist(id) => { root.add-to-playlist(id); }
+                    tag => { root.tag(); }
+                }
+                if !root.live: IconButton {
+                    icon: Icons.queue;
+                    label: "Queue";
+                    accessible-checkable: true;
+                    accessible-checked: root.queue-open;
+                    color: root.queue-open ? Theme.accent : Theme.text;
+                    clicked => { root.toggle-queue(); }
+                }
+                IconButton {
+                    icon: root.page-open ? Icons.chevron-down : Icons.chevron-up;
+                    label: root.page-open ? "Close now playing" : "Open now playing";
+                    clicked => { root.open-playing(); }
+                }
+            }
         }
     }
 }

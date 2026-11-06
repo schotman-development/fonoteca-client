@@ -24,7 +24,8 @@ use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMo
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::radio;
 use crate::{
-    AppWindow, Name, Page, PathStep, QueueLine, browse, offline, prefs, queue_drag, waveform,
+    AppWindow, Name, Page, PathStep, QueueLine, browse, lyrics, offline, prefs, queue_drag,
+    waveform,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::{Icons, MenuEntry, quality, scrobble, sound};
@@ -1115,6 +1116,8 @@ fn show_station(ui: &AppWindow, browser: &browse::Shared, tuned: &Tuned) {
     ui.set_playing_waveform("".into());
     ui.set_playing_cover(tuned.cover.clone());
     ui.set_playing_art(tuned.cover.clone());
+    ui.set_playing_banner(Image::default());
+    lyrics::clear(ui);
     browse::stop_playing_motion(browser);
 }
 
@@ -1163,13 +1166,34 @@ fn show_song(
     ui.set_playing_shown(ui.get_playing_shown() + 1);
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());
-    let (playing_now, song_id) = (playing.clone(), song.id.clone());
-    waveform::show(ui, browse::client(browser), song.id.clone(), move || {
-        let p = playing_now.borrow();
-        p.shown
-            .and_then(|shown| p.queue.get(shown))
-            .is_some_and(|song| song.id == song_id)
-    });
+    let still_playing = |playing: &Shared, id: &String| {
+        let (playing, id) = (playing.clone(), id.clone());
+        move || shown_song_id(&playing.borrow()).is_some_and(|shown| shown == id)
+    };
+    waveform::show(
+        ui,
+        browse::client(browser),
+        song.id.clone(),
+        still_playing(playing, &song.id),
+    );
+    lyrics::show(
+        ui,
+        browse::client(browser),
+        song,
+        still_playing(playing, &song.id),
+    );
+    // The banner of the last artist stays up until this one's comes.
+    match song_artist_id(song).filter(|_| browse::offers_artist_banners(browser)) {
+        Some(artist) => {
+            let still_playing = still_playing(playing, &song.id);
+            browse::playing_banner(ui, browser, artist, move |ui, banner| {
+                if still_playing() {
+                    ui.set_playing_banner(banner);
+                }
+            });
+        }
+        None => ui.set_playing_banner(Image::default()),
+    }
     browse::playing_motion(ui, browser, song.album_id.clone(), ART_SIZE, |ui, frame| {
         ui.set_playing_art(frame);
     });
@@ -1190,6 +1214,16 @@ fn show_song(
             }
         });
     }
+}
+
+/// The id of the first of a song's artists, or of its one artist on servers
+/// without the list.
+fn song_artist_id(song: &Child) -> Option<String> {
+    song.artists
+        .first()
+        .map(|artist| artist.id.clone())
+        .or_else(|| song.artist_id.clone())
+        .filter(|id| !id.is_empty())
 }
 
 /// Which of the sheet's `lines` are movements under an open work.

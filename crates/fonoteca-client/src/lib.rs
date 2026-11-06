@@ -19,6 +19,7 @@ mod fonts;
 mod headphones;
 mod logo_ink;
 mod loves;
+mod lyrics;
 #[cfg(target_os = "android")]
 mod media;
 #[cfg(target_os = "android")]
@@ -935,6 +936,7 @@ mod tests {
     static NO_WAVEFORM: AtomicBool = AtomicBool::new(false);
     /// While set, the server has no Fonoteca compositions.
     static NO_COMPOSITIONS: AtomicBool = AtomicBool::new(false);
+    static NO_BANNER: AtomicBool = AtomicBool::new(false);
     /// While set, the server converts a song from part way in.
     static TRANSCODE_OFFSET: AtomicBool = AtomicBool::new(false);
     /// While set, the server's genres are Fonoteca's first version, with no
@@ -1480,6 +1482,11 @@ mod tests {
             } else {
                 r#"{"name":"fonotecaCompositions","versions":[1]},"#
             };
+            let banner = if NO_BANNER.load(Relaxed) {
+                ""
+            } else {
+                r#"{"name":"fonotecaArtistBanner","versions":[1]},"#
+            };
             let genre_versions = if OLD_GENRES.load(Relaxed) { "1" } else { "1,2" };
             let offset = if TRANSCODE_OFFSET.load(Relaxed) {
                 r#",{"name":"transcodeOffset","versions":[1]}"#
@@ -1487,7 +1494,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{{"name":"fonotecaArtistBanner","versions":[1]}},{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1586,6 +1593,14 @@ mod tests {
                 json(
                     r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Not found"}}}"#,
                 )
+            }
+        } else if request.contains("/rest/getLyricsBySongId") {
+            if id == Some("t1") {
+                ok(
+                    r#""lyricsList":{"structuredLyrics":[{"lang":"en","synced":false,"line":[{"value":"Lights on the water"},{"value":"And the boats come home"}]}]}"#,
+                )
+            } else {
+                ok(r#""lyricsList":{"structuredLyrics":[]}"#)
             }
         } else if request.contains("/rest/getWaveform") {
             WAVEFORMS_ASKED.fetch_add(1, Relaxed);
@@ -1688,7 +1703,7 @@ mod tests {
             )
         } else if request.contains("/rest/getArtist") {
             ok(&format!(
-                r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{}}}]}}"#,
+                r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","bannerArt":"ba-r1","album":[{{{}}}]}}"#,
                 album_now()
             ))
         } else if request.contains("/rest/search3") && param("artistCount").is_none() {
@@ -1900,7 +1915,7 @@ mod tests {
         } else if request.contains("/rest/getPlayQueue") && QUEUED.load(Relaxed) {
             let movement = |id: &str, name: &str, number: u8| {
                 format!(
-                    r#"{{"id":"{id}","isDir":false,"title":"Sonata: {name}","album":"Symphonies","albumId":"a2","coverArt":"al-a2","duration":300,"works":[{{"name":"Sonata"}}],"movements":[{{"name":"{name}","number":{number},"count":3}}]}}"#
+                    r#"{{"id":"{id}","isDir":false,"title":"Sonata: {name}","album":"Symphonies","albumId":"a2","coverArt":"al-a2","artistId":"r1","duration":300,"works":[{{"name":"Sonata"}}],"movements":[{{"name":"{name}","number":{number},"count":3}}]}}"#
                 )
             };
             let entries = [
@@ -3305,6 +3320,7 @@ mod tests {
             assert!(ui.get_playing());
             assert_eq!(ui.get_playing_title(), "Jazz");
             assert_eq!(ui.get_playing_names().row_data(0).unwrap().label, "Live radio");
+            assert_eq!(button(&ui, "Live radio").accessible_enabled(), Some(false), "its chip opens no page");
             assert_eq!(ui.get_playing_duration(), 0.0);
             assert_eq!(ui.get_playing_album().link, "");
             assert_eq!(
@@ -3327,6 +3343,12 @@ mod tests {
             ui.invoke_play_station(curated_tile.link);
             wait_for("a catalogue station", || ui.get_playing_title() == curated_tile.title).await;
             assert!(play::testing::tuned().is_some_and(|(_, stream)| stream.starts_with("https://")));
+            // A station has no words, so a song's go when one takes over.
+            play::testing::show_song(&ui, vec![serde_json::from_str(HARBOUR_LIGHTS).unwrap()], 0);
+            wait_for("the song's words", || ui.get_playing_lyrics() != "").await;
+            ui.invoke_play_station(saved(0).link);
+            wait_for("the station once more", || ui.get_playing_live()).await;
+            assert_eq!(ui.get_playing_lyrics(), "", "a station has no words");
             // A song taken up after it puts the song back on the bar.
             let queued = opensubsonic::Child {
                 id: "r1".into(),
@@ -4370,11 +4392,11 @@ mod tests {
                 assert!(page_has_the_keys(), "the sidebar hands the page the keys");
                 click(&ui, "Now playing");
                 idle(Duration::from_millis(400)).await;
-                // The sound device is chosen from the sheet, wide, narrow and
-                // on a phone: the one in use is marked, the choice is kept as
-                // the settings once kept it, and opening the menu lists the
-                // devices again. There is no system default to choose: with
-                // none chosen, the system's own device is, by name.
+                // The sound device is chosen from a desktop's bar, and from the
+                // page of a tablet and a phone: the one in use is marked, the
+                // choice is kept as the settings once kept it, and opening the
+                // menu lists the devices again. There is no system default to
+                // choose: with none chosen, the system's own device is, by name.
                 let speakers = "alsa:hw:CARD=PCH,DEV=0";
                 let dac = "alsa:hw:CARD=DAC,DEV=0";
                 let merged_away = "alsa:plughw:CARD=DAC,DEV=0";
@@ -4427,25 +4449,17 @@ mod tests {
                     assert_eq!(crate::prefs::load().output_device.as_deref(), Some(speakers), "{width}px");
                     if width == 1100.0 {
                         let picker = button(&ui, "Sound device");
-                        let (position, size) = (picker.absolute_position(), picker.size());
-                        // The sheet ends above the player bar, and what plays
-                        // fills its first screen down to the stage's padding.
-                        let (player_bar, stage_padding) = (80.0, 24.0);
-                        let bottom = position.y + size.height;
-                        assert!(
-                            (bottom - (height - player_bar - stage_padding)).abs() <= 1.0,
-                            "at the bottom of the sheet, not at {bottom}"
-                        );
-                        // Button and name are centred together in what the
-                        // docked sidebar leaves, so the button sits left of
-                        // its middle by half the name and the gap.
-                        let (sidebar, name_and_gap) = (240.0, 240.0);
-                        let middle = sidebar + (width - sidebar) / 2.0;
-                        let centre = position.x + size.width / 2.0;
-                        assert!(
-                            (middle - name_and_gap..=middle).contains(&centre),
-                            "centred, not at {centre}"
-                        );
+                        let (top, bottom) = (picker.absolute_position().y, picker.absolute_position().y + picker.size().height);
+                        let player_bar = 80.0;
+                        assert!(top >= height - player_bar && bottom <= height, "in the bar, not at {top}");
+                    } else {
+                        // Under the cover and the controls.
+                        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                            position: slint::LogicalPosition::new(width / 2.0, 300.0),
+                            delta_x: 0.0,
+                            delta_y: -100000.0,
+                        });
+                        idle(Duration::from_millis(100)).await;
                     }
                     click(&ui, "Sound device");
                     wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
@@ -4511,14 +4525,20 @@ mod tests {
                 }
                 idle(Duration::from_millis(400)).await;
 
-                // The bar opens it wherever it is clicked but on its controls,
-                // and a second click closes it. The artist line is text.
+                // A desktop's bar spans what the sidebar leaves of the window.
                 let bar = button(&ui, "Now playing");
                 let (bar_at, bar_size) = (bar.absolute_position(), bar.size());
                 assert_eq!(bar_size.height, 80.0);
                 assert_eq!(bar_at.y + bar_size.height, 760.0, "the bar ends the window");
                 assert_eq!(bar_at.x + bar_size.width, 1100.0, "the bar spans the window");
                 assert!(bar_size.width > 600.0);
+                // A tablet's opens it wherever it is clicked but on its
+                // controls, and the sheet covers it. Its artist line is text.
+                ui.window().set_size(slint::LogicalSize::new(700.0, 760.0));
+                idle(Duration::from_millis(400)).await;
+                let bar = button(&ui, "Now playing");
+                let (bar_at, bar_size) = (bar.absolute_position(), bar.size());
+                assert_eq!(bar_at.x + bar_size.width, 700.0, "the bar spans the window");
                 ui.set_playing_names(slint::ModelRc::new(slint::VecModel::from(vec![Name {
                     label: "Ada Lovelace".into(),
                     link: "artists".into(),
@@ -4535,19 +4555,44 @@ mod tests {
                     tap(position).await;
                     assert!(ui.get_now_playing_open(), "a click on the bar opens it");
                     idle(Duration::from_millis(400)).await;
-                    tap(at_bar(bar_size.width / 2.0, 72.0)).await;
-                    assert!(!ui.get_now_playing_open(), "a second click closes it");
+                    click(&ui, "Close now playing");
                     idle(Duration::from_millis(400)).await;
                 }
+                // A desktop's stays in sight under the page, and a second
+                // click closes it: here beside its cover.
+                ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+                idle(Duration::from_millis(400)).await;
+                let cover = button(&ui, "Album cover");
+                let (cover_at, cover_size) = (cover.absolute_position(), cover.size());
+                let beside_cover = slint::LogicalPosition::new(cover_at.x + cover_size.width + 6.0, cover_at.y + cover_size.height / 2.0);
+                tap(beside_cover).await;
+                assert!(ui.get_now_playing_open(), "a click on the bar opens it");
+                idle(Duration::from_millis(400)).await;
+                tap(beside_cover).await;
+                assert!(!ui.get_now_playing_open(), "a second click closes it");
+                idle(Duration::from_millis(400)).await;
                 input.set_finger(finger);
 
+                ui.window().set_size(slint::LogicalSize::new(800.0, 760.0));
+                idle(Duration::from_millis(400)).await;
                 click(&ui, "Now playing");
                 idle(Duration::from_millis(400)).await;
 
-                // A finger's swipe up past the controls opens the queue, when it
-                // is long enough, and a swipe down in the queue does not go back.
+                // A finger's swipe up past the controls of a tablet's or a
+                // phone's page opens the queue, when it is long enough, and a
+                // swipe down in the queue does not go back. Beside the page's
+                // column nothing but the page takes the finger.
                 assert!(!ui.get_queue_open(), "Now playing opens on what plays");
-                let sheet_middle = slint::LogicalPosition::new(550.0, 400.0);
+                let sheet_middle = slint::LogicalPosition::new(750.0, 400.0);
+                let scroll_page = |by: f32| {
+                    ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                        position: sheet_middle,
+                        delta_x: 0.0,
+                        delta_y: by,
+                    });
+                };
+                scroll_page(-100000.0);
+                idle(Duration::from_millis(100)).await;
                 input.set_finger(true);
                 drag(&ui, sheet_middle, &[(0, 0.0, -20.0), (0, 0.0, -40.0)], 100).await;
                 assert!(!ui.get_queue_open(), "not far enough");
@@ -4560,7 +4605,13 @@ mod tests {
                 click(&ui, "Back to now playing");
                 idle(Duration::from_millis(100)).await;
                 assert!(!ui.get_queue_open());
+                input.set_finger(false);
+                scroll_page(-100000.0);
+                idle(Duration::from_millis(100)).await;
                 assert!(find(&ui, &menu).is_some(), "Now playing has it");
+                scroll_page(100000.0);
+                idle(Duration::from_millis(100)).await;
+                input.set_finger(true);
                 // Mostly sideways is no swipe up, and neither is one that
                 // starts away from the page's end, however far it goes.
                 drag(&ui, sheet_middle, &[(0, -100.0, -20.0), (0, -200.0, -60.0), (0, -300.0, -110.0)], 100).await;
@@ -4574,7 +4625,9 @@ mod tests {
                 input.set_finger(finger);
 
                 // The seek bar has a row of its own: no title, artist, album
-                // or time runs under or over it, whatever the width.
+                // or time runs under or over it, whatever the width; nor do
+                // the buttons of a desktop's bar, which shows the first
+                // artist only.
                 let long = |what: &str| format!("{what} that keeps going and going until it has to wrap");
                 let long_names = [long("An artist"), long("Another artist"), long("A third artist")];
                 ui.set_playing_title(long("A song title").into());
@@ -4603,10 +4656,25 @@ mod tests {
                     "1:05".to_owned(),
                     "4:31".to_owned(),
                 ];
-                for (width, height) in [(412.0, 915.0), (600.0, 760.0), (1100.0, 760.0)] {
+                let title_menu = format!("More for {}", long("A song title"));
+                let bar_labels: Vec<String> = [&labels[..2], &labels[4..]]
+                    .concat()
+                    .into_iter()
+                    .chain(["Sound device", "Sound processing", "Lyrics", "Queue", title_menu.as_str()].map(String::from))
+                    .collect();
+                for (width, height) in [(412.0, 915.0), (800.0, 1280.0), (900.0, 760.0), (1100.0, 760.0), (1600.0, 900.0)] {
                     ui.window().set_size(slint::LogicalSize::new(width, height));
                     idle(Duration::from_millis(400)).await;
-                    let boxes: Vec<_> = labels
+                    let docked = width >= 900.0;
+                    if !docked {
+                        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                            position: slint::LogicalPosition::new(width - 10.0, 300.0),
+                            delta_x: 0.0,
+                            delta_y: 100000.0,
+                        });
+                        idle(Duration::from_millis(100)).await;
+                    }
+                    let boxes: Vec<_> = if docked { &bar_labels[..] } else { &labels[..] }
                         .iter()
                         .map(|label| {
                             let element = ui
@@ -4631,6 +4699,8 @@ mod tests {
                         }
                     }
                 }
+                ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+                idle(Duration::from_millis(400)).await;
                 // The sheet closes when the page changes under it, and when
                 // playback ends.
                 let visit = ui.get_visit();
@@ -7130,7 +7200,11 @@ mod tests {
             let held = |frame: &'static str| BTreeSet::from([frame]);
 
             // It moves only while the sheet is open and the song plays, and is
-            // held on its frame otherwise, never blanked.
+            // held on its frame otherwise, never blanked; on a tablet, whose
+            // page always shows it.
+            wait_for("the artist's banner", || ui.get_playing_banner().size().width > 0).await;
+            ui.window().set_size(slint::LogicalSize::new(800.0, 760.0));
+            idle(Duration::from_millis(400)).await;
             let frame = art_looks(&ui);
             assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame));
             ui.set_playing_paused(false);
@@ -7152,6 +7226,12 @@ mod tests {
             assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame));
             click(&ui, "Now playing");
             assert_eq!(art_over(&ui, Duration::from_millis(400)).await, moving());
+            // A desktop's page shows the artist's banner in its place, and
+            // holds it.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(400)).await;
+            let frame = art_looks(&ui);
+            assert_eq!(art_over(&ui, Duration::from_millis(400)).await, held(frame), "held under the banner");
 
             // The next song of the album goes on with it: no new request, no
             // blank, and its still cover doesn't take a frame's place.
@@ -7243,6 +7323,112 @@ mod tests {
             wait_for("the refused unstar", || ui.get_playing_loved()).await;
             assert_eq!(play::testing::loved_ids(), [true, true], "refused, so loved again");
 
+            // A desktop's page shows the banner of the artist that plays,
+            // the album's cover until it comes, and the song's words; a song
+            // without them says so, and one by no artist has the cover.
+            let harbour = || -> opensubsonic::Child { serde_json::from_str(HARBOUR_LIGHTS).unwrap() };
+            let text_in_sight = |text: &str| {
+                let wanted = text.to_owned();
+                ui.root_element()
+                    .query_descendants()
+                    .match_predicate(move |e| e.accessible_label().is_some_and(|l| l == wanted))
+                    .find_first()
+                    .is_some()
+            };
+            let words = "Lights on the water\nAnd the boats come home";
+            play::testing::show_song(&ui, vec![harbour()], 0);
+            assert_eq!(ui.get_playing_lyrics(), "", "the last song's words are gone");
+            wait_for("its words", || ui.get_playing_lyrics() == words).await;
+            assert!(text_in_sight(words), "a desktop's page shows them");
+            wait_for("the artist's banner", || ui.get_playing_banner().size().width > 0).await;
+            play::testing::show_song(&ui, vec![song("quiet", "a2")], 0);
+            assert_eq!(ui.get_playing_banner().size().width, 0, "no artist, no banner");
+            wait_for("the note", || ui.get_playing_lyrics_note() == "No lyrics for this song.").await;
+            assert!(text_in_sight("No lyrics for this song."));
+
+            // On a desktop the bar's cover and album open the album, and an
+            // artist's chip the artist's page; so do a phone's page's.
+            let lowest = |label: &str| -> ElementHandle {
+                let wanted = label.to_owned();
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Button)
+                    .match_predicate(move |button| button.accessible_label().is_some_and(|l| l == wanted))
+                    .find_all()
+                    .into_iter()
+                    .max_by(|a, b| a.absolute_position().y.total_cmp(&b.absolute_position().y))
+                    .unwrap_or_else(|| panic!("no {label} button"))
+            };
+            play::testing::show_song(&ui, vec![harbour()], 0);
+            // From a page they don't lead to.
+            ui.invoke_open("albums".into());
+            wait_for("the albums", || ui.get_page() == Page::Albums).await;
+            let links = [("Album cover", Page::Album), ("Night Harbour", Page::Album), ("Mara Lind", Page::Artist)];
+            for (width, height) in [(1100.0, 760.0), (412.0, 915.0)] {
+                ui.window().set_size(slint::LogicalSize::new(width, height));
+                idle(Duration::from_millis(400)).await;
+                for (link, page) in links {
+                    if !ui.get_now_playing_open() {
+                        click(&ui, "Now playing");
+                        idle(Duration::from_millis(400)).await;
+                    }
+                    assert!(ui.get_now_playing_open());
+                    let visit = ui.get_visit();
+                    lowest(link).invoke_accessible_default_action();
+                    wait_for(&format!("{link}'s page at {width}px"), || ui.get_visit() != visit && ui.get_page() == page).await;
+                    assert!(!ui.get_now_playing_open(), "{link} closes Now playing at {width}px");
+                    let opened = ui.get_visit();
+                    ui.invoke_back();
+                    wait_for("the page before", || ui.get_visit() != opened).await;
+                    // The page's change closes Now playing once more, after it.
+                    idle(Duration::from_millis(400)).await;
+                }
+            }
+            // Where the app has no say in how the sound reaches the
+            // speakers, as in a browser, neither a desktop's bar nor a
+            // phone's page offers to choose it.
+            let sound_offered = || find(&ui, "Sound processing").is_some();
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(400)).await;
+            assert!(sound_offered(), "a desktop's bar offers it");
+            ui.set_has_sound(false);
+            idle(Duration::from_millis(100)).await;
+            assert!(!sound_offered(), "a desktop's bar without a say");
+            ui.window().set_size(slint::LogicalSize::new(412.0, 915.0));
+            idle(Duration::from_millis(400)).await;
+            click(&ui, "Now playing");
+            idle(Duration::from_millis(400)).await;
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(206.0, 400.0),
+                delta_x: 0.0,
+                delta_y: -100000.0,
+            });
+            idle(Duration::from_millis(100)).await;
+            assert!(!sound_offered(), "a phone's page without a say");
+            ui.set_has_sound(true);
+            idle(Duration::from_millis(100)).await;
+            assert!(sound_offered(), "a phone's page offers it");
+            press(&ui, slint::platform::Key::Escape);
+            assert!(!ui.get_now_playing_open());
+            // A phone's lyrics are a page of the sheet, from the row under
+            // the controls.
+            click(&ui, "Now playing");
+            idle(Duration::from_millis(400)).await;
+            assert!(!text_in_sight(words), "Now playing has no words");
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(206.0, 400.0),
+                delta_x: 0.0,
+                delta_y: -100000.0,
+            });
+            idle(Duration::from_millis(100)).await;
+            click(&ui, "Lyrics");
+            idle(Duration::from_millis(100)).await;
+            assert!(ui.get_lyrics_open() && text_in_sight(words), "the words");
+            assert!(find(&ui, "Album cover").is_none(), "in Now playing's place");
+            press(&ui, slint::platform::Key::Escape);
+            assert!(ui.get_now_playing_open() && !ui.get_lyrics_open(), "Escape goes back to Now playing");
+            assert!(find(&ui, "Album cover").is_some(), "Now playing opens at its top");
+
             // The songs played before the one playing wait above it in the
             // queue, out of view: the queue opens on what plays, and comes
             // back to it when the song changes, with the earlier ones a
@@ -7256,8 +7442,22 @@ mod tests {
                     .find_first()
                     .is_some()
             };
-            let on_what_plays = || find(&ui, "Sound device").is_some();
-            let tracks: Vec<_> = (0..12).map(|n| song(&format!("Track {n}"), "a2")).collect();
+            // On a phone or a tablet the queue is a page of the sheet, from
+            // the button at the end of Now playing.
+            ui.window().set_size(slint::LogicalSize::new(800.0, 760.0));
+            idle(Duration::from_millis(400)).await;
+            let on_what_plays = || find(&ui, "Album cover").is_some();
+            let open_queue = async || {
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(750.0, 400.0),
+                    delta_x: 0.0,
+                    delta_y: -100000.0,
+                });
+                idle(Duration::from_millis(100)).await;
+                click(&ui, "Queue");
+                idle(Duration::from_millis(300)).await;
+            };
+            let tracks: Vec<_> = (0..16).map(|n| song(&format!("Track {n}"), "a2")).collect();
             play::testing::show_queue(&ui, tracks.clone(), 6);
             click(&ui, "Close now playing");
             idle(Duration::from_millis(300)).await;
@@ -7267,8 +7467,7 @@ mod tests {
             assert!(on_what_plays(), "opened on what plays");
             assert!(!ui.get_queue_open());
             assert!(!played("Track 6") && !played("Track 5"), "no queue on Now playing");
-            click(&ui, "Queue");
-            idle(Duration::from_millis(300)).await;
+            open_queue().await;
             assert!(ui.get_queue_open());
             assert!(!on_what_plays(), "the queue has no controls");
             assert!(played("Track 6"), "the song playing is at the top");
@@ -7280,27 +7479,32 @@ mod tests {
             });
             idle(Duration::from_millis(100)).await;
             assert!(played("Track 0"), "scrolled up to the first played");
-            assert!(!played("Track 11"));
+            assert!(!played("Track 15"));
             play::testing::show_queue(&ui, tracks.clone(), 7);
             idle(Duration::from_millis(300)).await;
             assert_eq!(ui.get_previous_lines().row_count(), 7);
             assert!(played("Track 7"), "back on what plays after the song changed");
             assert!(!played("Track 6"));
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(550.0, 400.0),
+                delta_x: 0.0,
+                delta_y: 100000.0,
+            });
+            idle(Duration::from_millis(100)).await;
+            assert!(played("Track 0"), "left up among the songs played");
             // The down arrow and the Now playing button go back, one each way.
             click(&ui, "Back to now playing");
             idle(Duration::from_millis(100)).await;
             assert!(on_what_plays() && !ui.get_queue_open());
-            click(&ui, "Queue");
-            idle(Duration::from_millis(100)).await;
+            open_queue().await;
             assert!(ui.get_queue_open() && played("Track 7"), "opens on what plays again");
+            assert!(!played("Track 6"), "the songs played are above it again");
             assert!(!on_what_plays());
             press(&ui, slint::platform::Key::Escape);
             idle(Duration::from_millis(100)).await;
             assert!(on_what_plays() && !ui.get_queue_open(), "Back leaves the queue first");
             assert!(ui.get_now_playing_open());
-            click(&ui, "Queue");
-            idle(Duration::from_millis(100)).await;
-            // The player's bar has a button of the same name, under the sheet.
+            open_queue().await;
             let sheet_button = ui
                 .root_element()
                 .query_descendants()
@@ -7314,28 +7518,19 @@ mod tests {
             idle(Duration::from_millis(100)).await;
             assert!(on_what_plays() && !ui.get_queue_open());
             // The sheet opened from the bar shows Now playing, wherever it
-            // was left.
-            click(&ui, "Queue");
-            idle(Duration::from_millis(100)).await;
-            let bar_button = || {
-                ui.root_element()
-                    .query_descendants()
-                    .match_accessible_role(AccessibleRole::Button)
-                    .match_predicate(|button| button.accessible_label().is_some_and(|l| l == "Now playing"))
-                    .find_all()
-                    .into_iter()
-                    .max_by(|a, b| a.absolute_position().y.total_cmp(&b.absolute_position().y))
-                    .expect("no Now playing button")
-            };
-            bar_button().invoke_accessible_default_action();
+            // was left, as when the page under it changed.
+            open_queue().await;
+            let page = ui.get_visit();
+            ui.invoke_back();
+            wait_for("the page before to close it", || !ui.get_now_playing_open()).await;
+            ui.invoke_forward();
+            wait_for("the page again", || ui.get_visit() != page).await;
             idle(Duration::from_millis(400)).await;
-            assert!(!ui.get_now_playing_open());
-            bar_button().invoke_accessible_default_action();
+            click(&ui, "Now playing");
             idle(Duration::from_millis(400)).await;
             assert!(ui.get_now_playing_open() && !ui.get_queue_open() && on_what_plays());
             // The rows below are the queue's.
-            click(&ui, "Queue");
-            idle(Duration::from_millis(100)).await;
+            open_queue().await;
             // A row played before counts back from the one playing: it plays
             // next, or goes from the queue, whole and in its place.
             let titles = |lines: slint::ModelRc<QueueLine>| -> Vec<String> {
@@ -7536,7 +7731,7 @@ mod tests {
             assert!(queue_row("q0").absolute_position().y > page_at + 30.0, "it scrolls the page");
             input.set_touch(false);
             input.set_finger(false);
-            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            ui.window().set_size(slint::LogicalSize::new(800.0, 760.0));
             idle(Duration::from_millis(400)).await;
 
             // Alt and an arrow key move the row that has the keys by one unit,
@@ -7611,6 +7806,42 @@ mod tests {
             drag(&ui, grip_of("solo"), &[(0, 0.0, -6.0), (20, 0.0, -3.3 * row_height)], 20).await;
             assert_eq!(titles(), ["lead", "solo", "Sonata", "I", "II", "III", "Suite"], "above the work, not among its movements");
             assert_eq!(play::testing::queued_ids().0, ["lead", "solo", "I", "II", "III", "one", "two"]);
+
+            // On a desktop the queue is a panel at the window's right, which
+            // stays open as Now playing opens and closes beside it: the bar's
+            // Queue button opens and closes it, and so do its own close
+            // button, Escape in it and Android's back.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(400)).await;
+            assert!(ui.get_now_playing_open() && ui.get_queue_open(), "the queue stays open");
+            let panel_close = button(&ui, "Close queue");
+            assert!(panel_close.absolute_position().x > 1100.0 - 420.0, "a panel at the right");
+            assert!(row_in_sight("lead").is_some(), "with what plays");
+            click(&ui, "Close queue");
+            idle(Duration::from_millis(100)).await;
+            assert!(!ui.get_queue_open() && ui.get_now_playing_open());
+            assert!(row_in_sight("lead").is_none());
+            click(&ui, "Queue");
+            idle(Duration::from_millis(100)).await;
+            assert!(ui.get_queue_open() && row_in_sight("lead").is_some());
+            press(&ui, slint::platform::Key::Escape);
+            assert!(!ui.get_queue_open() && ui.get_now_playing_open(), "Escape in the panel closes it");
+            press(&ui, slint::platform::Key::Escape);
+            assert!(!ui.get_now_playing_open(), "then the page");
+            click(&ui, "Queue");
+            idle(Duration::from_millis(100)).await;
+            assert!(ui.get_queue_open() && !ui.get_now_playing_open());
+            click(&ui, "Now playing");
+            idle(Duration::from_millis(400)).await;
+            assert!(ui.get_queue_open() && ui.get_now_playing_open(), "the page opens beside it");
+            click(&ui, "Queue");
+            assert!(!ui.get_queue_open() && ui.get_now_playing_open(), "the bar's button closes it");
+            click(&ui, "Queue");
+            idle(Duration::from_millis(100)).await;
+            back::pressed(&ui, true);
+            assert!(!ui.get_queue_open() && ui.get_now_playing_open(), "back closes the panel first");
+            back::pressed(&ui, true);
+            assert!(!ui.get_now_playing_open());
 
             // So does the queue loaded anew, as on a sign in.
             let mut saved = prefs::load();
@@ -7737,6 +7968,7 @@ mod tests {
             wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
             NO_MOTION.store(true, Relaxed);
             NO_WAVEFORM.store(true, Relaxed);
+            NO_BANNER.store(true, Relaxed);
             OLD_GENRES.store(true, Relaxed);
             NO_COMPOSITIONS.store(true, Relaxed);
             ui.set_username("joe".into());
@@ -7752,6 +7984,8 @@ mod tests {
             wait_for("a few frames' time", || Instant::now() > later).await;
             assert_eq!(ui.get_playing_art().size().width, 1);
             assert_eq!(MOTIONS_ASKED.load(Relaxed), asked);
+            assert_eq!(ui.get_playing_banner().size().width, 0, "no banner without the extension");
+            NO_BANNER.store(false, Relaxed);
             // Descriptions come from the second version of the genres only.
             ui.invoke_open("genre:Jazz".into());
             wait_for("Jazz's subgenres", || ui.get_genre_tiles().row_count() == 1).await;
