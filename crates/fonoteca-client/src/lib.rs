@@ -972,6 +972,8 @@ mod tests {
     /// Whether Road Trip has been edited on the server since: changed later,
     /// and Rope and Anchor in place of Fugue.
     static ROAD_TRIP_EDITED: AtomicBool = AtomicBool::new(false);
+    /// The albums deleted on the server since, by id.
+    static GONE_ALBUMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// Whether a playlist named Later Jams for joe was made elsewhere.
     static LATER_JAMS_ELSEWHERE: AtomicBool = AtomicBool::new(false);
     /// Whether the station Wave was saved elsewhere.
@@ -1622,6 +1624,12 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(600));
             }
             reply("200 OK", "audio/wav", &tiny_wav())
+        } else if request.contains("/rest/getAlbum?")
+            && id.is_some_and(|id| GONE_ALBUMS.lock().unwrap().iter().any(|gone| gone == id))
+        {
+            json(
+                r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Album not found"}}}"#,
+            )
         } else if request.contains("/rest/getAlbum") && id == Some("a2") {
             ok(&format!(r#""album":{{{CLASSICAL}}}"#))
         } else if request.contains("/rest/getAlbum") {
@@ -1640,6 +1648,10 @@ mod tests {
             ok(&format!(r#""album":{{{},"song":{songs}}}"#, album_now()))
         } else if request.contains("/rest/getSong") && id == Some("t1") {
             ok(&format!(r#""song":{HARBOUR_LIGHTS}"#))
+        } else if request.contains("/rest/getSong") && id == Some("t2") {
+            ok(
+                r#""song":{"id":"t2","parent":"d2","isDir":false,"title":"Rope and Anchor","duration":218}"#,
+            )
         } else if request.contains("/rest/getIndexes") {
             ok(
                 r#""indexes":{"ignoredArticles":"The","lastModified":1,"index":[{"name":"M","artist":[{"id":"d1","name":"Mara Lind"}]},{"name":"S","artist":[{"id":"d3","name":"Singles","starred":"2024-01-01T00:00:00Z"}]}],"child":[{"id":"t9","isDir":false,"title":"Loose Song","duration":30}]}"#,
@@ -1669,6 +1681,11 @@ mod tests {
                 r#""artists":{{"ignoredArticles":"The","index":[{{"name":"A","artist":[{{"id":"r3","name":"Anna Bach","musicBrainzId":"mb-anna","albumCount":2}}]}},{{"name":"M","artist":[{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","bannerArt":"ba-r1","albumCount":1}}]}},{{"name":"O","artist":[{}]}}]}}"#,
                 others.join(",")
             ))
+        } else if request.contains("/rest/getArtist?") && id == Some("o120") {
+            // An album of their own, and a compilation they are on.
+            ok(
+                r#""artist":{"id":"o120","name":"Other 120","album":[{"id":"a120","name":"Other 120","artistId":"o120","songCount":2,"duration":470,"created":"2024-01-01T00:00:00Z"},{"id":"a2","name":"Classics","artistId":"o120","songCount":7,"duration":1,"created":"2024-01-01T00:00:00Z","isCompilation":true}]}"#,
+            )
         } else if request.contains("/rest/getArtist") {
             ok(&format!(
                 r#""artist":{{"id":"r1","name":"Mara Lind","coverArt":"ar-r1","album":[{{{}}}]}}"#,
@@ -2221,6 +2238,35 @@ mod tests {
             .await;
         press(ui, key);
         press(ui, slint::platform::Key::Return);
+    }
+
+    /// Plays what `pick` selects from the selection's menu: next, at the
+    /// queue's end, then in place of the queue. Checks that each lets the
+    /// selection go and puts `songs` in the queue there, in that order.
+    async fn play_selection(ui: &AppWindow, pick: impl Fn(), songs: &[&str]) {
+        let lone = |id: &str| -> opensubsonic::Child {
+            serde_json::from_str(&format!(r#"{{"id":"{id}","isDir":false,"title":"{id}"}}"#))
+                .unwrap()
+        };
+        let choose = |entry: &str| {
+            pick();
+            click(ui, "More for the selection");
+            click(ui, entry);
+            assert_eq!(ui.get_selected_tiles(), 0, "{entry} lets the selection go");
+        };
+        let queued = || play::testing::queued_ids().0;
+        play::testing::clear(ui);
+        play::testing::play_page(ui, vec![lone("x"), lone("y")], 0);
+        choose("Play next");
+        let next = [vec!["x"], songs.to_vec(), vec!["y"]].concat();
+        wait_for("the selection next", || queued() == next).await;
+        choose("Add to queue");
+        let last = [next.clone(), songs.to_vec()].concat();
+        wait_for("the selection at the end", || queued() == last).await;
+        choose("Play now");
+        wait_for("the selection alone", || queued() == songs).await;
+        play::testing::clear(ui);
+        ui.set_notice("".into());
     }
 
     /// The sidebar entry that is lit, or nothing.
@@ -3352,6 +3398,11 @@ mod tests {
             filter_artists("LIND");
             wait_for("one artist", || links(&ui) == ["artist:r1"]).await;
             assert_eq!(ui.get_album_filter(), "");
+            // The selection's menu plays the songs of an artist's own
+            // albums, not those of a compilation they are on.
+            filter_artists("Other 120");
+            wait_for("Other 120", || links(&ui) == ["artist:o120"]).await;
+            play_selection(&ui, || ui.invoke_select_tile(0, false), &["s1", "s2"]).await;
             filter_artists("lindsay");
             wait_for("no artists", || ui.get_tiles().row_count() == 0).await;
             filter_artists("");
@@ -3764,6 +3815,8 @@ mod tests {
             assert_eq!(writes(), ["updatePlaylist playlistId=p1&songIdToAdd=s1&songIdToAdd=s9"]);
             wait_for("the notice", || ui.get_notice() != "").await;
             ui.set_notice("".into());
+            // The selection's menu plays a playlist's songs.
+            play_selection(&ui, || ui.invoke_select_tile(0, false), &["s1", "s9"]).await;
             ui.invoke_open("playlist:p1".into());
             wait_for("Road Trip as the server has it", || {
                 (ui.get_tracks().row_data(1)).is_some_and(|track| track.title == "Fugue")
@@ -3860,6 +3913,40 @@ mod tests {
             wait_for("the notice", || ui.get_notice() != "").await;
             assert_eq!(ui.get_notice(), "Added 2 tracks to Road Trip.");
             ui.set_notice("".into());
+            // The selection's menu plays the albums picked in the page's
+            // order, whichever was picked first. Of the albums matching
+            // "Other 2", only the first, a2, has songs of its own.
+            let filter_albums = |typed: &str| {
+                ui.set_album_filter(typed.into());
+                ui.invoke_filter_albums();
+            };
+            let tile_link = |row: usize| ui.get_tiles().row_data(row).map(|tile| tile.link);
+            filter_albums("Other 2");
+            wait_for("a2 first", || tile_link(0).is_some_and(|link| link == "album:a2")).await;
+            assert_eq!(tile_link(1).unwrap(), "album:a20");
+            let pick_albums = || {
+                ui.invoke_select_tile(1, false);
+                ui.invoke_select_tile(0, false);
+            };
+            let albums = ["c1", "c2", "c3", "c4", "c6", "c7", "c5", "s1", "s2"];
+            play_selection(&ui, pick_albums, &albums).await;
+            // Albums deleted on the server since are left out, the album
+            // after them plays all the same, and the notice counts them.
+            let album_id = |row: usize| tile_link(row).unwrap().replace("album:", "");
+            GONE_ALBUMS.lock().unwrap().extend([album_id(2), album_id(3)]);
+            (2..5).for_each(|row| ui.invoke_select_tile(row, false));
+            click(&ui, "More for the selection");
+            click(&ui, "Play now");
+            wait_for("the album after them", || play::testing::queued_ids().0 == ["s1", "s2"]).await;
+            assert_eq!(
+                ui.get_notice(),
+                "The songs of 2 items couldn't be fetched: server error 70: Album not found"
+            );
+            GONE_ALBUMS.lock().unwrap().clear();
+            play::testing::clear(&ui);
+            ui.set_notice("".into());
+            filter_albums("");
+            wait_for("all albums", || ui.get_tiles().row_count() == 100).await;
             // A read-only playlist offers no changes.
             ui.invoke_open("playlist:p2".into());
             wait_for("the empty playlist", || ui.get_header_title() == "Empty").await;
@@ -5042,6 +5129,7 @@ mod tests {
             ui.invoke_select_line(1, false);
             assert!(ui.get_track_lines().row_data(1).unwrap().selected);
             assert_eq!(ui.get_selected_tiles(), 1);
+            assert!(!ui.get_selection_has_songs(), "the selection's menu plays no composition");
             // It stays selected in another order.
             ui.invoke_sort_tracks(3);
             assert!(ui.get_track_lines().row_data(0).unwrap().selected);
@@ -5472,6 +5560,14 @@ mod tests {
             assert_eq!(rows, [false, true, true, true, false]);
             assert_eq!(ui.get_selected_tiles(), 3);
             ui.invoke_clear_selection();
+            // The selection's menu plays the rows picked in the order shown,
+            // as sorted, whichever was picked first.
+            let shown = play::testing::page_song_ids(&ui);
+            let pick_rows = || {
+                ui.invoke_select_line(3, false);
+                ui.invoke_select_line(1, false);
+            };
+            play_selection(&ui, pick_rows, &[shown[1].as_str(), shown[3].as_str()]).await;
             // So does a click on a row with Shift held, beside its links.
             let title = column(&ui, "Title") as usize;
             let beside = |row: usize| {
@@ -5661,6 +5757,9 @@ mod tests {
                 *PLAYLIST_WRITES.lock().unwrap(),
                 ["updatePlaylist playlistId=p1&songIdToAdd=t2&songIdToAdd=t1"]
             );
+            // The selection's menu plays every song under a folder, in the
+            // same order.
+            play_selection(&ui, || ui.invoke_select_line(0, false), &["t2", "t1"]).await;
             // It sorts by a heading, kept apart from the tracks table's.
             ui.invoke_sort_tracks(1);
             assert_eq!(entry(&ui, 0), named("Harbour Lights", "song:t1"));
@@ -5691,6 +5790,23 @@ mod tests {
                 ui.get_header_title() == "Folders" && ui.get_track_lines().row_count() == 3
             })
             .await;
+            // A song selected on a page left behind plays all the same.
+            ui.invoke_open("folder:d2".into());
+            wait_for("Night Harbour's folder", || {
+                ui.get_header_title() == "Night Harbour" && ui.get_track_lines().row_count() == 2
+            })
+            .await;
+            let rope = (0..2).find(|&row| entry(&ui, row).1 == "song:t2").unwrap();
+            ui.invoke_select_line(rope as i32, false);
+            click(&ui, "Back");
+            wait_for("the top level once more", || {
+                ui.get_header_title() == "Folders" && ui.get_track_lines().row_count() == 3
+            })
+            .await;
+            click(&ui, "More for the selection");
+            click(&ui, "Play now");
+            wait_for("the song left behind", || play::testing::queued_ids().0 == ["t2"]).await;
+            play::testing::clear(&ui);
             click(&ui, "Tracks");
             wait_for("the tracks", || ui.get_track_lines().row_count() == 100).await;
 

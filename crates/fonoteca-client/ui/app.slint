@@ -1213,6 +1213,11 @@ export component AppWindow inherits Window {
     // selected: none without folders, or with no playlist selected.
     in property <[Name]> tile-moves;
     in property <[Name]> selection-moves;
+    // Whether anything selected has songs to play: a song, an album, an
+    // artist, a playlist or a folder; where songs can play, the selection's
+    // menu plays them.
+    in property <bool> selection-has-songs;
+    property <bool> selection-queued: root.can-play && root.selection-has-songs;
     // The tags page's rows; the tags dialog's tags, while not waiting for
     // what the songs have.
     in property <[TagRow]> tag-rows;
@@ -1325,10 +1330,12 @@ export component AppWindow inherits Window {
     // next or at its end; the songs of an album's or a playlist's link, to play now,
     // next or at the end; or the songs of the album or playlist on screen,
     // as `how` says: "next", "queue", or "shuffle-now", "shuffle-next" or
-    // "shuffle-last" for them in a random order.
+    // "shuffle-last" for them in a random order; or the songs of what is
+    // selected, in the page's order, to play now, next or at the end.
     callback queue-tracks(row: int, count: int, next: bool);
     callback queue-link(link: string, how: string);
     callback queue-page(how: string);
+    callback queue-selection(how: string);
     // The queue on the now playing sheet, by its rows there: the first is
     // the track playing.
     callback jump-to(row: int);
@@ -3336,13 +3343,18 @@ export component AppWindow inherits Window {
         height: self.preferred-height;
         count: root.selected-tiles;
         clear => { root.clear-selection(); }
-        if root.playlist-targets.length > 0 || root.tags-offered || root.selection-moves.length > 0: MoreMenu {
+        if root.selection-queued || root.playlist-targets.length > 0 || root.tags-offered || root.selection-moves.length > 0: MoreMenu {
             cross-axis-self-alignment: center;
             label: "More for the selection";
             color: Palette.accent-foreground;
             ring-color: Palette.accent-foreground;
             opening => {
                 self.entries = [];
+                if root.selection-queued {
+                    self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
+                    self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                    self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
+                }
                 if root.playlist-targets.length > 0 {
                     self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlist-targets });
                 }
@@ -3354,7 +3366,9 @@ export component AppWindow inherits Window {
                 }
             }
             activated(id, choice) => {
-                if id == "tags" {
+                if id == "play" || id == "next" || id == "queue" {
+                    root.queue-selection(id);
+                } else if id == "tags" {
                     root.tag-selection();
                     root.ask(Asking.tag-songs);
                 } else if id == "move" {

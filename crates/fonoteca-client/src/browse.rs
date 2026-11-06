@@ -1168,15 +1168,7 @@ fn select_tile(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
 fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
     let page = ui.get_page();
     let mut b = browser.borrow_mut();
-    let links: Vec<String> = if page == Page::Compositions {
-        b.view
-            .iter()
-            .map(|&piece| piece_link(&b.compositions[piece]))
-            .collect()
-    } else {
-        let (songs, order) = listed(&b, page);
-        order.iter().map(|&song| song_link(&songs[song])).collect()
-    };
+    let links = table_links(&b, page);
     let lines = b.lines.clone();
     for (row, selected) in pick(&mut b, &links, row, range) {
         if let Some(mut line) = lines.row_data(row) {
@@ -1185,6 +1177,20 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
         }
     }
     show_selected(ui, &b);
+}
+
+/// The links of the rows of the tracks or compositions table on `page`, in
+/// the order shown.
+fn table_links(b: &Browser, page: Page) -> Vec<String> {
+    if page == Page::Compositions {
+        return b
+            .view
+            .iter()
+            .map(|&piece| piece_link(&b.compositions[piece]))
+            .collect();
+    }
+    let (songs, order) = listed(b, page);
+    order.iter().map(|&song| song_link(&songs[song])).collect()
 }
 
 /// Puts `songs` on screen as the rows of an album's, playlist's, artist's or
@@ -1297,10 +1303,19 @@ fn joined(selected: &[bool]) -> Vec<(bool, bool)> {
         .collect()
 }
 
-/// Says how many tiles and rows are selected, and where the playlists among
-/// them can be moved: the top level and every folder.
+/// The kinds of links whose songs the selection's menu can play.
+const WITH_SONGS: [&str; 5] = ["song", "album", "artist", "playlist", "folder"];
+
+/// Says how many tiles and rows are selected, whether any has songs to play,
+/// and where the playlists among them can be moved: the top level and every
+/// folder.
 fn show_selected(ui: &AppWindow, b: &Browser) {
     ui.set_selected_tiles(b.selected.len() as i32);
+    let has_songs = |link: &String| {
+        link.split_once(':')
+            .is_some_and(|(kind, _)| WITH_SONGS.contains(&kind))
+    };
+    ui.set_selection_has_songs(b.selected.iter().any(has_songs));
     let playlists = b.selected.iter().any(|link| link.starts_with("playlist:"));
     let moves = match folders_of(b) {
         Some(folders) if playlists && !folders.is_empty() => {
@@ -1392,6 +1407,61 @@ fn clear_selection(ui: &AppWindow, browser: &Shared) {
     }
     show_track_selection(&browser.borrow());
     show_selected(ui, &browser.borrow());
+}
+
+/// The links selected, in the order `in_page_order` gives; and ends
+/// selecting.
+pub fn take_selection(ui: &AppWindow, browser: &Shared) -> Vec<String> {
+    let links = in_page_order(&browser.borrow(), ui.get_page());
+    clear_selection(ui, browser);
+    links
+}
+
+/// The links selected, those on `page` in the order it shows them and the
+/// rest after them in the order picked.
+fn in_page_order(b: &Browser, page: Page) -> Vec<String> {
+    let shown = selectable_links(b, page);
+    let place: HashMap<&str, usize> = shown
+        .iter()
+        .enumerate()
+        .map(|(at, link)| (link.as_str(), at))
+        .collect();
+    let mut links = b.selected.clone();
+    links.sort_by_key(|link| place.get(link.as_str()).copied().unwrap_or(usize::MAX));
+    links
+}
+
+/// The links of what can be selected on `page`, in the order it shows them:
+/// a table's rows, or else the track rows and then the tiles, but the tiles
+/// first on the downloads page.
+fn selectable_links(b: &Browser, page: Page) -> Vec<String> {
+    if matches!(
+        page,
+        Page::Tracks | Page::Compositions | Page::Folders | Page::Tag
+    ) {
+        return table_links(b, page);
+    }
+    let rows = b.songs.iter().map(song_link);
+    let tiles = b.tiles.iter().map(|tile| tile.link.to_string());
+    if page == Page::Downloads {
+        tiles.chain(rows).collect()
+    } else {
+        rows.chain(tiles).collect()
+    }
+}
+
+/// The songs of `links` that the pages left in the browser, by link, so as
+/// not to ask the server for them again.
+pub fn songs_held(browser: &Shared, links: &[String]) -> HashMap<String, Child> {
+    let wanted: HashSet<&str> = links
+        .iter()
+        .filter_map(|link| link.strip_prefix("song:"))
+        .collect();
+    let b = browser.borrow();
+    let held = b.songs.iter().chain(&b.song_list).chain(&b.entries);
+    held.filter(|song| !song.is_dir && wanted.contains(song.id.as_str()))
+        .map(|song| (song_link(song), song.clone()))
+        .collect()
 }
 
 fn open(ui: &AppWindow, browser: &Shared, link: String) {
@@ -4094,7 +4164,7 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
 /// The albums of `artist` that are theirs: they are among its artists and it
 /// is no compilation, in the order given. The albums they only appear on, and
 /// compilations, are left out.
-fn own_albums_of<'a>(
+pub(crate) fn own_albums_of<'a>(
     artist: &'a ArtistID3,
     albums: &'a [AlbumID3],
 ) -> impl Iterator<Item = &'a AlbumID3> {
@@ -8778,6 +8848,43 @@ mod tests {
         b.tracks.set_row_data(0, Track::default());
         show_track_selection(&b);
         assert!(!shown(&b).1);
+    }
+
+    #[test]
+    fn the_selection_is_in_the_order_of_the_page_and_the_rest_in_the_order_picked() {
+        let song = |id: &str| -> Child {
+            serde_json::from_str(&format!(r#"{{"id":"{id}","isDir":false,"title":"t"}}"#)).unwrap()
+        };
+        let tile = |link: &str| AlbumTile {
+            link: link.into(),
+            ..AlbumTile::default()
+        };
+        // The tracks table lists the same songs, sorted the other way.
+        let b = Browser {
+            songs: vec![song("a"), song("b")],
+            song_list: vec![song("a"), song("b")],
+            song_view: vec![1, 0],
+            selected: ["album:gone", "album:y", "song:b", "album:x", "song:a"]
+                .map(String::from)
+                .to_vec(),
+            ..Browser::default()
+        };
+        b.tiles.set_vec(vec![tile("album:x"), tile("album:y")]);
+        // An artist's top songs are above their albums.
+        assert_eq!(
+            in_page_order(&b, Page::Artist),
+            ["song:a", "song:b", "album:x", "album:y", "album:gone"]
+        );
+        // What is kept has its albums above its songs.
+        assert_eq!(
+            in_page_order(&b, Page::Downloads),
+            ["album:x", "album:y", "song:a", "song:b", "album:gone"]
+        );
+        // A table's rows go as sorted.
+        assert_eq!(
+            in_page_order(&b, Page::Tracks),
+            ["song:b", "song:a", "album:gone", "album:y", "album:x"]
+        );
     }
 
     #[test]

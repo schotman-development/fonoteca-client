@@ -387,6 +387,15 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             .expect("the event loop is running");
         }
     });
+    ui.on_queue_selection({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |how| {
+            let ui = weak.unwrap();
+            let links = browse::take_selection(&ui, &browser);
+            let held = browse::songs_held(&browser, &links);
+            queue_links(&ui, &browser, &playing, links, held, how.into());
+        }
+    });
     ui.on_jump_to({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |row| {
@@ -617,34 +626,56 @@ fn queue_songs(
     }
 }
 
-/// Does `how` with every song of the artist's own albums, once all of them
-/// have arrived: a shuffle across albums needs them all, and an album fetched
-/// per call keeps the window free meanwhile.
+/// Does `how` with every song of the artist's own albums.
 fn queue_artist(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, how: String) {
-    let Some(client) = browse::client(browser) else {
-        return;
-    };
-    let (kept, offline) = (browse::downloads(browser), browse::is_offline(browser));
     let albums = browse::own_albums(browser);
     if albums.is_empty() {
         return browse::notify(ui, browser, "They have no albums of their own.".into());
     }
     browse::notify(ui, browser, format!("Fetching {} albums…", albums.len()));
+    queue_links(ui, browser, playing, albums, HashMap::new(), how);
+}
+
+/// Does `how` with the songs of `links` in their order, once all of them
+/// have arrived: those `held` by link at once, the rest from the server or
+/// this device. A shuffle across them needs them all, and a link fetched per
+/// call keeps the window free meanwhile. Links whose songs couldn't be
+/// fetched are left out, and a notice says how many.
+fn queue_links(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    links: Vec<String>,
+    held: HashMap<String, Child>,
+    how: String,
+) {
+    let Some(client) = browse::client(browser) else {
+        return;
+    };
+    let (kept, offline) = (browse::downloads(browser), browse::is_offline(browser));
     let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
     slint::spawn_local(async move {
         let mut songs = Vec::new();
-        for link in albums {
+        let mut failures = Vec::new();
+        for link in links {
+            if let Some(song) = held.get(&link) {
+                songs.push(song.clone());
+                continue;
+            }
             match songs_of(&client, &kept, offline, &link).await {
-                Ok(album) => songs.extend(album),
-                Err(e) => {
-                    let Some(ui) = weak.upgrade() else { return };
-                    let text = format!("The songs couldn't be fetched: {e}");
-                    return browse::notify(&ui, &browser, text);
-                }
+                Ok(more) => songs.extend(more),
+                Err(e) => failures.push(e),
             }
         }
-        if let Some(ui) = weak.upgrade() {
-            queue_songs(&ui, &browser, &playing, songs, &how);
+        let Some(ui) = weak.upgrade() else { return };
+        queue_songs(&ui, &browser, &playing, songs, &how);
+        if let Some(last) = failures.last() {
+            let items = match failures.len() {
+                1 => "1 item".to_owned(),
+                count => format!("{count} items"),
+            };
+            let text = format!("The songs of {items} couldn't be fetched: {last}");
+            browse::notify(&ui, &browser, text);
         }
     })
     .expect("the event loop is running");
@@ -1434,7 +1465,8 @@ fn remember_expanded_works(queue: &Queue) {
     }
 }
 
-/// The songs of an album's, a playlist's or a folder's link, in their order.
+/// The songs of a song's, an album's, a playlist's, a folder's or an
+/// artist's link, in their order: an artist's those of their own albums.
 async fn songs_of(
     client: &Client,
     kept: &offline::Downloads,
@@ -1442,12 +1474,11 @@ async fn songs_of(
     link: &str,
 ) -> opensubsonic::Result<Vec<Child>> {
     Ok(match link.split_once(':') {
-        Some(("album", id)) => {
-            let call = client.get_album(id);
-            browse::saved_or(offline, || kept.album(id), call)
-                .await?
-                .song
+        Some(("song", id)) => {
+            let call = client.get_song(id);
+            vec![browse::saved_or(offline, || kept.song(id), call).await?]
         }
+        Some(("album", id)) => album_songs(client, kept, offline, id).await?,
         Some(("playlist", id)) => {
             let call = client.get_playlist(id);
             browse::saved_or(offline, || kept.playlist(id), call)
@@ -1460,8 +1491,29 @@ async fn songs_of(
                 .await?
                 .child
         }
+        Some(("artist", id)) => {
+            let artist = client.get_artist(id).await?;
+            let mut songs = Vec::new();
+            for album in browse::own_albums_of(&artist.artist, &artist.album) {
+                songs.extend(album_songs(client, kept, offline, &album.id).await?);
+            }
+            songs
+        }
         _ => Vec::new(),
     })
+}
+
+/// The songs of the album `id`, in their order.
+async fn album_songs(
+    client: &Client,
+    kept: &offline::Downloads,
+    offline: bool,
+    id: &str,
+) -> opensubsonic::Result<Vec<Child>> {
+    let call = client.get_album(id);
+    Ok(browse::saved_or(offline, || kept.album(id), call)
+        .await?
+        .song)
 }
 
 /// `songs` that can play now: while the server isn't there, only those kept
@@ -1670,6 +1722,13 @@ pub(crate) mod testing {
             p.queue.songs().map(|song| song.id.clone()).collect(),
             p.shown,
         )
+    }
+
+    /// The ids of the songs on screen, in their rows' order.
+    pub(crate) fn page_song_ids(ui: &AppWindow) -> Vec<String> {
+        let (browser, _) = handles();
+        let (songs, _) = browse::songs(&browser, ui.get_page(), 0);
+        songs.into_iter().map(|song| song.id).collect()
     }
 
     /// Whether each song queued is loved, in order.
