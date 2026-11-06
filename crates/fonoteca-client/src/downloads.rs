@@ -260,11 +260,12 @@ fn follow(ui: &AppWindow, browser: &browse::Shared, item: Item) {
     }
 }
 
-/// The album or playlist at `link`, as the server has it now.
+/// The album, playlist or folder at `link`, as the server has it now.
 async fn item_at(client: &Client, link: &str) -> opensubsonic::Result<Item> {
     match link.split_once(':') {
         Some(("album", id)) => client.get_album(id).await.map(Item::Album),
         Some(("playlist", id)) => client.get_playlist(id).await.map(Item::Playlist),
+        Some(("folder", id)) => browse::whole_folder(client, id).await.map(Item::Folder),
         _ => Err(opensubsonic::Error::Unexpected(format!(
             "{link} can't be downloaded"
         ))),

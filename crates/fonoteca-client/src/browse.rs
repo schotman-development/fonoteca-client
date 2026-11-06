@@ -25,8 +25,8 @@ use image::{AnimationDecoder, Frame, Frames};
 use opensubsonic::AlbumID3WithSongs;
 use opensubsonic::{
     AlbumID3, AlbumListType, Answers, ArtistID3, CatalogueStation, Child, Client, Composer,
-    Composition, ExplicitStatus, GenericMediaType, Genre, Indexes, InternetRadioStation, ItemDate,
-    ListOptions, MediaType, Movement, Playlist, PlaylistFolder, PlaylistFolderUpdate,
+    Composition, Directory, ExplicitStatus, GenericMediaType, Genre, Indexes, InternetRadioStation,
+    ItemDate, ListOptions, MediaType, Movement, Playlist, PlaylistFolder, PlaylistFolderUpdate,
     PlaylistUpdate, PlaylistWithSongs, RadioStation, ScanStatus, SearchOptions, Span, Tag,
     TagUpdate, User,
 };
@@ -219,6 +219,10 @@ pub struct Browser {
     library: Vec<AlbumID3>,
     library_loading: bool,
     library_loaded: bool,
+    /// How many tracks the server's last finished scan counted, once it
+    /// told; and whether it has answered, or failed to, since sign-in.
+    scanned_tracks: Option<usize>,
+    scanned_tracks_asked: bool,
     /// Every artist on the server, once they have arrived.
     artists: Vec<ArtistID3>,
     artists_loaded: bool,
@@ -491,8 +495,8 @@ pub fn song_at(browser: &Shared, row: usize) -> Option<Child> {
     browser.borrow().songs.get(row).cloned()
 }
 
-/// The downloads page: the albums and playlists kept as tiles, the songs
-/// kept on their own as rows.
+/// The downloads page: the albums, playlists and folders kept as tiles, the
+/// songs kept on their own as rows.
 fn downloads_page(ui: &AppWindow, browser: &Shared) {
     ui.set_header_title("Downloads".into());
     let mut tiles = Vec::new();
@@ -504,6 +508,7 @@ fn downloads_page(ui: &AppWindow, browser: &Shared) {
             }
             offline::Item::Playlist(playlist) => tiles.push(playlist_tile(&playlist.playlist)),
             offline::Item::Song(song) => songs.push(*song),
+            offline::Item::Folder(folder) => tiles.push(music_folder_tile(&folder)),
         }
     }
     let rows: Vec<Track> = songs.iter().map(song_track).collect();
@@ -533,7 +538,7 @@ pub fn downloads_changed(ui: &AppWindow, browser: &Shared) {
 }
 
 /// Shows how much of the page on screen is kept, on its header and on the
-/// rows of its songs.
+/// rows of its songs and folders.
 pub fn show_downloads(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let progress = b
@@ -571,6 +576,16 @@ pub fn show_downloads(ui: &AppWindow, browser: &Shared) {
         if tile.downloaded != kept {
             tile.downloaded = kept;
             b.tiles.set_row_data(row, tile);
+        }
+    }
+    for row in 0..b.lines.row_count() {
+        let Some(mut line) = b.lines.row_data(row).filter(|line| line.folder) else {
+            continue;
+        };
+        let kept = b.downloads.is_kept(&line.link);
+        if line.downloaded != kept {
+            line.downloaded = kept;
+            b.lines.set_row_data(row, line);
         }
     }
 }
@@ -2047,6 +2062,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
     if ask {
         load_library(ui, browser);
     }
+    count_tracks(ui, browser);
     played::ask(ui, browser);
     saved_stations(ui, browser);
     created_for::shelf(ui);
@@ -2080,11 +2096,7 @@ fn show_home(ui: &AppWindow, browser: &Shared) {
                 b.artists_loaded.then_some(b.artists.len()),
             ),
             stat(icons.get_album(), "Albums", library.map(Vec::len)),
-            stat(
-                icons.get_note(),
-                "Tracks",
-                library.map(|albums| albums.iter().map(|a| a.song_count.max(0) as usize).sum()),
-            ),
+            stat(icons.get_note(), "Tracks", track_count(&b)),
         ];
         if offers_compositions(&b) {
             stats.push(stat(
@@ -2115,6 +2127,39 @@ fn show_home(ui: &AppWindow, browser: &Shared) {
     // A library asked for again may have others.
     clear_tiles(ui, &mut browser.borrow_mut());
     add_tiles(ui, browser, tiles);
+}
+
+/// How many tracks the home page counts: as many as the tracks page lists,
+/// once they have arrived; until then as many as the server's last scan
+/// counted, which matches them; and from a server that doesn't count, the
+/// albums' songs.
+fn track_count(b: &Browser) -> Option<usize> {
+    let albums_songs = || b.library.iter().map(|a| a.song_count.max(0) as usize).sum();
+    (b.song_list_loaded.then_some(b.song_list.len()))
+        .or(b.scanned_tracks)
+        .or_else(|| (b.library_loaded && b.scanned_tracks_asked).then(albums_songs))
+}
+
+/// Asks the server how many tracks its scan counted, for the home page. A
+/// scan still going counts what it has walked so far, so the count from
+/// before it stays, as it does when the server can't answer.
+fn count_tracks(ui: &AppWindow, browser: &Shared) {
+    aside(
+        ui,
+        browser,
+        |client| async move { Ok(client.get_scan_status().await.ok()) },
+        |ui, browser, status: Option<ScanStatus>| {
+            {
+                let mut b = browser.borrow_mut();
+                b.scanned_tracks_asked = true;
+                let finished = status.filter(|status| !status.scanning);
+                if let Some(count) = finished.and_then(|status| status.count) {
+                    b.scanned_tracks = usize::try_from(count).ok();
+                }
+            }
+            show_home(ui, browser);
+        },
+    );
 }
 
 /// Whether two album tiles name the same album the same way.
@@ -2872,6 +2917,8 @@ fn track_line(b: &Browser, song: &Child, columns: &[usize], size: u32) -> TrackL
         selected: b.selected.contains(&link),
         album: album.unwrap_or_default(),
         artists: names(artists),
+        downloaded: song.is_dir && b.downloads.is_kept(&link),
+        link: link.into(),
     }
 }
 
@@ -2892,15 +2939,18 @@ fn piece_line(b: &Browser, piece: &Composition, columns: &[usize], size: u32) ->
         .map(composer_name)
         .filter(|composer| !composer.link.is_empty())
         .collect();
+    let link = piece_link(piece);
     TrackLine {
         title: piece.name.as_str().into(),
         cells: ModelRc::new(VecModel::from(cells)),
         loved: piece.starred.is_some(),
         cover: cover.unwrap_or_default(),
         folder: false,
-        selected: b.selected.contains(&piece_link(piece)),
+        selected: b.selected.contains(&link),
         album: Name::default(),
         artists: names(composers),
+        downloaded: false,
+        link: link.into(),
     }
 }
 
@@ -4436,7 +4486,7 @@ pub(crate) fn add_to_playlist(ui: &AppWindow, browser: &Shared, id: String, link
 }
 
 /// The songs of these links, in their order: a song's own, an album's, an
-/// artist's albums' or a playlist's.
+/// artist's albums', a playlist's or those under a folder.
 async fn songs_of(client: &Client, links: &[String]) -> opensubsonic::Result<Vec<String>> {
     let mut songs = Vec::new();
     for link in links {
@@ -4467,6 +4517,13 @@ async fn songs_of(client: &Client, links: &[String]) -> opensubsonic::Result<Vec
                     );
                 }
             }
+            "folder" => songs.extend(
+                whole_folder(client, id)
+                    .await?
+                    .child
+                    .into_iter()
+                    .map(|s| s.id),
+            ),
             _ => {}
         }
     }
@@ -4740,10 +4797,30 @@ async fn children_of(client: &Client, links: &[String]) -> opensubsonic::Result<
                     songs.extend(client.get_album(&album.id).await?.song);
                 }
             }
+            "folder" => songs.extend(whole_folder(client, id).await?.child),
             _ => {}
         }
     }
     Ok(songs)
+}
+
+/// The folder `id` with every song under it as its children, those of each
+/// folder in it in its place: what playing, adding, tagging or keeping a
+/// folder takes. A folder met again, as a link loop on the server makes, is
+/// gone through once.
+pub async fn whole_folder(client: &Client, id: &str) -> opensubsonic::Result<Directory> {
+    let mut folder = client.get_music_directory(id).await?;
+    let mut seen = HashSet::from([id.to_owned()]);
+    let mut waiting: Vec<Child> = folder.child.drain(..).rev().collect();
+    while let Some(entry) = waiting.pop() {
+        if !entry.is_dir {
+            folder.child.push(entry);
+        } else if seen.insert(entry.id.clone()) {
+            let inner = client.get_music_directory(&entry.id).await?;
+            waiting.extend(inner.child.into_iter().rev());
+        }
+    }
+    Ok(folder)
 }
 
 /// The tags dialog's tags, ticked where every song it is for has them.
@@ -6305,7 +6382,8 @@ fn song(ui: &AppWindow, browser: &Shared, id: String) {
 /// it; or at "tag:<id>" a tag's page, with the songs that have it or a tag
 /// under it. Each is a table like the tracks page's, whose titles open a
 /// folder or a song's page. A folder shown again, as when filtering, isn't
-/// asked for again.
+/// asked for again. A folder kept on this device lists its songs while the
+/// server can't be reached.
 fn folders(ui: &AppWindow, browser: &Shared, link: String) {
     show_columns(ui, browser);
     let tag = link.strip_prefix("tag:").map(str::to_owned);
@@ -6333,11 +6411,12 @@ fn folders(ui: &AppWindow, browser: &Shared, link: String) {
         tag_header(ui, &browser.borrow());
     }
     let id = link.strip_prefix("folder:").map(str::to_owned);
+    let (kept, offline) = (downloads(browser), is_offline(browser));
     load(
         ui,
         browser,
         move |client| {
-            let (tag, id) = (tag.clone(), id.clone());
+            let (tag, id, kept) = (tag.clone(), id.clone(), kept.clone());
             async move {
                 if let Some(tag) = tag {
                     let tag = client.get_tag(&tag).await?;
@@ -6350,7 +6429,8 @@ fn folders(ui: &AppWindow, browser: &Shared, link: String) {
                         indexes.map(top_level).unwrap_or_default(),
                     ));
                 };
-                let folder = client.get_music_directory(&id).await?;
+                let call = client.get_music_directory(&id);
+                let folder = saved_or(offline, || kept.folder(&id), call).await?;
                 Ok((folder.name, folder.child))
             }
         },
@@ -6666,6 +6746,20 @@ fn folder_tile(folder: &PlaylistFolder, inside: usize) -> (AlbumTile, Option<Str
         ..AlbumTile::default()
     };
     (tile, None)
+}
+
+/// A music folder's tile, as kept with every song under it, with how many
+/// those are, and the cover of the first.
+fn music_folder_tile(folder: &Directory) -> (AlbumTile, Option<String>) {
+    let tracks = count(folder.child.len(), "track", "tracks");
+    let tile = AlbumTile {
+        title: folder.name.as_str().into(),
+        names: names(vec![unlinked(tracks)]),
+        link: format!("folder:{}", folder.id).into(),
+        ..AlbumTile::default()
+    };
+    let cover = folder.child.iter().find_map(|song| song.cover_art.clone());
+    (tile, cover)
 }
 
 /// An album's tile, named by `credits`, and its cover's id.
@@ -8339,6 +8433,32 @@ mod tests {
         assert_eq!(duration(3725), "1:02:05");
         assert_eq!(count(1, "track", "tracks"), "1 track");
         assert_eq!(count(9, "track", "tracks"), "9 tracks");
+    }
+
+    #[test]
+    fn home_counts_the_tracks_the_tracks_page_lists() {
+        let album = r#"[{"id":"a1","name":"A","songCount":2,"duration":1,"created":""}]"#;
+        let mut b = Browser {
+            library: serde_json::from_str(album).unwrap(),
+            library_loaded: true,
+            ..Browser::default()
+        };
+        assert_eq!(
+            track_count(&b),
+            None,
+            "until the server says whether it counts"
+        );
+        b.scanned_tracks_asked = true;
+        assert_eq!(
+            track_count(&b),
+            Some(2),
+            "the albums' songs, from one that doesn't"
+        );
+        b.scanned_tracks = Some(3);
+        assert_eq!(track_count(&b), Some(3), "the scan's count");
+        b.song_list = serde_json::from_str(r#"[{"id":"s1","isDir":false,"title":"A"}]"#).unwrap();
+        b.song_list_loaded = true;
+        assert_eq!(track_count(&b), Some(1), "the tracks page's songs");
     }
 
     #[test]

@@ -1408,7 +1408,7 @@ fn remember_expanded_works(queue: &Queue) {
     }
 }
 
-/// The songs of an album's or a playlist's link, in their order.
+/// The songs of an album's, a playlist's or a folder's link, in their order.
 async fn songs_of(
     client: &Client,
     kept: &offline::Downloads,
@@ -1427,6 +1427,12 @@ async fn songs_of(
             browse::saved_or(offline, || kept.playlist(id), call)
                 .await?
                 .entry
+        }
+        Some(("folder", id)) => {
+            let call = browse::whole_folder(client, id);
+            browse::saved_or(offline, || kept.folder(id), call)
+                .await?
+                .child
         }
         _ => Vec::new(),
     })

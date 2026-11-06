@@ -871,6 +871,9 @@ mod tests {
     static MOVED: AtomicBool = AtomicBool::new(false);
     /// While set, the flow test's server answers every request with an error.
     static DOWN: AtomicBool = AtomicBool::new(false);
+    /// While set, the server hangs up on every folder it is asked for, as
+    /// one out of reach does.
+    static FOLDERS_UNREACHABLE: AtomicBool = AtomicBool::new(false);
     /// How many covers the server was asked for, and the first ones' ids.
     static COVERS: AtomicUsize = AtomicUsize::new(0);
     static FIRST_COVERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -1341,8 +1344,8 @@ mod tests {
     /// are by or about Bach, and each order puts them differently. It knows
     /// 122 artists, in three indexes, two playlists, one of them empty and
     /// read-only, and 230 songs for the empty search, more than the client
-    /// asks for at once. It takes every playlist change but a rename to
-    /// "Taken".
+    /// asks for at once, as many as its scans count once done. It takes every
+    /// playlist change but a rename to "Taken".
     fn subsonic(request: &str) -> Vec<u8> {
         let ok = |body: &str| {
             json(&format!(
@@ -1544,6 +1547,15 @@ mod tests {
             ok(
                 r#""indexes":{"ignoredArticles":"The","lastModified":1,"index":[{"name":"M","artist":[{"id":"d1","name":"Mara Lind"}]},{"name":"S","artist":[{"id":"d3","name":"Singles","starred":"2024-01-01T00:00:00Z"}]}],"child":[{"id":"t9","isDir":false,"title":"Loose Song","duration":30}]}"#,
             )
+        } else if request.contains("/rest/getMusicDirectory") && FOLDERS_UNREACHABLE.load(Relaxed) {
+            Vec::new()
+        } else if request.contains("/rest/getMusicDirectory") && id == Some("d3") {
+            ok(r#""directory":{"id":"d3","parent":"root","name":"Singles","child":[]}"#)
+        } else if request.contains("/rest/getMusicDirectory") && id == Some("d2") {
+            // The way back to her folder, as a link loop on disk makes.
+            ok(
+                r#""directory":{"id":"d2","parent":"d1","name":"Night Harbour","child":[{"id":"t2","parent":"d2","isDir":false,"title":"Rope and Anchor","duration":218,"coverArt":"al-a1"},{"id":"d1","parent":"d2","isDir":true,"title":"Mara Lind"}]}"#,
+            )
         } else if request.contains("/rest/getMusicDirectory") && id == Some("d1") {
             ok(
                 r#""directory":{"id":"d1","parent":"root","name":"Mara Lind","child":[{"id":"d2","parent":"d1","isDir":true,"title":"Night Harbour","coverArt":"al-a1"},{"id":"t1","parent":"d1","isDir":false,"title":"Harbour Lights","duration":252}]}"#,
@@ -1731,8 +1743,8 @@ mod tests {
             let scanning = SCANNING.load(Relaxed);
             let count = match (scanning, SCANS.load(Relaxed)) {
                 (true, _) => 3,
-                (false, 0 | 1) => 146,
-                (false, _) => 150,
+                (false, 0 | 1) => 226,
+                (false, _) => 230,
             };
             ok(&format!(
                 r#""scanStatus":{{"scanning":{scanning},"count":{count}}}"#
@@ -2823,7 +2835,7 @@ mod tests {
             // The server's scan: where it stands, one the server refuses,
             // and one it takes, followed while the page is up until done.
             wait_for("the scan status", || {
-                ui.get_scan_status() == "146 items scanned."
+                ui.get_scan_status() == "226 items scanned."
             })
             .await;
             assert!(!ui.get_scanning());
@@ -2860,7 +2872,7 @@ mod tests {
             .await;
             SCANNING.store(false, Relaxed);
             wait_for("the scan done", || {
-                ui.get_scan_status() == "150 items scanned."
+                ui.get_scan_status() == "230 items scanned."
             })
             .await;
             assert!(!ui.get_scanning());
@@ -5433,6 +5445,16 @@ mod tests {
             ui.set_folder_filter("".into());
             ui.invoke_filter_folders();
             wait_for("the three again", || ui.get_track_lines().row_count() == 3).await;
+            // A selection with no songs under it puts nothing in a playlist.
+            PLAYLIST_WRITES.lock().unwrap().clear();
+            ui.invoke_select_line(1, false);
+            ui.invoke_add_selection_to_playlist("p1".into());
+            wait_for("nothing added", || {
+                ui.get_notice() == "Nothing selected goes in a playlist."
+            })
+            .await;
+            assert!(PLAYLIST_WRITES.lock().unwrap().is_empty());
+            ui.invoke_clear_selection();
             click(&ui, "Mara Lind");
             wait_for("her folder", || ui.get_header_title() == "Mara Lind").await;
             assert_eq!(ui.get_section(), 8, "a folder is among the folders");
@@ -5451,7 +5473,8 @@ mod tests {
             ui.invoke_select_line(0, false);
             assert!(line(&ui, 0).selected);
             ui.invoke_clear_selection();
-            // A song row goes in a playlist; of a selection, only its songs.
+            // A song row goes in a playlist, and a folder's every song under
+            // it, each folder gone through once.
             ui.invoke_add_line_to_playlist(1, "p1".into());
             wait_for("the song added", || {
                 PLAYLIST_WRITES.lock().unwrap().last().map(String::as_str)
@@ -5463,11 +5486,14 @@ mod tests {
             PLAYLIST_WRITES.lock().unwrap().clear();
             ui.invoke_select_line(0, false);
             ui.invoke_add_selection_to_playlist("p1".into());
-            wait_for("nothing added", || {
-                ui.get_notice() == "Nothing selected goes in a playlist."
+            wait_for("the folder's songs added", || {
+                ui.get_notice() == "Added 2 tracks to Road Trip."
             })
             .await;
-            assert!(PLAYLIST_WRITES.lock().unwrap().is_empty());
+            assert_eq!(
+                *PLAYLIST_WRITES.lock().unwrap(),
+                ["updatePlaylist playlistId=p1&songIdToAdd=t2&songIdToAdd=t1"]
+            );
             // It sorts by a heading, kept apart from the tracks table's.
             ui.invoke_sort_tracks(1);
             assert_eq!(entry(&ui, 0), named("Harbour Lights", "song:t1"));
@@ -5528,9 +5554,13 @@ mod tests {
                     .map(|stat| (stat.label.into(), stat.value.into()))
                     .collect()
             };
+            // The tracks are as many as the tracks page lists, which the
+            // server's scan counts; the albums' own counts are short of them.
+            let tracks = |ui: &AppWindow| stats(ui).into_iter().find(|(label, _)| label == "Tracks");
             wait_for("the home page", || {
                 again.get_tiles().row_count() == 24
                     && stats(&again).iter().all(|(_, value)| value != "…")
+                    && tracks(&again).is_some_and(|(_, value)| value != "2")
             })
             .await;
             assert_eq!(LISTS.load(Relaxed), lists_kept, "the library kept on this device");
@@ -5542,7 +5572,7 @@ mod tests {
                 [
                     ("Artists", "122"),
                     ("Albums", "603"),
-                    ("Tracks", "2"),
+                    ("Tracks", "230"),
                     ("Composers", "2"),
                     ("Compositions", "3"),
                 ]
@@ -7602,6 +7632,75 @@ mod tests {
             assert_eq!(marked(&ui), [true, false], "s9 went, s1 is the album's");
             assert_eq!(files(&kept.join("songs")), 2);
 
+            // A folder's row has an album's menu, for every song under it:
+            // it queues, is tagged, and downloads as one item that shows on
+            // the downloads page.
+            ui.invoke_open("folder:d1".into());
+            wait_for("her folder", || ui.get_track_lines().row_count() == 2).await;
+            let folder_menu = || button(&ui, "More for Night Harbour").invoke_accessible_default_action();
+            let folder_line = || ui.get_track_lines().iter().find(|line| line.folder).unwrap();
+            let labelled = |label: &str| -> Vec<ElementHandle> {
+                let label = label.to_owned();
+                (ui.root_element().query_descendants())
+                    .match_accessible_role(AccessibleRole::Button)
+                    .match_predicate(move |button| button.accessible_label().is_some_and(|l| l == label))
+                    .find_all()
+            };
+            // The menu's entries come after the sidebar's of the same name.
+            let choose = |entry: &str| labelled(entry).last().unwrap().invoke_accessible_default_action();
+            let entries = ["Play now", "Play next", "Add to queue", "Add to playlist", "Tags", "Download"];
+            let before = entries.map(|entry| labelled(entry).len());
+            folder_menu();
+            assert_eq!(entries.map(|entry| labelled(entry).len()), before.map(|n| n + 1), "{entries:?}");
+            let queued = opensubsonic::Child {
+                id: "q1".into(),
+                title: "Song".into(),
+                ..Default::default()
+            };
+            play::testing::show_song(&ui, vec![queued.clone()], 0);
+            choose("Add to queue");
+            wait_for("its songs queued", || play::testing::queued_ids().0 == ["q1", "t2", "t1"]).await;
+            play::testing::clear(&ui);
+            ORGANIZE_WRITES.lock().unwrap().clear();
+            folder_menu();
+            choose("Tags");
+            assert!(ui.get_tag_choices_loading(), "its songs are asked for");
+            wait_for("its songs' tags", || !ui.get_tag_choices_loading()).await;
+            ui.invoke_toggle_tag(0);
+            wait_for("the tag put on", || !writes().is_empty()).await;
+            assert_eq!(writes(), ["updateTag tagId=t3&songIdToAdd=t2&songIdToAdd=t1"]);
+            click(&ui, "Done");
+            folder_menu();
+            choose("Download");
+            wait_for("the question", || find(&ui, "Cancel").is_some()).await;
+            confirm_download(&ui);
+            wait_for("the folder kept", || folder_line().downloaded).await;
+            assert_eq!(files(&kept.join("songs")), 4);
+            ui.invoke_open("downloads".into());
+            wait_for("the folder's tile", || {
+                ui.get_tiles().iter().any(|t| t.link == "folder:d2" && t.title == "Night Harbour" && t.downloaded)
+            })
+            .await;
+            let folder_tile = ui.get_tiles().iter().find(|t| t.link == "folder:d2").unwrap();
+            let named_by: Vec<String> = folder_tile.names.iter().map(|name| name.label.into()).collect();
+            assert_eq!(named_by, ["2 tracks"], "the songs it keeps");
+            ui.invoke_open("folder:d1".into());
+            wait_for("her folder again", || ui.get_track_lines().row_count() == 2).await;
+            // With the server out of reach, and its answers no longer fresh,
+            // the folder's songs come from this device.
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            FOLDERS_UNREACHABLE.store(true, Relaxed);
+            play::testing::show_song(&ui, vec![queued], 0);
+            folder_menu();
+            choose("Add to queue");
+            wait_for("its kept songs queued", || play::testing::queued_ids().0 == ["q1", "t2", "t1"]).await;
+            FOLDERS_UNREACHABLE.store(false, Relaxed);
+            play::testing::clear(&ui);
+            folder_menu();
+            choose("Remove download");
+            assert!(!folder_line().downloaded);
+            assert_eq!(files(&kept.join("songs")), 2, "the album's stay");
+
             // A downloaded playlist follows the server: on a visit to its page
             // and when the playlists are listed, an hour after they last were,
             // new songs come and those taken off go.
@@ -7720,6 +7819,18 @@ mod tests {
             click(&ui, "Skip");
             wait_for("signed in again", || ui.get_step() == Step::Done).await;
             wait_for("the account saved again", || !ui.get_busy()).await;
+            // A scan going on doesn't replace the home page's count with
+            // what it has walked so far: the count from before it stays.
+            let home_tracks = || ui.get_stats().iter().find(|stat| stat.label == "Tracks").unwrap().value;
+            wait_for("the tracks counted", || home_tracks() == "230").await;
+            let asked = SCAN_ASKS.load(Relaxed);
+            SCANNING.store(true, Relaxed);
+            ui.invoke_open("albums".into());
+            ui.invoke_open("home".into());
+            wait_for("home's look at the scan", || SCAN_ASKS.load(Relaxed) > asked).await;
+            idle(Duration::from_millis(500)).await;
+            SCANNING.store(false, Relaxed);
+            assert_eq!(home_tracks(), "230");
 
             // Signing out takes the downloads with it, and the button says
             // what that frees.

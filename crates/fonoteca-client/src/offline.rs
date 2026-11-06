@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use opensubsonic::{AlbumID3WithSongs, Child, Playlist, PlaylistWithSongs};
+use opensubsonic::{AlbumID3WithSongs, Child, Directory, Playlist, PlaylistWithSongs};
 use serde::{Deserialize, Serialize};
 
 const MANIFEST: &str = "index.json";
@@ -52,6 +52,8 @@ pub enum Item {
     Playlist(PlaylistWithSongs),
     /// A song asked for on its own.
     Song(Box<Child>),
+    /// A folder, with every song under it as its children.
+    Folder(Directory),
 }
 
 impl Item {
@@ -61,6 +63,7 @@ impl Item {
             Item::Album(album) => format!("album:{}", album.album.id),
             Item::Playlist(playlist) => format!("playlist:{}", playlist.playlist.id),
             Item::Song(song) => format!("song:{}", song.id),
+            Item::Folder(folder) => format!("folder:{}", folder.id),
         }
     }
 
@@ -70,6 +73,7 @@ impl Item {
             Item::Album(album) => &album.album.name,
             Item::Playlist(playlist) => &playlist.playlist.name,
             Item::Song(song) => &song.title,
+            Item::Folder(folder) => &folder.name,
         }
     }
 
@@ -79,6 +83,10 @@ impl Item {
             Item::Album(album) => album.album.cover_art.as_deref(),
             Item::Playlist(playlist) => playlist.playlist.cover_art.as_deref(),
             Item::Song(song) => song.cover_art.as_deref(),
+            Item::Folder(folder) => folder
+                .child
+                .iter()
+                .find_map(|song| song.cover_art.as_deref().filter(|id| !id.is_empty())),
         }
         .filter(|id| !id.is_empty())
     }
@@ -88,6 +96,7 @@ impl Item {
             Item::Album(album) => &album.song,
             Item::Playlist(playlist) => &playlist.entry,
             Item::Song(song) => std::slice::from_ref(song.as_ref()),
+            Item::Folder(folder) => &folder.child,
         }
     }
 }
@@ -814,6 +823,18 @@ impl Downloads {
             })
     }
 
+    /// The folder kept at `id`, with every song that was under it.
+    pub fn folder(&self, id: &str) -> Option<Directory> {
+        self.state()
+            .manifest
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Folder(folder) if folder.id == id => Some(folder.clone()),
+                _ => None,
+            })
+    }
+
     /// A song in any item kept, as the server had it.
     pub fn song(&self, id: &str) -> Option<Child> {
         let state = self.state();
@@ -1140,6 +1161,20 @@ mod tests {
         assert!(orphans(&items, &present).is_empty());
         assert_eq!(orphans(&items[1..], &present), ["b"]);
         assert!(orphans(&items[2..], &present).contains(&"b".to_owned()));
+    }
+
+    #[test]
+    fn a_folder_shows_the_cover_of_its_first_song_that_has_one() {
+        let folder: Directory = serde_json::from_value(serde_json::json!({
+            "id": "d1", "name": "Rips",
+            "child": [
+                {"id": "a", "isDir": false, "title": "a"},
+                {"id": "b", "isDir": false, "title": "b", "coverArt": ""},
+                {"id": "c", "isDir": false, "title": "c", "coverArt": "c-cover"},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(Item::Folder(folder).cover_art(), Some("c-cover"));
     }
 
     #[test]

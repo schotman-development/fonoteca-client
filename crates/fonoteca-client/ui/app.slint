@@ -2492,9 +2492,25 @@ export component AppWindow inherits Window {
                             playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
                             taggable: root.tags-offered && root.page != Page.compositions;
                             playable: root.can-play && root.page != Page.compositions;
+                            downloadable: root.can-download && root.may-download;
                             open(link) => { root.open(link); }
-                            play => { root.play-tracks(row); }
-                            queue(next) => { root.queue-tracks(row, 1, next); }
+                            // A folder plays and queues as an album does.
+                            play => {
+                                if line.folder {
+                                    root.queue-link(line.link, "play");
+                                } else {
+                                    root.play-tracks(row);
+                                }
+                            }
+                            queue(next) => {
+                                if line.folder {
+                                    root.queue-link(line.link, next ? "next" : "queue");
+                                } else {
+                                    root.queue-tracks(row, 1, next);
+                                }
+                            }
+                            download => { root.download-link(line.link); }
+                            remove-download => { root.remove-link-download(line.link); }
                             toggle-love => { root.toggle-line-love(row); }
                             select(range) => { root.select-line(row, range); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
