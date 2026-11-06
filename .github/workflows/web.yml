@@ -1,0 +1,40 @@
+# Checks on every push that the browser preview still builds: the lints of
+# the web build, and the page Trunk makes of it, as compose.yaml serves it.
+name: Web build
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRUNK_VERSION: 0.21.14
+  # The checksum dev/Containerfile checks.
+  TRUNK_SHA256: a67f4054b249fe9acc5fabc25de1aebf19783aca3ad6ff64bf34d7da44d0ea20
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Trunk
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trunk.tar.gz" \
+            "https://github.com/trunk-rs/trunk/releases/download/v$TRUNK_VERSION/trunk-x86_64-unknown-linux-musl.tar.gz"
+          echo "$TRUNK_SHA256  $RUNNER_TEMP/trunk.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Lint the web build
+        run: cargo clippy --locked -p fonoteca-client -p playback --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Build the page
+        working-directory: crates/fonoteca-client
+        run: trunk build --release --locked

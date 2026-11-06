@@ -160,7 +160,6 @@ const TOP_SONGS: u32 = 5;
 const ABOUT_SHORT: usize = 320;
 
 /// The motion cover of the album playing, for the now playing sheet.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Default)]
 struct PlayingMotion {
     /// The album it is of, and whether it has shown a frame yet.
@@ -214,7 +213,6 @@ pub struct Browser {
     pictures: HashMap<(String, u32), Image>,
     /// Shows the next frame of the motion cover of the album page's header.
     motion: Timer,
-    #[cfg(not(target_family = "wasm"))]
     playing: PlayingMotion,
     /// Every album on the server in the order they arrived, while they arrive
     /// and once they all have.
@@ -583,7 +581,6 @@ const DOWNLOADING: i32 = 1;
 const DOWNLOADED: i32 = 2;
 
 /// The links of the albums of the artist on screen that are their own.
-#[cfg(not(target_family = "wasm"))]
 pub fn own_albums(browser: &Shared) -> Vec<String> {
     browser.borrow().own_albums.clone()
 }
@@ -598,7 +595,6 @@ pub fn client(browser: &Shared) -> Option<Arc<Client>> {
 /// library lacks) or an artist's top songs, or the
 /// songs of the tracks, folders or a tag's page as filtered and sorted,
 /// without the folders between them.
-#[cfg(not(target_family = "wasm"))]
 pub fn songs(browser: &Shared, page: Page, row: usize) -> (Vec<Child>, usize) {
     let b = browser.borrow();
     if !matches!(page, Page::Tracks | Page::Folders | Page::Tag) {
@@ -616,7 +612,6 @@ pub fn songs(browser: &Shared, page: Page, row: usize) -> (Vec<Child>, usize) {
 }
 
 /// Fetches a cover `logical` pixels wide and hands it to `done`.
-#[cfg(not(target_family = "wasm"))]
 pub fn cover(
     ui: &AppWindow,
     browser: &Shared,
@@ -5894,7 +5889,6 @@ fn stream_address(station: &Station) -> &str {
 const STATION_LINK: &str = "station:";
 
 /// The station a tile's link names, with the picture the tile shows.
-#[cfg(not(target_family = "wasm"))]
 pub(crate) fn tile_station(
     ui: &AppWindow,
     browser: &Shared,
@@ -7350,7 +7344,6 @@ fn header_motion(ui: &AppWindow, browser: &Shared, album: String) {
 /// go in place of the cover `show` puts on the now playing sheet, until
 /// another album plays. The same album again, as the next track, goes on
 /// with it.
-#[cfg(not(target_family = "wasm"))]
 pub fn playing_motion(
     ui: &AppWindow,
     browser: &Shared,
@@ -7391,14 +7384,12 @@ pub fn playing_motion(
 
 /// Whether the motion cover of the album that plays has shown a frame, which
 /// stays up while it is held and until another album plays.
-#[cfg(not(target_family = "wasm"))]
 pub fn playing_motion_framed(browser: &Shared) -> bool {
     browser.borrow().playing.framed
 }
 
 /// Runs the motion cover of the album that plays, or holds it on the frame it
 /// is at: it moves only while the sheet is open and the song plays.
-#[cfg(not(target_family = "wasm"))]
 pub fn move_playing_motion(browser: &Shared, moving: bool) {
     let mut b = browser.borrow_mut();
     b.playing.moving = moving;
@@ -7410,7 +7401,6 @@ pub fn move_playing_motion(browser: &Shared, moving: bool) {
 }
 
 /// Drops the motion cover of the album that plays, as when nothing plays.
-#[cfg(not(target_family = "wasm"))]
 pub fn stop_playing_motion(browser: &Shared) {
     let mut b = browser.borrow_mut();
     b.playing = PlayingMotion {
@@ -7742,7 +7732,6 @@ pub(crate) fn found(browser: &Shared) -> matching::Found {
 
 /// Loves or unloves a song that plays, which no table of the page holds a
 /// row of.
-#[cfg(not(target_family = "wasm"))]
 pub fn love_playing(ui: &AppWindow, browser: &Shared, id: String, loved: bool) {
     mark_loved(&mut browser.borrow_mut(), ui.get_page(), &id, loved);
     let song = id.clone();
@@ -7919,7 +7908,6 @@ fn track_title(run: &[Child], i: usize) -> String {
 
 /// What now playing shows of a song that is part of a classical work: the
 /// work as the title, and which movement plays.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, PartialEq)]
 pub(crate) struct WorkLine {
     pub work: String,
@@ -7932,7 +7920,6 @@ pub(crate) struct WorkLine {
 /// The work line of the `index`th song of a queue, which `song_at` reads, or
 /// none where the song is no part of a work. Its neighbours of the same work
 /// and album tell its movement's name apart from theirs, as on the album page.
-#[cfg(not(target_family = "wasm"))]
 pub(crate) fn work_line<'a>(
     song_at: impl Fn(usize) -> Option<&'a Child>,
     index: usize,

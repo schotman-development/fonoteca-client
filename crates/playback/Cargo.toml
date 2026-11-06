@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[dependencies]
+# The browser has neither: there the crate is its types and a silent player.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 cpal = "0.18"
 ffmpeg-next = { version = "9", default-features = false, features = ["codec", "filter", "format"] }

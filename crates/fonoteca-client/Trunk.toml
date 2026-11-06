@@ -3,5 +3,8 @@ addresses = ["0.0.0.0"]
 port = 8090
 
 [watch]
+# The whole workspace, since the app is built from all its crates, not only
+# this one's folder, which Trunk would watch by default.
+watch = ["../../crates", "../../Cargo.toml", "../../Cargo.lock"]
 # Each dev server writes to its own folder; neither rebuilds for the other.
 ignore = ["dist", "dist-workbench"]

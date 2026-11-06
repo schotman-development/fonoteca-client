@@ -2,14 +2,18 @@
 //! over the app's own HTTPS client into a live download, which the player
 //! reads like any track.
 
+#[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
 
+#[cfg(not(target_family = "wasm"))]
 use playback::{Fetch, Fill};
+#[cfg(not(target_family = "wasm"))]
 use tokio::runtime::Handle;
 
 /// How much of a live stream is kept for the player: about two minutes of
 /// the usual 128 kbit/s, more than it is ever behind, and all the disk a
 /// station takes, however long it plays.
+#[cfg(not(target_family = "wasm"))]
 const LIVE_BYTES: u64 = 2 << 20;
 
 /// A station to play: its name, and the address of its stream, which may be
@@ -33,6 +37,7 @@ pub(crate) fn track(station: &Station) -> playback::Track {
 /// lets go of the download. Runs on the player's thread, and every request
 /// goes out on the runtime: certificate checks (Android's revocation lookup)
 /// and connecting happen inside the request, which must not block the UI.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn fetch(stream: String, folder: PathBuf, user_agent: &'static str) -> Fetch {
     let runtime = Handle::current();
     Box::new(move |_, _| {
@@ -53,8 +58,10 @@ pub(crate) fn fetch(stream: String, folder: PathBuf, user_agent: &'static str) -
 }
 
 /// The player's end of a station's bytes.
+#[cfg(not(target_family = "wasm"))]
 struct FillSink(Fill);
 
+#[cfg(not(target_family = "wasm"))]
 impl radiostream::Sink for FillSink {
     fn accept(&mut self, bytes: &[u8]) -> bool {
         self.0.append(bytes)

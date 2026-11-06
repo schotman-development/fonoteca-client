@@ -8,30 +8,56 @@
 //! play. FFmpeg decodes them and its filters do what changes the samples
 //! (volume leveling, the listener's [`Dsp`], resampling for a device that
 //! can't take the file's rate); cpal plays the result.
+//!
+//! The browser has no FFmpeg and no sound device for it: there the crate has
+//! only its types and a [`Player`] that plays nothing (`silent.rs`).
 
+#[cfg(not(target_family = "wasm"))]
 mod decode;
+#[cfg(not(target_family = "wasm"))]
 mod download;
+#[cfg(not(target_family = "wasm"))]
 mod dsp;
+#[cfg(not(target_family = "wasm"))]
 mod output;
+#[cfg(not(target_family = "wasm"))]
 mod outputs;
+#[cfg(any(target_family = "wasm", test))]
+mod silent;
 
+#[cfg(not(target_family = "wasm"))]
 use std::collections::VecDeque;
+#[cfg(not(target_family = "wasm"))]
 use std::fmt;
+#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
+#[cfg(not(target_family = "wasm"))]
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+#[cfg(not(target_family = "wasm"))]
 use std::sync::mpsc::{Receiver, Sender, channel};
+#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
+#[cfg(not(target_family = "wasm"))]
 pub use cpal::SampleFormat;
+#[cfg(not(target_family = "wasm"))]
 pub use download::{Download, Fill, live as live_download, new as download, open as open_file};
+#[cfg(not(target_family = "wasm"))]
 pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
+#[cfg(not(target_family = "wasm"))]
 pub use output::{SystemMixer, devices};
+#[cfg(not(target_family = "wasm"))]
 pub use outputs::OutputDevice;
 
+#[cfg(not(target_family = "wasm"))]
 use decode::{Decoding, Stop};
+#[cfg(not(target_family = "wasm"))]
 use output::{Route, Segment, Shared};
+#[cfg(target_family = "wasm")]
+pub use silent::Player;
 
 /// The format the device is opened in.
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Format {
     pub rate: u32,
@@ -39,6 +65,7 @@ pub struct Format {
     pub sample: cpal::SampleFormat,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Format {
     fn frame_bytes(&self) -> usize {
         usize::from(self.channels) * self.sample.sample_size()
@@ -49,6 +76,7 @@ impl Format {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl fmt::Display for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bits = match self.sample {
@@ -114,6 +142,7 @@ pub struct Gain {
     pub fallback: Option<f64>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Gain {
     /// The gain to apply in dB, never so much that the loudest sample
     /// clips; none when there is nothing to change.
@@ -174,8 +203,10 @@ pub struct Status {
 /// hands back the reading side. A source that begins a track anywhere marks
 /// the download [`Download::starting_at`] there; any other hands back the
 /// whole file, which the player reads on to that point.
+#[cfg(not(target_family = "wasm"))]
 pub type Fetch = Box<dyn FnMut(&Track, f64) -> Result<Download, String> + Send>;
 
+#[cfg(not(target_family = "wasm"))]
 enum Command {
     Play(Vec<Track>, usize, f64),
     /// A changed queue, and where each track of the one before went.
@@ -193,6 +224,7 @@ enum Command {
     Quit,
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub struct Player {
     shared: Arc<Shared>,
     commands: Sender<Command>,
@@ -203,12 +235,14 @@ pub struct Player {
 }
 
 /// How far ahead of the device the decoder goes, in seconds.
+#[cfg(not(target_family = "wasm"))]
 const AHEAD: f64 = 5.0;
 
 /// Before this many seconds into a track, Previous goes to the track
 /// before; after, back to its start.
 const RESTART_AFTER: f64 = 3.0;
 
+#[cfg(not(target_family = "wasm"))]
 impl Player {
     /// A player on the device with this cpal id, or the system's default,
     /// that gets its tracks from `fetch`.
@@ -374,6 +408,7 @@ impl Player {
 
 /// The steps from the audio, as the device is opened in `open`, to the
 /// sound: the device, and the system's mixer if it takes it first.
+#[cfg(not(target_family = "wasm"))]
 fn device_steps(device: &output::Device, route: Route, open: Format) -> Vec<Step> {
     let (how, quality) = if route == Route::BitPerfect {
         ("Bit-perfect", Quality::Lossless)
@@ -396,6 +431,7 @@ fn device_steps(device: &output::Device, route: Route, open: Format) -> Vec<Step
     steps
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Drop for Player {
     /// Lets the device go before returning, so another player, or another
     /// app, can open it right after.
@@ -411,12 +447,14 @@ impl Drop for Player {
 
 /// The track being decoded, and another reader of its download, to see when
 /// it has all arrived and to open it again.
+#[cfg(not(target_family = "wasm"))]
 struct Current {
     index: usize,
     decoding: Decoding,
     download: Download,
 }
 
+#[cfg(not(target_family = "wasm"))]
 struct Decoder {
     shared: Arc<Shared>,
     pending: Arc<AtomicUsize>,
@@ -435,6 +473,7 @@ struct Decoder {
     failed_from: (usize, f64),
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Decoder {
     fn run(mut self, commands: Receiver<Command>) {
         loop {
@@ -876,6 +915,7 @@ impl Decoder {
 /// and once all of it has arrived from any later point too: a seek in it then
 /// leaves no gap, where fetching it again from there leaves one of 50 to
 /// 100 ms. A live stream plays from where it is now, so it is fetched again.
+#[cfg(not(target_family = "wasm"))]
 fn plays_from(download: &Download, seconds: f64) -> bool {
     !download.is_live()
         && download
@@ -883,6 +923,7 @@ fn plays_from(download: &Download, seconds: f64) -> bool {
             .is_none_or(|start| start == seconds || (start < seconds && download.complete()))
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn segment(track: usize, decoding: &Decoding, seconds: f64) -> Segment {
     Segment {
         track,

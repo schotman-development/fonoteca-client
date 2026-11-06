@@ -9,21 +9,25 @@ use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::ops::Range;
+#[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use opensubsonic::{Child, Client};
-use playback::{Gain, Leveling, OutputDevice, Player, Quality, Repeat, Step, Track};
+#[cfg(not(target_family = "wasm"))]
+use playback::OutputDevice;
+use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::radio;
 use crate::{
-    AppWindow, Icons, MenuEntry, Name, Page, PathStep, QueueLine, browse, offline, prefs, quality,
-    queue_drag, scrobble, sound, waveform,
+    AppWindow, Name, Page, PathStep, QueueLine, browse, offline, prefs, queue_drag, waveform,
 };
+#[cfg(not(target_family = "wasm"))]
+use crate::{Icons, MenuEntry, quality, scrobble, sound};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -76,10 +80,13 @@ struct Playing {
     saved: Option<(Option<usize>, bool, f64)>,
     queue_refused: bool,
     /// The sound devices by cpal id, none for the default.
+    #[cfg(not(target_family = "wasm"))]
     devices: Vec<Option<String>>,
     /// What names each of `devices` beside the button that opens their menu.
+    #[cfg(not(target_family = "wasm"))]
     device_titles: Vec<SharedString>,
     tick: Timer,
+    #[cfg(not(target_family = "wasm"))]
     scrobbler: scrobble::Scrobbler,
 }
 
@@ -93,14 +100,20 @@ type Shared = Rc<RefCell<Playing>>;
 
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     let playing = Shared::default();
-    playing.borrow_mut().scrobbler = scrobble::Scrobbler::load();
+    #[cfg(not(target_family = "wasm"))]
+    {
+        playing.borrow_mut().scrobbler = scrobble::Scrobbler::load();
+    }
     #[cfg(test)]
     testing::keep(browser, &playing);
     let saved = prefs::load();
     ui.set_leveling(saved.leveling.clamp(0, 2));
     ui.set_repeat(saved.repeat.clamp(0, 2));
+    #[cfg(not(target_family = "wasm"))]
     show_stream_quality(ui, &saved);
     ui.set_can_play(true);
+    ui.set_has_sound(cfg!(not(target_family = "wasm")));
+    #[cfg(not(target_family = "wasm"))]
     list_devices(ui, &playing);
 
     ui.on_now_playing_moving_changed({
@@ -266,10 +279,12 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         }
     });
     wire_queue(ui, browser, &playing);
+    #[cfg(not(target_family = "wasm"))]
     ui.on_list_devices({
         let (weak, playing) = (ui.as_weak(), playing.clone());
         move || list_devices(&weak.unwrap(), &playing)
     });
+    #[cfg(not(target_family = "wasm"))]
     ui.on_choose_output({
         let (weak, playing) = (ui.as_weak(), playing.clone());
         move |index| {
@@ -305,6 +320,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         }
         prefs::save(&saved);
     });
+    #[cfg(not(target_family = "wasm"))]
     sound::wire(ui, {
         let playing = playing.clone();
         move |dsp| {
@@ -315,6 +331,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     });
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn show_stream_quality(ui: &AppWindow, saved: &prefs::Prefs) {
     ui.set_has_mobile_data(quality::HAS_MOBILE_DATA);
     let wifi = quality::within_lists(saved.wifi_quality);
@@ -468,6 +485,7 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
 /// Puts the sound devices there are now in the now playing sheet's menu, with
 /// the one chosen marked. Looking for them can take a moment, so it happens
 /// off the event loop.
+#[cfg(not(target_family = "wasm"))]
 fn list_devices(ui: &AppWindow, playing: &Shared) {
     let found = tokio::task::spawn_blocking(playback::devices);
     let (weak, playing) = (ui.as_weak(), playing.clone());
@@ -482,6 +500,7 @@ fn list_devices(ui: &AppWindow, playing: &Shared) {
 /// The `found` devices after the system's default, with the one chosen
 /// marked; a choice saved as a route that was folded into another is that
 /// other.
+#[cfg(not(target_family = "wasm"))]
 fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<OutputDevice>) {
     let saved = prefs::load().output_device;
     let mut devices = vec![None];
@@ -520,6 +539,7 @@ fn show_devices(ui: &AppWindow, playing: &Shared, found: Vec<OutputDevice>) {
 
 /// Moves the menu's mark, and the name beside the button, to the device
 /// `chosen`.
+#[cfg(not(target_family = "wasm"))]
 fn mark_device(ui: &AppWindow, playing: &Playing, chosen: usize) {
     let icons = ui.global::<Icons>();
     let entries = ui.get_output_devices();
@@ -534,6 +554,7 @@ fn mark_device(ui: &AppWindow, playing: &Playing, chosen: usize) {
 
 /// A check for the device in use; the others get a blank of its width, so
 /// their names line up with it.
+#[cfg(not(target_family = "wasm"))]
 fn device_icon(icons: &Icons, in_use: bool) -> SharedString {
     if in_use {
         icons.get_check()
@@ -665,11 +686,9 @@ fn begin(
     // lets the device go first, since a device played on directly can only
     // be open once.
     playing.borrow_mut().player = None;
-    let device = prefs::load().output_device;
-    let player = new_player(device, fetch(client, browse::downloads(browser)));
+    let player = song_player(client, browser);
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
     player.set_repeat(REPEAT[ui.get_repeat().clamp(0, 2) as usize]);
-    player.set_dsp(sound::dsp());
     player.play(tracks(&queue), start, seconds);
     // Before any of it is heard: a track starts once some of it is in.
     player.set_paused(paused);
@@ -685,10 +704,7 @@ fn tune(
     cover: Image,
 ) {
     playing.borrow_mut().player = None;
-    let device = prefs::load().output_device;
-    let fetch = radio::fetch(station.stream.clone(), cache(), browse::USER_AGENT);
-    let player = new_player(device, fetch);
-    player.set_dsp(sound::dsp());
+    let player = station_player(&station);
     player.play(vec![radio::track(&station)], 0, 0.0);
     adopt(
         ui,
@@ -698,6 +714,38 @@ fn tune(
         Queue::default(),
         Some(Tuned { station, cover }),
     );
+}
+
+/// A player for songs from `client`, or from their downloads, on the sound
+/// device and with the sound processing the settings pick.
+#[cfg(not(target_family = "wasm"))]
+fn song_player(client: Arc<Client>, browser: &browse::Shared) -> Player {
+    let fetch = fetch(client, browse::downloads(browser));
+    let player = new_player(prefs::load().output_device, fetch);
+    player.set_dsp(sound::dsp());
+    player
+}
+
+/// A player for the radio `station`, on the sound device and with the sound
+/// processing the settings pick.
+#[cfg(not(target_family = "wasm"))]
+fn station_player(station: &radio::Station) -> Player {
+    let fetch = radio::fetch(station.stream.clone(), cache(), browse::USER_AGENT);
+    let player = new_player(prefs::load().output_device, fetch);
+    player.set_dsp(sound::dsp());
+    player
+}
+
+/// The browser fetches and plays nothing: its player only goes through the
+/// queue, for the bar and now playing to show what would play.
+#[cfg(target_family = "wasm")]
+fn song_player(_client: Arc<Client>, _browser: &browse::Shared) -> Player {
+    Player::silent()
+}
+
+#[cfg(target_family = "wasm")]
+fn station_player(_station: &radio::Station) -> Player {
+    Player::silent()
 }
 
 /// Has `player` play `queue`, or else the `station`, with the bar showing
@@ -856,10 +904,13 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         return;
     }
     let state = (status.index, status.paused || status.ended);
-    let scrobbling = &mut *p;
-    let song = status.index.and_then(|index| scrobbling.queue.get(index));
-    let server = browse::client(browser);
-    (scrobbling.scrobbler).observe(song, status.position, state.1, server);
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let scrobbling = &mut *p;
+        let song = status.index.and_then(|index| scrobbling.queue.get(index));
+        let server = browse::client(browser);
+        (scrobbling.scrobbler).observe(song, status.position, state.1, server);
+    }
     let last = p.saved;
     #[cfg(target_os = "android")]
     if last.map(|(index, paused, _)| (index, paused)) != Some(state) {
@@ -1224,6 +1275,7 @@ fn announce(p: &Playing, index: Option<usize>, paused: bool, seconds: f64) {
 fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     #[cfg(target_os = "android")]
     crate::media::hide();
+    #[cfg(not(target_family = "wasm"))]
     playing.borrow().scrobbler.flush();
     {
         let mut p = playing.borrow_mut();
@@ -1307,6 +1359,11 @@ fn save(
     };
     let ids: Vec<String> = p.queue.songs().map(|song| song.id.clone()).collect();
     remember_expanded_works(&p.queue);
+    // The browser plays nothing, and a queue saved from it would take the
+    // place of the one a device that plays left off at.
+    if cfg!(target_family = "wasm") {
+        return;
+    }
     let position = current.is_some().then_some((seconds * 1000.0) as i64);
     let clearing = current.is_none();
     let playing = playing.clone();
@@ -1438,13 +1495,14 @@ fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
     Player::with_system(device, fetch, crate::bit_perfect::system())
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_family = "wasm")))]
 fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
     Player::new(device, fetch)
 }
 
 /// The OpenSubsonic extension with which a server converts a song from
 /// part way in.
+#[cfg(not(target_family = "wasm"))]
 const TRANSCODE_OFFSET: &str = "transcodeOffset";
 
 /// Fetches tracks from `client` in the format the settings pick for the
@@ -1455,6 +1513,7 @@ const TRANSCODE_OFFSET: &str = "transcodeOffset";
 /// played from part way in is converted from there. A track kept in
 /// `downloads` is read from its whole file, which seeks on disk. Runs on the
 /// player's thread.
+#[cfg(not(target_family = "wasm"))]
 fn fetch(client: Arc<Client>, downloads: offline::Downloads) -> playback::Fetch {
     let runtime = tokio::runtime::Handle::current();
     let folder = cache();
@@ -1494,6 +1553,7 @@ fn fetch(client: Arc<Client>, downloads: offline::Downloads) -> playback::Fetch 
 
 /// fonoteca-client in the system's cache folder, or on Android in a cache
 /// folder in the app's own, the only place it may write.
+#[cfg(not(target_family = "wasm"))]
 fn cache() -> PathBuf {
     #[cfg(target_os = "android")]
     let folder = prefs::FOLDER.get().map(|folder| folder.join("cache"));

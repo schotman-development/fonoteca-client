@@ -168,6 +168,10 @@ A browser has no secret store, so the browser build keeps the sign-in
 unencrypted in the page's localStorage until you sign out. Use it with a test
 account.
 
+The browser build shows the player, the queue and now playing as the app does,
+but plays nothing: it fetches no audio, tells neither the server nor
+ListenBrainz of any play, and leaves the queue saved on the server as it is.
+
 The same command serves the component workbench on http://localhost:8091. It
 shows each shared part of the UI on its own, with sample data and switches for
 long text, missing artwork and light or dark mode. It also runs natively:
@@ -222,3 +226,8 @@ OPRA's data is licensed
 and the extract stays under it (see
 [OPRA-LICENSE.md](crates/fonoteca-client/data/OPRA-LICENSE.md)). The app credits
 OPRA, with its logo, where the presets are browsed, and each preset's creator beside it.
+The browser build carries Noto Sans JP, Noto Sans KR, Noto Sans Arabic and Noto
+Emoji in `crates/fonoteca-client/data/fonts`, for text its one font, Inter,
+lacks. They are licensed under the SIL Open Font License 1.1 (see
+[LICENSE.md](crates/fonoteca-client/data/fonts/LICENSE.md), with their sources
+and versions).

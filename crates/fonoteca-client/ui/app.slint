@@ -1053,6 +1053,9 @@ export component AppWindow inherits Window {
     // Whether this build plays music, and the track it plays, if any: as
     // PlayerBar shows it.
     in property <bool> can-play;
+    // Whether what plays is heard, with a sound device and settings for it:
+    // not in the browser, which only shows what would play.
+    in property <bool> has-sound;
     in property <bool> playing;
     in property <image> playing-cover;
     in property <string> playing-title;
@@ -2621,7 +2624,7 @@ export component AppWindow inherits Window {
                             summary: "The token that connects your ListenBrainz account";
                             clicked => { root.open("setting:listenbrainz"); }
                         }
-                        if root.can-play: SettingsRow {
+                        if root.has-sound: SettingsRow {
                             icon: Icons.play;
                             title: "Playback";
                             summary: "Leveling and streaming quality";
@@ -2633,7 +2636,7 @@ export component AppWindow inherits Window {
                             summary: "Music kept on this device, and the space it takes";
                             clicked => { root.open("setting:downloads"); }
                         }
-                        if root.can-play: SettingsRow {
+                        if root.has-sound: SettingsRow {
                             icon: Icons.sound;
                             title: "Sound processing";
                             summary: "Headroom, crossfeed, upsampling and EQ";
@@ -3508,7 +3511,7 @@ export component AppWindow inherits Window {
                                             cycle-repeat => { root.cycle-repeat(); }
                                         }
                                     }
-                                    OutputPicker {
+                                    if root.has-sound: OutputPicker {
                                         output-devices: root.output-devices;
                                         output-name: root.output-name;
                                         list-devices => { root.list-devices(); }

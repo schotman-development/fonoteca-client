@@ -13,6 +13,8 @@ mod download_job;
 mod downloads;
 #[cfg(not(target_family = "wasm"))]
 mod eq_graph;
+#[cfg(target_family = "wasm")]
+mod fonts;
 #[cfg(not(target_family = "wasm"))]
 mod headphones;
 mod logo_ink;
@@ -24,23 +26,18 @@ mod network;
 mod offline;
 #[cfg(not(target_family = "wasm"))]
 mod opra;
-#[cfg(not(target_family = "wasm"))]
 mod play;
 mod prefs;
 #[cfg(not(target_family = "wasm"))]
 mod quality;
-#[cfg(not(target_family = "wasm"))]
 mod queue;
-#[cfg(not(target_family = "wasm"))]
 mod queue_drag;
-#[cfg(not(target_family = "wasm"))]
 mod radio;
 #[cfg(not(target_family = "wasm"))]
 mod scrobble;
 #[cfg(not(target_family = "wasm"))]
 mod sound;
 mod store;
-#[cfg(not(target_family = "wasm"))]
 mod waveform;
 mod zone;
 
@@ -473,13 +470,14 @@ fn android_main(app: slint::android::AndroidApp) {
 /// background, so a store waiting on an unlock prompt doesn't hold it back.
 fn start() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
+    #[cfg(target_family = "wasm")]
+    fonts::register();
     // Every press there is a finger's, the first one too.
     #[cfg(target_os = "android")]
     ui.global::<Input>().set_finger(true);
     let pending: Rc<RefCell<Option<(Account, Client)>>> = Rc::default();
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
-    #[cfg(not(target_family = "wasm"))]
     play::wire(&ui, &browser);
     #[cfg(not(target_family = "wasm"))]
     downloads::wire(&ui, &browser);
