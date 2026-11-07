@@ -16,7 +16,8 @@
 //! another host gets the form body.
 //!
 //! A client can keep the answers pages read in [`Answers`], and hand them
-//! out from there while they are fresh.
+//! out from there while they are fresh. One made to wait for a [`SignIn`]
+//! hands them out before the sign-in is over.
 
 mod answers;
 mod api;
@@ -30,7 +31,8 @@ pub use model::*;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Poll, Waker};
 
 use md5::{Digest, Md5};
 use reqwest::Url;
@@ -99,6 +101,8 @@ pub struct Client {
     gave_aged: AtomicBool,
     /// Whether an answer the server gave differed from the one kept.
     heard_news: AtomicBool,
+    /// The sign-in this client waits for before it sends anything.
+    signing_in: Option<Arc<SignIn>>,
 }
 
 impl Client {
@@ -151,6 +155,7 @@ impl Client {
             hands_out: HandsOut::Fresh,
             gave_aged: AtomicBool::new(false),
             heard_news: AtomicBool::new(false),
+            signing_in: None,
         })
     }
 
@@ -164,6 +169,21 @@ impl Client {
     pub fn keeping_answers_in(mut self, answers: Arc<Answers>) -> Self {
         self.answers = Some(answers);
         self
+    }
+
+    /// This client, sending nothing until `sign_in` is over and then sending
+    /// through the client that signed in: meanwhile it hands out kept
+    /// answers, aged ones too where it shows them, for pages shown while the
+    /// server is asked. The readers made from it wait for it too.
+    pub fn waiting_for(mut self, sign_in: Arc<SignIn>) -> Self {
+        self.signing_in = Some(sign_in);
+        self
+    }
+
+    /// Whether the sign-in this client waits for failed, so that it sends
+    /// nothing.
+    pub fn sign_in_failed(&self) -> bool {
+        (self.signing_in.as_ref()).is_some_and(|sign_in| sign_in.failed())
     }
 
     /// A client like this one, keeping answers in the same place, with notes
@@ -197,6 +217,7 @@ impl Client {
             hands_out,
             gave_aged: AtomicBool::new(false),
             heard_news: AtomicBool::new(false),
+            signing_in: self.signing_in.clone(),
         }
     }
 
@@ -227,17 +248,30 @@ impl Client {
     /// Whether the server listed `extension` the last time
     /// [`Client::get_open_subsonic_extensions`] was called.
     pub fn supports(&self, extension: &str) -> bool {
-        self.extensions
+        self.extensions()
             .lock()
             .is_ok_and(|listed| listed.iter().any(|listed| listed.name == extension))
     }
 
     /// Whether the server listed `version` of `extension`.
     pub fn supports_version(&self, extension: &str, version: i64) -> bool {
-        self.extensions.lock().is_ok_and(|listed| {
+        self.extensions().lock().is_ok_and(|listed| {
             (listed.iter())
                 .any(|listed| listed.name == extension && listed.versions.contains(&version))
         })
+    }
+
+    /// The extensions the server listed, as the client that signed in for
+    /// this one heard them, where it waited for a sign-in.
+    fn extensions(&self) -> &Mutex<Vec<model::OpenSubsonicExtension>> {
+        match self
+            .signing_in
+            .as_ref()
+            .and_then(|sign_in| sign_in.client())
+        {
+            Some(signed_in) => &signed_in.extensions,
+            None => &self.extensions,
+        }
     }
 
     fn request(&self, endpoint: &str, params: &Params) -> Result<(reqwest::RequestBuilder, u8)> {
@@ -317,6 +351,10 @@ impl Client {
     }
 
     async fn send(&self, endpoint: &str, params: &Params) -> Result<Body> {
+        if let Some(sign_in) = &self.signing_in {
+            let signed_in = sign_in.over().await.ok_or(Error::NotSignedIn)?;
+            return Box::pin(signed_in.send(endpoint, params)).await;
+        }
         loop {
             let (request, method) = self.request(endpoint, params)?;
             let response = exchange(request).await?;
@@ -427,6 +465,61 @@ impl Client {
                 "{endpoint} answered with JSON instead of data"
             ))),
         }
+    }
+}
+
+/// A sign-in under way, which a client made to wait for it waits for: until
+/// it is over that client sends nothing, so no credentials go out before the
+/// server's extensions say how they may, and then it sends through the
+/// client that signed in.
+#[derive(Default)]
+pub struct SignIn {
+    signed_in: OnceLock<Option<Arc<Client>>>,
+    waiting: Mutex<Vec<Waker>>,
+}
+
+impl SignIn {
+    /// Ends the sign-in, with the client that signed in, or `None` when it
+    /// failed, and wakes the calls that wait for it. Only the first end
+    /// counts.
+    pub fn end(&self, signed_in: Option<Arc<Client>>) {
+        let _ = self.signed_in.set(signed_in);
+        let waiting = self
+            .waiting
+            .lock()
+            .map(|mut waiting| std::mem::take(&mut *waiting));
+        waiting
+            .unwrap_or_default()
+            .into_iter()
+            .for_each(Waker::wake);
+    }
+
+    /// The client that signed in, once one has.
+    fn client(&self) -> Option<&Arc<Client>> {
+        self.signed_in.get().and_then(Option::as_ref)
+    }
+
+    /// Whether it ended without a client that signed in.
+    fn failed(&self) -> bool {
+        matches!(self.signed_in.get(), Some(None))
+    }
+
+    /// Waits until the sign-in is over, for the client that signed in.
+    async fn over(&self) -> Option<&Arc<Client>> {
+        std::future::poll_fn(|context| {
+            if let Some(signed_in) = self.signed_in.get() {
+                return Poll::Ready(signed_in.as_ref());
+            }
+            if let Ok(mut waiting) = self.waiting.lock() {
+                waiting.push(context.waker().clone());
+            }
+            // It may have ended in between, with this call not yet waiting.
+            match self.signed_in.get() {
+                Some(signed_in) => Poll::Ready(signed_in.as_ref()),
+                None => Poll::Pending,
+            }
+        })
+        .await
     }
 }
 
@@ -591,6 +684,8 @@ pub enum Error {
     /// A password would have gone to a plain http server elsewhere on the
     /// network; nothing was sent.
     PlainHttp,
+    /// The sign-in the client waited for failed; nothing was sent.
+    NotSignedIn,
     Unexpected(String),
 }
 
@@ -615,6 +710,7 @@ impl fmt::Display for Error {
             Error::Json(e) => write!(f, "unexpected response: {e}"),
             Error::Random(e) => write!(f, "no random source: {e}"),
             Error::PlainHttp => write!(f, "a password is only sent to an https address"),
+            Error::NotSignedIn => write!(f, "not signed in: the server didn't answer"),
             Error::Unexpected(what) => write!(f, "{what}"),
         }
     }
@@ -1039,6 +1135,84 @@ mod tests {
         assert_eq!(client.get_album("a1").await.unwrap().album.name, "Kept");
         assert_eq!(log.lock().unwrap().len(), 1, "asked the first time only");
         reader.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_client_waiting_for_a_sign_in_hands_out_what_is_kept_and_sends_through_it() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("getOpenSubsonicExtensions") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[{"name":"formPost","versions":[1]}]}}"#
+            } else if request.contains("getAlbum") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","album":{"id":"a1","name":"Kept","songCount":0,"duration":0,"created":"2021-01-01T00:00:00Z"}}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#
+            })
+        });
+        let asked = || log.lock().unwrap().len();
+        let answers = Arc::new(Answers::new(|| 1000));
+        let keeping = Client::new(&server, Auth::None).unwrap();
+        keeping
+            .keeping_answers_in(answers.clone())
+            .get_album("a1")
+            .await
+            .unwrap();
+        let waiting_for = |sign_in: &Arc<SignIn>| {
+            let client = Client::new(&server, password()).unwrap();
+            client
+                .keeping_answers_in(answers.clone())
+                .waiting_for(sign_in.clone())
+        };
+
+        let sign_in = Arc::new(SignIn::default());
+        let reader = waiting_for(&sign_in).reader(true);
+        assert_eq!(reader.get_album("a1").await.unwrap().album.name, "Kept");
+        assert!(!reader.supports("formPost"));
+        assert!(!reader.sign_in_failed());
+        let (pinged, ()) = tokio::join!(reader.ping(), async {
+            assert_eq!(asked(), 1, "nothing is sent while signing in");
+            let signed_in = Client::new(&server, password()).unwrap();
+            signed_in.get_open_subsonic_extensions().await.unwrap();
+            sign_in.end(Some(Arc::new(signed_in)));
+        });
+        pinged.unwrap();
+        assert!(reader.supports("formPost") && !reader.sign_in_failed());
+        let ping = log.lock().unwrap()[2].clone();
+        let (head, body) = ping.split_once("\r\n\r\n").unwrap();
+        assert!(
+            head.starts_with("POST /rest/ping") && !head.contains("joe"),
+            "{head}"
+        );
+        assert!(body.contains("u=joe"), "{body}");
+
+        let failed = Arc::new(SignIn::default());
+        failed.end(None);
+        let reader = waiting_for(&failed).reader(true);
+        assert_eq!(reader.get_album("a1").await.unwrap().album.name, "Kept");
+        assert!(matches!(reader.ping().await, Err(Error::NotSignedIn)));
+        assert_eq!(asked(), 3, "nothing is sent after a failed sign-in");
+        assert!(reader.sign_in_failed());
+    }
+
+    /// Wakes the call it was handed to, by noting it.
+    struct Woken(AtomicBool);
+
+    impl std::task::Wake for Woken {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Relaxed);
+        }
+    }
+
+    #[test]
+    fn the_end_of_a_sign_in_wakes_the_calls_waiting_for_it() {
+        let sign_in = SignIn::default();
+        let woken = Arc::new(Woken(AtomicBool::new(false)));
+        let waker = Waker::from(woken.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut over = std::pin::pin!(sign_in.over());
+        assert!(over.as_mut().poll(&mut context).is_pending());
+        sign_in.end(None);
+        assert!(woken.0.load(Relaxed), "nothing else polls it again");
+        assert!(matches!(over.poll(&mut context), Poll::Ready(None)));
     }
 
     #[test]

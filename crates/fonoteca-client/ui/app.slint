@@ -1523,6 +1523,8 @@ export component AppWindow inherits Window {
     callback refresh();
     callback show-section(index: int);
     callback show-more();
+    // The page's "Try again", after it couldn't show what it asked for.
+    callback try-again();
     callback sort-albums();
     callback sort-artists();
     callback sort-composers();
@@ -2928,7 +2930,7 @@ export component AppWindow inherits Window {
                         Button {
                             text: "Try again";
                             enabled: !Input.modal;
-                            clicked => { root.show-more(); }
+                            clicked => { root.try-again(); }
                         }
                     }
                     if root.loading: Note { text: "Loading…"; }

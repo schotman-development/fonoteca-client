@@ -371,24 +371,21 @@ pub type Shared = Rc<RefCell<Browser>>;
 
 /// Opens the home page with a signed-in client.
 pub fn start(ui: &AppWindow, browser: &Shared, client: Client) {
-    start_as(ui, browser, client, false);
+    open_library(ui, browser, client);
+    ask_signed_in(ui, browser);
 }
 
-/// Opens the downloads page with a client for a server that didn't answer:
-/// the pages show what is kept on this device and ask the server for
-/// nothing, until `reconnect`.
-pub fn start_offline(ui: &AppWindow, browser: &Shared, client: Client) {
-    start_as(ui, browser, client, true);
-}
-
-fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
+/// Opens the home page with `client`, which may still be signing in: the
+/// pages show what this device kept at once, and ask the server for the
+/// rest once it has. [`signed_in`] then goes on from there.
+pub fn open_library(ui: &AppWindow, browser: &Shared, client: Client) {
     {
         let mut b = browser.borrow_mut();
         let client = keep_answers(&mut b, client);
         b.client = Some(Arc::new(client));
         b.history.clear();
-        b.offline = offline;
-        b.downloads.set_offline(offline);
+        b.offline = false;
+        b.downloads.set_offline(false);
     }
     load_prefs(ui, browser);
     ui.set_album_filter("".into());
@@ -402,21 +399,38 @@ fn start_as(ui: &AppWindow, browser: &Shared, client: Client, offline: bool) {
     ui.set_may_administer(true);
     ui.set_may_download(true);
     sidebar(ui, browser);
-    if offline {
-        return open(ui, browser, "downloads".into());
-    }
     load_playlists(ui, browser);
-    load_tags(ui, browser);
-    load_me(ui, browser);
-    crate::loves::sync(ui, browser);
     open(ui, browser, "home".into());
-    ui.invoke_library_started();
-    #[cfg(not(target_family = "wasm"))]
-    crate::downloads::resume(ui, browser);
 }
 
-/// Goes on with `client`, signed in at last after an offline start, on the
-/// page on screen.
+/// Goes on once the client the library opened with has signed in: shows
+/// what the server's extensions offer, the playlist folders among them, and
+/// asks for what a signed-in library needs besides its pages.
+pub fn signed_in(ui: &AppWindow, browser: &Shared) {
+    sidebar(ui, browser);
+    load_playlists(ui, browser);
+    if ui.get_page() == Page::Home && offers_compositions(&browser.borrow()) {
+        show_home(ui, browser);
+        composers(ui, browser);
+        compositions(ui, browser);
+    }
+    ask_signed_in(ui, browser);
+}
+
+/// Goes on without the server, which didn't answer the sign-in: the pages
+/// show what is kept on this device, from the downloads page on, until
+/// `reconnect`.
+pub fn go_offline(ui: &AppWindow, browser: &Shared) {
+    {
+        let mut b = browser.borrow_mut();
+        b.offline = true;
+        b.downloads.set_offline(true);
+    }
+    open(ui, browser, "downloads".into());
+}
+
+/// Goes on with `client`, signed in at last after the server didn't answer
+/// the sign-in at start, on the page on screen, asked for anew.
 pub fn reconnect(ui: &AppWindow, browser: &Shared, client: Client) {
     {
         let mut b = browser.borrow_mut();
@@ -428,20 +442,36 @@ pub fn reconnect(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_roles("".into());
     ui.set_may_administer(true);
     ui.set_may_download(true);
+    // The server's extensions are known now.
+    sidebar(ui, browser);
     load_playlists(ui, browser);
+    ask_signed_in(ui, browser);
+    refresh(ui, browser);
+}
+
+/// Asks for what a signed-in library needs besides its pages: the tags,
+/// the user's roles, the hearts, the queue left playing and the downloads
+/// left to do.
+fn ask_signed_in(ui: &AppWindow, browser: &Shared) {
     load_tags(ui, browser);
     load_me(ui, browser);
     crate::loves::sync(ui, browser);
     ui.invoke_library_started();
     #[cfg(not(target_family = "wasm"))]
     crate::downloads::resume(ui, browser);
-    refresh(ui, browser);
 }
 
 /// Whether the pages show what is kept on this device instead of asking
 /// the server, which didn't answer at start.
 pub fn is_offline(browser: &Shared) -> bool {
     browser.borrow().offline
+}
+
+/// Whether the server didn't answer the sign-in the library opened with:
+/// its pages ask the server nothing until [`reconnect`].
+pub fn sign_in_failed(browser: &Shared) -> bool {
+    let b = browser.borrow();
+    (b.client.as_ref()).is_some_and(|client| client.sign_in_failed())
 }
 
 /// What `call` asks the server for, or when it can't be reached, or
@@ -760,6 +790,10 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     let mut carried = DataTransfer::default();
     carried.set_plain_text("playlist".into());
     ui.global::<Drag>().set_data(carried);
+    // The bottom bar's entries are the same on every server, so they are
+    // there before the library opens: a bar without them is no wider than
+    // the top bar's buttons, and narrows the whole screen to it.
+    ui.set_bar_entries(bar_entries(&ui.global::<Icons>()));
     ui.on_open({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |link| open(&weak.unwrap(), &browser, link.into())
@@ -793,11 +827,15 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     });
     ui.on_refresh({
         let (weak, browser) = (ui.as_weak(), browser.clone());
-        move || refresh(&weak.unwrap(), &browser)
+        move || ask_anew(&weak.unwrap(), &browser, refresh)
     });
     ui.on_show_more({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || more_tiles(&weak.unwrap(), &browser)
+    });
+    ui.on_try_again({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || ask_anew(&weak.unwrap(), &browser, more_tiles)
     });
     ui.on_save_created_for({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -2101,7 +2139,6 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     let entries = sections_of(&b);
     ui.set_browse_links(nav_entries(&icons, &entries, true));
     ui.set_library_links(nav_entries(&icons, &entries, false));
-    ui.set_bar_entries(bar_entries(&icons));
     show_selected(ui, &b);
     ui.set_folders_offered(offers(&b, FOLDERS));
     ui.set_tags_offered(offers(&b, TAGS));
@@ -3881,6 +3918,16 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
     b.view = view;
     drop(b);
     show_tiles(ui, browser, shown.max(TILES_AT_ONCE));
+}
+
+/// Asks the server for the page on screen anew with `ask`, as the user asked
+/// to. When the server didn't answer the sign-in, signs in again instead, as
+/// the note's "Try again" does, which goes on from the page on screen.
+fn ask_anew(ui: &AppWindow, browser: &Shared, ask: fn(&AppWindow, &Shared)) {
+    match sign_in_failed(browser) {
+        true => ui.invoke_reconnect(),
+        false => ask(ui, browser),
+    }
 }
 
 /// Shows the next tiles or rows, and asks for the library, the artists, the

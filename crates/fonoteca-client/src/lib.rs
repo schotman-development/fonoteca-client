@@ -49,7 +49,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use opensubsonic::{Auth, Client};
+use opensubsonic::{Auth, Client, SignIn};
 use serde::{Deserialize, Serialize};
 
 /// What the onboarding sets up, kept by [`store`].
@@ -128,17 +128,17 @@ async fn sign_in(server: &str, login: &Login) -> Result<(String, Client), String
 
 /// Opens the library with the saved account, or asks for a server when
 /// there is none. Runs at start, and again on "Try again" after the server
-/// didn't answer.
+/// didn't answer, which signs the library in again.
 ///
 /// With the server not answering and music downloaded from it, opens the
 /// downloads under the note that it didn't answer, and asks it again every
 /// so often until it does.
 fn resume(ui: &AppWindow, browser: &browse::Shared) {
     // The note stays up while the downloads are shown.
-    let showing_downloads = browse::is_offline(browser);
-    if !showing_downloads {
+    if !browse::is_offline(browser) {
         ui.set_offline("".into());
     }
+    let signing_in_again = browse::sign_in_failed(browser);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
         let mut account = store::load().await;
@@ -160,38 +160,80 @@ fn resume(ui: &AppWindow, browser: &browse::Shared) {
             return;
         };
         show(&ui, &account);
-        ui.set_loading(!showing_downloads);
-        let signed_in = sign_in(&account.server, &account.login).await;
-        // Signed out while this was under way, and maybe in again since.
-        if ui.get_step() != Step::Done || browse::started(&browser) {
-            return;
-        }
-        ui.set_loading(false);
-        match signed_in {
-            Ok((name, client)) => {
-                ui.set_server_name(name.into());
-                ui.set_offline("".into());
-                if showing_downloads {
-                    browse::reconnect(&ui, &browser, client);
-                } else {
-                    browse::start(&ui, &browser, client);
-                }
-            }
-            Err(e) => {
-                ui.set_offline(format!("Your server didn't answer: {e}").into());
-                if !browse::downloads(&browser).has_songs_from(&account.server) {
-                    return;
-                }
-                if !showing_downloads
-                    && let Ok(client) = Client::new(&account.server, account.login.auth())
-                {
-                    browse::start_offline(&ui, &browser, client);
-                }
-                ask_again_later(&ui, &browser);
-            }
+        match signing_in_again {
+            true => go_back_online(&ui, &browser, &account).await,
+            false => open_library(&ui, &browser, &account).await,
         }
     })
     .expect("the event loop is running");
+}
+
+/// Opens the library at once on what this device kept from before, while
+/// it signs in, and has its pages ask the server for the rest once it has.
+async fn open_library(ui: &AppWindow, browser: &browse::Shared, account: &Account) {
+    let client = match Client::new(&account.server, account.login.auth()) {
+        Ok(client) => client,
+        Err(e) => return ui.set_offline(format!("Your server didn't answer: {e}").into()),
+    };
+    let sign_in_over = Arc::new(SignIn::default());
+    browse::open_library(ui, browser, client.waiting_for(sign_in_over.clone()));
+    let opened = browse::client(browser);
+    let signed_in = sign_in(&account.server, &account.login).await;
+    let signed_in = signed_in.map(|(name, client)| (name, Arc::new(client)));
+    // Signed out while this was under way, and maybe in again since: then
+    // the pages left behind ask the server nothing more.
+    let still_open = goes_on_with(browser, opened);
+    let asks_through = signed_in.as_ref().ok().filter(|_| still_open);
+    sign_in_over.end(asks_through.map(|(_, client)| client.clone()));
+    if !still_open {
+        return;
+    }
+    match signed_in {
+        Ok((name, _)) => {
+            ui.set_server_name(name.into());
+            browse::signed_in(ui, browser);
+        }
+        Err(e) => didnt_answer(ui, browser, account, &e),
+    }
+}
+
+/// Signs in again after the server didn't answer, and goes on from the page
+/// on screen once it does.
+async fn go_back_online(ui: &AppWindow, browser: &browse::Shared, account: &Account) {
+    let failed = browse::client(browser);
+    let signed_in = sign_in(&account.server, &account.login).await;
+    // Signed out while this was under way, and maybe in again since, or
+    // signed in by another "Try again".
+    if !goes_on_with(browser, failed) {
+        return;
+    }
+    match signed_in {
+        Ok((name, client)) => {
+            ui.set_server_name(name.into());
+            ui.set_offline("".into());
+            browse::reconnect(ui, browser, client);
+        }
+        Err(e) => didnt_answer(ui, browser, account, &e),
+    }
+}
+
+/// Whether the library still goes on with `client`: signing out drops it,
+/// and signing in opens the library with another.
+fn goes_on_with(browser: &browse::Shared, client: Option<Arc<Client>>) -> bool {
+    (browse::client(browser).zip(client)).is_some_and(|(now, then)| Arc::ptr_eq(&now, &then))
+}
+
+/// Says the server didn't answer. With music downloaded from it, shows the
+/// downloads and asks the server again every so often.
+fn didnt_answer(ui: &AppWindow, browser: &browse::Shared, account: &Account, problem: &str) {
+    ui.set_offline(format!("Your server didn't answer: {problem}").into());
+    if !browse::downloads(browser).has_songs_from(&account.server) {
+        return;
+    }
+    if !browse::is_offline(browser) {
+        browse::go_offline(ui, browser);
+    }
+    ask_again_later(ui, browser);
 }
 
 /// Asks the server again after a while, if the app is still showing what is
@@ -914,6 +956,11 @@ mod tests {
     static DOWN: AtomicBool = AtomicBool::new(false);
     /// Every call it turned down so, as `ASKED` has them.
     static ASKED_WHILE_DOWN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// While set, the flow test's server holds its answer to a ping, as one
+    /// slow to sign in to does, and answers nothing else meanwhile.
+    static PING_HELD: AtomicBool = AtomicBool::new(false);
+    /// While set, it holds its answer to any other call so.
+    static ANSWERS_HELD: AtomicBool = AtomicBool::new(false);
     /// While set, the server hangs up on every folder it is asked for, as
     /// one out of reach does.
     static FOLDERS_UNREACHABLE: AtomicBool = AtomicBool::new(false);
@@ -1477,6 +1524,13 @@ mod tests {
     }
 
     fn flaky(request: &str) -> Vec<u8> {
+        let held = match request.contains("/rest/ping") {
+            true => &PING_HELD,
+            false => &ANSWERS_HELD,
+        };
+        while held.load(Relaxed) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         if DOWN.load(Relaxed) {
             ASKED_WHILE_DOWN.lock().unwrap().push(write_of(request));
             reply("503 Service Unavailable", "text/plain", b"down")
@@ -6036,16 +6090,87 @@ mod tests {
             click(&ui, "Tracks");
             wait_for("the tracks", || ui.get_track_lines().row_count() == 100).await;
 
-            // A second start finds the saved account, with its server down.
+            // A start shows the home page kept on this device at once, while
+            // the server is slow to sign in to, spanning a phone's window,
+            // and then what the server says in its place, on the same visit.
             let kept_answers = answers_kept_for(&server, "joe");
             wait_for("the answers saved", || kept_answers.exists()).await;
-            let lists_kept = LISTS.load(Relaxed);
-            DOWN.store(true, Relaxed);
-            let rob = ListenBrainz {
-                token: "rob token".into(),
-                user: "rob".into(),
+            let phone = slint::LogicalSize::new(360.0, 640.0);
+            let page_width = |ui: &AppWindow| {
+                let main = ui.root_element().query_descendants();
+                let page = main.match_accessible_role(AccessibleRole::Main).find_first();
+                page.unwrap().size().width
             };
-            store::save_listenbrainz(rob).await.unwrap();
+            let named = |ui: &AppWindow, title: &str| ui.get_tiles().iter().any(|t| t.title == title);
+            let labels = |ui: &AppWindow| -> Vec<String> {
+                ui.get_stats().iter().map(|stat| stat.label.into()).collect()
+            };
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            ALBUM_RENAMED.store(true, Relaxed);
+            PING_HELD.store(true, Relaxed);
+            let slow = start().unwrap();
+            slow.window().set_size(phone);
+            wait_for("the kept home page", || named(&slow, "Night Harbour")).await;
+            assert_eq!(slow.get_page(), Page::Home);
+            assert_eq!(page_width(&slow), 360.0);
+            let visit = slow.get_visit();
+            let (users, queues) = (times_asked("getUser"), times_asked("getPlayQueue"));
+            PING_HELD.store(false, Relaxed);
+            wait_for("the home page as the server has it", || {
+                named(&slow, "Night Harbour (Remastered)") && labels(&slow).len() == 5
+            })
+            .await;
+            assert_eq!(slow.get_visit(), visit, "not opened anew");
+            // Signed in, it asks for the user's roles and the queue left
+            // playing too.
+            wait_for("the user and the queue", || {
+                times_asked("getUser") > users && times_asked("getPlayQueue") > queues
+            })
+            .await;
+            ALBUM_RENAMED.store(false, Relaxed);
+            idle(Duration::from_millis(500)).await;
+
+            // With nothing kept, a start shows the home page's frame at once
+            // while it signs in, spanning a phone's window, and fills it in
+            // on the same visit.
+            std::fs::remove_file(&kept_answers).unwrap();
+            let extensions = times_asked("getOpenSubsonicExtensions");
+            PING_HELD.store(true, Relaxed);
+            let fresh = start().unwrap();
+            fresh.window().set_size(phone);
+            wait_for("the home page's frame", || {
+                labels(&fresh) == ["Artists", "Albums", "Tracks"]
+            })
+            .await;
+            assert!(fresh.get_sections().iter().any(|section| section == "Albums"));
+            assert_eq!(fresh.get_tiles().row_count(), 0);
+            assert_eq!(page_width(&fresh), 360.0);
+            let visit = fresh.get_visit();
+            // Signed in, it counts what the server's extensions offer too,
+            // before any answer comes.
+            wait_for("the extensions asked for", || {
+                times_asked("getOpenSubsonicExtensions") > extensions
+            })
+            .await;
+            ANSWERS_HELD.store(true, Relaxed);
+            PING_HELD.store(false, Relaxed);
+            wait_for("the frame of what they offer", || labels(&fresh).len() == 5).await;
+            assert_eq!(fresh.get_tiles().row_count(), 0);
+            assert!(fresh.get_sections().iter().any(|section| section == "Composers"));
+            ANSWERS_HELD.store(false, Relaxed);
+            wait_for("the home page filled in", || {
+                fresh.get_tiles().row_count() == 24 && labels(&fresh).len() == 5
+            })
+            .await;
+            assert_eq!(fresh.get_visit(), visit, "not opened anew");
+            idle(Duration::from_millis(500)).await;
+
+            // A second start finds the saved account, with its server down,
+            // and the pages kept from over an hour before.
+            wait_for("the answers saved", || kept_answers.exists()).await;
+            let lists_kept = LISTS.load(Relaxed);
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            DOWN.store(true, Relaxed);
             // The most played, last in the Sort menus, come back too.
             let mut saved = crate::prefs::load();
             assert_eq!((saved.album_sort, saved.album_descending), (1, true));
@@ -6055,13 +6180,69 @@ mod tests {
             let again = start().unwrap();
             wait_for("the offline note", || again.get_offline() != "").await;
             assert_eq!(again.get_step(), Step::Done);
-            DOWN.store(false, Relaxed);
+            // The home page kept stays, spanning a phone's window.
+            again.window().set_size(phone);
+            wait_for("the kept home page", || again.get_tiles().row_count() == 24).await;
+            assert_eq!(again.get_page(), Page::Home);
+            assert_eq!(page_width(&again), 360.0);
+            // A page with nothing kept, as the tracks page lists the empty
+            // search, says the server didn't answer.
             again
                 .window()
                 .set_size(slint::LogicalSize::new(1100.0, 760.0));
-            click(&again, "Try again");
-            // It opens on the home page: a welcome, the library's counts and
-            // its newest albums.
+            click(&again, "Tracks");
+            wait_for("the tracks' problem", || again.get_page_problem() != "").await;
+            // Pulled down to ask for it anew, it signs in again, and says the
+            // server didn't answer once more.
+            let pings_while_down = || {
+                let asked = ASKED_WHILE_DOWN.lock().unwrap();
+                asked.iter().filter(|call| call.starts_with("ping ")).count()
+            };
+            let pinged = pings_while_down();
+            again.invoke_refresh();
+            wait_for("a sign-in while down", || pings_while_down() > pinged).await;
+            wait_for("the note once more", || again.get_offline() != "").await;
+            assert_eq!(again.get_page(), Page::Tracks);
+            DOWN.store(false, Relaxed);
+            // Set before it signs in again, which reads it.
+            let rob = ListenBrainz {
+                token: "rob token".into(),
+                user: "rob".into(),
+            };
+            store::save_listenbrainz(rob).await.unwrap();
+            // The page's own Try again, below the note's, signs in again,
+            // and asks for the page on screen. Pressed twice while the server
+            // is slow to sign in to, it signs in once: the second finds the
+            // library signed in by the first.
+            let tries = || {
+                again
+                    .root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Button)
+                    .match_predicate(|button| button.accessible_label().is_some_and(|l| l == "Try again"))
+                    .find_all()
+            };
+            assert_eq!(tries().len(), 2, "the note's and the page's");
+            let (pings, users) = (times_asked("ping"), times_asked("getUser"));
+            PING_HELD.store(true, Relaxed);
+            // Each reads the ListenBrainz user anew just before it signs in.
+            for _ in 0..2 {
+                again.set_listenbrainz_user("".into());
+                let page_try_again = tries().pop().expect("the page's Try again");
+                page_try_again.invoke_accessible_default_action();
+                wait_for("a Try again under way", || again.get_listenbrainz_user() == "rob").await;
+            }
+            PING_HELD.store(false, Relaxed);
+            wait_for("the tracks", || again.get_track_lines().row_count() == 100).await;
+            assert_eq!(again.get_page(), Page::Tracks);
+            wait_for("both signed in", || times_asked("ping") >= pings + 2).await;
+            idle(Duration::from_millis(500)).await;
+            assert_eq!(times_asked("getUser"), users + 1, "signed in once");
+            assert_eq!(again.get_offline(), "");
+            assert!(again.get_sections().iter().any(|section| section == "Composers"));
+            // The home page: a welcome, the library's counts and its newest
+            // albums.
+            click(&again, "Home");
             let stats = |ui: &AppWindow| -> Vec<(String, String)> {
                 let stats = ui.get_stats();
                 stats
@@ -6078,7 +6259,7 @@ mod tests {
                     && tracks(&again).is_some_and(|(_, value)| value != "2")
             })
             .await;
-            assert_eq!(LISTS.load(Relaxed), lists_kept, "the library kept on this device");
+            wait_for("the library kept asked for again", || LISTS.load(Relaxed) > lists_kept).await;
             assert_eq!(again.get_offline(), "");
             assert_eq!(again.get_page(), Page::Home);
             assert_eq!(again.get_username(), "joe");
@@ -9053,6 +9234,49 @@ mod tests {
             click(&ui, &frees);
             wait_for("the sign-in step again", || ui.get_step() == Step::SignIn).await;
             assert!(!kept.exists(), "the downloads went with the account");
+
+            // A start signed out of while it signs in, and then in elsewhere,
+            // leaves the library signed in to since alone: once its sign-in
+            // ends, the pages it opened ask nothing more.
+            let elsewhere = serve(subsonic);
+            let account = Account {
+                server: server.clone(),
+                login: Login::Password {
+                    username: "joe".into(),
+                    password: "pw".into(),
+                },
+                legacy_listenbrainz: None,
+            };
+            store::save(account).await.unwrap();
+            // Whatever is kept is aged, so the folders page asks the server.
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            PING_HELD.store(true, Relaxed);
+            // `super::`, as a step above binds `start` to a position.
+            let left = super::start().unwrap();
+            wait_for("the library opened", || left.get_step() == Step::Done).await;
+            left.invoke_open("folders".into());
+            left.invoke_open("account".into());
+            click(&left, "Change server");
+            wait_for("the server step", || left.get_step() == Step::Server).await;
+            left.set_address(elsewhere.as_str().into());
+            click(&left, "Continue");
+            wait_for("the sign-in step", || left.get_step() == Step::SignIn).await;
+            left.set_username("joe".into());
+            left.set_password("pw".into());
+            left.set_listenbrainz_user("".into());
+            let users = times_asked("getUser");
+            click(&left, "Sign in");
+            wait_for("the ListenBrainz step", || left.get_step() == Step::Listenbrainz).await;
+            click(&left, "Skip");
+            wait_for("the library elsewhere", || times_asked("getUser") > users).await;
+            wait_for("its account saved", || !left.get_busy()).await;
+            let (users, folders) = (times_asked("getUser"), times_asked("getIndexes"));
+            let pings = times_asked("ping");
+            PING_HELD.store(false, Relaxed);
+            wait_for("the sign-in left behind", || times_asked("ping") > pings).await;
+            idle(Duration::from_millis(500)).await;
+            assert_eq!(times_asked("getUser"), users, "the library elsewhere is asked for once");
+            assert_eq!(times_asked("getIndexes"), folders, "the folders left asked nothing");
 
             slint::quit_event_loop().unwrap();
         })
