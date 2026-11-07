@@ -1267,6 +1267,10 @@ export component AppWindow inherits Window {
     in property <int> download-songs;
     // What signing out frees by removing the downloads; empty without any.
     in property <string> sign-out-frees;
+    // What the button pressed says while the plays waiting for the server
+    // go before the account signs out; empty otherwise.
+    in property <string> sign-out-sending;
+    in property <string> change-server-sending;
     in property <string> download-space;
     in property <string> download-status;
     in-out property <int> download-limit;
@@ -2985,7 +2989,7 @@ export component AppWindow inherits Window {
                             alignment: start;
                             spacing: 8px;
                             Button {
-                                text: root.sign-out-frees == "" ? "Sign out" : "Sign out and free " + root.sign-out-frees;
+                                text: root.sign-out-sending != "" ? root.sign-out-sending : root.sign-out-frees == "" ? "Sign out" : "Sign out and free " + root.sign-out-frees;
                                 enabled: !root.busy && !Input.modal;
                                 clicked => { root.sign-out(); }
                             }
@@ -2998,7 +3002,7 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             alignment: start;
                             Button {
-                                text: "Change server";
+                                text: root.change-server-sending != "" ? root.change-server-sending : "Change server";
                                 enabled: !root.busy && !Input.modal;
                                 clicked => { root.change-server(); }
                             }
@@ -4360,7 +4364,7 @@ export component AppWindow inherits Window {
                         spacing: 12px;
                         Heading { text: "ListenBrainz"; }
                         Note {
-                            text: "Optional. With a token, the app sends what you play to ListenBrainz. Your user token is on https://listenbrainz.org/settings/";
+                            text: "Optional. With a token, the app shows your ListenBrainz stats, playlists and listens, and keeps your loves in step. What you play reaches ListenBrainz through your server once you link it there. Your user token is on https://listenbrainz.org/settings/";
                             font-size: root.phone ? Theme.body : 0px;
                         }
                         LineEdit {

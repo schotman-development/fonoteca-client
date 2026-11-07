@@ -924,12 +924,16 @@ impl Client {
 
     /// Tells the server a song was played, from `time` in milliseconds since
     /// 1970, or else now, for its play counts and the albums it lists as
-    /// played most recently.
+    /// played most recently. When it is not a `submission`, it only says
+    /// the song plays now.
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/scrobble/>
-    pub async fn scrobble(&self, id: &str, time: Option<i64>) -> Result<()> {
-        self.call_unit("scrobble", Params::new().req("id", id).opt("time", time))
-            .await
+    pub async fn scrobble(&self, id: &str, time: Option<i64>, submission: bool) -> Result<()> {
+        let params = Params::new()
+            .req("id", id)
+            .opt("time", time)
+            .req("submission", submission);
+        self.call_unit("scrobble", params).await
     }
 
     // Sonic similarity

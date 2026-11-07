@@ -1047,6 +1047,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_scrobble_says_what_plays_now_apart_from_a_play_with_its_time() {
+        let (server, log) =
+            serve(|_| json(r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#));
+        let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
+        client.scrobble("s1", None, false).await.unwrap();
+        client.scrobble("s1", Some(1_000_000), true).await.unwrap();
+        let log = log.lock().unwrap();
+        assert!(log[0].contains("id=s1&submission=false"), "{}", log[0]);
+        assert!(
+            log[1].contains("id=s1&time=1000000&submission=true"),
+            "{}",
+            log[1]
+        );
+    }
+
+    #[tokio::test]
     async fn kept_answers_are_handed_out_while_fresh() {
         use std::sync::atomic::AtomicU64;
         static NOW: AtomicU64 = AtomicU64::new(1000);

@@ -1,6 +1,6 @@
 //! The [ListenBrainz](https://listenbrainz.readthedocs.io/en/latest/users/api/)
-//! calls: submit listens and the track playing now, read a user's listens
-//! back, love, hate or clear a recording, and read a user's feedback back.
+//! calls: read a user's listens back, love, hate or clear a recording, and
+//! read a user's feedback back.
 //!
 //! Recordings are identified by their MusicBrainz recording ID, which
 //! OpenSubsonic servers such as Navidrome put in a song's `musicBrainzId`.
@@ -30,47 +30,12 @@ pub use playlist::{Playlist, PlaylistTrack};
 
 pub const API_ROOT: &str = "https://api.listenbrainz.org/1/";
 
-/// The most listens one submit call takes.
-pub const MAX_LISTENS_PER_REQUEST: usize = 1000;
-
 pub use stats::{COVER_ART_ROOT, GenreActivity, Range, TopAlbum, TopArtist, TopGenre};
 
 /// How many feedback items [`Client::loved_recordings`] asks for at once.
 const FEEDBACK_PAGE: u32 = 100;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-/// What ListenBrainz keeps of a track played.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackMetadata {
-    pub artist_name: String,
-    pub track_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release_name: Option<String>,
-    pub additional_info: AdditionalInfo,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdditionalInfo {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recording_mbid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tracknumber: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration: Option<u64>,
-    /// The program playing and the one submitting, which are this app.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_player: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submission_client: Option<String>,
-}
-
-/// A track played, and when it began, in seconds since 1970.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Listen {
-    pub listened_at: i64,
-    pub track_metadata: TrackMetadata,
-}
 
 /// A user's feedback on a recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,40 +177,6 @@ impl Client {
         Ok(validation.user_name.filter(|_| validation.valid))
     }
 
-    /// Says that the user has just begun listening to a track.
-    pub async fn playing_now(&self, track_metadata: &TrackMetadata) -> Result<()> {
-        #[derive(Serialize)]
-        struct Payload<'a> {
-            track_metadata: &'a TrackMetadata,
-        }
-        let body = SubmitListens {
-            listen_type: "playing_now",
-            payload: &[Payload { track_metadata }],
-        };
-        self.submit(&body).await
-    }
-
-    /// Keeps these listens, at most [`MAX_LISTENS_PER_REQUEST`] of them. One
-    /// is a `single`, which ListenBrainz asks of a track just finished; more
-    /// are an `import`.
-    pub async fn submit_listens(&self, listens: &[Listen]) -> Result<()> {
-        let listen_type = if listens.len() == 1 {
-            "single"
-        } else {
-            "import"
-        };
-        let body = SubmitListens {
-            listen_type,
-            payload: listens,
-        };
-        self.submit(&body).await
-    }
-
-    async fn submit<T: Serialize>(&self, body: &SubmitListens<'_, T>) -> Result<()> {
-        let request = self.http.post(self.url(&["submit-listens"])).json(body);
-        send::<IgnoredAny>(self.authorized(request)).await.map(drop)
-    }
-
     /// Loves, hates or clears the user's feedback on a recording.
     pub async fn submit_feedback(&self, recording_mbid: &str, score: Score) -> Result<()> {
         #[derive(Serialize)]
@@ -338,12 +269,6 @@ impl Client {
         let list: List = send(self.authorized(request)).await?;
         Ok(list.feedback)
     }
-}
-
-#[derive(Serialize)]
-struct SubmitListens<'a, T> {
-    listen_type: &'static str,
-    payload: &'a [T],
 }
 
 /// Sends `request` from the runtime's threads, after waiting `turn`'s
@@ -582,35 +507,6 @@ mod tests {
             url.as_str(),
             "https://api.listenbrainz.org/1/feedback/user/a%20b%2Fc/get-feedback"
         );
-    }
-
-    #[test]
-    fn a_listen_is_the_json_listenbrainz_takes() {
-        let listen = Listen {
-            listened_at: 1700000000,
-            track_metadata: TrackMetadata {
-                artist_name: "Rob".into(),
-                track_name: "Song".into(),
-                release_name: None,
-                additional_info: AdditionalInfo {
-                    duration: Some(200),
-                    ..Default::default()
-                },
-            },
-        };
-        let body = SubmitListens {
-            listen_type: "single",
-            payload: std::slice::from_ref(&listen),
-        };
-        assert_eq!(
-            serde_json::to_value(&body).unwrap(),
-            serde_json::json!({"listen_type": "single", "payload": [{
-                "listened_at": 1700000000,
-                "track_metadata": {"artist_name": "Rob", "track_name": "Song",
-                    "additional_info": {"duration": 200}}}]})
-        );
-        let kept = serde_json::to_string(&listen).unwrap();
-        assert_eq!(serde_json::from_str::<Listen>(&kept).unwrap(), listen);
     }
 
     #[test]

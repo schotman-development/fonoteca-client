@@ -263,7 +263,7 @@ impl Answers {
     /// of date by their call, and gives the look through the rest for what
     /// it named, if it needs one, for [`Answers::forget_outdated`].
     pub(crate) fn called(&self, call: &str, params: &[(&str, String)]) -> Option<Search> {
-        let change = Change::of(call)?;
+        let change = Change::of(call, params)?;
         let mut kept = self.lock();
         kept.writes += 1;
         let before = kept.answers.len();
@@ -403,7 +403,7 @@ enum Change {
 }
 
 impl Change {
-    fn of(call: &str) -> Option<Self> {
+    fn of(call: &str, params: &[(&str, String)]) -> Option<Self> {
         match call {
             "startScan" => Some(Self::Everything),
             "star" | "unstar" | "setRating" => Some(Self::Naming),
@@ -418,6 +418,8 @@ impl Change {
             "createInternetRadioStation"
             | "updateInternetRadioStation"
             | "deleteInternetRadioStation" => Some(Self::Reads("getInternetRadioStations")),
+            // Saying what plays now counts no play.
+            "scrobble" if is_playing_now(params) => None,
             // A play raises only the counts in the album lists and in
             // Fonoteca's composers and compositions, so they still show at
             // once, and are asked for again.
@@ -444,6 +446,11 @@ impl Change {
     fn names(&self) -> bool {
         matches!(self, Self::Naming | Self::ReadsAndNaming(_))
     }
+}
+
+/// Whether a scrobble's `params` only say what plays now.
+fn is_playing_now(params: &[(&str, String)]) -> bool {
+    (params.iter()).any(|(name, value)| *name == "submission" && value == "false")
 }
 
 /// Whether one of the strings in the JSON `text`, its keys too, is one of
@@ -753,6 +760,17 @@ mod tests {
         call(&answers, "scrobble", &params(&[("id", "s1")]));
         assert!(answers.find(&composers).unwrap().aged);
         assert!(answers.find(&pieces).unwrap().aged);
+    }
+
+    #[test]
+    fn saying_what_plays_now_keeps_the_album_lists_fresh() {
+        let library = key("getAlbumList2", &[("type", "alphabeticalByName")]);
+        let answers = kept(&[(&library, r#"{"albumList2":{}}"#)]);
+        let writes = answers.writes();
+        let playing_now = params(&[("id", "s1"), ("submission", "false")]);
+        call(&answers, "scrobble", &playing_now);
+        assert!(!answers.find(&library).unwrap().aged);
+        assert_eq!(answers.writes(), writes, "the reads under way are kept");
     }
 
     #[test]

@@ -752,6 +752,13 @@ pub fn log_play(browser: &Shared, song: &Child, listened_at: i64) {
     }
 }
 
+/// What names the account signed in on this device, for the plays that
+/// wait for its server.
+#[cfg(not(target_family = "wasm"))]
+pub fn account(browser: &Shared) -> Option<String> {
+    account_key(&browser.borrow()).map(str::to_owned)
+}
+
 /// Forgets the plays logged on this device for the account signed in,
 /// before it signs out.
 pub fn forget_plays(browser: &Shared) -> std::io::Result<()> {
@@ -8787,7 +8794,8 @@ fn length(tracks: i64, seconds: i64) -> String {
     )
 }
 
-fn count(n: usize, one: &str, many: &str) -> String {
+/// "1 track", "2 tracks".
+pub fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 

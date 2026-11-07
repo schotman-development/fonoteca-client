@@ -1,17 +1,20 @@
-//! Scrobbling to ListenBrainz while a token is set: tells it which track
-//! just began, and submits a listen once a track was heard long enough.
-//! Listens that can't be submitted yet wait in the preferences, and go out
-//! at the next listen and at the next start. The server is told of each
-//! track heard long enough too, for the albums it lists as played last.
+//! Scrobbling to the server: tells it which track just began, as playing
+//! now, and of each track heard long enough, from when it began. The server
+//! passes them on, to ListenBrainz too once that is linked there. Plays it
+//! can't be told of yet wait on this device for its account, and go oldest
+//! first, each with its own time, at the next track, the next play, the next
+//! start and as the account signs out, which forgets the ones still left.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::{Poll, Waker};
 
-use listenbrainz::{AdditionalInfo, Client, Listen, TrackMetadata};
 use opensubsonic::Child;
+use serde::{Deserialize, Serialize};
 
-use crate::{prefs, store};
+use crate::prefs;
 
 /// ListenBrainz counts a listen after half the track, or this many seconds
 /// of it, whichever comes first.
@@ -20,7 +23,10 @@ const LISTENED_ENOUGH_AT_MOST: f64 = 4.0 * 60.0;
 /// still be heard playing; more is a seek. The clock is what tells a seek
 /// from a late look, which a phone in a pocket makes.
 const SLACK_HEARD: f64 = 2.0;
-const APP_NAME: &str = "Fonoteca";
+/// The errors by which the server refuses a play for good: a call it finds
+/// a parameter missing from, and a song it doesn't have.
+const MISSING_PARAMETER: i64 = 10;
+const NOT_FOUND: i64 = 70;
 
 /// What the player says, as of one look at it.
 pub struct Heard<'a> {
@@ -119,57 +125,42 @@ fn listened_enough(duration: Option<f64>) -> f64 {
     })
 }
 
-/// What ListenBrainz needs of `song`, or none when it lacks an artist or
-/// a title, which it refuses.
-fn metadata(song: &Child) -> Option<TrackMetadata> {
-    let artist_name = song.artist.clone().filter(|artist| !artist.is_empty())?;
-    if song.title.is_empty() {
-        return None;
-    }
-    Some(TrackMetadata {
-        artist_name,
-        track_name: song.title.clone(),
-        release_name: song.album.clone(),
-        additional_info: AdditionalInfo {
-            recording_mbid: song.music_brainz_id.clone(),
-            tracknumber: song.track.map(|track| track.to_string()),
-            duration: song
-                .duration
-                .and_then(|seconds| u64::try_from(seconds).ok()),
-            media_player: Some(APP_NAME.to_owned()),
-            submission_client: Some(APP_NAME.to_owned()),
-        },
-    })
+/// The server signed in to, and what names its account on this device.
+pub struct Server {
+    pub client: Arc<opensubsonic::Client>,
+    pub account: String,
+}
+
+/// A play the server is still to be told of: the song, and when it began,
+/// in seconds since 1970.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingPlay {
+    pub id: String,
+    pub started_at: i64,
 }
 
 #[derive(Default)]
 pub struct Scrobbler {
     tracker: Tracker,
-    outbox: Rc<Outbox>,
+    /// The plays waiting for each account's server, by account.
+    outboxes: HashMap<String, Rc<Outbox>>,
     #[cfg(test)]
     looks: u32,
     #[cfg(test)]
-    flushes: Cell<u32>,
+    sends: u32,
 }
 
 impl Scrobbler {
-    /// With the listens an earlier run left waiting.
-    pub fn load() -> Self {
-        Scrobbler {
-            outbox: Rc::new(Outbox::new(prefs::waiting_listens())),
-            ..Self::default()
-        }
-    }
-
     /// Looks at what plays, `song` being the track playing, on `server`.
-    /// Says when it began once it was heard long enough, with a token or
+    /// Says when it began once it was heard long enough, with a server or
     /// without.
     pub fn observe(
         &mut self,
         song: Option<&Child>,
         position: f64,
         paused: bool,
-        server: Option<Arc<opensubsonic::Client>>,
+        server: Option<Server>,
     ) -> Option<i64> {
         #[cfg(test)]
         {
@@ -177,41 +168,75 @@ impl Scrobbler {
         }
         let heard = heard_of(song, position, paused);
         let event = self.tracker.observe(clock(), &heard)?;
-        let listened_at = match event {
+        if let (Some(song), Some(server)) = (song, server) {
+            self.tell(&event, song, server);
+        }
+        match event {
             Event::Due { started_at } => Some(started_at),
             Event::Started => None,
-        };
-        if let (Some(started_at), Some(song), Some(server)) = (listened_at, song, server) {
-            report(server, song.id.clone(), started_at);
         }
-        if let Some(track_metadata) = song.and_then(metadata) {
-            let outbox = self.outbox.clone();
-            slint::spawn_local(async move {
-                react(client().await, &outbox, event, track_metadata).await;
-            })
-            .expect("the event loop is running");
-        }
-        listened_at
     }
 
-    /// Submits the listens waiting, if any.
-    pub fn flush(&self) {
-        #[cfg(test)]
-        self.flushes.set(self.flushes.get() + 1);
-        let outbox = self.outbox.clone();
-        slint::spawn_local(async move {
-            if let Some(client) = client().await {
-                outbox.flush(&client).await;
+    /// Tells `server` that `song` plays now, or that it was played, which
+    /// waits behind the plays before it until the server has them all.
+    fn tell(&mut self, event: &Event, song: &Child, server: Server) {
+        let outbox = self.outbox(&server.account);
+        match *event {
+            Event::Started => announce(server.client, song.id.clone(), outbox),
+            Event::Due { started_at } => {
+                outbox.add(WaitingPlay {
+                    id: song.id.clone(),
+                    started_at,
+                });
+                send(server.client, outbox);
             }
-        })
-        .expect("the event loop is running");
+        }
     }
 
-    /// How often the player was looked at and the waiting listens were
-    /// flushed, for the tests of the wiring.
+    /// Sends the plays waiting for `server`, unless a send is under way.
+    pub fn send_waiting(&mut self, server: Server) -> impl Future<Output = ()> + use<> {
+        #[cfg(test)]
+        {
+            self.sends += 1;
+        }
+        let outbox = self.outbox(&server.account);
+        async move { outbox.send(&server.client).await }
+    }
+
+    /// Sends the plays waiting for `server` once the send under way, if any,
+    /// has ended: the last try before its account signs out.
+    pub fn send_last(&mut self, server: Server) -> impl Future<Output = ()> + use<> {
+        let outbox = self.outbox(&server.account);
+        async move { outbox.send_last(&server.client).await }
+    }
+
+    /// How many plays wait for the server of `account`.
+    pub fn waiting(&mut self, account: &str) -> usize {
+        self.outbox(account).waiting.borrow().len()
+    }
+
+    /// Forgets the plays still waiting for the server of `account`, as it
+    /// signs out.
+    pub fn forget(&mut self, account: &str) -> std::io::Result<()> {
+        if let Some(outbox) = self.outboxes.remove(account) {
+            outbox.waiting.borrow_mut().clear();
+        }
+        prefs::forget_waiting_plays(account)
+    }
+
+    /// The plays waiting for the server of `account`, read from this device
+    /// the first time.
+    fn outbox(&mut self, account: &str) -> Rc<Outbox> {
+        let outbox = (self.outboxes.entry(account.to_owned()))
+            .or_insert_with(|| Rc::new(Outbox::load(account)));
+        outbox.clone()
+    }
+
+    /// How often the player was looked at and what waits was sent, for the
+    /// tests of the wiring.
     #[cfg(test)]
     pub fn calls(&self) -> (u32, u32) {
-        (self.looks, self.flushes.get())
+        (self.looks, self.sends)
     }
 }
 
@@ -233,137 +258,122 @@ fn heard_of(song: Option<&Child>, position: f64, paused: bool) -> Heard<'_> {
     }
 }
 
-/// Acts on `event` when there is a token, and not otherwise: without one
-/// nothing is sent and no listen is kept.
-async fn react(
-    client: Option<Client>,
-    outbox: &Outbox,
-    event: Event,
-    track_metadata: TrackMetadata,
-) {
-    let Some(client) = client else { return };
-    match event {
-        Event::Started => announce(&client, &track_metadata).await,
-        Event::Due { started_at } => {
-            outbox.add(Listen {
-                listened_at: started_at,
-                track_metadata,
-            });
-            outbox.flush(&client).await;
-        }
-    }
-}
-
-/// The client for the saved token, if there is one.
-async fn client() -> Option<Client> {
-    let token = store::load_listenbrainz().await?.token;
-    // Tests must never reach the real ListenBrainz, which is someone's account.
-    #[cfg(not(test))]
-    let client = Client::new(token);
-    #[cfg(test)]
-    let client = Client::with_root(token, "http://127.0.0.1:9/1/");
-    client
-        .inspect_err(|e| eprintln!("ListenBrainz: no client: {e}"))
-        .ok()
-}
-
-/// Tells `server` that `song` was played from `started_at`, in seconds since
-/// 1970. A play it misses is only missing from its counts and lists.
-fn report(server: Arc<opensubsonic::Client>, song: String, started_at: i64) {
+/// Tells `server` that `song` plays now, and once it has answered, the plays
+/// waiting for it. The listener only misses a "playing now" when this fails.
+fn announce(server: Arc<opensubsonic::Client>, song: String, outbox: Rc<Outbox>) {
     slint::spawn_local(async move {
-        if let Err(e) = server.scrobble(&song, Some(started_at * 1000)).await {
-            eprintln!("The server missed the play of {song}: {e}");
+        match server.scrobble(&song, None, false).await {
+            Ok(()) => outbox.send(&server).await,
+            Err(e) => eprintln!("The server wasn't told {song} plays now: {e}"),
         }
     })
     .expect("the event loop is running");
 }
 
-/// A track just began. The listener only misses a stat when this fails.
-async fn announce(client: &Client, track_metadata: &TrackMetadata) {
-    if let Err(e) = client.playing_now(track_metadata).await {
-        eprintln!("ListenBrainz playing now: {e}");
-    }
+fn send(server: Arc<opensubsonic::Client>, outbox: Rc<Outbox>) {
+    slint::spawn_local(async move { outbox.send(&server).await })
+        .expect("the event loop is running");
 }
 
-/// The listens not yet submitted, oldest first.
-#[derive(Default)]
+/// The plays the server of one account is still to be told of, oldest
+/// first, kept on this device until it has them.
 struct Outbox {
-    waiting: RefCell<Vec<Listen>>,
-    is_flushing: Cell<bool>,
+    account: String,
+    waiting: RefCell<Vec<WaitingPlay>>,
+    is_sending: Cell<bool>,
+    /// The last tries waiting for the send under way to end.
+    send_ended: RefCell<Vec<Waker>>,
 }
 
 impl Outbox {
-    fn new(waiting: Vec<Listen>) -> Self {
+    fn load(account: &str) -> Self {
         Outbox {
-            waiting: RefCell::new(waiting),
-            is_flushing: Cell::new(false),
+            account: account.to_owned(),
+            waiting: RefCell::new(prefs::waiting_plays(account)),
+            is_sending: Cell::new(false),
+            send_ended: RefCell::default(),
         }
     }
 
-    fn add(&self, listen: Listen) {
+    fn add(&self, play: WaitingPlay) {
         let mut waiting = self.waiting.borrow_mut();
-        waiting.push(listen);
-        prefs::save_waiting_listens(&waiting);
+        waiting.push(play);
+        prefs::save_waiting_plays(&self.account, &waiting);
     }
 
-    /// Submits what waits, unless another flush is under way, which would
-    /// send the same listens twice.
-    async fn flush(&self, client: &Client) {
-        if self.waiting.borrow().is_empty() || self.is_flushing.replace(true) {
+    /// Tells `server` of what waits, unless another send is under way, which
+    /// would tell it of the same plays twice.
+    async fn send(&self, server: &opensubsonic::Client) {
+        if self.is_sending.replace(true) {
             return;
         }
-        if let Err(e) = self.submit_all(client).await {
-            eprintln!("ListenBrainz listens kept for later: {e}");
+        if let Err(e) = self.send_all(server).await {
+            eprintln!("Plays kept for the server: {e}");
         }
-        self.is_flushing.set(false);
+        self.is_sending.set(false);
+        for waker in self.send_ended.take() {
+            waker.wake();
+        }
     }
 
-    /// Submits the listens in batches until none is left. Any failure but
-    /// a listen refused as malformed stops it and keeps every listen for a
-    /// later try, since a token that is invalid now may be replaced. A batch
-    /// refused as malformed is split into single listens, so that only the
-    /// ones it refuses are dropped.
-    async fn submit_all(&self, client: &Client) -> listenbrainz::Result<()> {
-        let mut batch_size = listenbrainz::MAX_LISTENS_PER_REQUEST;
+    /// Tells `server` of what waits once the send under way, if any, has
+    /// ended, which may have stopped short of the plays behind it.
+    async fn send_last(&self, server: &opensubsonic::Client) {
+        std::future::poll_fn(|context| {
+            if !self.is_sending.get() {
+                return Poll::Ready(());
+            }
+            self.send_ended.borrow_mut().push(context.waker().clone());
+            Poll::Pending
+        })
+        .await;
+        self.send(server).await;
+    }
+
+    /// Tells the server of each play in turn until none is left. A play it
+    /// refuses for good is dropped. Any other failure stops it and keeps
+    /// the plays for a later try: the network, the server itself or the
+    /// login may be fine by then.
+    async fn send_all(&self, server: &opensubsonic::Client) -> opensubsonic::Result<()> {
         loop {
-            let batch: Vec<Listen> = self
-                .waiting
-                .borrow()
-                .iter()
-                .take(batch_size)
-                .cloned()
-                .collect();
-            if batch.is_empty() {
+            let Some(play) = self.waiting.borrow().first().cloned() else {
                 return Ok(());
-            }
-            match client.submit_listens(&batch).await {
-                Ok(()) => self.remove_first(batch.len()),
-                Err(e) if !e.is_malformed_listen() => return Err(e),
-                Err(e) => {
-                    eprintln!("ListenBrainz refused {} listens: {e}", batch.len());
-                    if batch.len() == 1 {
-                        self.remove_first(1);
-                    }
-                    batch_size = 1;
+            };
+            let time = Some(play.started_at * 1000);
+            match server.scrobble(&play.id, time, true).await {
+                Ok(()) => {}
+                Err(e) if is_refused_for_good(&e) => {
+                    eprintln!("The server refused the play of {}: {e}", play.id);
                 }
+                Err(e) => return Err(e),
             }
+            self.remove(&play);
         }
     }
 
-    fn remove_first(&self, count: usize) {
+    /// Takes `play` off the front, unless its account signed out while it
+    /// went, which forgot it already.
+    fn remove(&self, play: &WaitingPlay) {
         let mut waiting = self.waiting.borrow_mut();
-        // New listens only join at the end while a batch is out.
-        let count = count.min(waiting.len());
-        waiting.drain(..count);
-        prefs::save_waiting_listens(&waiting);
+        if waiting.first() != Some(play) {
+            return;
+        }
+        waiting.remove(0);
+        prefs::save_waiting_plays(&self.account, &waiting);
     }
+}
+
+/// Whether the server refused a play in a way that telling it again won't
+/// change.
+fn is_refused_for_good(e: &opensubsonic::Error) -> bool {
+    matches!(e, opensubsonic::Error::Api(problem) if matches!(problem.code, MISSING_PARAMETER | NOT_FOUND))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     use super::*;
 
@@ -588,171 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn what_listenbrainz_is_told_of_a_song_is_its_own_tags() {
-        let song: Child = serde_json::from_str(
-            r#"{"id": "1", "title": "Title", "artist": "Artist", "album": "Album",
-                "musicBrainzId": "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae",
-                "isDir": false, "track": 3, "duration": 90}"#,
-        )
-        .unwrap();
-        let metadata = metadata(&song).unwrap();
-        assert_eq!(metadata.track_name, "Title");
-        assert_eq!(metadata.artist_name, "Artist");
-        assert_eq!(metadata.release_name.as_deref(), Some("Album"));
-        let info = metadata.additional_info;
-        assert_eq!(
-            info.recording_mbid.as_deref(),
-            Some("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae")
-        );
-        assert_eq!(info.tracknumber.as_deref(), Some("3"));
-        assert_eq!(info.duration, Some(90));
-    }
-
-    /// Answers each request with the next status of `statuses` (the last
-    /// one for every request after), and records the bodies.
-    fn serve(statuses: Vec<u16>) -> (String, Arc<Mutex<Vec<String>>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let root = format!("http://{}/1/", listener.local_addr().unwrap());
-        let bodies = Arc::new(Mutex::new(Vec::new()));
-        let seen = bodies.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                respond(stream, &statuses, &seen);
-            }
-        });
-        (root, bodies)
-    }
-
-    fn respond(mut stream: std::net::TcpStream, statuses: &[u16], seen: &Mutex<Vec<String>>) {
-        let mut request = Vec::new();
-        let mut chunk = [0; 4096];
-        let body = loop {
-            let read = stream.read(&mut chunk).unwrap_or(0);
-            request.extend_from_slice(&chunk[..read]);
-            let text = String::from_utf8_lossy(&request).into_owned();
-            let Some((head, body)) = text.split_once("\r\n\r\n") else {
-                continue;
-            };
-            let length = head
-                .to_lowercase()
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length: ")?.parse().ok())
-                .unwrap_or(0usize);
-            if body.len() >= length || read == 0 {
-                break body.to_owned();
-            }
-        };
-        let mut seen = seen.lock().unwrap();
-        let status = statuses[seen.len().min(statuses.len() - 1)];
-        seen.push(body);
-        let payload = if status == 200 {
-            r#"{"status": "ok"}"#
-        } else {
-            r#"{"code": 1, "error": "no"}"#
-        };
-        let _ = write!(
-            stream,
-            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-            payload.len()
-        );
-    }
-
-    fn listen(at: i64) -> Listen {
-        Listen {
-            listened_at: at,
-            track_metadata: TrackMetadata {
-                artist_name: "A".into(),
-                track_name: format!("T{at}"),
-                release_name: None,
-                additional_info: AdditionalInfo::default(),
-            },
-        }
-    }
-
-    fn submit(statuses: Vec<u16>, waiting: Vec<Listen>) -> (Vec<i64>, Vec<String>, bool) {
-        let _saving = persisting();
-        let (root, bodies) = serve(statuses);
-        let client = Client::with_root("token", &root).unwrap();
-        let outbox = Outbox::new(waiting);
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let result = runtime.block_on(outbox.submit_all(&client));
-        let left = outbox
-            .waiting
-            .borrow()
-            .iter()
-            .map(|l| l.listened_at)
-            .collect();
-        let bodies = bodies.lock().unwrap().clone();
-        (left, bodies, result.is_ok())
-    }
-
-    #[test]
-    fn waiting_listens_go_out_together_as_an_import() {
-        let (left, bodies, ok) = submit(vec![200], vec![listen(1), listen(2)]);
-        assert!(ok && left.is_empty());
-        assert_eq!(bodies.len(), 1);
-        assert!(
-            bodies[0].contains(r#""listen_type":"import""#),
-            "{}",
-            bodies[0]
-        );
-    }
-
-    #[test]
-    fn a_failing_server_or_network_keeps_the_listens() {
-        for status in [500, 503, 429] {
-            let (left, bodies, ok) = submit(vec![status], vec![listen(1), listen(2)]);
-            assert!(!ok);
-            assert_eq!((left, bodies.len()), (vec![1, 2], 1), "status {status}");
-        }
-        let unreachable = Client::with_root("t", "http://127.0.0.1:9/1/").unwrap();
-        let outbox = Outbox::new(vec![listen(1)]);
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        assert!(runtime.block_on(outbox.submit_all(&unreachable)).is_err());
-        assert_eq!(outbox.waiting.borrow().len(), 1);
-    }
-
-    #[test]
-    fn a_listen_listenbrainz_refuses_is_dropped_and_the_others_still_go() {
-        // The batch is refused; then 1 is refused alone and 2 is taken.
-        let (left, bodies, ok) = submit(vec![400, 400, 200], vec![listen(1), listen(2)]);
-        assert!(ok && left.is_empty());
-        assert_eq!(bodies.len(), 3);
-        assert!(bodies[2].contains(r#""listen_type":"single""#));
-        assert!(bodies[2].contains("T2"));
-    }
-
-    #[test]
-    fn a_refused_token_or_address_keeps_the_listens_until_a_later_try_succeeds() {
-        let _saving = persisting();
-        for status in [401, 403, 404] {
-            let (root, bodies) = serve(vec![status, 200]);
-            let client = Client::with_root("token", &root).unwrap();
-            let outbox = Outbox::new(vec![listen(1), listen(2)]);
-            let runtime = runtime();
-            assert!(runtime.block_on(outbox.submit_all(&client)).is_err());
-            assert_eq!(outbox.waiting.borrow().len(), 2, "status {status}");
-            assert_eq!(bodies.lock().unwrap().len(), 1, "stopped at the first");
-            assert!(runtime.block_on(outbox.submit_all(&client)).is_ok());
-            assert!(outbox.waiting.borrow().is_empty(), "status {status}");
-            assert_eq!(bodies.lock().unwrap().len(), 2);
-        }
-    }
-
-    #[test]
-    fn waiting_listens_survive_a_restart() {
-        let _saving = persisting();
-        let outbox = Outbox::new(Vec::new());
-        outbox.add(listen(7));
-        let after_restart = Scrobbler::load();
-        assert_eq!(
-            after_restart.outbox.waiting.borrow().as_slice(),
-            [listen(7)]
-        );
-    }
-
-    #[test]
-    fn a_play_heard_long_enough_is_counted_for_the_log_without_a_token_or_an_artist() {
+    fn a_play_heard_long_enough_is_counted_for_the_log_without_a_server() {
         let song: Child =
             serde_json::from_str(r#"{"id": "1", "title": "T", "isDir": false, "duration": 1}"#)
                 .unwrap();
@@ -772,88 +618,248 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_song_without_an_artist_is_not_submitted() {
-        let song: Child =
-            serde_json::from_str(r#"{"id": "1", "title": "T", "isDir": false}"#).unwrap();
-        assert!(metadata(&song).is_none());
+    const OK: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#;
+
+    fn reply(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
     }
 
-    /// The tests that save the waiting listens share one saved value.
-    static PERSISTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn taken() -> String {
+        reply("200 OK", OK)
+    }
 
-    fn persisting() -> std::sync::MutexGuard<'static, ()> {
-        PERSISTING.lock().unwrap_or_else(|e| e.into_inner())
+    fn down() -> String {
+        reply("503 Service Unavailable", "")
+    }
+
+    fn refused(code: i64) -> String {
+        let body = format!(
+            r#"{{"subsonic-response":{{"status":"failed","version":"1.16.1","error":{{"code":{code},"message":"no"}}}}}}"#
+        );
+        reply("200 OK", &body)
+    }
+
+    /// A server that answers each call with the next of `replies` (the last
+    /// one for every call after), and what it was told: each call's
+    /// parameters after the login.
+    fn serve(replies: Vec<String>) -> (opensubsonic::Client, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let seen = told.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = BufReader::new(stream);
+                let mut request = String::new();
+                while stream.read_line(&mut request).unwrap_or(0) > 2 {}
+                let line = request.lines().next().unwrap_or_default();
+                let target = line.split(' ').nth(1).unwrap_or_default();
+                let asked = target.split_once("&id=").map_or("", |(_, asked)| asked);
+                let mut seen = seen.lock().unwrap();
+                let reply = &replies[seen.len().min(replies.len() - 1)];
+                seen.push(format!("id={asked}"));
+                let _ = stream.get_mut().write_all(reply.as_bytes());
+            }
+        });
+        (client(&address), told)
+    }
+
+    fn client(address: &str) -> opensubsonic::Client {
+        let login = opensubsonic::Auth::Password {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        opensubsonic::Client::new(address, login).unwrap()
+    }
+
+    fn waiting(id: &str, started_at: i64) -> WaitingPlay {
+        WaitingPlay {
+            id: id.into(),
+            started_at,
+        }
     }
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Runtime::new().unwrap()
     }
 
-    #[test]
-    fn without_a_token_nothing_is_announced_and_no_listen_is_kept() {
-        let outbox = Outbox::new(Vec::new());
-        let track = listen(1).track_metadata;
-        runtime().block_on(async {
-            react(None, &outbox, Event::Started, track.clone()).await;
-            for _ in 0..3 {
-                react(None, &outbox, Event::Due { started_at: 5 }, track.clone()).await;
-            }
-        });
-        assert!(outbox.waiting.borrow().is_empty());
+    /// An outbox for `account` holding `plays`, as a play heard adds them.
+    fn outbox_with(account: &str, plays: &[WaitingPlay]) -> Outbox {
+        prefs::save_waiting_plays(account, &[]);
+        let outbox = Outbox::load(account);
+        for play in plays {
+            outbox.add(play.clone());
+        }
+        outbox
     }
 
     #[test]
-    fn with_a_token_a_due_listen_is_submitted() {
-        let _saving = persisting();
-        let (root, bodies) = serve(vec![200]);
-        let client = Client::with_root("token", &root).unwrap();
-        let outbox = Outbox::new(Vec::new());
-        let track = listen(1).track_metadata;
-        runtime().block_on(react(
-            Some(client),
-            &outbox,
-            Event::Due { started_at: 5 },
-            track,
-        ));
-        assert!(outbox.waiting.borrow().is_empty());
-        let bodies = bodies.lock().unwrap();
-        assert_eq!(bodies.len(), 1);
-        assert!(bodies[0].contains(r#""listened_at":5"#), "{}", bodies[0]);
-    }
-
-    #[test]
-    fn a_track_that_begins_is_announced_as_playing_now_without_a_time() {
-        let (root, bodies) = serve(vec![200]);
-        let client = Client::with_root("token", &root).unwrap();
-        let outbox = Outbox::new(Vec::new());
-        let track = listen(1).track_metadata;
-        runtime().block_on(react(Some(client), &outbox, Event::Started, track));
-        let bodies = bodies.lock().unwrap();
-        assert_eq!(bodies.len(), 1);
-        assert!(
-            bodies[0].contains(r#""listen_type":"playing_now""#),
-            "{}",
-            bodies[0]
+    fn a_play_waits_while_the_server_cant_be_reached_and_goes_later_with_its_own_time() {
+        let account = "unreachable-then-back";
+        let outbox = outbox_with(account, &[waiting("s1", 1000)]);
+        runtime().block_on(outbox.send(&client("http://127.0.0.1:9")));
+        assert_eq!(prefs::waiting_plays(account), [waiting("s1", 1000)]);
+        // Read back from this device, as at the next start.
+        let after_restart = Outbox::load(account);
+        let (server, told) = serve(vec![taken()]);
+        runtime().block_on(after_restart.send(&server));
+        assert_eq!(
+            *told.lock().unwrap(),
+            ["id=s1&time=1000000&submission=true"]
         );
-        assert!(!bodies[0].contains("listened_at"), "{}", bodies[0]);
-        assert!(outbox.waiting.borrow().is_empty(), "it is not a listen");
+        assert!(prefs::waiting_plays(account).is_empty());
+        assert!(after_restart.waiting.borrow().is_empty());
     }
 
     #[test]
-    fn a_flush_under_way_is_not_joined_by_another() {
-        let _saving = persisting();
-        let (root, bodies) = serve(vec![200]);
-        let client = Client::with_root("token", &root).unwrap();
-        let outbox = Outbox::new(vec![listen(1)]);
-        outbox.is_flushing.set(true);
-        runtime().block_on(outbox.flush(&client));
-        assert!(bodies.lock().unwrap().is_empty());
+    fn waiting_plays_go_oldest_first_each_with_its_own_time() {
+        let outbox = outbox_with("in-order", &[waiting("s1", 1000), waiting("s2", 2000)]);
+        let (server, told) = serve(vec![taken()]);
+        runtime().block_on(outbox.send(&server));
+        assert_eq!(
+            *told.lock().unwrap(),
+            [
+                "id=s1&time=1000000&submission=true",
+                "id=s2&time=2000000&submission=true"
+            ]
+        );
+        assert!(prefs::waiting_plays("in-order").is_empty());
+    }
+
+    #[test]
+    fn a_failing_server_or_a_refused_login_keeps_the_plays_and_stops_at_the_first() {
+        let wrong_login = 40;
+        let generic = 0;
+        for reply in [down(), refused(wrong_login), refused(generic)] {
+            let account = "kept-on-failure";
+            let both = [waiting("s1", 1000), waiting("s2", 2000)];
+            let outbox = outbox_with(account, &both);
+            let (server, told) = serve(vec![reply.clone()]);
+            runtime().block_on(outbox.send(&server));
+            assert_eq!(told.lock().unwrap().len(), 1, "{reply}");
+            assert_eq!(prefs::waiting_plays(account), both, "{reply}");
+        }
+    }
+
+    #[test]
+    fn a_play_the_server_refuses_for_good_is_dropped_and_the_next_still_goes() {
+        for code in [MISSING_PARAMETER, NOT_FOUND] {
+            let account = "refused-for-good";
+            let outbox = outbox_with(account, &[waiting("gone", 1000), waiting("s2", 2000)]);
+            let (server, told) = serve(vec![refused(code), taken()]);
+            runtime().block_on(outbox.send(&server));
+            assert_eq!(
+                *told.lock().unwrap(),
+                [
+                    "id=gone&time=1000000&submission=true",
+                    "id=s2&time=2000000&submission=true"
+                ]
+            );
+            assert!(prefs::waiting_plays(account).is_empty(), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_send_under_way_is_not_joined_by_another() {
+        let outbox = outbox_with("sending", &[waiting("s1", 1000)]);
+        let (server, told) = serve(vec![taken()]);
+        outbox.is_sending.set(true);
+        runtime().block_on(outbox.send(&server));
+        assert!(told.lock().unwrap().is_empty());
         assert_eq!(outbox.waiting.borrow().len(), 1);
         // One that is done lets the next go.
-        outbox.is_flushing.set(false);
-        runtime().block_on(outbox.flush(&client));
-        assert_eq!(bodies.lock().unwrap().len(), 1);
-        assert!(!outbox.is_flushing.get());
+        outbox.is_sending.set(false);
+        runtime().block_on(outbox.send(&server));
+        assert_eq!(told.lock().unwrap().len(), 1);
+        assert!(!outbox.is_sending.get());
+    }
+
+    #[test]
+    fn an_account_signing_out_sends_its_plays_once_more_and_then_forgets_the_rest() {
+        let account = "signing-out";
+        prefs::save_waiting_plays(account, &[waiting("s1", 1000), waiting("s2", 2000)]);
+        let mut scrobbler = Scrobbler::default();
+        let (server, told) = serve(vec![taken(), down()]);
+        let server = Server {
+            client: Arc::new(server),
+            account: account.into(),
+        };
+        runtime().block_on(scrobbler.send_waiting(server));
+        assert_eq!(
+            told.lock().unwrap()[0],
+            "id=s1&time=1000000&submission=true"
+        );
+        assert_eq!(prefs::waiting_plays(account), [waiting("s2", 2000)]);
+        scrobbler.forget(account).unwrap();
+        assert!(prefs::waiting_plays(account).is_empty());
+        assert!(!scrobbler.outboxes.contains_key(account));
+    }
+
+    #[test]
+    fn an_account_signing_out_waits_for_the_send_under_way_and_tries_the_plays_behind_it() {
+        let account = "sending-as-it-signs-out";
+        let plays = [
+            waiting("s1", 1000),
+            waiting("s2", 2000),
+            waiting("s3", 3000),
+        ];
+        prefs::save_waiting_plays(account, &plays);
+        let mut scrobbler = Scrobbler::default();
+        let (server, told) = serve(vec![taken(), down()]);
+        let server = Arc::new(server);
+        let leaving = Server {
+            client: server.clone(),
+            account: account.into(),
+        };
+        let outbox = scrobbler.outbox(account);
+        let tasks = tokio::task::LocalSet::new();
+        tasks.block_on(&runtime(), async {
+            let under_way = tokio::task::spawn_local(async move { outbox.send(&server).await });
+            while !scrobbler.outbox(account).is_sending.get() {
+                tokio::task::yield_now().await;
+            }
+            scrobbler.send_last(leaving).await;
+            assert!(under_way.is_finished(), "the send under way ended first");
+        });
+        // The send under way stopped at s2; the last try tried it again.
+        assert_eq!(
+            *told.lock().unwrap(),
+            [
+                "id=s1&time=1000000&submission=true",
+                "id=s2&time=2000000&submission=true",
+                "id=s2&time=2000000&submission=true"
+            ]
+        );
+        scrobbler.forget(account).unwrap();
+        assert!(prefs::waiting_plays(account).is_empty());
+    }
+
+    #[test]
+    fn a_send_under_way_as_its_account_signs_out_goes_no_further_and_keeps_nothing() {
+        let account = "taken-while-signing-out";
+        prefs::save_waiting_plays(account, &[waiting("s1", 1000), waiting("s2", 2000)]);
+        let mut scrobbler = Scrobbler::default();
+        let (server, told) = serve(vec![taken()]);
+        let outbox = scrobbler.outbox(account);
+        let sending = outbox.clone();
+        let tasks = tokio::task::LocalSet::new();
+        tasks.block_on(&runtime(), async {
+            let under_way = tokio::task::spawn_local(async move { sending.send(&server).await });
+            while !outbox.is_sending.get() {
+                tokio::task::yield_now().await;
+            }
+            scrobbler.forget(account).unwrap();
+            under_way.await.unwrap();
+        });
+        // The server took s1 as the account signed out.
+        assert_eq!(
+            *told.lock().unwrap(),
+            ["id=s1&time=1000000&submission=true"]
+        );
+        assert!(outbox.waiting.borrow().is_empty());
+        assert!(prefs::waiting_plays(account).is_empty());
     }
 }

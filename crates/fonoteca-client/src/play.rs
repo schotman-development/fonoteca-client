@@ -54,7 +54,7 @@ const LIVE_RADIO: &str = "Live radio";
 const PREVIOUS_SHOWN: usize = 50;
 
 #[derive(Default)]
-struct Playing {
+pub struct Playing {
     player: Option<Player>,
     /// The songs queued; the one the bar shows and the steps it shows for
     /// it.
@@ -100,16 +100,18 @@ struct Tuned {
     cover: Image,
 }
 
-type Shared = Rc<RefCell<Playing>>;
+pub type Shared = Rc<RefCell<Playing>>;
 
-pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
+/// Wires up the player, the bar and the queue, and hands back what plays,
+/// for a sign out to reach the plays waiting for the server.
+pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
     let playing = Shared::default();
-    #[cfg(not(target_family = "wasm"))]
-    {
-        playing.borrow_mut().scrobbler = scrobble::Scrobbler::load();
-    }
     #[cfg(test)]
     testing::keep(browser, &playing);
+    #[cfg(not(target_family = "wasm"))]
+    if let Err(e) = prefs::forget_waiting_listens() {
+        eprintln!("The listens an earlier version kept couldn't be removed: {e}");
+    }
     let saved = prefs::load();
     ui.set_leveling(saved.leveling.clamp(0, 2));
     ui.set_repeat(saved.repeat.clamp(0, 2));
@@ -331,6 +333,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
             }
         }
     });
+    playing
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -970,7 +973,8 @@ fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
 }
 
 /// Shows `scrobbler` what plays, `song` being the track playing, and logs
-/// it as played on this device once it counts, when the server is told too.
+/// it as played on this device once it counts, when the server is told too,
+/// at once or once it can be reached.
 #[cfg(not(target_family = "wasm"))]
 fn observe(
     browser: &browse::Shared,
@@ -979,7 +983,7 @@ fn observe(
     position: f64,
     paused: bool,
 ) {
-    let server = browse::client(browser);
+    let server = server(browser);
     let tells_server = server.is_some();
     let counted = scrobbler.observe(song, position, paused, server);
     if let (Some(song), Some(listened_at)) = (song, counted) {
@@ -988,6 +992,58 @@ fn observe(
             browse::told_play(browser);
         }
     }
+}
+
+/// How many plays wait for the server of the account signed in.
+#[cfg(not(target_family = "wasm"))]
+pub fn waiting_plays(playing: &Shared, browser: &browse::Shared) -> usize {
+    match browse::account(browser) {
+        Some(account) => playing.borrow_mut().scrobbler.waiting(&account),
+        None => 0,
+    }
+}
+
+#[cfg(target_family = "wasm")]
+pub fn waiting_plays(_playing: &Shared, _browser: &browse::Shared) -> usize {
+    0
+}
+
+/// Tells the server of the plays waiting for the account signed in, once
+/// more before it signs out, after the send under way if there is one.
+#[cfg(not(target_family = "wasm"))]
+pub async fn send_waiting_plays(playing: Shared, browser: browse::Shared) {
+    let Some(server) = server(&browser) else {
+        return;
+    };
+    let sending = playing.borrow_mut().scrobbler.send_last(server);
+    sending.await;
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn send_waiting_plays(_playing: Shared, _browser: browse::Shared) {}
+
+/// Forgets the plays still waiting for the server of the account signed in,
+/// as it signs out.
+#[cfg(not(target_family = "wasm"))]
+pub fn forget_waiting_plays(playing: &Shared, browser: &browse::Shared) -> std::io::Result<()> {
+    match browse::account(browser) {
+        Some(account) => playing.borrow_mut().scrobbler.forget(&account),
+        None => Ok(()),
+    }
+}
+
+#[cfg(target_family = "wasm")]
+pub fn forget_waiting_plays(_playing: &Shared, _browser: &browse::Shared) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The server signed in to, which the scrobbler tells of what plays.
+#[cfg(not(target_family = "wasm"))]
+fn server(browser: &browse::Shared) -> Option<scrobble::Server> {
+    Some(scrobble::Server {
+        client: browse::client(browser)?,
+        account: browse::account(browser)?,
+    })
 }
 
 /// Puts what the player says on the bar, or takes the bar down after a
@@ -1430,7 +1486,10 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     #[cfg(target_os = "android")]
     crate::media::hide();
     #[cfg(not(target_family = "wasm"))]
-    playing.borrow().scrobbler.flush();
+    if let Some(server) = server(browser) {
+        let sending = playing.borrow_mut().scrobbler.send_waiting(server);
+        slint::spawn_local(sending).expect("the event loop is running");
+    }
     {
         let mut p = playing.borrow_mut();
         p.player = None;
@@ -1912,7 +1971,21 @@ pub(crate) mod testing {
         super::observe(&browser, &mut p.scrobbler, Some(song), position, false);
     }
 
-    /// How often the scrobbler was shown the player and asked to flush.
+    /// Shows the scrobbler `song` playing, `position` seconds in, on the
+    /// server signed in to as though `account` were signed in to it.
+    pub(crate) fn hear_for(account: &str, song: &Child, position: f64) {
+        let (browser, playing) = handles();
+        let server = scrobble::Server {
+            client: browse::client(&browser).expect("signed in"),
+            account: account.to_owned(),
+        };
+        let mut p = playing.borrow_mut();
+        p.scrobbler
+            .observe(Some(song), position, false, Some(server));
+    }
+
+    /// How often the scrobbler was shown the player and asked to send what
+    /// waits.
     pub(crate) fn scrobbler_calls() -> (u32, u32) {
         handles().1.borrow().scrobbler.calls()
     }

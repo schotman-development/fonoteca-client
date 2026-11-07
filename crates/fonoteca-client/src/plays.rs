@@ -22,7 +22,7 @@ static WRITING: Mutex<()> = Mutex::new(());
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Play {
-    /// In seconds since 1970, the time ListenBrainz is sent with it.
+    /// In seconds since 1970, the time the server is told it began.
     pub listened_at: i64,
     pub id: String,
     pub title: String,
@@ -39,7 +39,8 @@ pub struct Play {
     /// In seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<i64>,
-    /// Its recording's MusicBrainz ID, which ListenBrainz is sent too.
+    /// Its recording's MusicBrainz ID, which the history matches ListenBrainz's
+    /// listens by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<String>,
 }
@@ -78,7 +79,7 @@ impl Play {
 }
 
 /// Adds `play` to the log of `account`, off the UI thread. One that can't be
-/// written is missing from the history, and still goes to ListenBrainz.
+/// written is missing from the history, and still goes to the server.
 #[cfg(not(target_family = "wasm"))]
 pub fn add(account: &str, play: Play) {
     let account = account.to_owned();

@@ -412,6 +412,64 @@ fn forget_plays(ui: &AppWindow, browser: &browse::Shared) -> bool {
     }
 }
 
+/// Forgets the plays waiting for the account's server before it goes. When
+/// they can't be removed it says so and stays signed in.
+fn forget_waiting_plays(ui: &AppWindow, browser: &browse::Shared, playing: &play::Shared) -> bool {
+    match play::forget_waiting_plays(playing, browser) {
+        Ok(()) => true,
+        Err(e) => {
+            let note = format!(
+                "Not signed out: the plays waiting for the server couldn't be removed: {e}"
+            );
+            ui.set_saved_note(note.into());
+            false
+        }
+    }
+}
+
+/// Removes all the account keeps on this device. When something can't be
+/// removed it says so; whether all went.
+fn forget_account(ui: &AppWindow, browser: &browse::Shared, playing: &play::Shared) -> bool {
+    remove_downloads(ui, browser)
+        && forget_answers(ui, browser)
+        && forget_plays(ui, browser)
+        && forget_waiting_plays(ui, browser, playing)
+}
+
+/// Tells the server of the plays waiting for it once more, saying so with
+/// `shows` on the button pressed while they go, removes all the account
+/// keeps on this device, and then `goes`. With no plays waiting it goes at
+/// once. When something can't be removed it says so and stays signed in.
+fn leave(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &play::Shared,
+    shows: fn(&AppWindow, slint::SharedString),
+    goes: impl FnOnce(&AppWindow) + 'static,
+) {
+    let waiting = play::waiting_plays(playing, browser);
+    if waiting == 0 {
+        if forget_account(ui, browser, playing) {
+            goes(ui);
+        }
+        return;
+    }
+    let sending = format!("Sending {}…", browse::count(waiting, "play", "plays"));
+    shows(ui, sending.into());
+    let last_send = play::send_waiting_plays(playing.clone(), browser.clone());
+    let (browser, playing) = (browser.clone(), playing.clone());
+    let task = async {
+        last_send.await;
+        Ok(())
+    };
+    run(ui, task, move |ui, ()| {
+        shows(ui, slint::SharedString::new());
+        if forget_account(ui, &browser, &playing) {
+            goes(ui);
+        }
+    });
+}
+
 /// Stops the library and clears what the screens know of the account.
 fn signed_out(ui: &AppWindow, browser: &browse::Shared) {
     browse::stop(browser);
@@ -541,7 +599,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let pending: Rc<RefCell<Option<(Account, Client)>>> = Rc::default();
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
-    play::wire(&ui, &browser);
+    let playing = play::wire(&ui, &browser);
     #[cfg(not(target_family = "wasm"))]
     downloads::wire(&ui, &browser);
     #[cfg(target_os = "android")]
@@ -686,51 +744,45 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
 
     ui.on_sign_out({
         let weak = ui.as_weak();
-        let browser = browser.clone();
+        let (browser, playing) = (browser.clone(), playing.clone());
         move || {
             let ui = weak.unwrap();
             // A disabled button still takes a screen reader's press.
             if ui.get_busy() {
                 return;
             }
-            if !remove_downloads(&ui, &browser)
-                || !forget_answers(&ui, &browser)
-                || !forget_plays(&ui, &browser)
-            {
-                return;
-            }
-            let browser = browser.clone();
-            run(&ui, store::forget(), move |ui, ()| {
-                signed_out(ui, &browser);
-                ask_for_login(ui, Some(ui.get_address().into()));
+            let signing_out = browser.clone();
+            let shows = AppWindow::set_sign_out_sending;
+            leave(&ui, &browser, &playing, shows, move |ui| {
+                run(ui, store::forget(), move |ui, ()| {
+                    signed_out(ui, &signing_out);
+                    ask_for_login(ui, Some(ui.get_address().into()));
+                });
             });
         }
     });
 
     ui.on_change_server({
         let weak = ui.as_weak();
-        let browser = browser.clone();
+        let (browser, playing) = (browser.clone(), playing.clone());
         move || {
             let ui = weak.unwrap();
             // A disabled button still takes a screen reader's press.
             if ui.get_busy() {
                 return;
             }
-            if !remove_downloads(&ui, &browser)
-                || !forget_answers(&ui, &browser)
-                || !forget_plays(&ui, &browser)
-            {
-                return;
-            }
-            let browser = browser.clone();
-            let task = async {
-                store::forget().await?;
-                store::forget_server().await
-            };
-            run(&ui, task, move |ui, ()| {
-                signed_out(ui, &browser);
-                ui.set_address("".into());
-                ui.set_step(Step::Server);
+            let signing_out = browser.clone();
+            let shows = AppWindow::set_change_server_sending;
+            leave(&ui, &browser, &playing, shows, move |ui| {
+                let task = async {
+                    store::forget().await?;
+                    store::forget_server().await
+                };
+                run(ui, task, move |ui, ()| {
+                    signed_out(ui, &signing_out);
+                    ui.set_address("".into());
+                    ui.set_step(Step::Server);
+                });
             });
         }
     });
@@ -1057,9 +1109,13 @@ mod tests {
     /// The plays the server was told of, as `PLAYLIST_WRITES` has them, and
     /// how often it was asked for the albums played last: none until it
     /// was told of a play, then the first album and one by Anna Bach and
-    /// Mara Lind.
+    /// Mara Lind. The songs it was told play now, whether it can't be
+    /// reached for either, and how many plays it turned away so.
     static SCROBBLES: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static RECENT_ASKS: AtomicUsize = AtomicUsize::new(0);
+    static PLAYING_NOW: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static SCROBBLE_DOWN: AtomicBool = AtomicBool::new(false);
+    static PLAYS_TURNED_AWAY: AtomicUsize = AtomicUsize::new(0);
 
     /// What names `username` on `server` on this device.
     fn account_of(server: &str, username: &str) -> String {
@@ -2025,8 +2081,17 @@ mod tests {
         } else if request.contains("/rest/startScan") {
             SCANNING.store(true, Relaxed);
             ok(r#""scanStatus":{"scanning":true,"count":3}"#)
+        } else if request.contains("/rest/scrobble?") && SCROBBLE_DOWN.load(Relaxed) {
+            if !write_of(request).ends_with("&submission=false") {
+                PLAYS_TURNED_AWAY.fetch_add(1, Relaxed);
+            }
+            reply("503 Service Unavailable", "text/plain", b"down")
         } else if request.contains("/rest/scrobble?") {
-            SCROBBLES.lock().unwrap().push(write_of(request));
+            let told = write_of(request);
+            match told.ends_with("&submission=false") {
+                true => PLAYING_NOW.lock().unwrap().push(told),
+                false => SCROBBLES.lock().unwrap().push(told),
+            }
             json(OK)
         } else if request.contains("/rest/savePlayQueue") {
             SAVES.lock().unwrap().push(write_of(request));
@@ -6185,7 +6250,10 @@ mod tests {
             (saved.album_sort, saved.artist_sort) = (4, 1);
             (saved.composer_sort, saved.composer_descending) = (1, true);
             crate::prefs::save(&saved);
+            // It removes the listens an earlier version kept for ListenBrainz.
+            prefs::leave_waiting_listens();
             let again = start().unwrap();
+            assert!(!prefs::has_waiting_listens());
             wait_for("the offline note", || again.get_offline() != "").await;
             assert_eq!(again.get_step(), Step::Done);
             // The home page kept stays, spanning a phone's window.
@@ -6859,11 +6927,22 @@ mod tests {
             assert_eq!(text_top(&ui, "Last listened artists"), None);
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
 
-            // A song heard for half its length, when ListenBrainz counts a
-            // listen, is told to the server once, as played from when it
-            // began, and not before. No player is left from the steps before,
-            // whose looks at nothing playing would end the song's play.
+            // A song that begins is told to the server as playing now. Heard
+            // for half its length, when ListenBrainz counts a listen, it is
+            // told once as played, from when it began, and not before. No
+            // player is left from the steps before, whose looks at nothing
+            // playing would end the song's play.
             play::testing::clear(&ui);
+            PLAYING_NOW.lock().unwrap().clear();
+            let told = || SCROBBLES.lock().unwrap().clone();
+            let playing_now = || PLAYING_NOW.lock().unwrap().clone();
+            let time_told = |call: &str, id: &str| -> u128 {
+                (call.strip_prefix(&format!("scrobble id={id}&time=")))
+                    .and_then(|time| time.strip_suffix("&submission=true"))
+                    .unwrap_or_else(|| panic!("{call}"))
+                    .parse()
+                    .unwrap()
+            };
             let harbour: opensubsonic::Child = serde_json::from_str(
                 r#"{"id":"t1","isDir":false,"title":"Harbour Lights","albumId":"a1","duration":2}"#,
             )
@@ -6874,32 +6953,33 @@ mod tests {
                 play::testing::hear(&harbour, position);
                 idle(Duration::from_millis(400)).await;
             }
-            assert!(SCROBBLES.lock().unwrap().is_empty(), "told before half of it played");
+            wait_for("the song playing now told", || !playing_now().is_empty()).await;
+            assert_eq!(playing_now(), ["scrobble id=t1&submission=false"]);
+            assert!(told().is_empty(), "told before half of it played");
             play::testing::hear(&harbour, 1.2);
-            wait_for("the play told", || !SCROBBLES.lock().unwrap().is_empty()).await;
+            wait_for("the play told", || !told().is_empty()).await;
             play::testing::hear(&harbour, 1.6);
             idle(Duration::from_millis(200)).await;
-            let told = SCROBBLES.lock().unwrap().clone();
-            assert_eq!(told.len(), 1, "{told:?}");
-            let time: u128 = (told[0].strip_prefix("scrobble id=t1&time="))
-                .unwrap_or_else(|| panic!("{told:?}"))
-                .parse()
-                .unwrap();
+            assert_eq!(told().len(), 1, "{:?}", told());
+            let time = time_told(&told()[0], "t1");
             assert!(time <= began + 100 && time + 1000 > began, "played from {time}, began {began}");
+            assert_eq!(playing_now().len(), 1, "playing now is told once");
             // It is logged on this device too, as played from that time;
             // the history's steps below start from an empty log.
             let joe = account_of(&server, "joe");
-            wait_for("the play logged", || {
-                std::fs::read_to_string(plays_kept_for(&server, "joe"))
-                    .is_ok_and(|log| log.contains(r#""t1""#))
-            })
-            .await;
-            let logged = plays::read(&joe).await;
-            assert_eq!(logged.len(), 1, "{logged:?}");
-            assert_eq!(
-                (logged[0].id.as_str(), logged[0].listened_at as u128 * 1000),
-                ("t1", time)
-            );
+            let logged_at = async |id: &str| -> u128 {
+                let quoted = format!(r#""{id}""#);
+                wait_for("the play logged", || {
+                    std::fs::read_to_string(plays_kept_for(&server, "joe"))
+                        .is_ok_and(|log| log.contains(&quoted))
+                })
+                .await;
+                let logged = plays::read(&joe).await;
+                let play = logged.iter().find(|play| play.id == id).unwrap();
+                play.listened_at as u128 * 1000
+            };
+            assert_eq!(logged_at("t1").await, time);
+            assert_eq!(plays::read(&joe).await.len(), 1);
             plays::forget(&joe).unwrap();
 
             // The next visit to Home, within the hour the empty list asked
@@ -7397,6 +7477,85 @@ mod tests {
                     .any(|asked| asked.starts_with("GET /1/feedback/user/joe/get-feedback"))
             );
 
+            // A play heard while the server can't be reached waits on this
+            // device, and goes once the server answers again, at the next song
+            // that begins, with the time it began; it is logged at once, at
+            // that time. With a token too, plays go to the server alone,
+            // which tells ListenBrainz. The history's steps below start from
+            // an empty log.
+            let submits = || {
+                (LISTENBRAINZ_ASKED.lock().unwrap().iter())
+                    .filter(|asked| asked.starts_with("POST /1/submit-listens"))
+                    .count()
+            };
+            play::testing::clear(&ui);
+            let plays_told = told().len();
+            SCROBBLE_DOWN.store(true, Relaxed);
+            let tide: opensubsonic::Child = serde_json::from_str(
+                r#"{"id":"t2","isDir":false,"title":"Tide","albumId":"a1","duration":2}"#,
+            )
+            .unwrap();
+            let began = since_1970();
+            for position in [0.0, 0.4, 0.8, 1.2] {
+                play::testing::hear(&tide, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            wait_for("the play kept", || !prefs::waiting_plays(&joe).is_empty()).await;
+            let kept = prefs::waiting_plays(&joe);
+            assert_eq!(kept.len(), 1, "{kept:?}");
+            let time = kept[0].started_at as u128 * 1000;
+            assert!(time <= began + 100 && time + 1000 > began, "played from {time}, began {began}");
+            assert_eq!(logged_at("t2").await, time);
+            assert_eq!(told().len(), plays_told);
+            SCROBBLE_DOWN.store(false, Relaxed);
+            let announced = playing_now().len();
+            play::testing::hear(&harbour, 0.0);
+            wait_for("the play kept told", || {
+                prefs::waiting_plays(&joe).is_empty() && playing_now().len() == announced + 1
+            })
+            .await;
+            assert_eq!(told().len(), plays_told + 1);
+            assert_eq!(time_told(&told()[plays_told], "t2"), time);
+            assert_eq!(playing_now()[announced], "scrobble id=t1&submission=false");
+            assert_eq!(submits(), 0);
+            plays::forget(&joe).unwrap();
+
+            // A play kept for one account waits for its own server: another
+            // account's play goes without it. It goes at the next start or
+            // sign in to its own account, before any song begins.
+            play::testing::clear(&ui);
+            SCROBBLE_DOWN.store(true, Relaxed);
+            for position in [0.0, 0.4, 0.8, 1.2] {
+                play::testing::hear(&tide, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            wait_for("the play kept", || !prefs::waiting_plays(&joe).is_empty()).await;
+            let time = prefs::waiting_plays(&joe)[0].started_at as u128 * 1000;
+            SCROBBLE_DOWN.store(false, Relaxed);
+            let plays_told = told().len();
+            let another = "another account";
+            for position in [0.0, 0.4, 0.8, 1.2] {
+                play::testing::hear_for(another, &harbour, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            wait_for("the other account's play told", || {
+                told().len() > plays_told && prefs::waiting_plays(another).is_empty()
+            })
+            .await;
+            assert_eq!(told().len(), plays_told + 1, "{:?}", told());
+            assert!(told()[plays_told].starts_with("scrobble id=t1&"), "{:?}", told());
+            assert_eq!(prefs::waiting_plays(&joe).len(), 1);
+            let announced = playing_now().len();
+            play::testing::restore(&ui);
+            wait_for("the kept play told at the start", || {
+                prefs::waiting_plays(&joe).is_empty()
+            })
+            .await;
+            assert_eq!(told().len(), plays_told + 2);
+            assert_eq!(time_told(&told()[plays_told + 1], "t2"), time);
+            assert_eq!(playing_now().len(), announced, "no song began");
+            plays::forget(&joe).unwrap();
+
             // The history is in Browse, right after Radio.
             let browse_group = |ui: &AppWindow| -> Vec<String> {
                 (ui.get_sections().iter().zip(ui.get_section_groups().iter()))
@@ -7561,14 +7720,36 @@ mod tests {
             };
             store::save_listenbrainz(kept.clone()).await.unwrap();
             ui.set_listenbrainz_user("listener".into());
+            // A play the server can't be told of is tried once more as the
+            // account signs out, and then goes with it.
+            play::testing::clear(&ui);
+            SCROBBLE_DOWN.store(true, Relaxed);
+            let turned_away = PLAYS_TURNED_AWAY.load(Relaxed);
+            for position in [0.0, 0.4, 0.8, 1.2] {
+                play::testing::hear(&tide, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            wait_for("the play kept", || {
+                !prefs::waiting_plays(&joe).is_empty()
+                    && PLAYS_TURNED_AWAY.load(Relaxed) > turned_away
+            })
+            .await;
+            // Its send is over once the refusal is back.
+            idle(Duration::from_millis(300)).await;
+            let turned_away = PLAYS_TURNED_AWAY.load(Relaxed);
             // Lists on their way when the account signs out don't keep the
             // next sign in from loading its own.
             ui.invoke_pick_stat_period(3);
             assert!(ui.get_stat_loading());
             click(&ui, "Account");
             click(&ui, "Sign out");
+            assert_eq!(ui.get_sign_out_sending(), "Sending 1 play…");
             // Signing out keeps the server, and asks for the login alone.
             wait_for("the sign-in step", || ui.get_step() == Step::SignIn).await;
+            assert_eq!(ui.get_sign_out_sending(), "");
+            assert_eq!(PLAYS_TURNED_AWAY.load(Relaxed), turned_away + 1, "tried once more");
+            assert!(prefs::waiting_plays(&joe).is_empty(), "the play kept went with the account");
+            SCROBBLE_DOWN.store(false, Relaxed);
             assert!(!joes_plays.exists(), "the plays logged went with the account");
             assert_eq!(ui.get_username(), "");
             assert_eq!(ui.get_address(), server.as_str());
@@ -7662,8 +7843,27 @@ mod tests {
             let eve = account_of(&server, "eve");
             plays::append(&eve, &plays::Play::of(&sent, 1)).unwrap();
             assert!(eves_plays.exists());
+            play::testing::clear(&ui);
+            SCROBBLE_DOWN.store(true, Relaxed);
+            let turned_away = PLAYS_TURNED_AWAY.load(Relaxed);
+            // Another song than the one counted last, which would go on.
+            for position in [0.0, 0.4, 0.8, 1.2] {
+                play::testing::hear(&harbour, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            wait_for("eve's play kept", || {
+                !prefs::waiting_plays(&eve).is_empty()
+                    && PLAYS_TURNED_AWAY.load(Relaxed) > turned_away
+            })
+            .await;
+            idle(Duration::from_millis(300)).await;
+            let turned_away = PLAYS_TURNED_AWAY.load(Relaxed);
             click(&ui, "Change server");
+            assert_eq!(ui.get_change_server_sending(), "Sending 1 play…");
             wait_for("the server step", || ui.get_step() == Step::Server).await;
+            assert_eq!(PLAYS_TURNED_AWAY.load(Relaxed), turned_away + 1, "tried once more");
+            assert!(prefs::waiting_plays(&eve).is_empty(), "the play kept went with the server");
+            SCROBBLE_DOWN.store(false, Relaxed);
             assert!(!downloads_folder.exists(), "the downloads went with the server");
             assert!(!eves_answers.exists(), "the pages kept went with the server");
             assert!(!eves_plays.exists(), "the plays logged went with the server");
@@ -8508,7 +8708,7 @@ mod tests {
             assert_eq!(ui.get_playing_title(), "Sonata");
             assert_eq!(ui.get_playing_movement_place(), "2 of 3");
             assert_eq!(ui.get_playing_position(), 61.5);
-            // The scrobbler flushes what waits with the sign in.
+            // The scrobbler sends what waits with the sign in.
             assert!(play::testing::scrobbler_calls().1 > 0);
             assert_eq!(
                 rows(),
@@ -9253,9 +9453,11 @@ mod tests {
             assert_eq!(finishes(), before, "a pump during a fetch");
             assert!(kept_answers.exists());
             ui.invoke_sign_out();
-            // The answers kept go with the account. The windows started
-            // beside this one keep their own until they close.
+            // The answers kept go with the account, at once with no plays
+            // waiting. The windows started beside this one keep their own
+            // until they close.
             assert!(!kept_answers.exists());
+            assert_eq!(ui.get_sign_out_sending(), "");
             wait_for("the job ended", || finishes() > before).await;
             SLOW_DOWNLOAD.store(false, Relaxed);
             wait_for("the sign-in step after it", || ui.get_step() == Step::SignIn).await;

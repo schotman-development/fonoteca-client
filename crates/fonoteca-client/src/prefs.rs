@@ -121,22 +121,55 @@ const PREFERENCES: &str = "preferences";
 
 const LOGOS: &str = "station-logos";
 
+/// The listens an earlier version kept for ListenBrainz. They are dropped:
+/// plays reach it through the server now.
 #[cfg(not(target_family = "wasm"))]
 const WAITING_LISTENS: &str = "waiting-listens";
 
+/// Removes the listens an earlier version kept for ListenBrainz.
 #[cfg(not(target_family = "wasm"))]
-/// The listens made and not yet submitted to ListenBrainz, oldest first.
-pub fn waiting_listens() -> Vec<listenbrainz::Listen> {
-    read(WAITING_LISTENS)
+pub fn forget_waiting_listens() -> std::io::Result<()> {
+    remove(WAITING_LISTENS)
+}
+
+/// Leaves listens for ListenBrainz behind, as an earlier version did.
+#[cfg(test)]
+pub(crate) fn leave_waiting_listens() {
+    write(WAITING_LISTENS, "[]");
+}
+
+#[cfg(test)]
+pub(crate) fn has_waiting_listens() -> bool {
+    read(WAITING_LISTENS).is_some()
+}
+
+#[cfg(not(target_family = "wasm"))]
+const WAITING_PLAYS: &str = "waiting-plays";
+
+#[cfg(not(target_family = "wasm"))]
+fn waiting_plays_name(account: &str) -> String {
+    format!("{WAITING_PLAYS}-{account}")
+}
+
+/// The plays the server of `account` is still to be told of, oldest first.
+#[cfg(not(target_family = "wasm"))]
+pub fn waiting_plays(account: &str) -> Vec<crate::scrobble::WaitingPlay> {
+    read(&waiting_plays_name(account))
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default()
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn save_waiting_listens(listens: &[listenbrainz::Listen]) {
-    if let Ok(json) = serde_json::to_string(listens) {
-        write(WAITING_LISTENS, &json);
+pub fn save_waiting_plays(account: &str, plays: &[crate::scrobble::WaitingPlay]) {
+    if let Ok(json) = serde_json::to_string(plays) {
+        write(&waiting_plays_name(account), &json);
     }
+}
+
+/// Removes the plays waiting for the server of `account`.
+#[cfg(not(target_family = "wasm"))]
+pub fn forget_waiting_plays(account: &str) -> std::io::Result<()> {
+    remove(&waiting_plays_name(account))
 }
 
 const ANSWERS_SALT: &str = "answers-salt";
@@ -257,7 +290,7 @@ pub(crate) fn now() -> u64 {
 }
 
 #[cfg(test)]
-static SAVED: std::sync::Mutex<Option<HashMap<&str, String>>> = std::sync::Mutex::new(None);
+static SAVED: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 fn read(name: &str) -> Option<String> {
@@ -265,9 +298,19 @@ fn read(name: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-fn write(name: &'static str, json: &str) {
+fn write(name: &str, json: &str) {
     let mut saved = SAVED.lock().unwrap();
-    saved.get_or_insert_default().insert(name, json.to_owned());
+    saved
+        .get_or_insert_default()
+        .insert(name.to_owned(), json.to_owned());
+}
+
+#[cfg(test)]
+fn remove(name: &str) -> std::io::Result<()> {
+    if let Some(saved) = SAVED.lock().unwrap().as_mut() {
+        saved.remove(name);
+    }
+    Ok(())
 }
 
 #[cfg(all(not(test), target_family = "wasm"))]
@@ -332,6 +375,17 @@ fn write(name: &str, json: &str) {
         && std::fs::write(&partial, json).is_ok();
     if written {
         let _ = std::fs::rename(&partial, &file);
+    }
+}
+
+#[cfg(all(not(test), not(target_family = "wasm")))]
+fn remove(name: &str) -> std::io::Result<()> {
+    let Some(file) = file(name) else {
+        return Ok(());
+    };
+    match std::fs::remove_file(file) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
 }
 
