@@ -2200,6 +2200,16 @@ export component AppWindow inherits Window {
                         stats: root.stats;
                         open(link) => { root.open(link); }
                     }
+                    if root.page == Page.home && root.tiles.length > 0: CoverShelf {
+                        title: "Recently added";
+                        tiles: root.tiles;
+                        entries: root.can-play ? root.queue-entries : [];
+                        activated(index, id) => { root.queue-link(root.tiles[index].link, id); }
+                        open(link) => { root.open(link); }
+                        in-view(first, last) => { root.tiles-in-view(first, last); }
+                        selecting: root.selected-tiles > 0;
+                        select(index, range) => { root.select-tile(index, range); }
+                    }
                     if root.page == Page.home && root.played-albums.length > 0: CoverShelf {
                         title: "Last played albums";
                         tiles: root.played-albums;
@@ -2212,16 +2222,6 @@ export component AppWindow inherits Window {
                         tiles: root.played-artists;
                         round: true;
                         open(link) => { root.open(link); }
-                    }
-                    if root.page == Page.home && root.tiles.length > 0: CoverShelf {
-                        title: "Recently added";
-                        tiles: root.tiles;
-                        entries: root.can-play ? root.queue-entries : [];
-                        activated(index, id) => { root.queue-link(root.tiles[index].link, id); }
-                        open(link) => { root.open(link); }
-                        in-view(first, last) => { root.tiles-in-view(first, last); }
-                        selecting: root.selected-tiles > 0;
-                        select(index, range) => { root.select-tile(index, range); }
                     }
                     if root.page == Page.home && root.listenbrainz-user != "": ListeningStats {
                         periods: root.stat-periods;

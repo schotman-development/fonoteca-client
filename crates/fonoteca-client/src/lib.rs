@@ -6790,17 +6790,17 @@ mod tests {
                 |pair: &[Instant]| pair[1] - pair[0] >= listenbrainz::STAND_IN_SPACING / 2;
             assert!(asked_at.windows(2).all(spaced), "{asked_at:?}");
 
-            // Home runs: the library's counts, the albums played last and
-            // their artists, the newest albums, the listening stats, then the
+            // Home runs: the library's counts, the newest albums, the albums
+            // played last and their artists, the listening stats, then the
             // playlists made for the user and the saved stations.
             ui.set_listenbrainz_user("joe".into());
             ui.window().set_size(ALL_OF_HOME);
             wait_for("the saved stations", || ui.get_saved_stations().row_count() > 0).await;
             let sections = [
                 "ARTISTS",
+                "Recently added",
                 "Last played albums",
                 "Last listened artists",
-                "Recently added",
                 "Your listening",
                 "Created for you",
                 "Saved stations",
