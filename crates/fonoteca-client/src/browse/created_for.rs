@@ -52,6 +52,7 @@ pub(super) struct State {
 }
 
 struct Shown {
+    mbid: String,
     name: String,
     tracks: Vec<lb::PlaylistTrack>,
 }
@@ -141,6 +142,7 @@ pub(super) fn shelf(ui: &AppWindow, browser: &Shared) {
                 }
                 // The playlists whose tracks an earlier visit kept show their
                 // banners at once, on this visit's new tiles.
+                show_kind(&ui, &browser.borrow());
                 banners(&ui, &browser);
                 fetch_shelf_tracks(&ui, &browser, &model).await;
             }
@@ -377,6 +379,7 @@ pub(super) fn banners(ui: &AppWindow, browser: &Shared) {
         return;
     }
     let browser = browser.clone();
+    let weak = ui.as_weak();
     slint::spawn_local(async move {
         for (row, banner) in wanted {
             if !Rc::ptr_eq(&browser.borrow().created_for.tiles, &tiles) {
@@ -386,15 +389,43 @@ pub(super) fn banners(ui: &AppWindow, browser: &Shared) {
             if let (Some(Some(image)), Some(mut tile)) = (image, tiles.row_data(row)) {
                 tile.cover = image;
                 tiles.set_row_data(row, tile);
+                if let Some(ui) = weak.upgrade() {
+                    show_kind(&ui, &browser.borrow());
+                }
             }
         }
     })
     .expect("the event loop is running");
 }
 
+/// Gives the page of the playlist on screen the kind, tint and banner of its
+/// tile on Home, as the tile has them now: none where Home has no tile for it.
+fn show_kind(ui: &AppWindow, b: &Browser) {
+    let state = &b.created_for;
+    let tile = (state.shown.as_ref())
+        .and_then(|shown| {
+            state
+                .shelf
+                .iter()
+                .position(|playlist| playlist.mbid == shown.mbid)
+        })
+        .and_then(|row| state.tiles.row_data(row));
+    ui.set_created_for_kind(
+        tile.as_ref()
+            .map_or_else(Default::default, |tile| tile.title.clone()),
+    );
+    ui.set_created_for_tint(
+        tile.as_ref()
+            .map_or_else(Default::default, |tile| tile.tint),
+    );
+    ui.set_created_for_banner(tile.map_or_else(Default::default, |tile| tile.cover));
+}
+
 /// Shows the page of the playlist with this ID: every track at once, greyed,
 /// then each the library has as it is found, one search after another so a
-/// playlist of fifty is not fifty searches at once.
+/// playlist of fifty is not fifty searches at once. Where Home hasn't made
+/// its tiles yet, they are made for the page's banner once the tracks are
+/// shown, and it comes when its tile has it; the tracks don't wait for it.
 pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
     let visit = browser.borrow().visit;
     ui.set_loading(true);
@@ -410,6 +441,9 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
             Ok(playlist) => {
                 show(&ui, &browser, playlist);
                 resume(&ui, &browser);
+                if browser.borrow().created_for.shelf.is_empty() {
+                    shelf(&ui, &browser);
+                }
             }
             Err(e) => ui.set_page_problem(e.into()),
         }
@@ -433,9 +467,11 @@ fn show(ui: &AppWindow, browser: &Shared, playlist: lb::Playlist) {
     let mut b = browser.borrow_mut();
     show_songs(&mut b, songs, rows);
     b.created_for.shown = Some(Shown {
+        mbid: playlist.mbid,
         name: playlist.title,
         tracks: playlist.tracks,
     });
+    show_kind(ui, &b);
 }
 
 /// Looks for the library's songs of the playlist on screen, from the first

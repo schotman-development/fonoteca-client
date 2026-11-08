@@ -1,5 +1,5 @@
 import { LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AlbumTile, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine }
 
@@ -1460,6 +1460,11 @@ export component AppWindow inherits Window {
     // stopped by a failure and "Try again" goes on with it.
     in property <bool> created-for;
     in property <bool> created-for-matching;
+    // What the Home tile of the playlist shown calls its kind, the colour it
+    // has and the banner behind it; no kind where Home has no tile for it.
+    in property <string> created-for-kind;
+    in property <KindTint> created-for-tint;
+    in property <image> created-for-banner;
     callback save-created-for();
     // The links of the history's pages of newer and of older plays, ""
     // for none.
@@ -2380,6 +2385,16 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                    if root.page == Page.playlist && root.created-for && root.created-for-kind != "": GenreBanner {
+                        height: Screen.phone ? 140px : 200px * Theme.zoom;
+                        accessible-role: image;
+                        accessible-label: root.created-for-kind;
+                        picture: root.created-for-banner;
+                        name: root.created-for-kind;
+                        name-size: Screen.phone ? 28px * Theme.zoom : 40px * Theme.zoom;
+                        backdrop: KindTints.backdrop(root.created-for-tint);
+                        wash: KindTints.wash(root.created-for-tint);
                     }
                     if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;

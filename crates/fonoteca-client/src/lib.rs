@@ -2275,6 +2275,14 @@ mod tests {
             .find_first()
     }
 
+    /// The banner behind a playlist made for the user at the top of its page.
+    fn mix_banner(ui: &AppWindow) -> Option<ElementHandle> {
+        ui.root_element()
+            .query_descendants()
+            .match_inherits("GenreBanner")
+            .find_first()
+    }
+
     /// Whether a drop-down with `label` is in sight.
     fn find_combo(ui: &AppWindow, label: &str) -> bool {
         let label = label.to_owned();
@@ -7070,6 +7078,27 @@ mod tests {
                 .await
                 .unwrap();
             LATER_SLOW.store(true, Relaxed);
+            // A playlist opened before Home has made its tiles has its tracks
+            // at once, the tint of its kind once the tiles are made, then the
+            // banner its tile has, while the last playlist's tracks are still
+            // being fetched.
+            ui.invoke_open("createdfor:trip".into());
+            wait_for("the playlist's tracks", || ui.get_tracks().row_count() == 1).await;
+            assert_eq!(ui.get_created_for_kind(), "");
+            assert!(mix_banner(&ui).is_none());
+            wait_for("its kind", || ui.get_created_for_kind() == "Weekly Jams").await;
+            assert_eq!(ui.get_created_for_tint(), KindTint::Green);
+            // The tint and name are there when the list is, ahead of the banner,
+            // which waits for the playlist's tracks.
+            assert_eq!(ui.get_created_for_banner().size().width, 0);
+            let banner = mix_banner(&ui).expect("the banner");
+            assert_eq!(banner.accessible_label().as_deref(), Some("Weekly Jams"));
+            wait_for("its banner", || ui.get_created_for_banner().size().width > 0).await;
+            assert!(!LATER_ANSWERED.load(Relaxed));
+            wait_for("the last playlist", || LATER_ANSWERED.load(Relaxed)).await;
+            LATER_SLOW.store(false, Relaxed);
+            idle(Duration::from_millis(300)).await;
+
             ui.invoke_open("home".into());
             wait_for("the Created for you shelf", || ui.get_created_for_you().row_count() == 3).await;
             let shelf: Vec<(String, String)> = (ui.get_created_for_you().iter())
@@ -7096,21 +7125,26 @@ mod tests {
                     .map(|tile| tile.cover.size().width > 0)
                     .collect()
             };
-            // The second tile has its banner while the third's playlist is
-            // still being fetched.
             wait_for("the banner", || covers()[1]).await;
-            assert!(!LATER_ANSWERED.load(Relaxed));
-            wait_for("the last playlist", || LATER_ANSWERED.load(Relaxed)).await;
-            LATER_SLOW.store(false, Relaxed);
             idle(Duration::from_millis(300)).await;
             assert_eq!(covers(), [false, true, false]);
+            // The page and the shelf each fetched the trip playlist's tracks, the
+            // shelf the others', and Home asked for the list again.
+            let asked = LISTENBRAINZ_ASKED.lock().unwrap().clone();
+            let list = "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true";
+            assert_eq!(asked.iter().filter(|line| *line == list).count(), 2);
+            assert_eq!(asked.last().map(String::as_str), Some(list));
+            let mut fetched: Vec<&str> = (asked.iter())
+                .filter_map(|line| line.strip_prefix("GET /1/playlist/"))
+                .collect();
+            fetched.sort();
             assert_eq!(
-                *LISTENBRAINZ_ASKED.lock().unwrap(),
+                fetched,
                 [
-                    "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true",
-                    "GET /1/playlist/daily HTTP/1.1 token=true",
-                    "GET /1/playlist/trip HTTP/1.1 token=true",
-                    "GET /1/playlist/later HTTP/1.1 token=true"
+                    "daily HTTP/1.1 token=true",
+                    "later HTTP/1.1 token=true",
+                    "trip HTTP/1.1 token=true",
+                    "trip HTTP/1.1 token=true"
                 ]
             );
             // Each call about a call's spacing after the one before, as ListenBrainz
@@ -7146,10 +7180,18 @@ mod tests {
             // Every track is listed in ListenBrainz's order. The library's are
             // found by recording, or by title and artist whatever the accents,
             // one search each; the others stay greyed.
+            SEARCHES.store(0, Relaxed);
             ui.invoke_open("createdfor:daily".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 4).await;
             assert_eq!(ui.get_header_title(), "Daily Jams for joe, 2026-11-04 Wed");
             wait_for("the tracks found", || !ui.get_created_for_matching()).await;
+            // The page names its kind and tints as its tile does; the tile
+            // has no banner, so neither has the page.
+            assert_eq!(ui.get_created_for_kind(), "Daily Jams");
+            assert_eq!(ui.get_created_for_tint(), KindTint::Blue);
+            assert_eq!(ui.get_created_for_banner().size().width, 0);
+            let banner = mix_banner(&ui).expect("the banner");
+            assert_eq!(banner.accessible_label().as_deref(), Some("Daily Jams"));
             assert_eq!(lit(&ui), "Home", "a playlist made for you belongs to Home");
             let rows: Vec<(String, bool)> = (ui.get_tracks().iter())
                 .map(|track| (track.title.to_string(), track.unavailable))
@@ -7165,8 +7207,8 @@ mod tests {
             );
             assert_eq!(ui.get_header_facts(), "2 of 4 tracks in your library");
             let asked = LISTENBRAINZ_ASKED.lock().unwrap().clone();
-            assert_eq!(asked.len(), 5);
-            assert_eq!(asked[4], "GET /1/playlist/daily HTTP/1.1 token=true");
+            assert_eq!(asked.len(), 7);
+            assert_eq!(asked[6], "GET /1/playlist/daily HTTP/1.1 token=true");
             // A track the library has takes one search; one it hasn't, two.
             assert_eq!(SEARCHES.load(Relaxed), 6);
 
@@ -7214,6 +7256,12 @@ mod tests {
                 ui.get_tracks().row_count() == 1 && !ui.get_created_for_matching()
             })
             .await;
+            // The page has the banner its tile has, under the same tint.
+            let tile = ui.get_created_for_you().row_data(1).unwrap();
+            assert!(tile.cover.size().width > 0);
+            assert_eq!(ui.get_created_for_kind(), tile.title);
+            assert_eq!(ui.get_created_for_tint(), KindTint::Green);
+            assert_eq!(ui.get_created_for_banner().size(), tile.cover.size());
             let sent = writes().len();
             click(&ui, "Save to library");
             wait_for("the name taken said", || ui.get_notice() != "").await;
@@ -7263,12 +7311,25 @@ mod tests {
             assert_eq!(writes()[sent..], ["createPlaylist name=Later+Jams+for+joe&songId=lb5"]);
             ui.set_notice("".into());
 
+            // A playlist of the library has no banner, though the one before it
+            // had.
+            assert!(mix_banner(&ui).is_some());
+            ui.invoke_open("playlist:p1".into());
+            wait_for("the library's playlist", || {
+                ui.get_page() == Page::Playlist && !ui.get_created_for()
+            })
+            .await;
+            assert!(mix_banner(&ui).is_none());
+
             // A playlist none of whose tracks the library has saves nothing.
             ui.invoke_open("createdfor:exploring".into());
             wait_for("the empty playlist", || {
                 ui.get_header_title() == "Weekly Exploration for joe" && !ui.get_created_for_matching()
             })
             .await;
+            // Home has no tile for it, so it has no banner either.
+            assert_eq!(ui.get_created_for_kind(), "");
+            assert!(mix_banner(&ui).is_none());
             let sent = writes().len();
             click(&ui, "Save to library");
             wait_for("the nothing to save said", || ui.get_notice() != "").await;
