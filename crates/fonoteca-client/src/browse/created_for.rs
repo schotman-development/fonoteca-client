@@ -7,11 +7,14 @@
 //! The list and each playlist on it are kept on this device, so the shelf
 //! and its banners show at once. The list is asked for again once it is an
 //! hour old; a playlist only when the list says ListenBrainz changed it.
+//! The library's songs of each are looked up as soon as Home has it, and
+//! kept with it, so its page plays them at once. Opened, its tracks are
+//! looked up again, and the page changes once they all are.
 
 use listenbrainz as lb;
 use serde::{Deserialize, Serialize};
 
-use super::matching::{fold, lookup};
+use super::matching::{fold, lookup, search_anew};
 use super::*;
 use crate::KindTint;
 
@@ -52,13 +55,16 @@ pub(super) struct State {
 }
 
 /// The playlists made for a user as kept on this device: the list as
-/// ListenBrainz last gave it, newest first, and those on it fetched whole,
-/// by ID, as of the change the list said they had then. A playlist whose
-/// tracks couldn't be fetched has none kept, so the next round asks again.
+/// ListenBrainz last gave it, newest first; those on it fetched whole, by
+/// ID, as of the change the list said they had then; and the library's song
+/// of each track of those, none for one it lacks, by ID, as last looked up
+/// whole. A playlist whose tracks couldn't be fetched has none kept, so the
+/// next round asks again; one fetched again loses its songs with its tracks.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 struct Shelf {
     playlists: Vec<lb::Playlist>,
     fetched: HashMap<String, lb::Playlist>,
+    songs: HashMap<String, Vec<Option<Child>>>,
 }
 
 impl Shelf {
@@ -67,6 +73,7 @@ impl Shelf {
     fn listing(mut self, list: Vec<lb::Playlist>) -> Self {
         self.fetched
             .retain(|mbid, _| list.iter().any(|listed| listed.mbid == *mbid));
+        self.songs.retain(|mbid, _| self.fetched.contains_key(mbid));
         self.playlists = list;
         self
     }
@@ -92,7 +99,35 @@ impl Shelf {
             return;
         };
         playlist.last_modified_at = listed.last_modified_at.clone();
+        self.songs.remove(&playlist.mbid);
         self.fetched.insert(playlist.mbid.clone(), playlist);
+    }
+
+    /// The playlists kept whole whose tracks have no songs kept, in shelf
+    /// order.
+    fn unmatched(&self) -> Vec<lb::Playlist> {
+        (self.playlists.iter())
+            .filter_map(|listed| self.current(&listed.mbid))
+            .filter(|playlist| !self.songs.contains_key(&playlist.mbid))
+            .cloned()
+            .collect()
+    }
+
+    /// Keeps `songs`, the library's of each of `playlist`'s tracks, while
+    /// those are the tracks kept of it.
+    fn keep_songs(&mut self, playlist: &lb::Playlist, songs: Vec<Option<Child>>) {
+        let is_kept =
+            (self.current(&playlist.mbid)).is_some_and(|kept| kept.tracks == playlist.tracks);
+        if is_kept {
+            self.songs.insert(playlist.mbid.clone(), songs);
+        }
+    }
+
+    /// The songs kept of the tracks of the playlist with this ID, unless
+    /// ListenBrainz changed it since.
+    fn kept_songs(&self, mbid: &str) -> Option<&Vec<Option<Child>>> {
+        self.current(mbid)?;
+        self.songs.get(mbid)
     }
 
     /// The playlist with this ID as kept, unless ListenBrainz changed it
@@ -109,10 +144,18 @@ fn kept_under(user: &str) -> String {
     format!("createdfor:{user}")
 }
 
+/// The playlist on screen, and the ListenBrainz user it was made for.
 struct Shown {
-    mbid: String,
-    name: String,
-    tracks: Vec<lb::PlaylistTrack>,
+    user: String,
+    playlist: lb::Playlist,
+}
+
+/// A playlist to show, made for the ListenBrainz user `user`, with the
+/// library's songs of its tracks as kept, when they are.
+struct Opened {
+    user: String,
+    playlist: lb::Playlist,
+    songs: Option<Vec<Option<Child>>>,
 }
 
 /// The playlists to offer: all but the weekly ones of music the user
@@ -183,8 +226,9 @@ pub(crate) async fn account() -> Option<(lb::Client, String)> {
 /// Shows the shelf on the home page: the playlists made for the user as
 /// kept, at once, with the banners of those kept whole, or none without a
 /// token. A list an hour old, or none, is asked for again and shown where it
-/// differs; then the playlists on it not kept whole are fetched. Says so
-/// when ListenBrainz can't be asked and nothing is kept.
+/// differs; then the playlists on it not kept whole are fetched, and their
+/// tracks looked up in the library. Says so when ListenBrainz can't be asked
+/// and nothing is kept.
 pub(super) fn shelf(ui: &AppWindow, browser: &Shared) {
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
@@ -222,6 +266,7 @@ pub(super) fn shelf(ui: &AppWindow, browser: &Shared) {
             }
         }
         fetch_shelf_tracks(&ui, &browser, &answers, &client, &user).await;
+        match_shelf(&browser, &answers, &user).await;
     })
     .expect("the event loop is running");
 }
@@ -384,6 +429,71 @@ async fn fetch_shelf_tracks(
     }
 }
 
+/// Looks up the library's songs of the tracks of each playlist on the shelf
+/// kept whole without them, one playlist after another, and keeps each
+/// playlist's once all are looked up, so that its page has them at once.
+/// Stops at a search that fails, or when the shelf is not the one it began
+/// with.
+async fn match_shelf(browser: &Shared, answers: &Answers, user: &str) {
+    let (client, found, unmatched, tiles) = {
+        let b = browser.borrow();
+        let Some(client) = b.client.clone() else {
+            return;
+        };
+        let shelf = &b.created_for;
+        (
+            client,
+            b.found.clone(),
+            shelf.shelf.unmatched(),
+            shelf.tiles.clone(),
+        )
+    };
+    for playlist in unmatched {
+        let looked_up = look_up(&playlist.tracks, async |track| {
+            lookup(&found, &client, track).await
+        });
+        let songs = match looked_up.await {
+            Ok(songs) => songs,
+            Err(e) => {
+                eprintln!("The playlists made for you couldn't be looked up in your library: {e}");
+                return;
+            }
+        };
+        if !Rc::ptr_eq(&browser.borrow().created_for.tiles, &tiles) {
+            return;
+        }
+        keep_songs(browser, answers, user, &playlist, songs);
+    }
+}
+
+/// The library's song of each of `tracks` as `song_of` gives it, none for
+/// one it lacks, one track after another so a playlist of fifty is not
+/// fifty searches at once.
+async fn look_up(
+    tracks: &[lb::PlaylistTrack],
+    song_of: impl AsyncFn(&lb::PlaylistTrack) -> opensubsonic::Result<Option<Child>>,
+) -> opensubsonic::Result<Vec<Option<Child>>> {
+    let mut songs = Vec::with_capacity(tracks.len());
+    for track in tracks {
+        songs.push(song_of(track).await?);
+    }
+    Ok(songs)
+}
+
+/// Keeps `songs`, the library's of each of `playlist`'s tracks, on the
+/// shelf shown and on this device.
+fn keep_songs(
+    browser: &Shared,
+    answers: &Answers,
+    user: &str,
+    playlist: &lb::Playlist,
+    songs: Vec<Option<Child>>,
+) {
+    let shelf = &mut browser.borrow_mut().created_for.shelf;
+    shelf.keep_songs(playlist, songs.clone());
+    change_shelf(answers, user, |shelf| shelf.keep_songs(playlist, songs));
+}
+
 /// The library's artists in `tracks`, the one with most tracks first, those
 /// with as many in the order of their first track. An artist is matched by
 /// its MusicBrainz ID, else by name.
@@ -505,7 +615,7 @@ fn show_kind(ui: &AppWindow, b: &Browser) {
     let state = &b.created_for;
     let tile = (state.shown.as_ref())
         .and_then(|shown| {
-            (state.shelf.playlists.iter()).position(|playlist| playlist.mbid == shown.mbid)
+            (state.shelf.playlists.iter()).position(|playlist| playlist.mbid == shown.playlist.mbid)
         })
         .and_then(|row| state.tiles.row_data(row));
     ui.set_created_for_kind(
@@ -519,11 +629,12 @@ fn show_kind(ui: &AppWindow, b: &Browser) {
     ui.set_created_for_banner(tile.map_or_else(Default::default, |tile| tile.cover));
 }
 
-/// Shows the page of the playlist with this ID: every track at once, greyed,
-/// then each the library has as it is found, one search after another so a
-/// playlist of fifty is not fifty searches at once. Where Home hasn't made
-/// its tiles yet, they are made for the page's banner once the tracks are
-/// shown, and it comes when its tile has it; the tracks don't wait for it.
+/// Shows the page of the playlist with this ID: every track at once, with
+/// the library's songs kept for them, else greyed; then with those the
+/// library has now, all at once once every track is looked up. Where Home
+/// hasn't made its tiles yet, they are made for the page's banner once the
+/// tracks are shown, and it comes when its tile has it; the tracks don't
+/// wait for it.
 pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
     let visit = browser.borrow().visit;
     ui.set_loading(true);
@@ -536,8 +647,8 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
         }
         ui.set_loading(false);
         match fetched {
-            Ok(playlist) => {
-                show(&ui, &browser, playlist);
+            Ok(opened) => {
+                show(&ui, &browser, opened);
                 resume(&ui, &browser);
                 if browser.borrow().created_for.shelf.playlists.is_empty() {
                     shelf(&ui, &browser);
@@ -549,99 +660,164 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
     .expect("the event loop is running");
 }
 
-/// The playlist with this ID as kept, unless ListenBrainz changed it since;
-/// else fetched, and kept while it is on the shelf.
-async fn playlist(browser: &Shared, mbid: &str) -> Result<lb::Playlist, String> {
+/// The playlist with this ID as kept, with the songs kept of it, unless
+/// ListenBrainz changed it since; else fetched, and kept while it is on the
+/// shelf.
+async fn playlist(browser: &Shared, mbid: &str) -> Result<Opened, String> {
     let Some((client, user)) = account().await else {
         return Err("Set your ListenBrainz token in the settings to see this playlist.".into());
     };
     let answers = listenbrainz_answers(browser).await;
-    let kept = (answers.as_deref())
-        .and_then(|answers| kept_shelf(answers, &user))
-        .and_then(|(shelf, _)| shelf.current(mbid).cloned());
-    if let Some(playlist) = kept {
-        return Ok(playlist);
+    let kept = (answers.as_deref()).and_then(|answers| kept_shelf(answers, &user));
+    if let Some((shelf, _)) = &kept
+        && let Some(playlist) = shelf.current(mbid)
+    {
+        let songs = shelf.kept_songs(mbid).cloned();
+        let playlist = playlist.clone();
+        return Ok(Opened {
+            user,
+            playlist,
+            songs,
+        });
     }
     let playlist = (client.playlist(mbid).await)
         .map_err(|e| format!("The playlist couldn't be fetched: {e}"))?;
     if let Some(answers) = &answers {
         change_shelf(answers, &user, |shelf| shelf.keep(playlist.clone()));
     }
-    Ok(playlist)
+    let songs = None;
+    Ok(Opened {
+        user,
+        playlist,
+        songs,
+    })
 }
 
-fn show(ui: &AppWindow, browser: &Shared, playlist: lb::Playlist) {
-    ui.set_header_title(playlist.title.as_str().into());
-    ui.set_header_facts(count(playlist.tracks.len(), "track", "tracks").into());
-    ui.set_created_for(true);
-    let songs = playlist.tracks.iter().map(missing_song).collect();
-    let rows = playlist.tracks.iter().map(missing_row).collect();
-    let mut b = browser.borrow_mut();
-    show_songs(&mut b, songs, rows);
-    b.created_for.shown = Some(Shown {
-        mbid: playlist.mbid,
-        name: playlist.title,
-        tracks: playlist.tracks,
-    });
-    show_kind(ui, &b);
-}
-
-/// Looks for the library's songs of the playlist on screen, from the first
-/// track on; what was found before comes from the cache, so after a failure
-/// it goes on where that stopped. Save stays off until it has all been
+/// Puts the playlist on the page, each track with the library's song kept
+/// for it; without those, every track greyed and Save off until they are
 /// looked up.
+fn show(ui: &AppWindow, browser: &Shared, opened: Opened) {
+    let Opened {
+        user,
+        playlist,
+        songs,
+    } = opened;
+    let total = playlist.tracks.len();
+    let is_matched = songs.is_some();
+    ui.set_header_title(playlist.title.as_str().into());
+    ui.set_created_for(true);
+    ui.set_created_for_matching(!is_matched);
+    let songs = songs.unwrap_or_else(|| vec![None; total]);
+    let (songs, rows) = songs_and_rows(&playlist.tracks, songs);
+    {
+        let mut b = browser.borrow_mut();
+        show_songs(&mut b, songs, rows);
+        let facts = match is_matched {
+            true => facts(&b, total),
+            false => count(total, "track", "tracks"),
+        };
+        ui.set_header_facts(facts.into());
+        b.created_for.shown = Some(Shown { user, playlist });
+        show_kind(ui, &b);
+    }
+    show_downloads(ui, browser);
+}
+
+/// The page's songs and rows of `tracks` with `songs`, the library's of
+/// each: a missing song and a greyed row for a track it lacks.
+fn songs_and_rows(
+    tracks: &[lb::PlaylistTrack],
+    songs: Vec<Option<Child>>,
+) -> (Vec<Child>, Vec<Track>) {
+    (tracks.iter().zip(songs))
+        .map(|(track, song)| match song {
+            Some(song) => {
+                let row = song_track(&song);
+                (song, row)
+            }
+            None => (missing_song(track), missing_row(track)),
+        })
+        .unzip()
+}
+
+/// Looks up the library's songs of the playlist on screen anew, each track
+/// asked of the library whatever was found before, so a song it has gained
+/// or lost since shows.
 pub(super) fn resume(ui: &AppWindow, browser: &Shared) {
-    let (client, visit, tracks) = {
+    let (client, visit, user, playlist) = {
         let b = browser.borrow();
         let (Some(client), Some(shown)) = (b.client.clone(), &b.created_for.shown) else {
             return;
         };
-        (client, b.visit, shown.tracks.clone())
+        (client, b.visit, shown.user.clone(), shown.playlist.clone())
     };
-    ui.set_created_for_matching(true);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        find_songs(&weak, &browser, &client, &tracks, visit).await;
+        find_songs(&weak, &browser, &client, &user, &playlist, visit).await;
     })
     .expect("the event loop is running");
 }
 
+/// Looks up the library's songs of `playlist`'s tracks and, once all are,
+/// keeps them and puts them on the page together, never track by track. A
+/// search that fails says so where the page has no songs yet, and leaves
+/// those kept where it has.
 async fn find_songs(
     weak: &slint::Weak<AppWindow>,
     browser: &Shared,
     client: &Client,
-    tracks: &[lb::PlaylistTrack],
+    user: &str,
+    playlist: &lb::Playlist,
     visit: i32,
 ) {
-    let cache = browser.borrow().found.clone();
-    for (row, track) in tracks.iter().enumerate() {
-        let found = match lookup(&cache, client, track).await {
-            Ok(found) => found,
-            Err(e) => {
-                let Some(ui) = weak.upgrade() else { return };
-                if browser.borrow().visit == visit {
-                    ui.set_page_problem(format!("Your server didn't answer: {e}").into());
-                }
-                return;
-            }
-        };
-        let Some(ui) = weak.upgrade() else { return };
-        let mut b = browser.borrow_mut();
-        if b.visit != visit {
+    let found = browser.borrow().found.clone();
+    let looked_up = look_up(&playlist.tracks, async |track| {
+        search_anew(&found, client, track).await
+    })
+    .await;
+    let Some(ui) = weak.upgrade() else { return };
+    let is_on_page = browser.borrow().visit == visit;
+    let songs = match looked_up {
+        Ok(songs) => songs,
+        Err(_) if !is_on_page => return,
+        Err(e) if ui.get_created_for_matching() => {
+            return ui.set_page_problem(format!("Your server didn't answer: {e}").into());
+        }
+        Err(e) => {
+            eprintln!("The songs kept of the playlist stay: your server didn't answer: {e}");
             return;
         }
-        if let Some(song) = found {
-            b.tracks.set_row_data(row, song_track(&song));
-            b.songs[row] = song;
+    };
+    if let Some(answers) = listenbrainz_answers(browser).await {
+        keep_songs(browser, &answers, user, playlist, songs.clone());
+    }
+    let Some(ui) = weak.upgrade() else { return };
+    if browser.borrow().visit == visit {
+        show_found(&ui, browser, &playlist.tracks, songs);
+    }
+}
+
+/// Gives each row of the page the library's song of its track, from
+/// `songs`, all at once, and turns Save on.
+fn show_found(
+    ui: &AppWindow,
+    browser: &Shared,
+    tracks: &[lb::PlaylistTrack],
+    songs: Vec<Option<Child>>,
+) {
+    let (songs, rows) = songs_and_rows(tracks, songs);
+    {
+        let mut b = browser.borrow_mut();
+        for (row, (song, track_row)) in songs.into_iter().zip(rows).enumerate() {
+            if b.songs[row] != song {
+                b.tracks.set_row_data(row, track_row);
+                b.songs[row] = song;
+            }
         }
         ui.set_header_facts(facts(&b, tracks.len()).into());
     }
-    if let Some(ui) = weak.upgrade()
-        && browser.borrow().visit == visit
-    {
-        ui.set_created_for_matching(false);
-        show_downloads(&ui, browser);
-    }
+    ui.set_created_for_matching(false);
+    show_downloads(ui, browser);
 }
 
 /// "38 of 50 tracks are in your library".
@@ -673,7 +849,11 @@ pub(super) fn save(ui: &AppWindow, browser: &Shared) {
             .filter(|song| !is_missing(song))
             .map(|song| song.id.clone())
             .collect();
-        (shown.name.clone(), shown.tracks.len(), ids)
+        (
+            shown.playlist.title.clone(),
+            shown.playlist.tracks.len(),
+            ids,
+        )
     };
     if ids.is_empty() {
         return notify(
@@ -947,6 +1127,50 @@ mod tests {
         assert_eq!(shelf.unfetched(), ["a", "c"]);
         assert!(shelf.current("a").is_none(), "its page fetches it again");
         assert_eq!(fetched_ids(&shelf), ["a"], "kept until then, and b gone");
+    }
+
+    #[test]
+    fn songs_are_kept_with_their_playlist_and_go_with_it() {
+        let mut shelf = Shelf::default().listing(vec![made("a", None), made("b", None)]);
+        let a = whole(made("a", None));
+        shelf.keep(a.clone());
+        assert_eq!(shelf.unmatched(), std::slice::from_ref(&a));
+        let songs = vec![Some(song("s1", "T", "Ann", None))];
+        shelf.keep_songs(&a, songs.clone());
+        assert!(shelf.unmatched().is_empty());
+        assert_eq!(shelf.kept_songs("a"), Some(&songs));
+        let other_tracks = lb::Playlist {
+            tracks: vec![wanted("U", "Bo", None)],
+            ..a.clone()
+        };
+        shelf.keep_songs(&other_tracks, vec![None]);
+        assert_eq!(shelf.kept_songs("a"), Some(&songs), "of other tracks");
+        shelf.keep(a.clone());
+        assert!(shelf.kept_songs("a").is_none(), "fetched again");
+        shelf.keep_songs(&a, songs);
+        let shelf = shelf.listing(vec![made("b", None)]);
+        assert!(shelf.songs.is_empty(), "gone with it");
+    }
+
+    #[test]
+    fn songs_of_a_playlist_listenbrainz_changed_are_not_shown() {
+        let mut shelf = Shelf::default().listing(vec![made("a", None)]);
+        let a = whole(made("a", None));
+        shelf.keep(a.clone());
+        shelf.keep_songs(&a, vec![None]);
+        let shelf = shelf.listing(vec![changed(made("a", None), "later")]);
+        assert!(shelf.kept_songs("a").is_none());
+        assert!(shelf.unmatched().is_empty(), "fetched again first");
+    }
+
+    #[test]
+    fn a_track_has_the_row_of_its_song_and_else_a_greyed_one() {
+        let tracks = [wanted("Halo", "Ann", None), wanted("Gone", "Bo", None)];
+        let found = vec![Some(song("s1", "Halo", "Ann", None)), None];
+        let (songs, rows) = songs_and_rows(&tracks, found);
+        assert_eq!(songs[0].id, "s1");
+        assert!(is_missing(&songs[1]));
+        assert_eq!((rows[0].unavailable, rows[1].unavailable), (false, true));
     }
 
     #[test]

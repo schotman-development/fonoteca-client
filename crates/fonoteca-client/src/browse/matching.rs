@@ -16,8 +16,8 @@ const SEARCH_RESULTS: u32 = 30;
 
 /// What the library found for tracks already looked up: the song of a track
 /// by its key, or none when the library has no song of it. Kept for the
-/// session, so a playlist opens again at once and a loved track is not
-/// searched for twice.
+/// session, so Home looks up the tracks of its playlists once and a loved
+/// track is not searched for twice; a playlist's page asks again.
 #[derive(Clone, Default)]
 pub(crate) struct Found(Rc<RefCell<HashMap<String, Option<Child>>>>);
 
@@ -114,6 +114,16 @@ pub(crate) async fn lookup(
     if let Some(found) = cache.0.borrow().get(&key(track)) {
         return Ok(found.clone());
     }
+    search_anew(cache, client, track).await
+}
+
+/// The library's song of `track` as it has it now, searched for whatever
+/// was found before, and noted in `cache` for the session.
+pub(crate) async fn search_anew(
+    cache: &Found,
+    client: &Client,
+    track: &lb::PlaylistTrack,
+) -> opensubsonic::Result<Option<Child>> {
     let found = search(client, track).await?;
     cache.0.borrow_mut().insert(key(track), found.clone());
     Ok(found)

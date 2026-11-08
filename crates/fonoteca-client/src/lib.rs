@@ -1212,6 +1212,10 @@ mod tests {
     /// whether it refuses them.
     static SEARCHES: AtomicUsize = AtomicUsize::new(0);
     static SEARCH_DOWN: AtomicBool = AtomicBool::new(false);
+    /// While set, the library has a song of "Not Here" too, and its search
+    /// for Cher's "Familiar" takes a while.
+    static NOT_HERE_ADDED: AtomicBool = AtomicBool::new(false);
+    static CHER_SLOW: AtomicBool = AtomicBool::new(false);
     /// What the global search asked the server and the radio directory for,
     /// in turn.
     static GLOBAL_SEARCHES: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -1247,11 +1251,19 @@ mod tests {
     /// The songs of `LISTENBRAINZ_LIBRARY` a search finds.
     fn library_search(query: &str) -> String {
         let query = query.replace("%20", " ").replace('+', " ").to_lowercase();
-        let found: Vec<&str> = LISTENBRAINZ_LIBRARY
+        let mut found: Vec<&str> = LISTENBRAINZ_LIBRARY
             .iter()
             .filter(|(searched, _)| query.starts_with(searched))
             .map(|(_, song)| *song)
             .collect();
+        if NOT_HERE_ADDED.load(Relaxed) && query.starts_with("not here") {
+            found.push(
+                r#"{"id":"lb6","isDir":false,"title":"Not Here","artist":"Nobody","duration":200}"#,
+            );
+        }
+        if CHER_SLOW.load(Relaxed) && query.starts_with("familiar cher") {
+            std::thread::sleep(Duration::from_millis(600));
+        }
         format!(r#""searchResult3":{{"song":[{}]}}"#, found.join(","))
     }
 
@@ -1335,7 +1347,7 @@ mod tests {
                 "Weekly Exploration for joe",
                 "exploring",
                 "weekly-exploration",
-                "",
+                &track("Lost", "Nobody", None),
             ),
             (
                 "Road Trip",
@@ -7403,6 +7415,10 @@ mod tests {
             let spaced =
                 |pair: &[Instant]| pair[1] - pair[0] >= listenbrainz::STAND_IN_SPACING / 2;
             assert!(asked_at.windows(2).all(spaced), "{asked_at:?}");
+            // As they arrive, the tracks of the playlists are looked up in the
+            // library, before any is opened: a track the library has takes
+            // one search, one it hasn't two.
+            wait_for("the playlists' songs", || SEARCHES.load(Relaxed) == 8).await;
 
             // Home runs: the library's counts, the newest albums, the albums
             // played last and their artists, the listening stats, then the
@@ -7426,15 +7442,15 @@ mod tests {
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
             ui.set_listenbrainz_user("".into());
 
-            // Every track is listed in ListenBrainz's order. The library's are
-            // found by recording, or by title and artist whatever the accents,
-            // one search each; the others stay greyed.
+            // Every track is listed in ListenBrainz's order, with the songs the
+            // library has, found at once by Home: by recording, or by title and
+            // artist whatever the accents. The others are greyed.
             SEARCHES.store(0, Relaxed);
             let asked = LISTENBRAINZ_ASKED.lock().unwrap().len();
             ui.invoke_open("createdfor:daily".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 4).await;
             assert_eq!(ui.get_header_title(), "Daily Jams for joe, 2026-11-04 Wed");
-            wait_for("the tracks found", || !ui.get_created_for_matching()).await;
+            assert!(!ui.get_created_for_matching());
             // The page names its kind and tints as its tile does; the tile
             // has no banner, so neither has the page.
             assert_eq!(ui.get_created_for_kind(), "Daily Jams");
@@ -7458,8 +7474,12 @@ mod tests {
             assert_eq!(ui.get_header_facts(), "2 of 4 tracks in your library");
             // Its tracks are those the shelf kept: ListenBrainz isn't asked.
             assert_eq!(LISTENBRAINZ_ASKED.lock().unwrap().len(), asked);
-            // A track the library has takes one search; one it hasn't, two.
-            assert_eq!(SEARCHES.load(Relaxed), 6);
+            // The page asks the library again all the same, a search for a
+            // track it has and two for one it hasn't, and with nothing new
+            // found stays as it was.
+            wait_for("the tracks looked up anew", || SEARCHES.load(Relaxed) == 6).await;
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(ui.get_header_facts(), "2 of 4 tracks in your library");
 
             // A greyed row can't be selected, by a click or in a range.
             assert_eq!(button(&ui, "Not Here").accessible_enabled(), Some(false));
@@ -7474,17 +7494,6 @@ mod tests {
             assert_eq!(picked, [true, true, false, false]);
             ui.invoke_clear_selection();
 
-            // Opened again, the matches are the session's and nothing is searched.
-            let searched = SEARCHES.load(Relaxed);
-            ui.invoke_open("home".into());
-            ui.invoke_open("createdfor:daily".into());
-            wait_for("the playlist again", || ui.get_tracks().row_count() == 4).await;
-            wait_for("the tracks found again", || {
-                !ui.get_created_for_matching() && ui.get_header_facts() == "2 of 4 tracks in your library"
-            })
-            .await;
-            assert_eq!(SEARCHES.load(Relaxed), searched);
-
             // Save makes a playlist of the songs the library has, in order.
             let sent = writes().len();
             click(&ui, "Save to library");
@@ -7498,6 +7507,38 @@ mod tests {
                 ["createPlaylist name=Daily+Jams+for+joe%2C+2026-11-04+Wed&songId=lb1&songId=lb2"]
             );
             ui.set_notice("".into());
+
+            // A song the library gains while the app runs shows when the
+            // playlist is opened again: the page has the songs found before at
+            // once, asks the library again, and changes once every track is
+            // looked up, never track by track, here once the last, slow to
+            // look up, is.
+            NOT_HERE_ADDED.store(true, Relaxed);
+            CHER_SLOW.store(true, Relaxed);
+            let searched = SEARCHES.load(Relaxed);
+            ui.invoke_open("home".into());
+            ui.invoke_open("createdfor:daily".into());
+            wait_for("the songs found before", || ui.get_tracks().row_count() == 4).await;
+            let is_not_here_greyed = || ui.get_tracks().row_data(2).unwrap().unavailable;
+            assert!(is_not_here_greyed());
+            wait_for("the last track asked for", || SEARCHES.load(Relaxed) == searched + 4).await;
+            assert!(is_not_here_greyed(), "not track by track");
+            wait_for("all looked up", || !is_not_here_greyed()).await;
+            assert_eq!(SEARCHES.load(Relaxed), searched + 5);
+            assert_eq!(ui.get_header_facts(), "3 of 4 tracks in your library");
+            NOT_HERE_ADDED.store(false, Relaxed);
+            CHER_SLOW.store(false, Relaxed);
+            // What it found is kept: opened again while the library can't be
+            // searched, the page has it at once, and keeps it.
+            SEARCH_DOWN.store(true, Relaxed);
+            ui.invoke_open("home".into());
+            ui.invoke_open("createdfor:daily".into());
+            wait_for("the songs found last", || ui.get_tracks().row_count() == 4).await;
+            assert!(!is_not_here_greyed());
+            idle(Duration::from_millis(300)).await;
+            assert!(!is_not_here_greyed());
+            assert_eq!(ui.get_page_problem(), "");
+            SEARCH_DOWN.store(false, Relaxed);
 
             // A name the server already has is left alone.
             ui.invoke_open("createdfor:trip".into());
@@ -7521,27 +7562,13 @@ mod tests {
             assert_eq!(writes().len(), sent);
             ui.set_notice("".into());
 
-            // A search that fails stops the matching and keeps Save off, so a
-            // part of the playlist is never saved; Try again goes on.
-            SEARCH_DOWN.store(true, Relaxed);
             ui.invoke_open("createdfor:later".into());
-            wait_for("the failed search said", || {
-                ui.get_page_problem().starts_with("Your server didn't answer")
+            wait_for("the third playlist", || {
+                ui.get_header_title() == "Later Jams for joe" && ui.get_tracks().row_count() == 1
             })
             .await;
-            assert!(ui.get_created_for_matching());
-            assert_eq!(button(&ui, "Save to library").accessible_enabled(), Some(false));
-            let sent = writes().len();
-            ui.invoke_save_created_for();
-            idle(Duration::from_millis(200)).await;
-            assert_eq!((writes().len(), ui.get_notice().as_str()), (sent, ""));
-            assert!(ui.get_tracks().row_data(0).unwrap().unavailable);
-            SEARCH_DOWN.store(false, Relaxed);
-            click(&ui, "Try again");
-            wait_for("the matching resumed", || !ui.get_created_for_matching()).await;
-            assert_eq!(ui.get_page_problem(), "");
-            assert!(!ui.get_tracks().row_data(0).unwrap().unavailable);
             assert_eq!(button(&ui, "Save to library").accessible_enabled(), Some(true));
+            let sent = writes().len();
             // A playlist of its name made elsewhere since the playlists were
             // asked for is found too: the server is asked.
             LATER_JAMS_ELSEWHERE.store(true, Relaxed);
@@ -7571,16 +7598,32 @@ mod tests {
             assert!(mix_banner(&ui).is_none());
             assert!(header_has_cover(&ui), "a library playlist keeps its cover");
 
-            // A playlist none of whose tracks the library has saves nothing.
+            // A playlist not on the shelf has no songs kept: its tracks are
+            // greyed, and Save is off, until all are looked up. A search that
+            // fails stops that, so a part of the playlist is never saved; Try
+            // again goes on.
+            SEARCH_DOWN.store(true, Relaxed);
             ui.invoke_open("createdfor:exploring".into());
-            wait_for("the empty playlist", || {
-                ui.get_header_title() == "Weekly Exploration for joe" && !ui.get_created_for_matching()
+            wait_for("the failed search said", || {
+                ui.get_page_problem().starts_with("Your server didn't answer")
             })
             .await;
+            assert_eq!(ui.get_header_title(), "Weekly Exploration for joe");
+            assert!(ui.get_created_for_matching());
+            assert_eq!(button(&ui, "Save to library").accessible_enabled(), Some(false));
             // Home has no tile for it, so it has no banner either.
             assert_eq!(ui.get_created_for_kind(), "");
             assert!(mix_banner(&ui).is_none());
             let sent = writes().len();
+            ui.invoke_save_created_for();
+            idle(Duration::from_millis(200)).await;
+            assert_eq!((writes().len(), ui.get_notice().as_str()), (sent, ""));
+            SEARCH_DOWN.store(false, Relaxed);
+            click(&ui, "Try again");
+            wait_for("the looking up resumed", || !ui.get_created_for_matching()).await;
+            assert_eq!(ui.get_page_problem(), "");
+            assert!(ui.get_tracks().row_data(0).unwrap().unavailable);
+            // None of its tracks are the library's, so it saves nothing.
             click(&ui, "Save to library");
             wait_for("the nothing to save said", || ui.get_notice() != "").await;
             assert_eq!(ui.get_notice(), "None of its tracks are in your library.");
@@ -7716,17 +7759,34 @@ mod tests {
             let asked_since = asked()[before..].to_vec();
             assert!(!asked_since.iter().any(|line| line.contains("/playlist")), "{asked_since:?}");
             assert_eq!(restarted.get_page_problem(), "");
+            // The library's songs of the playlists are kept too, as Home found
+            // them once the token came back: a playlist's rows play them at
+            // once, with the library's search down.
+            SEARCH_DOWN.store(true, Relaxed);
+            restarted.invoke_open("createdfor:later".into());
+            wait_for("the songs kept, after a restart", || {
+                restarted.get_header_title() == "Later Jams for joe"
+            })
+            .await;
+            assert!(!restarted.get_created_for_matching());
+            assert!(!restarted.get_tracks().row_data(0).unwrap().unavailable);
+            assert_eq!(button(&restarted, "Salt").accessible_enabled(), Some(true));
+            idle(Duration::from_millis(200)).await;
+            assert_eq!(restarted.get_page_problem(), "", "the songs kept stay");
+            SEARCH_DOWN.store(false, Relaxed);
             drop(restarted);
             LISTENBRAINZ_DOWN.store(false, Relaxed);
 
             // A heart set in the app syncs with ListenBrainz: it sends the
             // hearts it can and stars the song of a love the server lacks,
             // whose heart then shows on the page, with the rows still there.
+            let searched = SEARCHES.load(Relaxed);
             ui.invoke_open("createdfor:daily".into());
             wait_for("the playlist to heart", || {
-                ui.get_tracks().row_count() == 4 && !ui.get_created_for_matching()
+                ui.get_tracks().row_count() == 4 && SEARCHES.load(Relaxed) == searched + 6
             })
             .await;
+            idle(Duration::from_millis(300)).await;
             assert!(!ui.get_tracks().row_data(0).unwrap().loved);
             ui.invoke_toggle_love(1);
             wait_for("the loved song starred", || {
