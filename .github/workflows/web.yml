@@ -23,10 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Through gh, signed in: GitHub times out unauthenticated release
+      # downloads when it is under load.
       - name: Install Trunk
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/trunk.tar.gz" \
-            "https://github.com/trunk-rs/trunk/releases/download/v$TRUNK_VERSION/trunk-x86_64-unknown-linux-musl.tar.gz"
+          gh release download "v$TRUNK_VERSION" --repo trunk-rs/trunk \
+            --pattern trunk-x86_64-unknown-linux-musl.tar.gz --output "$RUNNER_TEMP/trunk.tar.gz"
           echo "$TRUNK_SHA256  $RUNNER_TEMP/trunk.tar.gz" | sha256sum --check
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$RUNNER_TEMP/bin"

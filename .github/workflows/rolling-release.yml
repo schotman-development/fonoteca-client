@@ -36,6 +36,21 @@ jobs:
       - name: Build FFmpeg
         run: scripts/ffmpeg.sh android
 
+      # skia-bindings fetches its prebuilt Skia with plain curl, which GitHub
+      # times out for unauthenticated release downloads under load, and the
+      # build from source it then falls back to can't find the NDK's clang++.
+      # So fetch them through gh, signed in: every Android variant of this
+      # version, since the key in the file name depends on the features
+      # Slint asks for.
+      - name: Fetch the prebuilt Skia
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n '/^name = "skia-bindings"$/{n;s/^version = "\(.*\)"/\1/p}' Cargo.lock)
+          gh release download "$version" --repo rust-skia/skia-binaries \
+            --pattern 'skia-binaries-*-aarch64-linux-android-*.tar.gz' --dir "$RUNNER_TEMP/skia"
+          echo "SKIA_BINARIES_URL=file://$RUNNER_TEMP/skia/skia-binaries-{key}.tar.gz" >> "$GITHUB_ENV"
+
       # Linked for Android 9 (API 28), the app's oldest. Not with cargo-ndk:
       # it tells Slint's build script to compile its Java helper against
       # that platform too, which lacks the classes the helper uses. The
