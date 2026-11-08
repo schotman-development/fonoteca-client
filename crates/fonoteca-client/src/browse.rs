@@ -101,7 +101,7 @@ pub(crate) const USER_AGENT: &str = concat!("fonoteca-client/", env!("CARGO_PKG_
 /// Tiles added to the albums or artists page at a time.
 const TILES_AT_ONCE: usize = 100;
 /// The entries for the most played in the albums page's and the artists
-/// page's Sort menus, in app.slint.
+/// page's Sort menus, in app.slint. The composers page has the artists' menu.
 const MOST_PLAYED_ALBUMS: i32 = 4;
 const MOST_PLAYED_ARTISTS: i32 = 1;
 /// Albums asked for at a time while the library loads, and at most how many,
@@ -148,6 +148,9 @@ const RADIO_CATALOGUE: &str = "fonotecaRadioCatalogue";
 const MOTION: &str = "fonotecaAlbumMotion";
 /// Fonoteca's extension for composers and compositions.
 const COMPOSITIONS: &str = "fonotecaCompositions";
+/// The version of that extension whose composers and compositions carry
+/// their plays.
+const COMPOSITION_PLAYS: i64 = 2;
 /// OpenSubsonic's extension for an artist's top songs by id, not name.
 const TOP_SONGS_BY_ID: &str = "topSongsByArtistId";
 /// The proposed OpenSubsonic extension for folders of playlists.
@@ -241,6 +244,10 @@ pub struct Browser {
     composers_loaded: bool,
     compositions: Vec<Composition>,
     compositions_loaded: bool,
+    /// Whether the server was told of a play since the composers' and the
+    /// compositions' play counts were asked for.
+    composers_miss_plays: bool,
+    compositions_miss_plays: bool,
     /// Every genre, once they have arrived, and on a genre's page the tiles
     /// of its subgenres and of its artists.
     genres: Vec<Genre>,
@@ -618,13 +625,15 @@ pub fn client(browser: &Shared) -> Option<Arc<Client>> {
 }
 
 /// Notes that the server was told of a play, which the play counts of the
-/// library and the songs asked for before miss: the next page sorted by them
-/// asks for them again.
+/// library, the songs, the composers and the compositions asked for before
+/// miss: the next page sorted by them asks for them again.
 #[cfg(not(target_family = "wasm"))]
 pub fn told_play(browser: &Shared) {
     let mut b = browser.borrow_mut();
     b.library_misses_plays = true;
     b.song_list_misses_plays = true;
+    b.composers_miss_plays = true;
+    b.compositions_miss_plays = true;
 }
 
 /// The songs on screen in their rows' order, and where the `row`th row is
@@ -824,7 +833,8 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         }
     };
     ui.on_sort_albums(sort.clone());
-    ui.on_sort_artists(sort);
+    ui.on_sort_artists(sort.clone());
+    ui.on_sort_composers(sort);
     ui.on_sort_tracks({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| sort_tracks(&weak.unwrap(), &browser, index as usize)
@@ -1659,10 +1669,12 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "composers" => {
             ui.set_page(Page::Composers);
+            recount_composers(ui, browser);
             composers(ui, browser);
         }
         "compositions" => {
             ui.set_page(Page::Compositions);
+            recount_compositions(ui, browser);
             compositions(ui, browser);
         }
         "composer" => {
@@ -1744,6 +1756,11 @@ fn offers_compositions(b: &Browser) -> bool {
     b.client
         .as_ref()
         .is_some_and(|client| client.supports(COMPOSITIONS))
+}
+
+/// Whether the server counts the plays of its composers and compositions.
+fn counts_composition_plays(b: &Browser) -> bool {
+    offers_version(b, COMPOSITIONS, COMPOSITION_PLAYS)
 }
 
 /// Whether the server has this extension.
@@ -2088,6 +2105,7 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     show_selected(ui, &b);
     ui.set_folders_offered(offers(&b, FOLDERS));
     ui.set_tags_offered(offers(&b, TAGS));
+    ui.set_composer_plays_counted(counts_composition_plays(&b));
     let targets: Vec<Name> = b
         .playlists
         .iter()
@@ -2568,6 +2586,104 @@ fn compositions(ui: &AppWindow, browser: &Shared) {
     );
 }
 
+/// Asks for the composers again when their page sorts by plays and the
+/// server was told of one since they were asked for.
+fn recount_composers(ui: &AppWindow, browser: &Shared) {
+    let b = browser.borrow();
+    let by_plays = counts_composition_plays(&b) && ui.get_composer_sort() == MOST_PLAYED_ARTISTS;
+    if !b.composers_loaded || !by_plays {
+        return;
+    }
+    drop(b);
+    recount(
+        ui,
+        browser,
+        Page::Composers,
+        |b| &mut b.composers_miss_plays,
+        |reader| async move { reader.get_composers().await },
+        |b, composers| {
+            b.composers = (composers.index.into_iter())
+                .flat_map(|index| index.composer)
+                .collect();
+        },
+    );
+}
+
+/// Asks for the compositions again when their table shows or sorts by the
+/// plays and the server was told of one since they were asked for.
+fn recount_compositions(ui: &AppWindow, browser: &Shared) {
+    let b = browser.borrow();
+    let table = piece_table(&b);
+    let uses_plays =
+        (table.shown().into_iter().chain(table.sort)).any(|c| PIECE_COLUMNS[c].is_count);
+    if !b.compositions_loaded || !uses_plays {
+        return;
+    }
+    drop(b);
+    recount(
+        ui,
+        browser,
+        Page::Compositions,
+        |b| &mut b.compositions_miss_plays,
+        |reader| async move { reader.get_compositions(None).await },
+        |b, compositions| b.compositions = compositions.composition,
+    );
+}
+
+/// Asks the server for a list again with `task` when `misses_plays` says it
+/// was told of a play since the list was asked for. What is shown stays
+/// until the answer comes; `take` then puts it in the list's place, and
+/// `page`, if on screen, shows it in its order. When the server can't
+/// answer, the next visit asks again.
+fn recount<T: 'static, F: Future<Output = opensubsonic::Result<T>> + 'static>(
+    ui: &AppWindow,
+    browser: &Shared,
+    page: Page,
+    misses_plays: fn(&mut Browser) -> &mut bool,
+    task: impl FnOnce(Client) -> F,
+    take: impl FnOnce(&mut Browser, T) + 'static,
+) {
+    let client = {
+        let mut b = browser.borrow_mut();
+        let misses = misses_plays(&mut b);
+        if !*misses {
+            return;
+        }
+        *misses = false;
+        b.client.clone()
+    };
+    let Some(client) = client else { return };
+    let answer = task(client.reader(false));
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        let answer = answer.await;
+        let Some(ui) = weak.upgrade() else { return };
+        let signed_in =
+            (browser.borrow().client.as_ref()).is_some_and(|current| Arc::ptr_eq(current, &client));
+        if !signed_in {
+            return;
+        }
+        let list = match answer {
+            Ok(list) => list,
+            Err(e) => {
+                eprintln!("The plays on the {page:?} page couldn't be asked for again: {e}");
+                *misses_plays(&mut browser.borrow_mut()) = true;
+                return;
+            }
+        };
+        let mut b = browser.borrow_mut();
+        take(&mut b, list);
+        if ui.get_page() != page {
+            return;
+        }
+        // The order indexes into the list; the page sorts it anew.
+        b.view.clear();
+        drop(b);
+        arrange(&ui, &browser);
+    })
+    .expect("the event loop is running");
+}
+
 /// Asks for the playlists, for the sidebar and the playlists page.
 fn load_playlists(ui: &AppWindow, browser: &Shared) {
     ask_playlists(ui, browser, true);
@@ -2802,6 +2918,31 @@ impl Table {
     fn shown(&self) -> Vec<usize> {
         (0..self.shown.len()).filter(|&c| self.shown[c]).collect()
     }
+
+    /// The table of its first `count` columns only.
+    fn first(&self, count: usize) -> Table {
+        Table {
+            shown: self.shown.iter().copied().take(count).collect(),
+            sort: self.sort.filter(|&c| c < count),
+            descending: self.descending,
+        }
+    }
+}
+
+/// The compositions table as the server can fill it: without the plays on a
+/// server that doesn't count them. The table picked keeps them, for a server
+/// that does.
+fn piece_table(b: &Browser) -> Table {
+    offered_piece_table(&b.piece_table, counts_composition_plays(b))
+}
+
+/// `table` of `PIECE_COLUMNS` without its last column, the plays, unless
+/// the server `counts_plays`.
+fn offered_piece_table(table: &Table, counts_plays: bool) -> Table {
+    match counts_plays {
+        true => table.first(PIECE_COLUMNS.len()),
+        false => table.first(PIECE_COLUMNS.len() - 1),
+    }
 }
 
 /// The songs a table of `COLUMNS` on `page` lists and their order there: the
@@ -2916,7 +3057,8 @@ const COLUMNS: &[Column<Child>] = &[
 
 /// The compositions table's columns, as Roon's: one for every field of a
 /// composition in Fonoteca's compositions but the ids. Dates sort by the
-/// year it was begun, periods by when they were.
+/// year it was begun, periods by when they were. The plays come last, so
+/// that a server without them leaves the others in their places.
 #[rustfmt::skip]
 const PIECE_COLUMNS: &[Column<Composition>] = &[
     Column { shown: true, ..column(COVER, LINE_COVER_SIZE, |_| Vec::new()) },
@@ -2940,6 +3082,7 @@ const PIECE_COLUMNS: &[Column<Composition>] = &[
     Column { shown: true, ..numeric(LOVED, 40.0, |_| Vec::new(), |piece| Some(if piece.starred.is_some() { 1.0 } else { 0.0 })) },
     column("Starred", 100.0, |piece| day(&piece.starred)),
     column("MusicBrainz ID", 290.0, |piece| text_of(&piece.music_brainz_id)),
+    tally("Plays", 56.0, |piece| number(piece.play_count), |piece| float(Some(piece.play_count.unwrap_or(0)))),
 ];
 
 /// A cell of one plain value, or an empty one.
@@ -3025,7 +3168,7 @@ fn tracks(ui: &AppWindow, browser: &Shared) {
 fn show_columns(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     if ui.get_page() == Page::Compositions {
-        set_columns(ui, PIECE_COLUMNS, &b.piece_table);
+        set_columns(ui, PIECE_COLUMNS, &piece_table(&b));
     } else {
         set_columns(ui, COLUMNS, song_table(&b, ui.get_page()));
     }
@@ -3213,7 +3356,7 @@ fn piece_link(piece: &Composition) -> String {
 fn want_line_covers(b: &mut Browser, page: Page, start: usize) {
     let pieces = page == Page::Compositions;
     let shown = if pieces {
-        shows_cover(PIECE_COLUMNS, &b.piece_table)
+        shows_cover(PIECE_COLUMNS, &piece_table(b))
     } else {
         shows_cover(COLUMNS, song_table(b, page))
     };
@@ -3538,7 +3681,10 @@ fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
             return;
         };
         *shown = !*shown;
-        let columns = table.shown();
+        let columns = match page {
+            Page::Compositions => piece_table(&b).shown(),
+            _ => table.shown(),
+        };
         let rows = b.lines.row_count();
         let lines: Vec<TrackLine> = if page == Page::Compositions {
             b.view[..rows]
@@ -3588,6 +3734,8 @@ fn load_prefs(ui: &AppWindow, browser: &Shared) {
     ui.set_album_descending(prefs.album_descending);
     ui.set_artist_sort(prefs.artist_sort.clamp(0, MOST_PLAYED_ARTISTS));
     ui.set_artist_descending(prefs.artist_descending);
+    ui.set_composer_sort(prefs.composer_sort.clamp(0, MOST_PLAYED_ARTISTS));
+    ui.set_composer_descending(prefs.composer_descending);
 }
 
 /// A table as saved: the columns of `all` with the headings `shown`, or
@@ -3613,8 +3761,8 @@ fn saved_table<T>(
     }
 }
 
-/// Saves the order of the albums, artists, tracks, compositions and folders
-/// and the tables' columns on this device.
+/// Saves the order of the albums, artists, composers, tracks, compositions
+/// and folders and the tables' columns on this device.
 fn save_prefs(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let (track_columns, track_sort) = titles(COLUMNS, &b.track_table);
@@ -3625,6 +3773,8 @@ fn save_prefs(ui: &AppWindow, browser: &Shared) {
         album_descending: ui.get_album_descending(),
         artist_sort: ui.get_artist_sort(),
         artist_descending: ui.get_artist_descending(),
+        composer_sort: ui.get_composer_sort(),
+        composer_descending: ui.get_composer_descending(),
         track_columns: Some(track_columns),
         track_sort,
         track_descending: b.track_table.descending,
@@ -3679,6 +3829,8 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
     }
     let (sort, descending) = (ui.get_album_sort(), ui.get_album_descending());
     let (artist_sort, artist_descending) = (ui.get_artist_sort(), ui.get_artist_descending());
+    let (composer_sort, composer_descending) =
+        (ui.get_composer_sort(), ui.get_composer_descending());
     let filter = typed_filter(ui).unwrap_or_default();
     let page = ui.get_page();
     let mut b = browser.borrow_mut();
@@ -3698,10 +3850,13 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
             let view = filtered(&b.artists, &filter, |artist| artist.name.clone());
             arranged_artists(&b, view, artist_sort, artist_descending)
         }
-        Page::Composers => filtered(&b.composers, &filter, |composer| composer.name.clone()),
+        Page::Composers => {
+            let view = filtered(&b.composers, &filter, |composer| composer.name.clone());
+            arranged_composers(&b, view, composer_sort, composer_descending)
+        }
         Page::Compositions => {
             let view = filtered(&b.compositions, &filter, composition_text);
-            sorted(&b.compositions, view, PIECE_COLUMNS, &b.piece_table)
+            sorted(&b.compositions, view, PIECE_COLUMNS, &piece_table(&b))
         }
         Page::Genre => {
             let mut view = genre_albums(&b, genre);
@@ -3830,7 +3985,7 @@ fn on_page(b: &Browser, page: Page) -> usize {
 fn show_tiles(ui: &AppWindow, browser: &Shared, upto: usize) {
     let page = ui.get_page();
     let (columns, size) = (
-        browser.borrow().piece_table.shown(),
+        piece_table(&browser.borrow()).shown(),
         pixels(ui, LINE_COVER_SIZE),
     );
     let (tiles, more, waiting) = {
@@ -3912,16 +4067,11 @@ fn arranged(library: &[AlbumID3], filter: &str, sort: i32, descending: bool) -> 
 }
 
 /// `view`, indexes into the artists, in the order of the artists page's Sort
-/// menu's `sort`: the server's, which is by name, turned around for
-/// `descending`; or by how often their albums were played, the most first
-/// for `descending`, ties by name either way. The standard has no count of
-/// an artist's plays.
-fn arranged_artists(b: &Browser, mut view: Vec<usize>, sort: i32, descending: bool) -> Vec<usize> {
+/// menu's `sort`: by name, or by how often their albums were played. The
+/// standard has no count of an artist's plays.
+fn arranged_artists(b: &Browser, view: Vec<usize>, sort: i32, descending: bool) -> Vec<usize> {
     if sort != MOST_PLAYED_ARTISTS {
-        if descending {
-            view.reverse();
-        }
-        return view;
+        return by_name(view, descending);
     }
     let mut plays: HashMap<String, i64> = HashMap::new();
     for album in &b.library {
@@ -3929,14 +4079,41 @@ fn arranged_artists(b: &Browser, mut view: Vec<usize>, sort: i32, descending: bo
             *plays.entry(name.link.into()).or_default() += album.play_count.unwrap_or(0);
         }
     }
-    let played = |i: &usize| {
-        let link = format!("artist:{}", b.artists[*i].id);
+    by_plays(view, descending, |i| {
+        let link = format!("artist:{}", b.artists[i].id);
         plays.get(&link).copied().unwrap_or(0)
-    };
+    })
+}
+
+/// `view`, indexes into the composers, in the order of their page's Sort
+/// menu's `sort`, which has the artists' entries; on a server that doesn't
+/// count their plays, which shows no Sort menu there, in the server's.
+fn arranged_composers(b: &Browser, view: Vec<usize>, sort: i32, descending: bool) -> Vec<usize> {
+    if !counts_composition_plays(b) {
+        return view;
+    }
+    if sort != MOST_PLAYED_ARTISTS {
+        return by_name(view, descending);
+    }
+    by_plays(view, descending, |i| b.composers[i].play_count.unwrap_or(0))
+}
+
+/// `view`, indexes into a list the server sends by name, turned around for
+/// `descending`.
+fn by_name(mut view: Vec<usize>, descending: bool) -> Vec<usize> {
+    if descending {
+        view.reverse();
+    }
+    view
+}
+
+/// `view`, indexes into a list the server sends by name, by their `plays`,
+/// the most first for `descending`, ties by name either way.
+fn by_plays(mut view: Vec<usize>, descending: bool, plays: impl Fn(usize) -> i64) -> Vec<usize> {
     // Sorted stably, so ties keep the server's order.
     match descending {
-        true => view.sort_by_cached_key(|i| Reverse(played(i))),
-        false => view.sort_by_cached_key(played),
+        true => view.sort_by_cached_key(|&i| Reverse(plays(i))),
+        false => view.sort_by_cached_key(|&i| plays(i)),
     }
     view
 }
@@ -9088,6 +9265,66 @@ mod tests {
         assert_eq!(sorted(&pieces, all, PIECE_COLUMNS, &table), [2, 0, 3, 1]);
         assert_eq!(language("lat"), "Latin");
         assert_eq!(language("xyz"), "xyz");
+    }
+
+    #[test]
+    fn compositions_by_their_plays_none_counted_as_0_ties_by_name() {
+        let pieces: Vec<Composition> = serde_json::from_str(
+            r#"[{"id":"w1","name":"Requiem","playCount":3},{"id":"w2","name":"egmont","playCount":3},
+                {"id":"w3","name":"Mass"},{"id":"w4","name":"Symphony","playCount":7}]"#,
+        )
+        .unwrap();
+        let plays = PIECE_COLUMNS.iter().position(|c| c.title == "Plays");
+        assert!(
+            PIECE_COLUMNS[plays.unwrap()].is_count,
+            "most first at first"
+        );
+        let table = |descending| Table {
+            sort: plays,
+            descending,
+            ..Table::default()
+        };
+        let all = vec![0, 1, 2, 3];
+        assert_eq!(
+            sorted(&pieces, all.clone(), PIECE_COLUMNS, &table(true)),
+            [3, 1, 0, 2]
+        );
+        assert_eq!(
+            sorted(&pieces, all, PIECE_COLUMNS, &table(false)),
+            [2, 1, 0, 3]
+        );
+    }
+
+    #[test]
+    fn a_server_that_counts_no_plays_shows_no_plays_column() {
+        let plays = PIECE_COLUMNS.len() - 1;
+        assert_eq!(PIECE_COLUMNS[plays].title, "Plays");
+        let saved = Table {
+            shown: PIECE_COLUMNS.iter().map(|_| true).collect(),
+            sort: Some(plays),
+            descending: true,
+        };
+        let without = offered_piece_table(&saved, false);
+        assert_eq!(without.shown(), (0..plays).collect::<Vec<_>>());
+        assert_eq!(without.sort, None);
+        let with = offered_piece_table(&saved, true);
+        assert_eq!(with.shown(), (0..=plays).collect::<Vec<_>>());
+        assert_eq!((with.sort, with.descending), (Some(plays), true));
+        let by_date = Table {
+            sort: Some(3),
+            ..saved
+        };
+        assert_eq!(offered_piece_table(&by_date, false).sort, Some(3));
+    }
+
+    #[test]
+    fn by_name_either_way_or_by_plays_ties_in_the_servers_order() {
+        let plays = [2, 5, 0, 2];
+        let view = vec![0, 1, 2, 3];
+        assert_eq!(by_name(view.clone(), false), [0, 1, 2, 3]);
+        assert_eq!(by_name(view.clone(), true), [3, 2, 1, 0]);
+        assert_eq!(by_plays(view.clone(), true, |i| plays[i]), [1, 0, 3, 2]);
+        assert_eq!(by_plays(view, false, |i| plays[i]), [2, 0, 3, 1]);
     }
 
     #[test]

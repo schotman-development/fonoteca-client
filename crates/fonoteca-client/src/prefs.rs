@@ -1,9 +1,10 @@
-//! Preferences kept on this device: how the albums, artists, tracks,
-//! compositions and folders are sorted, which columns the tables show, the radio page's
-//! languages, the sound device, volume leveling and sound processing; and the pictures of saved stations the app found in the radio
-//! directory. They aren't secrets, so plain files in the system's settings
-//! folder keep them, and the browser preview its localStorage. Where neither
-//! works they last until the app closes.
+//! Preferences kept on this device: how the albums, artists, composers,
+//! tracks, compositions and folders are sorted, which columns the tables
+//! show, the radio page's languages, the sound device, volume leveling and
+//! sound processing; and the pictures of saved stations the app found in the
+//! radio directory. They aren't secrets, so plain files in the system's
+//! settings folder keep them, and the browser preview its localStorage.
+//! Where neither works they last until the app closes.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -19,6 +20,9 @@ pub struct Prefs {
     /// The same for the artists page.
     pub artist_sort: i32,
     pub artist_descending: bool,
+    /// The same for the composers page.
+    pub composer_sort: i32,
+    pub composer_descending: bool,
     /// The headings of the tracks table's columns shown, none for the first
     /// choice; the heading of the column it is sorted by, and the direction.
     pub track_columns: Option<Vec<String>>,

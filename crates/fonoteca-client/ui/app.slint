@@ -1033,35 +1033,6 @@ component GenreFilter inherits HorizontalLayout {
     }
 }
 
-// The heading of the composers page, with its filter beside it, or under
-// it when `narrow`.
-component FilterHeading inherits VerticalLayout {
-    in property <string> title;
-    in property <bool> narrow;
-    in-out property <string> filter;
-    callback edited();
-    spacing: 12px;
-    HorizontalLayout {
-        spacing: 12px;
-        Heading {
-            horizontal-stretch: 1;
-            text: root.title;
-            vertical-alignment: center;
-        }
-        if !root.narrow: Filter {
-            horizontal-stretch: 0;
-            what: root.title.to-lowercase();
-            text <=> root.filter;
-            edited => { root.edited(); }
-        }
-    }
-    if root.narrow: Filter {
-        what: root.title.to-lowercase();
-        text <=> root.filter;
-        edited => { root.edited(); }
-    }
-}
-
 // The buttons under an onboarding step: in a row with the main one on the
 // right, or on a phone stacked full width, the main one first. An empty
 // `other` or a false `back` leaves that button out.
@@ -1153,10 +1124,11 @@ component SortControls inherits HorizontalLayout {
 }
 
 // An overview page's filter of `what` it lists, with the sort controls
-// beside it or, when `stacked`, under it.
+// beside it or, when `stacked`, under it, where it is `sortable`.
 component OverviewControls inherits VerticalLayout {
     in property <string> what;
     in property <bool> stacked;
+    in property <bool> sortable: true;
     in property <[string]> sort-entries;
     in property <int> descending-from;
     in-out property <string> filter;
@@ -1172,7 +1144,7 @@ component OverviewControls inherits VerticalLayout {
             text <=> root.filter;
             edited => { root.filter-edited(); }
         }
-        if !root.stacked: SortControls {
+        if !root.stacked && root.sortable: SortControls {
             entries: root.sort-entries;
             descending-from: root.descending-from;
             sort <=> root.sort;
@@ -1180,7 +1152,7 @@ component OverviewControls inherits VerticalLayout {
             sort-selected => { root.sort-selected(); }
         }
     }
-    if root.stacked: SortControls {
+    if root.stacked && root.sortable: SortControls {
         alignment: start;
         entries: root.sort-entries;
         descending-from: root.descending-from;
@@ -1518,11 +1490,16 @@ export component AppWindow inherits Window {
     // A short word on what was just done, such as songs added to a playlist.
     in property <string> notice;
     // The albums page's order, as the index into its Sort menu, its
-    // direction, and the filter typed on it; the same for the artists page.
+    // direction, and the filter typed on it; the same for the artists page,
+    // and for the composers page, which has the artists' Sort menu where the
+    // server counts their plays.
     in-out property <int> album-sort;
     in-out property <bool> album-descending;
     in-out property <int> artist-sort;
     in-out property <bool> artist-descending;
+    in-out property <int> composer-sort;
+    in-out property <bool> composer-descending;
+    in property <bool> composer-plays-counted;
     // Their Sort menus' entries, in the order browse.rs takes them, and the
     // first that starts descending: names start A to Z, dates newest first,
     // plays most first.
@@ -1548,6 +1525,7 @@ export component AppWindow inherits Window {
     callback show-more();
     callback sort-albums();
     callback sort-artists();
+    callback sort-composers();
     callback filter-albums();
     callback filter-artists();
     callback filter-composers();
@@ -2324,11 +2302,42 @@ export component AppWindow inherits Window {
                             open(link) => { root.open(link); }
                         }
                     }
-                    if root.page == Page.composers: FilterHeading {
-                        title: "Composers";
-                        narrow: scroll.visible-width < 600px;
-                        filter <=> root.composer-filter;
-                        edited => { root.filter-composers(); }
+                    // The composers' too, which sort as the artists where the
+                    // server counts their plays.
+                    if root.page == Page.composers: VerticalLayout {
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Heading {
+                                horizontal-stretch: 1;
+                                text: "Composers";
+                                vertical-alignment: center;
+                            }
+                            if scroll.visible-width >= 600px: OverviewControls {
+                                horizontal-stretch: 0;
+                                what: "composers";
+                                sortable: root.composer-plays-counted;
+                                sort-entries: root.artist-sorts;
+                                descending-from: root.artist-sorts-descending-from;
+                                filter <=> root.composer-filter;
+                                sort <=> root.composer-sort;
+                                descending <=> root.composer-descending;
+                                filter-edited => { root.filter-composers(); }
+                                sort-selected => { root.sort-composers(); }
+                            }
+                        }
+                        if scroll.visible-width < 600px: OverviewControls {
+                            stacked: true;
+                            what: "composers";
+                            sortable: root.composer-plays-counted;
+                            sort-entries: root.artist-sorts;
+                            descending-from: root.artist-sorts-descending-from;
+                            filter <=> root.composer-filter;
+                            sort <=> root.composer-sort;
+                            descending <=> root.composer-descending;
+                            filter-edited => { root.filter-composers(); }
+                            sort-selected => { root.sort-composers(); }
+                        }
                     }
                     // The playlists at the top level or in a folder, with a
                     // menu to make more there and, in a folder, to change it.

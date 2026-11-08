@@ -812,6 +812,20 @@ mod tests {
         }
     }
 
+    /// The plays field of a composer or composition as the server has it
+    /// now: `before` the first play is told, then `after`; and none from
+    /// Fonoteca's first version of its compositions.
+    fn composition_plays(before: u32, after: u32) -> String {
+        if OLD_COMPOSITIONS.load(Relaxed) {
+            return String::new();
+        }
+        let plays = match SCROBBLES.lock().unwrap().is_empty() {
+            true => before,
+            false => after,
+        };
+        format!(r#","playCount":{plays}"#)
+    }
+
     /// Road Trip's fields as the server has them now.
     fn road_trip_now() -> String {
         if ROAD_TRIP_EDITED.load(Relaxed) {
@@ -941,6 +955,11 @@ mod tests {
     static NO_WAVEFORM: AtomicBool = AtomicBool::new(false);
     /// While set, the server has no Fonoteca compositions.
     static NO_COMPOSITIONS: AtomicBool = AtomicBool::new(false);
+    /// While set, the server's compositions are Fonoteca's first version,
+    /// whose composers and compositions carry no plays.
+    static OLD_COMPOSITIONS: AtomicBool = AtomicBool::new(false);
+    /// While set, the server refuses to give the composers.
+    static COMPOSERS_DOWN: AtomicBool = AtomicBool::new(false);
     static NO_BANNER: AtomicBool = AtomicBool::new(false);
     /// While set, the server converts a song from part way in.
     static TRANSCODE_OFFSET: AtomicBool = AtomicBool::new(false);
@@ -1508,10 +1527,15 @@ mod tests {
             } else {
                 r#"{"name":"fonotecaWaveform","versions":[1]},"#
             };
-            let compositions = if NO_COMPOSITIONS.load(Relaxed) {
-                ""
+            let composition_versions = if OLD_COMPOSITIONS.load(Relaxed) {
+                "1"
             } else {
-                r#"{"name":"fonotecaCompositions","versions":[1]},"#
+                "1,2"
+            };
+            let compositions = if NO_COMPOSITIONS.load(Relaxed) {
+                String::new()
+            } else {
+                format!(r#"{{"name":"fonotecaCompositions","versions":[{composition_versions}]}},"#)
             };
             let banner = if NO_BANNER.load(Relaxed) {
                 ""
@@ -1899,18 +1923,30 @@ mod tests {
                 r#""playlist":{{{},"entry":{songs}}}"#,
                 road_trip_now()
             ))
+        } else if request.contains("/rest/getComposers") && COMPOSERS_DOWN.load(Relaxed) {
+            reply("503 Service Unavailable", "text/plain", b"down")
         } else if request.contains("/rest/getComposers") {
-            ok(
-                r#""composers":{"index":[{"name":"B","composer":[{"id":"r9","name":"Ludwig van Beethoven","sortName":"Beethoven, Ludwig van","coverArt":"ar-r9","compositionCount":2}]},{"name":"M","composer":[{"id":"r10","name":"Wolfgang Amadeus Mozart","compositionCount":1}]}]}"#,
-            )
+            let (beethoven, mozart) = (composition_plays(10, 22), composition_plays(12, 12));
+            ok(&format!(
+                r#""composers":{{"index":[{{"name":"B","composer":[{{"id":"r9","name":"Ludwig van Beethoven","sortName":"Beethoven, Ludwig van","coverArt":"ar-r9","compositionCount":2{beethoven}}}]}},{{"name":"M","composer":[{{"id":"r10","name":"Wolfgang Amadeus Mozart","compositionCount":1{mozart}}}]}}]}}"#,
+            ))
         } else if request.contains("/rest/getCompositions") && id == Some("w5") {
             ok(&format!(
                 r#""compositions":{{"composition":[{{{SYMPHONY}}}]}}"#
             ))
         } else if request.contains("/rest/getCompositions") {
-            let egmont = r#"{"id":"w9","name":"Egmont Overture","composers":[{"id":"r9","name":"Ludwig van Beethoven"}],"composed":{"from":{"year":1809},"to":{"year":1810}},"albumCount":1}"#;
-            let requiem = r#"{"id":"w7","name":"Requiem","composers":[{"id":"r10","name":"Wolfgang Amadeus Mozart"},{"id":"r11","name":"Franz Xaver Süssmayr"}],"albumCount":3,"form":"Requiem","period":"Classical","starred":"2026-10-19T08:00:00Z","key":"D minor","movementCount":14,"duration":3300,"lyricists":[{"id":"r12","name":"Thomas of Celano"},{"id":"","name":"Liturgy"}],"languages":["lat","deu"]}"#;
-            let symphony = r#"{"id":"w5","name":"Symphony No. 5","composers":[{"id":"r9","name":"Ludwig van Beethoven"}],"composed":{"from":{"year":1804},"to":{"year":1808}},"albumCount":2,"movementCount":4}"#;
+            let egmont_plays = composition_plays(3, 15);
+            let egmont = format!(
+                r#"{{"id":"w9","name":"Egmont Overture","composers":[{{"id":"r9","name":"Ludwig van Beethoven"}}],"composed":{{"from":{{"year":1809}},"to":{{"year":1810}}}},"albumCount":1{egmont_plays}}}"#
+            );
+            let requiem_plays = composition_plays(12, 12);
+            let requiem = format!(
+                r#"{{"id":"w7","name":"Requiem","composers":[{{"id":"r10","name":"Wolfgang Amadeus Mozart"}},{{"id":"r11","name":"Franz Xaver Süssmayr"}}],"albumCount":3,"form":"Requiem","period":"Classical","starred":"2026-10-19T08:00:00Z","key":"D minor","movementCount":14,"duration":3300,"lyricists":[{{"id":"r12","name":"Thomas of Celano"}},{{"id":"","name":"Liturgy"}}],"languages":["lat","deu"]{requiem_plays}}}"#
+            );
+            let symphony_plays = composition_plays(7, 7);
+            let symphony = format!(
+                r#"{{"id":"w5","name":"Symphony No. 5","composers":[{{"id":"r9","name":"Ludwig van Beethoven"}}],"composed":{{"from":{{"year":1804}},"to":{{"year":1808}}}},"albumCount":2,"movementCount":4{symphony_plays}}}"#
+            );
             let pieces = if param("composerId") == Some("r9") {
                 [egmont, symphony].join(",")
             } else {
@@ -5047,6 +5083,31 @@ mod tests {
             ui.set_composer_filter("".into());
             ui.invoke_filter_composers();
             wait_for("both composers", || ui.get_tiles().row_count() == 2).await;
+            // Where the server counts their plays, Most played, chosen from
+            // their Sort menu, starts with the most played, is saved on this
+            // device, and turns around; Name, chosen again, goes A to Z, and
+            // turns around too.
+            let composer_links = |ui: &AppWindow| -> Vec<String> {
+                ui.get_tiles().iter().map(|tile| tile.link.into()).collect()
+            };
+            assert!(ui.get_composer_plays_counted());
+            move_sort_choice(&ui, slint::platform::Key::DownArrow).await;
+            assert_eq!((ui.get_composer_sort(), ui.get_composer_descending()), (1, true));
+            let saved = crate::prefs::load();
+            assert_eq!((saved.composer_sort, saved.composer_descending), (1, true));
+            assert_eq!(composer_links(&ui), ["composer:r10", "composer:r9"]);
+            ui.set_composer_descending(false);
+            ui.invoke_sort_composers();
+            assert_eq!(composer_links(&ui), ["composer:r9", "composer:r10"]);
+            assert!(!crate::prefs::load().composer_descending);
+            move_sort_choice(&ui, slint::platform::Key::UpArrow).await;
+            assert_eq!((ui.get_composer_sort(), ui.get_composer_descending()), (0, false));
+            ui.set_composer_descending(true);
+            ui.invoke_sort_composers();
+            assert_eq!(composer_links(&ui), ["composer:r10", "composer:r9"]);
+            ui.set_composer_descending(false);
+            ui.invoke_sort_composers();
+            assert_eq!(composer_links(&ui), ["composer:r9", "composer:r10"]);
             // A composer's page lists their pieces, without their own name on
             // each.
             click(&ui, "Ludwig van Beethoven");
@@ -5240,6 +5301,32 @@ mod tests {
             let saved = crate::prefs::load();
             assert_eq!(saved.composition_sort.as_deref(), Some("Date"));
             assert!(saved.composition_descending);
+            // Where the server counts their plays, the Plays column, picked
+            // like the others, sorts the most played first at first, which
+            // is saved on this device, and then the least.
+            choose(&ui, "Plays");
+            let plays_heading = heading(&ui, "Plays");
+            ui.invoke_sort_tracks(plays_heading as i32);
+            assert_eq!(
+                order(&ui),
+                ["composition:w7", "composition:w5", "composition:w9"]
+            );
+            assert_eq!(piece(&ui, 0)[plays_heading], plain("12"));
+            let saved = crate::prefs::load();
+            assert_eq!(saved.composition_sort.as_deref(), Some("Plays"));
+            assert!(saved.composition_descending);
+            ui.invoke_sort_tracks(plays_heading as i32);
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w5", "composition:w7"]
+            );
+            choose(&ui, "Plays");
+            ui.invoke_sort_tracks(3);
+            ui.invoke_sort_tracks(3);
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w5", "composition:w7"]
+            );
             // Its columns are picked apart from the tracks table's, and the
             // composition's name takes the room left over.
             let mbid = ui
@@ -5963,6 +6050,7 @@ mod tests {
             let mut saved = crate::prefs::load();
             assert_eq!((saved.album_sort, saved.album_descending), (1, true));
             (saved.album_sort, saved.artist_sort) = (4, 1);
+            (saved.composer_sort, saved.composer_descending) = (1, true);
             crate::prefs::save(&saved);
             let again = start().unwrap();
             wait_for("the offline note", || again.get_offline() != "").await;
@@ -6478,6 +6566,7 @@ mod tests {
             assert_eq!(again.get_album_sort(), 4);
             assert!(again.get_album_descending());
             assert_eq!(again.get_artist_sort(), 1);
+            assert_eq!((again.get_composer_sort(), again.get_composer_descending()), (1, true));
             click(&again, "Tracks");
             wait_for("the tracks", || again.get_track_lines().row_count() == 100).await;
             assert_eq!(titles(&again), titles(&ui));
@@ -6711,6 +6800,67 @@ mod tests {
             ui.invoke_sort_tracks(column(&ui, "Year"));
             ui.invoke_sort_tracks(column(&ui, "Year"));
             assert_eq!(sorted(&ui), [("Year".to_owned(), true)]);
+            // So do the composers, whose plays Fonoteca counts, where they
+            // are sorted by them; by name they aren't asked for again.
+            let composers_asked = times_asked("getComposers");
+            ui.invoke_open("composers".into());
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(times_asked("getComposers"), composers_asked);
+            // When the server can't give them, the counts shown stay, and
+            // the next visit asks again.
+            COMPOSERS_DOWN.store(true, Relaxed);
+            ui.set_composer_sort(1);
+            ui.set_composer_descending(true);
+            ui.invoke_sort_composers();
+            assert_eq!(composer_links(&ui), ["composer:r10", "composer:r9"]);
+            wait_for("the composers refused", || {
+                times_asked("getComposers") > composers_asked
+            })
+            .await;
+            idle(Duration::from_millis(300)).await;
+            COMPOSERS_DOWN.store(false, Relaxed);
+            assert_eq!(composer_links(&ui), ["composer:r10", "composer:r9"]);
+            ui.invoke_open("setting:downloads".into());
+            ui.invoke_back();
+            wait_for("Beethoven's plays", || composer_links(&ui)[0] == "composer:r9").await;
+            // Once they came, a visit doesn't ask for them again. An hour
+            // on, so that the answer kept can't stand in for the server.
+            let composers_asked = times_asked("getComposers");
+            let now = answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            ui.invoke_open("setting:downloads".into());
+            ui.invoke_back();
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(times_asked("getComposers"), composers_asked);
+            answers::LATER.store(now, Relaxed);
+            ui.set_composer_sort(0);
+            ui.set_composer_descending(false);
+            ui.invoke_sort_composers();
+            // The compositions' too, where their table shows the plays:
+            // sorted by date, the Egmont Overture's count changes in place.
+            // Without them, they aren't asked for again.
+            let compositions_asked = times_asked("getCompositions");
+            ui.invoke_open("compositions".into());
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(times_asked("getCompositions"), compositions_asked);
+            choose(&ui, "Plays");
+            let plays_heading = heading(&ui, "Plays");
+            let egmont_plays = |ui: &AppWindow| piece(ui, 0)[plays_heading].clone();
+            ui.invoke_open("albums".into());
+            ui.invoke_open("compositions".into());
+            assert_eq!(egmont_plays(&ui), plain("3"));
+            wait_for("the Egmont Overture's plays", || egmont_plays(&ui) == plain("15")).await;
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w5", "composition:w7"]
+            );
+            ui.invoke_sort_tracks(plays_heading as i32);
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w7", "composition:w5"]
+            );
+            choose(&ui, "Plays");
+            ui.invoke_sort_tracks(3);
+            ui.invoke_sort_tracks(3);
             ui.set_artist_sort(0);
             ui.set_artist_descending(false);
             ui.set_album_sort(album_sort);
@@ -7186,6 +7336,15 @@ mod tests {
             // It keeps the token too, and so does signing in as someone
             // else, which doesn't ask for one.
             assert_eq!(token(store::load_listenbrainz().await), Some(kept.token.clone()));
+            // Her server counts no plays of its composers and compositions,
+            // as Fonoteca's first version, where they were sorted by them
+            // before, and the composers turned around.
+            OLD_COMPOSITIONS.store(true, Relaxed);
+            let mut saved = crate::prefs::load();
+            (saved.composer_sort, saved.composer_descending) = (0, true);
+            saved.composition_columns.as_mut().unwrap().push("Plays".into());
+            (saved.composition_sort, saved.composition_descending) = (Some("Plays".into()), true);
+            crate::prefs::save(&saved);
             ui.set_username("eve".into());
             ui.set_password("pw".into());
             click(&ui, "Sign in");
@@ -7214,6 +7373,41 @@ mod tests {
             assert_eq!(token(store::load_listenbrainz().await), Some(kept.token));
             let signed_in_as = store::load().await.expect("saved").login;
             assert!(matches!(signed_in_as, Login::Password { ref username, .. } if username == "eve"));
+            // So the composers page has no Sort menu and lists them in the
+            // server's order, and the compositions table has no Plays column
+            // to show or sort by, which stay picked for a server that counts
+            // them.
+            assert!(!ui.get_composer_plays_counted());
+            click(&ui, "Composers");
+            wait_for("her composers", || ui.get_tiles().row_count() == 2).await;
+            assert!(!find_combo(&ui, "Sort by"));
+            // Nor on a phone, where the menu goes under the filter.
+            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            assert!(!find_combo(&ui, "Sort by"));
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            assert_eq!(composer_links(&ui), ["composer:r9", "composer:r10"]);
+            click(&ui, "Compositions");
+            wait_for("her compositions", || ui.get_track_lines().row_count() == 3).await;
+            let cells_match_titles = |ui: &AppWindow| {
+                let columns = titles(ui).len();
+                (ui.get_track_lines().iter()).all(|line| line.cells.row_count() == columns)
+            };
+            assert!(cells_match_titles(&ui));
+            assert!(!titles(&ui).contains(&"Plays".to_owned()));
+            assert!(!ui.get_track_choices().iter().any(|choice| choice.title == "Plays"));
+            assert!(sorted(&ui).is_empty());
+            assert_eq!(
+                order(&ui),
+                ["composition:w9", "composition:w7", "composition:w5"]
+            );
+            choose(&ui, "Key");
+            assert!(cells_match_titles(&ui));
+            choose(&ui, "Key");
+            let saved = crate::prefs::load();
+            assert!(saved.composition_columns.unwrap().contains(&"Plays".to_owned()));
+            assert_eq!(saved.composition_sort.as_deref(), Some("Plays"));
+            assert_eq!((saved.composer_sort, saved.composer_descending), (0, true));
+            OLD_COMPOSITIONS.store(false, Relaxed);
             // Only changing the server forgets it, and the token stays.
             // The downloads belong to the server, and go with it.
             let downloads_folder = crate::offline::folder().unwrap();

@@ -477,6 +477,9 @@ pub struct Composer {
     pub music_brainz_id: Option<String>,
     pub cover_art: Option<String>,
     pub composition_count: Option<i64>,
+    /// How often their compositions were played, summed; from version 2 of
+    /// the extension.
+    pub play_count: Option<i64>,
 }
 
 /// Not in the spec: classical pieces, from Fonoteca's `fonotecaCompositions`
@@ -518,6 +521,9 @@ pub struct Composition {
     pub movement_count: Option<i64>,
     /// The longest held performance, in seconds.
     pub duration: Option<i64>,
+    /// How often its recordings were played, each play once however many
+    /// files hold it; from version 2 of the extension.
+    pub play_count: Option<i64>,
     /// Who wrote its words.
     #[serde(default)]
     pub lyricists: Vec<Composer>,

@@ -273,7 +273,8 @@ impl Answers {
         }
         if let Change::Ages(reads) = change {
             let an_hour_ago = (self.clock)().saturating_sub(FRESH_FOR);
-            let aged = (kept.answers.iter_mut()).filter(|(read, _)| read.starts_with(reads));
+            let aged = (kept.answers.iter_mut())
+                .filter(|(read, _)| reads.iter().any(|reads| read.starts_with(reads)));
             for (_, answer) in aged {
                 answer.at = an_hour_ago;
             }
@@ -396,9 +397,9 @@ enum Change {
     Reads(&'static str),
     /// Both of these.
     ReadsAndNaming(&'static str),
-    /// None, but the answers to the calls whose names start so are aged:
-    /// shown at once and asked for again.
-    Ages(&'static str),
+    /// None, but the answers to the calls whose names start with one of
+    /// these are aged: shown at once and asked for again.
+    Ages(&'static [&'static str]),
 }
 
 impl Change {
@@ -417,9 +418,14 @@ impl Change {
             "createInternetRadioStation"
             | "updateInternetRadioStation"
             | "deleteInternetRadioStation" => Some(Self::Reads("getInternetRadioStations")),
-            // A play raises only the counts in the album lists, so they
-            // still show at once, and are asked for again.
-            "scrobble" => Some(Self::Ages("getAlbumList2")),
+            // A play raises only the counts in the album lists and in
+            // Fonoteca's composers and compositions, so they still show at
+            // once, and are asked for again.
+            "scrobble" => Some(Self::Ages(&[
+                "getAlbumList2",
+                "getComposers",
+                "getCompositions",
+            ])),
             _ => None,
         }
     }
@@ -734,6 +740,19 @@ mod tests {
             "its page shows no plays"
         );
         assert!(answers.unsaved().is_some(), "saved aged");
+    }
+
+    #[test]
+    fn a_play_ages_the_composers_and_compositions_too() {
+        let composers = key("getComposers", &[]);
+        let pieces = key("getCompositions", &[]);
+        let answers = kept(&[
+            (&composers, r#"{"composers":{}}"#),
+            (&pieces, r#"{"compositions":{}}"#),
+        ]);
+        call(&answers, "scrobble", &params(&[("id", "s1")]));
+        assert!(answers.find(&composers).unwrap().aged);
+        assert!(answers.find(&pieces).unwrap().aged);
     }
 
     #[test]
