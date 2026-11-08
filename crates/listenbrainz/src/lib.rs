@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 mod listens;
 mod playlist;
 
-pub use listens::{Around, Listened, ListensPage};
+pub use listens::{Around, Listened, ListensPage, MAX_LISTENS_PER_PAGE};
 #[cfg(target_family = "wasm")]
 pub use pace::use_browser_clock;
 pub use pace::{CALL_SPACING, STAND_IN_SPACING};
@@ -33,7 +33,7 @@ pub const API_ROOT: &str = "https://api.listenbrainz.org/1/";
 pub use stats::{COVER_ART_ROOT, GenreActivity, Range, TopAlbum, TopArtist, TopGenre};
 
 /// How many feedback items [`Client::loved_recordings`] asks for at once.
-const FEEDBACK_PAGE: u32 = 100;
+pub const FEEDBACK_PAGE: u32 = 100;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -70,7 +70,7 @@ impl TryFrom<i8> for Score {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Feedback {
     /// The MusicBrainz user name.
     pub user_id: String,
@@ -86,7 +86,7 @@ pub struct Feedback {
 }
 
 /// The name of a recording that has feedback.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedbackTrack {
     pub artist_name: String,
     pub track_name: String,

@@ -185,6 +185,9 @@ pub struct Browser {
     /// The answers the pages read, kept for the account signed in, and what
     /// saves them on this device as they change.
     answers: Option<(String, Arc<Answers>)>,
+    /// What ListenBrainz answered, kept for the same account and saved with
+    /// them.
+    listenbrainz_answers: Option<Arc<Answers>>,
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     saving: Timer,
     history: Vec<String>,
@@ -721,25 +724,65 @@ fn keep_answers(b: &mut Browser, client: Client) -> Client {
     let account = client.account(&prefs::answers_salt());
     if b.answers.as_ref().is_none_or(|(kept, _)| *kept != account) {
         let answers = answers::load(&account);
+        let listenbrainz = answers::load(&listenbrainz_account(&account));
         #[cfg(not(target_family = "wasm"))]
         b.saving.start(TimerMode::Repeated, SAVE_EVERY, {
             let (account, answers) = (account.clone(), answers.clone());
-            move || answers::save(&account, &answers)
+            let listenbrainz = listenbrainz.clone();
+            move || {
+                answers::save(&account, &answers);
+                answers::save(&listenbrainz_account(&account), &listenbrainz);
+            }
         });
         b.answers = Some((account, answers));
+        b.listenbrainz_answers = Some(listenbrainz);
     }
     let (_, answers) = b.answers.as_ref().expect("the answers were just kept");
     client.keeping_answers_in(answers.clone())
 }
 
-/// Forgets the answers kept for the account signed in, on this device too,
-/// before it signs out.
+/// What names the answers ListenBrainz gave for `account` apart from the
+/// pages' own.
+pub(crate) fn listenbrainz_account(account: &str) -> String {
+    format!("{account}-listenbrainz")
+}
+
+/// Forgets the answers kept for the account signed in, ListenBrainz's too,
+/// on this device too, before it signs out.
 pub fn forget_answers(browser: &Shared) -> std::io::Result<()> {
     let b = browser.borrow();
     b.saving.stop();
-    match &b.answers {
-        Some((account, answers)) => answers::forget(account, answers),
-        None => Ok(()),
+    let (Some((account, answers)), Some(listenbrainz)) = (&b.answers, &b.listenbrainz_answers)
+    else {
+        return Ok(());
+    };
+    answers::forget(account, answers)?;
+    answers::forget(&listenbrainz_account(account), listenbrainz)
+}
+
+/// Forgets what ListenBrainz answered for the account signed in, on this
+/// device too, when its token goes.
+pub fn forget_listenbrainz_answers(browser: &Shared) -> std::io::Result<()> {
+    let b = browser.borrow();
+    let (Some((account, _)), Some(listenbrainz)) = (&b.answers, &b.listenbrainz_answers) else {
+        return Ok(());
+    };
+    answers::clear(&listenbrainz_account(account), listenbrainz)
+}
+
+/// Where what ListenBrainz answered is kept for the account signed in, once
+/// those saved on this device are in.
+pub(crate) async fn listenbrainz_answers(browser: &Shared) -> Option<Arc<Answers>> {
+    let answers = browser.borrow().listenbrainz_answers.clone()?;
+    Some(answers::loaded(answers).await)
+}
+
+/// Ages the listening history kept of ListenBrainz, which lacks a play the
+/// server just took and passes on to it, so that the next visit asks for it.
+#[cfg(not(target_family = "wasm"))]
+pub fn play_taken(browser: &Shared) {
+    if let Some(listenbrainz) = &browser.borrow().listenbrainz_answers {
+        listenbrainz.age(listens::KEPT_UNDER);
     }
 }
 
@@ -1574,6 +1617,9 @@ fn refresh(ui: &AppWindow, browser: &Shared) {
         // Shown at once, and asked for again.
         if let Some((_, answers)) = &b.answers {
             answers.age_all();
+        }
+        if let Some(listenbrainz) = &b.listenbrainz_answers {
+            listenbrainz.age_all();
         }
         // The orders index into the lists; the page shown sorts its own anew.
         b.view.clear();

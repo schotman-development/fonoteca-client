@@ -5,16 +5,21 @@
 //! library's picture and a link to its page once the library has arrived;
 //! an album that isn't gets its cover from the cover art archive, which
 //! ListenBrainz's statistics point to, and an artist that isn't, none.
+//!
+//! Each period's lists are kept on this device and show at once; an hour
+//! on, they are asked for again, and replaced once all three have come.
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use listenbrainz::{Range, TopAlbum, TopArtist, TopGenre};
-use opensubsonic::{AlbumID3, ArtistID3};
+use opensubsonic::{AlbumID3, Answers, ArtistID3};
+use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 
 use super::{Browser, Shared, count, pixels};
-use crate::{AppWindow, RankedEntry, RankedList, store};
+use crate::{AppWindow, RankedEntry, RankedList, answers, store};
 
 /// The periods to pick from, with the range of ListenBrainz's each is.
 const PERIODS: [(&str, Range); 4] = [
@@ -56,6 +61,7 @@ fn cover_art_root() -> String {
 }
 
 /// One list as ListenBrainz sent it.
+#[derive(Debug, PartialEq)]
 enum Fetched<T> {
     Heard(Vec<T>),
     /// ListenBrainz has not worked this period out yet.
@@ -79,6 +85,14 @@ impl<T> Fetched<T> {
         }
     }
 
+    /// The list, or where it failed `kept`.
+    fn or(self, kept: Fetched<T>) -> Fetched<T> {
+        match self {
+            Fetched::Failed(_) if !matches!(kept, Fetched::Failed(_)) => kept,
+            fetched => fetched,
+        }
+    }
+
     /// What a list without places says in their stead.
     fn note(&self) -> String {
         match self {
@@ -92,6 +106,19 @@ impl<T> Fetched<T> {
     }
 }
 
+impl<T: Clone> Fetched<T> {
+    /// The places to keep, none where ListenBrainz hasn't worked the period
+    /// out; nothing for a list that failed.
+    fn kept(&self) -> Option<Option<Vec<T>>> {
+        match self {
+            Fetched::Heard(places) => Some(Some(places.clone())),
+            Fetched::NotCalculated => Some(None),
+            Fetched::Failed(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 struct Answer {
     albums: Fetched<TopAlbum>,
     artists: Fetched<TopArtist>,
@@ -99,11 +126,54 @@ struct Answer {
 }
 
 impl Answer {
-    fn is_complete(&self) -> bool {
-        !matches!(self.albums, Fetched::Failed(_))
-            && !matches!(self.artists, Fetched::Failed(_))
-            && !matches!(self.genres, Fetched::Failed(_))
+    /// What to keep of it, once every list came.
+    fn kept(&self) -> Option<Kept> {
+        Some(Kept {
+            albums: self.albums.kept()?,
+            artists: self.artists.kept()?,
+            genres: self.genres.kept()?,
+        })
     }
+
+    /// Each list, or where it failed the one in `kept`.
+    fn or(self, kept: Answer) -> Answer {
+        Answer {
+            albums: self.albums.or(kept.albums),
+            artists: self.artists.or(kept.artists),
+            genres: self.genres.or(kept.genres),
+        }
+    }
+}
+
+/// The lists of a period as kept on this device: each one's places, or none
+/// where ListenBrainz hadn't worked the period out yet.
+#[derive(Serialize, Deserialize)]
+struct Kept {
+    albums: Option<Vec<TopAlbum>>,
+    artists: Option<Vec<TopArtist>>,
+    genres: Option<Vec<TopGenre>>,
+}
+
+impl From<Kept> for Answer {
+    fn from(kept: Kept) -> Self {
+        Answer {
+            albums: Fetched::new(Ok(kept.albums)),
+            artists: Fetched::new(Ok(kept.artists)),
+            genres: Fetched::new(Ok(kept.genres)),
+        }
+    }
+}
+
+/// Where the lists of `range` are kept for `user`.
+fn kept_under(user: &str, range: Range) -> String {
+    format!("stats:{user}:{}", range.as_str())
+}
+
+/// The lists of `range` kept for `user`, and whether they are an hour old or
+/// more.
+fn kept(answers: &Answers, user: &str, range: Range) -> Option<(Answer, bool)> {
+    let (kept, aged) = answers::find::<Kept>(answers, &kept_under(user, range))?;
+    Some((kept.into(), aged))
 }
 
 pub(super) struct Stats {
@@ -172,11 +242,11 @@ pub(super) fn wire(ui: &AppWindow, browser: &Shared) {
     });
 }
 
-/// Asks for the lists on a visit to the home page, unless they are here or
-/// on their way. A list that failed is asked for again.
+/// Shows the lists on a visit to the home page, unless they are on their
+/// way.
 pub(super) fn ask(ui: &AppWindow, browser: &Shared) {
     let user = ui.get_listenbrainz_user();
-    let is_current = {
+    {
         let b = browser.borrow();
         // What the window shows may be of a Browser signing out replaced.
         ui.set_stat_loading(b.stats.loading);
@@ -184,25 +254,77 @@ pub(super) fn ask(ui: &AppWindow, browser: &Shared) {
         if user.is_empty() || b.stats.loading {
             return;
         }
-        b.stats.user == user.as_str() && b.stats.answer.as_ref().is_some_and(Answer::is_complete)
-    };
-    if !is_current {
-        fetch(ui, browser);
     }
+    show_kept_or_fetch(ui, browser);
 }
 
 fn pick(ui: &AppWindow, browser: &Shared, index: usize) {
     if index >= PERIODS.len() || index == browser.borrow().stats.period {
         return;
     }
-    browser.borrow_mut().stats.period = index;
+    {
+        let mut b = browser.borrow_mut();
+        b.stats.period = index;
+        // The lists on their way are another period's.
+        b.stats.round += 1;
+        b.stats.loading = false;
+    }
     ui.set_stat_period(index as i32);
-    fetch(ui, browser);
+    ui.set_stat_loading(false);
+    show_kept_or_fetch(ui, browser);
 }
 
-/// Asks ListenBrainz for the three lists of the period picked. The lists
-/// shown stay until all three are here.
-fn fetch(ui: &AppWindow, browser: &Shared) {
+/// Shows the lists kept of the period picked, and asks for them when none
+/// are kept or they are an hour old. A list that failed isn't kept, so it is
+/// asked for again.
+fn show_kept_or_fetch(ui: &AppWindow, browser: &Shared) {
+    let Some(answers) = browser.borrow().listenbrainz_answers.clone() else {
+        return;
+    };
+    if !answers.is_loaded() {
+        return show_kept_or_fetch_once_loaded(ui, browser, answers);
+    }
+    let user = ui.get_listenbrainz_user().to_string();
+    let range = PERIODS[browser.borrow().stats.period].1;
+    let Some((answer, aged)) = kept(&answers, &user, range) else {
+        return fetch(ui, browser, answers);
+    };
+    let is_shown = {
+        let b = browser.borrow();
+        b.stats.user == user && b.stats.answer.as_ref() == Some(&answer)
+    };
+    if !is_shown {
+        {
+            let mut b = browser.borrow_mut();
+            b.stats.user = user;
+            b.stats.answer = Some(answer);
+            b.stats.drawn = None;
+        }
+        show(ui, browser);
+    }
+    if aged {
+        fetch(ui, browser, answers);
+    }
+}
+
+/// Waits for the answers saved on this device, which may hold the lists, and
+/// then shows them or asks for them.
+fn show_kept_or_fetch_once_loaded(ui: &AppWindow, browser: &Shared, answers: Arc<Answers>) {
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        answers::loaded(answers).await;
+        if let Some(ui) = weak.upgrade() {
+            show_kept_or_fetch(&ui, &browser);
+        }
+    })
+    .expect("the event loop is running");
+}
+
+/// Asks ListenBrainz for the three lists of the period picked, and keeps
+/// them in `answers` once all three came. The lists shown stay until all
+/// three are here; one that failed then shows the one kept, if any.
+fn fetch(ui: &AppWindow, browser: &Shared, answers: Arc<Answers>) {
+    let writes = answers.writes();
     let (round, session, range, user) = {
         let mut b = browser.borrow_mut();
         b.stats.round += 1;
@@ -229,6 +351,7 @@ fn fetch(ui: &AppWindow, browser: &Shared) {
             Some(client) => Some(answer(client, &user, range).await),
             None => None,
         };
+        let answer = answer.map(|answer| kept_or_filled(&answers, &user, range, answer, writes));
         let Some(ui) = weak.upgrade() else { return };
         {
             let mut b = browser.borrow_mut();
@@ -245,6 +368,26 @@ fn fetch(ui: &AppWindow, browser: &Shared) {
         show(&ui, &browser);
     })
     .expect("the event loop is running");
+}
+
+/// Keeps `answer` once every list came, unless the answers kept were cleared
+/// since there were `writes`; else gives the lists that failed those kept.
+fn kept_or_filled(
+    answers: &Answers,
+    user: &str,
+    range: Range,
+    answer: Answer,
+    writes: u64,
+) -> Answer {
+    let key = kept_under(user, range);
+    if let Some(kept) = answer.kept() {
+        answers::keep(answers, key, &kept, writes);
+        return answer;
+    }
+    match answers::find::<Kept>(answers, &key) {
+        Some((kept, _)) => answer.or(kept.into()),
+        None => answer,
+    }
 }
 
 /// The client for the saved token. ListenBrainz asks for one call a second
@@ -970,7 +1113,7 @@ mod tests {
         assert_eq!(answer.albums.places()[0].release_group_name, "Away");
         assert_eq!(answer.artists.note(), "Nothing was played in this period.");
         assert_eq!(answer.genres.places()[0].listen_count, 5);
-        assert!(answer.is_complete());
+        assert!(answer.kept().is_some());
     }
 
     #[test]
@@ -993,6 +1136,39 @@ mod tests {
             "{}",
             answer.artists.note()
         );
-        assert!(!answer.is_complete(), "a failure is asked for again");
+        assert!(answer.kept().is_none(), "a failure is asked for again");
+    }
+
+    fn albums(names: &[&str]) -> Fetched<TopAlbum> {
+        Fetched::Heard(names.iter().map(|name| top_album(name, "Cell")).collect())
+    }
+
+    fn answered(albums: Fetched<TopAlbum>, genres: Fetched<TopGenre>) -> Answer {
+        Answer {
+            albums,
+            artists: Fetched::Heard(vec![top_artist("Cell", None)]),
+            genres,
+        }
+    }
+
+    #[test]
+    fn lists_are_kept_once_all_came_a_period_not_worked_out_too() {
+        let answer = answered(albums(&["Away"]), Fetched::NotCalculated);
+        let kept = answer.kept().expect("all came");
+        let json = serde_json::to_string(&kept).unwrap();
+        let back: Answer = serde_json::from_str::<Kept>(&json).unwrap().into();
+        assert_eq!(back, answer);
+        assert_eq!(kept_under("rob", Range::ThisYear), "stats:rob:this_year");
+    }
+
+    #[test]
+    fn a_list_that_failed_shows_the_one_kept_and_the_others_come_anew() {
+        let failed = || Fetched::Failed("down".to_owned());
+        let kept = answered(albums(&["Kept"]), Fetched::Heard(Vec::new()));
+        let shown = answered(failed(), Fetched::NotCalculated).or(kept);
+        assert_eq!(shown, answered(albums(&["Kept"]), Fetched::NotCalculated));
+        let none_kept = answered(failed(), Fetched::Failed("down too".to_owned()));
+        let shown = answered(failed(), Fetched::NotCalculated).or(none_kept);
+        assert_eq!(shown.albums.note(), "down", "says why where none is kept");
     }
 }

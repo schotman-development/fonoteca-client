@@ -724,11 +724,18 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
 
     ui.on_remove_listenbrainz({
         let weak = ui.as_weak();
+        let browser = browser.clone();
         move || {
             let ui = weak.unwrap();
             // A disabled button still takes a screen reader's press.
             if ui.get_busy() {
                 return;
+            }
+            if let Err(e) = browse::forget_listenbrainz_answers(&browser) {
+                let problem = format!(
+                    "The token wasn't removed: what ListenBrainz answered couldn't be removed from this device: {e}"
+                );
+                return ui.set_problem(problem.into());
             }
             run(&ui, store::forget_listenbrainz(), |ui, ()| {
                 ui.set_listenbrainz_user("".into());
@@ -1139,6 +1146,11 @@ mod tests {
         answers::file(&account_of(server, username)).unwrap()
     }
 
+    /// Where what ListenBrainz answered is kept for `username` on `server`.
+    fn listenbrainz_kept_for(server: &str, username: &str) -> std::path::PathBuf {
+        answers::file(&browse::listenbrainz_account(&account_of(server, username))).unwrap()
+    }
+
     /// Where the plays are logged for `username` on `server`.
     fn plays_kept_for(server: &str, username: &str) -> std::path::PathBuf {
         plays::file(&account_of(server, username)).unwrap()
@@ -1190,6 +1202,8 @@ mod tests {
     static LATER_ANSWERED: AtomicBool = AtomicBool::new(false);
     /// How long the stand-in takes to answer for the playlist "later" when it is slow.
     const LATER_PAUSE: Duration = Duration::from_millis(900);
+    /// The playlists ListenBrainz says it changed since it made them.
+    static PLAYLISTS_CHANGED: Mutex<Vec<&str>> = Mutex::new(Vec::new());
     /// While set, the server gives Mara Lind another banner, after a pause,
     /// and which banners it was asked for.
     static BANNER_CHANGED: AtomicBool = AtomicBool::new(false);
@@ -1283,8 +1297,12 @@ mod tests {
                 "trip" => "2026-11-02T22:00:00+00:00",
                 _ => "2026-11-04T22:00:00+00:00",
             };
+            let changed = match PLAYLISTS_CHANGED.lock().unwrap().contains(&id) {
+                true => "2026-11-05T22:00:00+00:00",
+                false => date,
+            };
             format!(
-                r#"{{"playlist":{{"title":"{title}","identifier":"https://listenbrainz.org/playlist/{id}","date":"{date}","annotation":"<p>Made for joe</p>","track":[{tracks}],"extension":{{"https://musicbrainz.org/doc/jspf#playlist":{{"additional_metadata":{{"algorithm_metadata":{{"source_patch":"{patch}"}}}}}}}}}}}}"#
+                r#"{{"playlist":{{"title":"{title}","identifier":"https://listenbrainz.org/playlist/{id}","date":"{date}","annotation":"<p>Made for joe</p>","track":[{tracks}],"extension":{{"https://musicbrainz.org/doc/jspf#playlist":{{"last_modified_at":"{changed}","additional_metadata":{{"algorithm_metadata":{{"source_patch":"{patch}"}}}}}}}}}}}}"#
             )
         };
         let track = |title: &str, artist: &str, mbid: Option<&str>| {
@@ -1361,6 +1379,8 @@ mod tests {
             }
         } else if let Some(query) = target.strip_prefix("/1/user/joe/listens?") {
             listens_of_joe(query)
+        } else if target == "/1/user/joe/listen-count" {
+            format!(r#"{{"payload":{{"count":{}}}}}"#, joe_listen_count())
         } else if target == "/1/feedback/recording-feedback" {
             r#"{"status":"ok"}"#.to_owned()
         } else if target.starts_with("/1/feedback/user/joe/get-feedback") {
@@ -1386,9 +1406,29 @@ mod tests {
     const JOE_LISTENED_LAST: i64 = 1_767_225_600;
     const JOE_LISTENS_APART: i64 = 600;
 
+    /// While set, joe has heard one listen more, ten minutes after the last;
+    /// and ListenBrainz counts one listen of his more than it gives, as one
+    /// that came late with an older time.
+    static JOE_NEW_LISTEN: AtomicBool = AtomicBool::new(false);
+    static JOE_LATE_LISTEN: AtomicBool = AtomicBool::new(false);
+
     /// When joe heard his `n`th listen, counting from the newest.
     fn joe_listened_at(n: i64) -> i64 {
         JOE_LISTENED_LAST - n * JOE_LISTENS_APART
+    }
+
+    /// When joe heard each of his listens, newest first.
+    fn joe_listens() -> impl DoubleEndedIterator<Item = i64> {
+        let newest =
+            (JOE_NEW_LISTEN.load(Relaxed)).then_some(JOE_LISTENED_LAST + JOE_LISTENS_APART);
+        newest
+            .into_iter()
+            .chain((0..JOE_LISTENS).map(joe_listened_at))
+    }
+
+    /// How many listens ListenBrainz counts for joe.
+    fn joe_listen_count() -> usize {
+        joe_listens().count() + usize::from(JOE_LATE_LISTEN.load(Relaxed))
     }
 
     /// A page of joe's listens, as ListenBrainz pages them: the newest, those
@@ -1407,7 +1447,7 @@ mod tests {
                     .ok()
             })
         };
-        let all = (0..JOE_LISTENS).map(joe_listened_at);
+        let all = joe_listens();
         let count = number("count").unwrap_or(25) as usize;
         let page: Vec<i64> = match (number("max_ts"), number("min_ts")) {
             (Some(before), _) => all.filter(|&at| at < before).take(count).collect(),
@@ -1431,8 +1471,9 @@ mod tests {
         };
         let listens: Vec<String> = page.iter().copied().map(listen).collect();
         format!(
-            r#"{{"payload":{{"count":{},"user_id":"joe","latest_listen_ts":{JOE_LISTENED_LAST},"oldest_listen_ts":{},"listens":[{}]}}}}"#,
+            r#"{{"payload":{{"count":{},"user_id":"joe","latest_listen_ts":{},"oldest_listen_ts":{},"listens":[{}]}}}}"#,
             listens.len(),
+            joe_listens().next().unwrap(),
             joe_listened_at(JOE_LISTENS - 1),
             listens.join(",")
         )
@@ -7337,11 +7378,11 @@ mod tests {
             idle(Duration::from_millis(300)).await;
             assert_eq!(covers(), [false, true, false]);
             // The page and the shelf each fetched the trip playlist's tracks, the
-            // shelf the others', and Home asked for the list again.
+            // shelf the others'; Home showed the shelf as kept within the hour
+            // and asked for nothing.
             let asked = LISTENBRAINZ_ASKED.lock().unwrap().clone();
             let list = "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true";
-            assert_eq!(asked.iter().filter(|line| *line == list).count(), 2);
-            assert_eq!(asked.last().map(String::as_str), Some(list));
+            assert_eq!(asked.iter().filter(|line| *line == list).count(), 1);
             let mut fetched: Vec<&str> = (asked.iter())
                 .filter_map(|line| line.strip_prefix("GET /1/playlist/"))
                 .collect();
@@ -7389,6 +7430,7 @@ mod tests {
             // found by recording, or by title and artist whatever the accents,
             // one search each; the others stay greyed.
             SEARCHES.store(0, Relaxed);
+            let asked = LISTENBRAINZ_ASKED.lock().unwrap().len();
             ui.invoke_open("createdfor:daily".into());
             wait_for("the playlist", || ui.get_tracks().row_count() == 4).await;
             assert_eq!(ui.get_header_title(), "Daily Jams for joe, 2026-11-04 Wed");
@@ -7414,9 +7456,8 @@ mod tests {
                 ]
             );
             assert_eq!(ui.get_header_facts(), "2 of 4 tracks in your library");
-            let asked = LISTENBRAINZ_ASKED.lock().unwrap().clone();
-            assert_eq!(asked.len(), 7);
-            assert_eq!(asked[6], "GET /1/playlist/daily HTTP/1.1 token=true");
+            // Its tracks are those the shelf kept: ListenBrainz isn't asked.
+            assert_eq!(LISTENBRAINZ_ASKED.lock().unwrap().len(), asked);
             // A track the library has takes one search; one it hasn't, two.
             assert_eq!(SEARCHES.load(Relaxed), 6);
 
@@ -7546,33 +7587,58 @@ mod tests {
             assert_eq!(writes().len(), sent);
             ui.set_notice("".into());
 
-            // A ListenBrainz that is down shows as the other problems do.
-            LISTENBRAINZ_DOWN.store(true, Relaxed);
-            ui.invoke_open("home".into());
-            wait_for("the shelf's problem", || {
-                ui.get_page_problem().starts_with("Created for you couldn't be fetched")
-            })
-            .await;
-            assert_eq!(ui.get_created_for_you().row_count(), 0);
-            // The tracks of the shelf's playlists were fetched on its first showing
-            // and are not fetched again when it comes back.
+            // The shelf is kept on this device: within the hour Home asks
+            // ListenBrainz nothing, so one that is down goes unseen.
+            let asked = || LISTENBRAINZ_ASKED.lock().unwrap().clone();
             let playlist_fetches = || {
-                (LISTENBRAINZ_ASKED.lock().unwrap().iter())
+                (asked().iter())
                     .filter(|line| line.starts_with("GET /1/playlist/"))
                     .count()
             };
             let fetched = playlist_fetches();
+            let before = asked().len();
+            LISTENBRAINZ_DOWN.store(true, Relaxed);
+            ui.invoke_open("home".into());
+            idle(Duration::from_millis(400)).await;
+            assert_eq!(asked().len(), before);
+            assert_eq!(ui.get_created_for_you().row_count(), 3);
+            assert_eq!(ui.get_page_problem(), "");
+            // An hour on, the list is asked for again; while ListenBrainz is
+            // down the tiles kept stay, with their banners, and nothing is
+            // said.
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            ui.invoke_show_more();
+            wait_for("the list asked for again", || asked().len() > before).await;
+            idle(Duration::from_millis(300)).await;
+            assert_eq!(ui.get_created_for_you().row_count(), 3);
+            wait_for("the banner kept", || covers()[1]).await;
+            assert_eq!(covers(), [false, true, false]);
+            assert_eq!(ui.get_page_problem(), "");
+            // Back up, the list is kept anew, and the playlists on it are not
+            // fetched again while ListenBrainz says they haven't changed.
             LISTENBRAINZ_DOWN.store(false, Relaxed);
             ui.invoke_show_more();
-            wait_for("the shelf again", || ui.get_created_for_you().row_count() == 3).await;
+            wait_for("the list kept anew", || asked().len() == before + 2).await;
             idle(Duration::from_millis(400)).await;
+            assert_eq!(asked()[before + 1], "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true");
             assert_eq!(playlist_fetches(), fetched);
-            assert_eq!(ui.get_page_problem(), "");
-            // The new tiles have the banners of the tracks kept at once.
-            wait_for("the banner on coming back", || covers()[1]).await;
+            // One it changed is fetched again with the list, an hour on.
+            PLAYLISTS_CHANGED.lock().unwrap().push("daily");
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            ui.invoke_show_more();
+            wait_for("the changed playlist fetched", || playlist_fetches() > fetched).await;
+            idle(Duration::from_millis(400)).await;
+            assert_eq!(
+                asked()[before + 2..],
+                [
+                    "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true",
+                    "GET /1/playlist/daily HTTP/1.1 token=true"
+                ]
+            );
             assert_eq!(covers(), [false, true, false]);
+            let (fetched, listed) = (playlist_fetches(), asked().len());
             // The library's artists, asked for again, give the tile the banner
-            // they now have.
+            // they now have; ListenBrainz is asked for the list again too.
             BANNER_CHANGED.store(true, Relaxed);
             ui.invoke_refresh();
             wait_for("the new banner asked for", || {
@@ -7580,7 +7646,78 @@ mod tests {
             })
             .await;
             BANNER_CHANGED.store(false, Relaxed);
+            wait_for("the list asked for on refresh", || asked().len() > listed).await;
+            idle(Duration::from_millis(400)).await;
+            assert_eq!(
+                asked()[listed..],
+                ["GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true"]
+            );
             assert_eq!(playlist_fetches(), fetched);
+
+            // Removing the token forgets what ListenBrainz answered, on this
+            // device too: with a token set again and ListenBrainz down, the
+            // shelf has nothing to show and says why.
+            let joes_listenbrainz = listenbrainz_kept_for(&server, "joe");
+            idle(Duration::from_millis(400)).await;
+            wait_for("ListenBrainz's answers saved", || {
+                std::fs::read_to_string(&joes_listenbrainz)
+                    .is_ok_and(|kept| kept.contains("createdfor:joe"))
+            })
+            .await;
+            ui.set_listenbrainz_user("joe".into());
+            ui.invoke_open("settings".into());
+            click(&ui, "ListenBrainz");
+            click(&ui, "Remove token");
+            wait_for("the token removed", || ui.get_listenbrainz_user() == "").await;
+            wait_for("what ListenBrainz answered forgotten", || {
+                std::fs::read_to_string(&joes_listenbrainz)
+                    .map_or(true, |kept| !kept.contains("createdfor:joe"))
+            })
+            .await;
+            store::save_listenbrainz(ListenBrainz { token: "tok".into(), user: "joe".into() })
+                .await
+                .unwrap();
+            LISTENBRAINZ_DOWN.store(true, Relaxed);
+            ui.invoke_open("home".into());
+            wait_for("the shelf's problem", || {
+                ui.get_page_problem().starts_with("Created for you couldn't be fetched")
+            })
+            .await;
+            assert_eq!(ui.get_created_for_you().row_count(), 0);
+            LISTENBRAINZ_DOWN.store(false, Relaxed);
+            ui.invoke_show_more();
+            wait_for("the shelf again", || ui.get_created_for_you().row_count() == 3).await;
+            wait_for("its playlists fetched anew", || playlist_fetches() == fetched + 3).await;
+            assert_eq!(ui.get_page_problem(), "");
+
+            // After a restart the shelf and its banners show at once from
+            // what is kept on this device: ListenBrainz, down, isn't asked.
+            idle(Duration::from_millis(400)).await;
+            wait_for("ListenBrainz's answers saved", || {
+                std::fs::read_to_string(&joes_listenbrainz)
+                    .is_ok_and(|kept| kept.contains("createdfor:joe"))
+            })
+            .await;
+            LISTENBRAINZ_DOWN.store(true, Relaxed);
+            let before = asked().len();
+            let restarted = crate::start().unwrap();
+            restarted.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            let restarted_covers = || -> Vec<bool> {
+                (restarted.get_created_for_you().iter())
+                    .map(|tile| tile.cover.size().width > 0)
+                    .collect()
+            };
+            wait_for("the shelf kept, after a restart", || {
+                restarted.get_created_for_you().row_count() == 3
+            })
+            .await;
+            wait_for("its banner kept", || restarted_covers()[1]).await;
+            assert_eq!(restarted_covers(), [false, true, false]);
+            let asked_since = asked()[before..].to_vec();
+            assert!(!asked_since.iter().any(|line| line.contains("/playlist")), "{asked_since:?}");
+            assert_eq!(restarted.get_page_problem(), "");
+            drop(restarted);
+            LISTENBRAINZ_DOWN.store(false, Relaxed);
 
             // A heart set in the app syncs with ListenBrainz: it sends the
             // hearts it can and stars the song of a love the server lacks,
@@ -7741,9 +7878,14 @@ mod tests {
             };
             assert_eq!(available(&ui)[..4], [true, false, true, false]);
             assert_eq!(available(&ui).iter().filter(|&&lit| lit).count(), 2);
+            // They are kept on this device, with how many ListenBrainz counts.
+            let asked_for_history = asked();
             assert_eq!(
-                LISTENBRAINZ_ASKED.lock().unwrap().last().unwrap(),
-                "GET /1/user/joe/listens?count=100 HTTP/1.1 token=true"
+                asked_for_history[asked_for_history.len() - 2..],
+                [
+                    "GET /1/user/joe/listens?count=100 HTTP/1.1 token=true",
+                    "GET /1/user/joe/listen-count HTTP/1.1 token=true"
+                ]
             );
             SEARCH_DOWN.store(false, Relaxed);
             let searched = SEARCHES.load(Relaxed);
@@ -7754,14 +7896,16 @@ mod tests {
                 idle(Duration::from_millis(50))
             };
             to_the_end(&ui).await;
+            let before = asked().len();
             click(&ui, "Try again");
-            // The plays here show first, alone, until ListenBrainz answers.
+            // The listens kept show at once, without asking ListenBrainz.
             wait_for("the listens found", || {
                 ui.get_tracks().row_count() == 100
                     && ui.get_tracks().row_data(1).is_some_and(|track| !track.unavailable)
             })
             .await;
             assert_eq!((ui.get_page_problem().as_str(), ui.get_header_facts().as_str()), ("", ""));
+            assert_eq!(asked().len(), before);
             let rows: Vec<(String, bool)> = (ui.get_tracks().iter())
                 .map(|track| (track.title.to_string(), track.unavailable))
                 .collect();
@@ -7795,7 +7939,8 @@ mod tests {
 
             // Next has what was heard before the oldest on the page, and
             // Previous what was heard after the newest; neither is offered
-            // without.
+            // without. Next asks for the page before the listens kept, which
+            // are then kept with them; Previous is among those kept.
             to_the_end(&ui).await;
             assert_eq!(button(&ui, "Previous page").accessible_enabled(), Some(false));
             click(&ui, "Next page");
@@ -7805,27 +7950,117 @@ mod tests {
             })
             .await;
             assert_eq!(
-                *LISTENBRAINZ_ASKED.lock().unwrap().last().unwrap(),
-                format!("GET /1/user/joe/listens?count=100&max_ts={} HTTP/1.1 token=true", joe_listened_at(98))
+                *asked().last().unwrap(),
+                format!("GET /1/user/joe/listens?count=100&max_ts={} HTTP/1.1 token=true", joe_listened_at(99))
             );
             assert!(ui.get_tracks().row_data(3).unwrap().unavailable);
             to_the_end(&ui).await;
             assert_eq!(button(&ui, "Next page").accessible_enabled(), Some(false));
             assert_eq!(button(&ui, "Previous page").accessible_enabled(), Some(true));
+            let before = asked().len();
             click(&ui, "Previous page");
             wait_for("the newer listens found", || {
                 ui.get_tracks().row_count() == 100
                     && ui.get_tracks().row_data(1).is_some_and(|track| !track.unavailable)
             })
             .await;
-            assert_eq!(
-                *LISTENBRAINZ_ASKED.lock().unwrap().last().unwrap(),
-                format!("GET /1/user/joe/listens?count=100&min_ts={} HTTP/1.1 token=true", joe_listened_at(99))
-            );
+            assert_eq!(asked().len(), before);
             assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Played Here");
             to_the_end(&ui).await;
             assert_eq!(button(&ui, "Previous page").accessible_enabled(), Some(false));
             assert_eq!(SEARCHES.load(Relaxed) - searched, 3, "the pages again take no search");
+
+            // An hour on, a visit shows the listens kept at once and asks
+            // only for those since the newest of them, and for the count;
+            // while ListenBrainz is down they stay, and nothing is said.
+            let before = asked().len();
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            LISTENBRAINZ_DOWN.store(true, Relaxed);
+            ui.invoke_open("history".into());
+            wait_for("the listens since asked for", || asked().len() > before).await;
+            wait_for("the listens kept", || !ui.get_loading()).await;
+            assert_eq!(ui.get_tracks().row_count(), 100);
+            assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Played Here");
+            assert_eq!(ui.get_page_problem(), "");
+            LISTENBRAINZ_DOWN.store(false, Relaxed);
+            // Back up, the listen joe heard since goes on top of them.
+            JOE_NEW_LISTEN.store(true, Relaxed);
+            ui.invoke_open("settings".into());
+            ui.invoke_open("history".into());
+            wait_for("the listen since on top", || {
+                ui.get_tracks().row_data(0).is_some_and(|track| track.title == "Café del Mar")
+            })
+            .await;
+            assert_eq!(
+                asked()[before + 1..],
+                [
+                    format!("GET /1/user/joe/listens?count=1000&min_ts={JOE_LISTENED_LAST} HTTP/1.1 token=true"),
+                    "GET /1/user/joe/listen-count HTTP/1.1 token=true".to_owned()
+                ]
+            );
+            assert_eq!(ui.get_tracks().row_data(1).unwrap().title, "Played Here");
+            // When ListenBrainz counts other listens than those kept and
+            // those since, as when one came late with an older time, the
+            // newest page takes the place of those kept: the page before it
+            // is asked for again.
+            JOE_LATE_LISTEN.store(true, Relaxed);
+            answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
+            let before = asked().len();
+            ui.invoke_open("settings".into());
+            ui.invoke_open("history".into());
+            wait_for("the newest page asked for", || asked().len() == before + 3).await;
+            assert_eq!(
+                asked()[before..],
+                [
+                    format!(
+                        "GET /1/user/joe/listens?count=1000&min_ts={} HTTP/1.1 token=true",
+                        JOE_LISTENED_LAST + JOE_LISTENS_APART
+                    ),
+                    "GET /1/user/joe/listen-count HTTP/1.1 token=true".to_owned(),
+                    "GET /1/user/joe/listens?count=100 HTTP/1.1 token=true".to_owned()
+                ]
+            );
+            wait_for("the newest page", || !ui.get_loading()).await;
+            to_the_end(&ui).await;
+            click(&ui, "Next page");
+            wait_for("the page before asked for", || asked().len() == before + 4).await;
+            assert_eq!(
+                asked()[before + 3],
+                format!("GET /1/user/joe/listens?count=100&max_ts={} HTTP/1.1 token=true", joe_listened_at(98))
+            );
+            JOE_NEW_LISTEN.store(false, Relaxed);
+            JOE_LATE_LISTEN.store(false, Relaxed);
+            ui.invoke_open("history".into());
+            wait_for("the newest page again", || {
+                !ui.get_loading() && ui.get_tracks().row_count() == 100
+            })
+            .await;
+            // A play the server takes passes on to ListenBrainz, so the next
+            // visit asks for the listens since at once, within the hour. It
+            // is heard for joe without being logged here, which would change
+            // the plays this device kept.
+            let low_tide: opensubsonic::Child = serde_json::from_str(
+                r#"{"id":"t3","isDir":false,"title":"Low Tide","albumId":"a1","duration":2}"#,
+            )
+            .unwrap();
+            let (before, plays_told) = (asked().len(), SCROBBLES.lock().unwrap().len());
+            for position in [0.0, 0.4, 0.8, 1.2] {
+                play::testing::hear_for(&joe, &low_tide, position);
+                idle(Duration::from_millis(400)).await;
+            }
+            wait_for("the play taken", || SCROBBLES.lock().unwrap().len() > plays_told).await;
+            assert_eq!(asked().len(), before);
+            ui.invoke_open("settings".into());
+            ui.invoke_open("history".into());
+            wait_for("the listens since asked for", || asked().len() > before).await;
+            assert_eq!(
+                asked()[before],
+                format!(
+                    "GET /1/user/joe/listens?count=1000&min_ts={} HTTP/1.1 token=true",
+                    JOE_LISTENED_LAST + JOE_LISTENS_APART
+                )
+            );
+            idle(Duration::from_millis(500)).await;
 
             // Without the token the page keeps the plays here alone, and
             // ListenBrainz isn't asked.
@@ -7880,6 +8115,7 @@ mod tests {
             assert!(prefs::waiting_plays(&joe).is_empty(), "the play kept went with the account");
             SCROBBLE_DOWN.store(false, Relaxed);
             assert!(!joes_plays.exists(), "the plays logged went with the account");
+            assert!(!joes_listenbrainz.exists(), "and what ListenBrainz answered");
             assert_eq!(ui.get_username(), "");
             assert_eq!(ui.get_address(), server.as_str());
             assert!(store::load().await.is_none());
@@ -7968,6 +8204,8 @@ mod tests {
             click(&ui, "Account");
             let eves_answers = answers_kept_for(&server, "eve");
             wait_for("eve's pages kept", || eves_answers.exists()).await;
+            let eves_listenbrainz = listenbrainz_kept_for(&server, "eve");
+            wait_for("eve's ListenBrainz answers kept", || eves_listenbrainz.exists()).await;
             let eves_plays = plays_kept_for(&server, "eve");
             let eve = account_of(&server, "eve");
             plays::append(&eve, &plays::Play::of(&sent, 1)).unwrap();
@@ -7996,6 +8234,7 @@ mod tests {
             assert!(!downloads_folder.exists(), "the downloads went with the server");
             assert!(!eves_answers.exists(), "the pages kept went with the server");
             assert!(!eves_plays.exists(), "the plays logged went with the server");
+            assert!(!eves_listenbrainz.exists(), "and what ListenBrainz answered");
             assert_eq!(ui.get_address(), "");
             assert!(store::load().await.is_none());
             assert!(store::load_server().await.is_none());

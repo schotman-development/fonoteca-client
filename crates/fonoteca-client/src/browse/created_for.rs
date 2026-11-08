@@ -3,8 +3,13 @@
 //! The tracks the library has can be played; the others stay greyed. Save
 //! makes a playlist of the first on the server. [`matching`] says which
 //! songs are the library's.
+//!
+//! The list and each playlist on it are kept on this device, so the shelf
+//! and its banners show at once. The list is asked for again once it is an
+//! hour old; a playlist only when the list says ListenBrainz changed it.
 
 use listenbrainz as lb;
+use serde::{Deserialize, Serialize};
 
 use super::matching::{fold, lookup};
 use super::*;
@@ -35,20 +40,73 @@ const UNLABELLED_MISSED_TITLE: &str = "Top Missed Recordings of ";
 /// before it can be made, a day either way.
 const LAST_WEEK_DAYS: std::ops::RangeInclusive<i64> = 6..=8;
 
-/// The playlist on screen.
+/// The playlist on screen, and the home page's shelf.
 #[derive(Default)]
 pub(super) struct State {
     shown: Option<Shown>,
-    /// The playlists on the home page's shelf, newest first, and the tiles
-    /// that show them.
-    shelf: Vec<lb::Playlist>,
+    /// The shelf as kept, and the tiles that show it.
+    shelf: Shelf,
     tiles: Rc<VecModel<AlbumTile>>,
-    /// The tracks of the shelf's playlists by ID, kept for the session. A
-    /// playlist whose tracks couldn't be fetched has none kept, so the next
-    /// visit to the home page asks again.
-    shelf_tracks: HashMap<String, Vec<lb::PlaylistTrack>>,
     /// The banner each tile was given, by row.
     banners: Vec<Option<String>>,
+}
+
+/// The playlists made for a user as kept on this device: the list as
+/// ListenBrainz last gave it, newest first, and those on it fetched whole,
+/// by ID, as of the change the list said they had then. A playlist whose
+/// tracks couldn't be fetched has none kept, so the next round asks again.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+struct Shelf {
+    playlists: Vec<lb::Playlist>,
+    fetched: HashMap<String, lb::Playlist>,
+}
+
+impl Shelf {
+    /// The shelf with `list` in place of its list, and only the playlists
+    /// fetched before that are still on it.
+    fn listing(mut self, list: Vec<lb::Playlist>) -> Self {
+        self.fetched
+            .retain(|mbid, _| list.iter().any(|listed| listed.mbid == *mbid));
+        self.playlists = list;
+        self
+    }
+
+    /// The IDs of the playlists listed that are to be fetched whole, in
+    /// shelf order: those not fetched yet, and those ListenBrainz changed
+    /// since.
+    fn unfetched(&self) -> Vec<String> {
+        (self.playlists.iter())
+            .filter(|listed| {
+                (self.fetched.get(&listed.mbid))
+                    .is_none_or(|kept| kept.last_modified_at != listed.last_modified_at)
+            })
+            .map(|listed| listed.mbid.clone())
+            .collect()
+    }
+
+    /// Keeps `playlist`, fetched whole, as of the change the list says it
+    /// has, while it is on the list.
+    fn keep(&mut self, mut playlist: lb::Playlist) {
+        let Some(listed) = (self.playlists.iter()).find(|listed| listed.mbid == playlist.mbid)
+        else {
+            return;
+        };
+        playlist.last_modified_at = listed.last_modified_at.clone();
+        self.fetched.insert(playlist.mbid.clone(), playlist);
+    }
+
+    /// The playlist with this ID as kept, unless ListenBrainz changed it
+    /// since or it isn't listed.
+    fn current(&self, mbid: &str) -> Option<&lb::Playlist> {
+        let kept = self.fetched.get(mbid)?;
+        let listed = (self.playlists.iter()).find(|listed| listed.mbid == mbid)?;
+        (kept.last_modified_at == listed.last_modified_at).then_some(kept)
+    }
+}
+
+/// Where the shelf of `user` is kept.
+fn kept_under(user: &str) -> String {
+    format!("createdfor:{user}")
 }
 
 struct Shown {
@@ -122,49 +180,92 @@ pub(crate) async fn account() -> Option<(lb::Client, String)> {
         .map(|client| (client, saved.user))
 }
 
-/// Shows the shelf on the home page: the playlists made for the user, or
-/// none without a token, and then their banners. Says so when ListenBrainz
-/// can't be asked.
+/// Shows the shelf on the home page: the playlists made for the user as
+/// kept, at once, with the banners of those kept whole, or none without a
+/// token. A list an hour old, or none, is asked for again and shown where it
+/// differs; then the playlists on it not kept whole are fetched. Says so
+/// when ListenBrainz can't be asked and nothing is kept.
 pub(super) fn shelf(ui: &AppWindow, browser: &Shared) {
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let playlists = playlists().await;
+        let account = account().await;
+        let answers = listenbrainz_answers(&browser).await;
         let Some(ui) = weak.upgrade() else { return };
-        match playlists {
-            Ok(playlists) => {
-                let model = Rc::new(VecModel::from(tiles(&playlists)));
-                ui.set_created_for_you(ModelRc::from(model.clone()));
-                {
-                    let mut b = browser.borrow_mut();
-                    b.created_for.banners = vec![None; playlists.len()];
-                    b.created_for.shelf = playlists;
-                    b.created_for.tiles = model.clone();
+        let (Some((client, user)), Some(answers)) = (account, answers) else {
+            return show_shelf(&ui, &browser, Shelf::default());
+        };
+        let kept = kept_shelf(&answers, &user);
+        if let Some((shelf, _)) = &kept {
+            show_shelf(&ui, &browser, shelf.clone());
+        }
+        if kept.as_ref().is_none_or(|(_, aged)| *aged) {
+            let listed = list(&answers, &client, &user).await;
+            let Some(ui) = weak.upgrade() else { return };
+            match listed {
+                Ok(shelf) if browser.borrow().created_for.shelf != shelf || kept.is_none() => {
+                    show_shelf(&ui, &browser, shelf)
                 }
-                // The playlists whose tracks an earlier visit kept show their
-                // banners at once, on this visit's new tiles.
-                show_kind(&ui, &browser.borrow());
-                banners(&ui, &browser);
-                fetch_shelf_tracks(&ui, &browser, &model).await;
-            }
-            Err(e) => {
-                ui.set_created_for_you(ModelRc::default());
-                if ui.get_page() == Page::Home {
-                    ui.set_page_problem(format!("Created for you couldn't be fetched: {e}").into());
+                Ok(_) => {}
+                Err(e) if kept.is_some() => {
+                    eprintln!("ListenBrainz: the playlists made for you stay as kept: {e}");
+                    return;
+                }
+                Err(e) => {
+                    ui.set_created_for_you(ModelRc::default());
+                    if ui.get_page() == Page::Home {
+                        ui.set_page_problem(
+                            format!("Created for you couldn't be fetched: {e}").into(),
+                        );
+                    }
+                    return;
                 }
             }
         }
+        fetch_shelf_tracks(&ui, &browser, &answers, &client, &user).await;
     })
     .expect("the event loop is running");
 }
 
-async fn playlists() -> Result<Vec<lb::Playlist>, lb::Error> {
-    let Some((client, user)) = account().await else {
-        return Ok(Vec::new());
+/// Puts `shelf` on the home page as new tiles, which the playlists kept
+/// whole give their banners at once.
+fn show_shelf(ui: &AppWindow, browser: &Shared, shelf: Shelf) {
+    let model = Rc::new(VecModel::from(tiles(&shelf.playlists)));
+    ui.set_created_for_you(ModelRc::from(model.clone()));
+    {
+        let mut b = browser.borrow_mut();
+        b.created_for.banners = vec![None; shelf.playlists.len()];
+        b.created_for.shelf = shelf;
+        b.created_for.tiles = model;
+    }
+    show_kind(ui, &browser.borrow());
+    banners(ui, browser);
+}
+
+/// The shelf kept for `user`, and whether it is an hour old or more.
+fn kept_shelf(answers: &Answers, user: &str) -> Option<(Shelf, bool)> {
+    answers::find(answers, &kept_under(user))
+}
+
+/// Changes the shelf kept for `user` as `change` says. The list on it keeps
+/// its age, as it isn't asked for anew.
+fn change_shelf(answers: &Answers, user: &str, change: impl FnOnce(&mut Shelf)) {
+    let Some((mut shelf, _)) = kept_shelf(answers, user) else {
+        return;
     };
-    client
-        .playlists_created_for(&user)
-        .await
-        .map(without_exploration)
+    change(&mut shelf);
+    answers::amend(answers, &kept_under(user), &shelf);
+}
+
+/// Asks for the list of the playlists made for `user` and keeps it, with the
+/// playlists kept whole that are still on it.
+async fn list(answers: &Answers, client: &lb::Client, user: &str) -> Result<Shelf, lb::Error> {
+    let writes = answers.writes();
+    let list = without_exploration(client.playlists_created_for(user).await?);
+    // Read after the call: a playlist may have been kept meanwhile.
+    let kept = kept_shelf(answers, user).map(|(shelf, _)| shelf);
+    let shelf = kept.unwrap_or_default().listing(list);
+    answers::keep(answers, kept_under(user), &shelf, writes);
+    Ok(shelf)
 }
 
 /// What a tile calls its playlist and the colour it has: by the algorithm
@@ -234,24 +335,14 @@ fn tiles(playlists: &[lb::Playlist]) -> Vec<AlbumTile> {
         .collect()
 }
 
-/// The IDs of the shelf's playlists whose tracks aren't kept, in shelf
-/// order.
-fn playlists_without_tracks(state: &State) -> Vec<String> {
-    (state.shelf.iter())
-        .map(|playlist| playlist.mbid.clone())
-        .filter(|mbid| !state.shelf_tracks.contains_key(mbid))
-        .collect()
-}
-
-/// Keeps the tracks of a playlist that was fetched. One that couldn't be
-/// keeps nothing, so that the next round asks for it again.
-fn keep_tracks(state: &mut State, mbid: String, fetched: Result<lb::Playlist, lb::Error>) {
-    match fetched {
-        Ok(playlist) => {
-            state.shelf_tracks.insert(mbid, playlist.tracks);
-        }
-        Err(e) => eprintln!("ListenBrainz: no tracks for a banner: {e}"),
-    }
+/// Keeps a playlist fetched whole on the shelf shown and on this device.
+fn keep_fetched(browser: &Shared, answers: &Answers, user: &str, playlist: lb::Playlist) {
+    browser
+        .borrow_mut()
+        .created_for
+        .shelf
+        .keep(playlist.clone());
+    change_shelf(answers, user, |shelf| shelf.keep(playlist));
 }
 
 /// Whether ListenBrainz answered that the rate limit is reached, which ends
@@ -260,23 +351,32 @@ fn is_rate_limited(fetched: &Result<lb::Playlist, lb::Error>) -> bool {
     matches!(fetched, Err(lb::Error::RateLimited { .. }))
 }
 
-/// Fetches the tracks of the shelf's playlists that aren't kept yet, in
-/// shelf order, and gives each tile its banner as its tracks arrive. The
-/// playlists the list gives have none, and they say which artists each has.
+/// Fetches the shelf's playlists that aren't kept whole, in shelf order,
+/// keeps them, and gives each tile its banner as its playlist arrives. The
+/// list gives them without their tracks, which say which artists each has.
 /// ListenBrainz makes the calls wait their turn. Stops when it says the rate
 /// limit is reached, or when the shelf is not the one it began with.
-async fn fetch_shelf_tracks(ui: &AppWindow, browser: &Shared, model: &Rc<VecModel<AlbumTile>>) {
-    let wanted = playlists_without_tracks(&browser.borrow().created_for);
-    let Some((client, _)) = account().await else {
-        return;
+async fn fetch_shelf_tracks(
+    ui: &AppWindow,
+    browser: &Shared,
+    answers: &Answers,
+    client: &lb::Client,
+    user: &str,
+) {
+    let (wanted, tiles) = {
+        let b = browser.borrow();
+        (b.created_for.shelf.unfetched(), b.created_for.tiles.clone())
     };
     for mbid in wanted {
         let fetched = client.playlist(&mbid).await;
-        if !Rc::ptr_eq(&browser.borrow().created_for.tiles, model) {
+        if !Rc::ptr_eq(&browser.borrow().created_for.tiles, &tiles) {
             return;
         }
         let limited = is_rate_limited(&fetched);
-        keep_tracks(&mut browser.borrow_mut().created_for, mbid, fetched);
+        match fetched {
+            Ok(playlist) => keep_fetched(browser, answers, user, playlist),
+            Err(e) => eprintln!("ListenBrainz: no tracks for a banner: {e}"),
+        }
         banners(ui, browser);
         if limited {
             return;
@@ -330,9 +430,10 @@ fn artists_in(tracks: &[lb::PlaylistTrack], artists: &[ArtistID3]) -> Vec<(Name,
 /// The banners the shelf's playlists get from the artists the library has
 /// and the server's banners, if it offers them.
 fn banners_of(b: &Browser) -> Vec<Option<String>> {
+    let shelf = &b.created_for.shelf;
     shelf_banners(
-        &b.created_for.shelf,
-        &b.created_for.shelf_tracks,
+        &shelf.playlists,
+        &shelf.fetched,
         &b.artists,
         offers(b, ARTIST_BANNER),
     )
@@ -343,13 +444,13 @@ fn banners_of(b: &Browser) -> Vec<Option<String>> {
 /// shows.
 fn shelf_banners(
     playlists: &[lb::Playlist],
-    tracks: &HashMap<String, Vec<lb::PlaylistTrack>>,
+    fetched: &HashMap<String, lb::Playlist>,
     artists: &[ArtistID3],
     offered: bool,
 ) -> Vec<Option<String>> {
     let banners = artist_banners(artists, offered);
     let known = playlists.iter().map(|playlist| {
-        let tracks = tracks.get(&playlist.mbid).map_or(&[][..], Vec::as_slice);
+        let tracks = (fetched.get(&playlist.mbid)).map_or(&[][..], |whole| whole.tracks.as_slice());
         artists_in(tracks, artists)
     });
     distinct_banners(known, &banners)
@@ -404,10 +505,7 @@ fn show_kind(ui: &AppWindow, b: &Browser) {
     let state = &b.created_for;
     let tile = (state.shown.as_ref())
         .and_then(|shown| {
-            state
-                .shelf
-                .iter()
-                .position(|playlist| playlist.mbid == shown.mbid)
+            (state.shelf.playlists.iter()).position(|playlist| playlist.mbid == shown.mbid)
         })
         .and_then(|row| state.tiles.row_data(row));
     ui.set_created_for_kind(
@@ -431,7 +529,7 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
     ui.set_loading(true);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let fetched = fetch(&mbid).await;
+        let fetched = playlist(&browser, &mbid).await;
         let Some(ui) = weak.upgrade() else { return };
         if browser.borrow().visit != visit {
             return;
@@ -441,7 +539,7 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
             Ok(playlist) => {
                 show(&ui, &browser, playlist);
                 resume(&ui, &browser);
-                if browser.borrow().created_for.shelf.is_empty() {
+                if browser.borrow().created_for.shelf.playlists.is_empty() {
                     shelf(&ui, &browser);
                 }
             }
@@ -451,11 +549,25 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, mbid: String) {
     .expect("the event loop is running");
 }
 
-async fn fetch(mbid: &str) -> Result<lb::Playlist, String> {
-    let Some((client, _)) = account().await else {
+/// The playlist with this ID as kept, unless ListenBrainz changed it since;
+/// else fetched, and kept while it is on the shelf.
+async fn playlist(browser: &Shared, mbid: &str) -> Result<lb::Playlist, String> {
+    let Some((client, user)) = account().await else {
         return Err("Set your ListenBrainz token in the settings to see this playlist.".into());
     };
-    (client.playlist(mbid).await).map_err(|e| format!("The playlist couldn't be fetched: {e}"))
+    let answers = listenbrainz_answers(browser).await;
+    let kept = (answers.as_deref())
+        .and_then(|answers| kept_shelf(answers, &user))
+        .and_then(|(shelf, _)| shelf.current(mbid).cloned());
+    if let Some(playlist) = kept {
+        return Ok(playlist);
+    }
+    let playlist = (client.playlist(mbid).await)
+        .map_err(|e| format!("The playlist couldn't be fetched: {e}"))?;
+    if let Some(answers) = &answers {
+        change_shelf(answers, &user, |shelf| shelf.keep(playlist.clone()));
+    }
+    Ok(playlist)
 }
 
 fn show(ui: &AppWindow, browser: &Shared, playlist: lb::Playlist) {
@@ -626,6 +738,7 @@ mod tests {
             annotation: None,
             source_patch: patch.map(str::to_owned),
             date: None,
+            last_modified_at: None,
             tracks: Vec::new(),
         }
     }
@@ -784,21 +897,64 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_playlist_whose_tracks_failed_to_come_is_asked_for_again() {
-        let mut state = State {
-            shelf: vec![made("a", None), made("b", None), made("c", None)],
-            ..State::default()
-        };
-        let with_tracks = lb::Playlist {
+    fn changed(playlist: lb::Playlist, at: &str) -> lb::Playlist {
+        lb::Playlist {
+            last_modified_at: Some(at.into()),
+            ..playlist
+        }
+    }
+
+    fn whole(playlist: lb::Playlist) -> lb::Playlist {
+        lb::Playlist {
             tracks: vec![wanted("T", "Ann", None)],
-            ..made("a", None)
-        };
-        keep_tracks(&mut state, "a".into(), Ok(with_tracks));
-        let limited = lb::Error::RateLimited { reset_in: Some(30) };
-        keep_tracks(&mut state, "b".into(), Err(limited));
-        assert_eq!(playlists_without_tracks(&state), ["b", "c"]);
-        assert_eq!(state.shelf_tracks.keys().collect::<Vec<_>>(), ["a"]);
+            ..playlist
+        }
+    }
+
+    fn fetched_ids(shelf: &Shelf) -> Vec<&str> {
+        let mut ids: Vec<&str> = shelf.fetched.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn only_the_playlists_not_kept_whole_are_fetched() {
+        let mut shelf =
+            Shelf::default().listing(vec![made("a", None), made("b", None), made("c", None)]);
+        shelf.keep(whole(made("a", None)));
+        assert_eq!(shelf.unfetched(), ["b", "c"]);
+        assert_eq!(shelf.current("a").unwrap().tracks.len(), 1);
+        assert!(shelf.current("b").is_none());
+        shelf.keep(whole(made("elsewhere", None)));
+        assert_eq!(fetched_ids(&shelf), ["a"], "only those listed are kept");
+    }
+
+    #[test]
+    fn a_playlist_listenbrainz_changed_is_fetched_again_and_one_gone_is_dropped() {
+        let first = changed(made("a", None), "2026-11-04T23:02:06+00:00");
+        let mut shelf = Shelf::default().listing(vec![first.clone(), made("b", None)]);
+        // Fetched whole, it carries the change the list said it has.
+        shelf.keep(whole(changed(
+            made("a", None),
+            "whatever the playlist says",
+        )));
+        shelf.keep(whole(made("b", None)));
+        assert!(shelf.unfetched().is_empty());
+        let shelf = shelf.listing(vec![first.clone(), made("b", None)]);
+        assert!(shelf.unfetched().is_empty(), "the same list asks for none");
+        let newer = changed(made("a", None), "2026-11-05T23:02:06+00:00");
+        let shelf = shelf.listing(vec![newer, made("c", None)]);
+        assert_eq!(shelf.unfetched(), ["a", "c"]);
+        assert!(shelf.current("a").is_none(), "its page fetches it again");
+        assert_eq!(fetched_ids(&shelf), ["a"], "kept until then, and b gone");
+    }
+
+    #[test]
+    fn the_shelf_is_kept_per_listenbrainz_user() {
+        assert_eq!(kept_under("joe"), "createdfor:joe");
+        let shelf = Shelf::default().listing(vec![changed(made("a", None), "t")]);
+        let json = serde_json::to_string(&shelf).unwrap();
+        assert_eq!(serde_json::from_str::<Shelf>(&json).unwrap(), shelf);
     }
 
     #[test]
@@ -815,16 +971,30 @@ mod tests {
 
     #[test]
     fn a_server_without_banners_gives_none_even_when_the_artists_have_them() {
+        let mut shelf = Shelf::default().listing(vec![made("one", None)]);
+        shelf.keep(with_tracks("one", vec![by(&[("Ann", None)])]));
         let b = Browser {
             artists: vec![artist("a", "Ann", None, Some("banner-a"))],
             created_for: State {
-                shelf: vec![made("one", None)],
-                shelf_tracks: HashMap::from([("one".to_owned(), vec![by(&[("Ann", None)])])]),
+                shelf,
                 ..State::default()
             },
             ..Browser::default()
         };
         assert_eq!(banners_of(&b), [None]);
+    }
+
+    fn with_tracks(mbid: &str, tracks: Vec<lb::PlaylistTrack>) -> lb::Playlist {
+        lb::Playlist {
+            tracks,
+            ..made(mbid, None)
+        }
+    }
+
+    fn fetched(playlists: Vec<(&str, Vec<lb::PlaylistTrack>)>) -> HashMap<String, lb::Playlist> {
+        (playlists.into_iter())
+            .map(|(mbid, tracks)| (mbid.to_owned(), with_tracks(mbid, tracks)))
+            .collect()
     }
 
     #[test]
@@ -955,30 +1125,27 @@ mod tests {
             made("three", None),
             made("four", None),
         ];
-        let tracks = HashMap::from([
+        let tracks = fetched(vec![
             (
-                "one".to_owned(),
+                "one",
                 vec![
                     by(&[("Ann", None)]),
                     by(&[("Ann", None)]),
                     by(&[("Bo", None)]),
                 ],
             ),
-            ("two".to_owned(), vec![by(&[("Bo", None)])]),
-            ("three".to_owned(), vec![by(&[("Bo", None)])]),
+            ("two", vec![by(&[("Bo", None)])]),
+            ("three", vec![by(&[("Bo", None)])]),
             // The tracks of "four" couldn't be fetched.
-            ("four".to_owned(), Vec::new()),
+            ("four", Vec::new()),
         ]);
         assert_eq!(
             shelf_banners(&playlists, &tracks, &artists, true),
             [Some("banner-b".to_owned()), None, None, None]
         );
-        let tracks = HashMap::from([
-            ("one".to_owned(), vec![by(&[("Bo", None)])]),
-            (
-                "two".to_owned(),
-                vec![by(&[("Bo", None)]), by(&[("Cy", None)])],
-            ),
+        let tracks = fetched(vec![
+            ("one", vec![by(&[("Bo", None)])]),
+            ("two", vec![by(&[("Bo", None)]), by(&[("Cy", None)])]),
         ]);
         assert_eq!(
             shelf_banners(&playlists[..2], &tracks, &artists, true),
@@ -998,6 +1165,7 @@ mod tests {
             annotation: None,
             source_patch: patch.map(str::to_owned),
             date: None,
+            last_modified_at: None,
             tracks: Vec::new(),
         };
         let offered = without_exploration(vec![

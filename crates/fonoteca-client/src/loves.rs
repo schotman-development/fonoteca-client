@@ -9,17 +9,21 @@
 //! can't be sent, so it stays on the server and is counted. The first sync
 //! has no kept copy, which makes it a union: nothing is removed from either
 //! side.
+//!
+//! What ListenBrainz loves is kept on this device too, and used for an hour
+//! without asking. Then only the loves newer than those kept are read, as
+//! long as their count says nothing was taken back meanwhile.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use listenbrainz as lb;
-use opensubsonic::{Child, Client};
+use opensubsonic::{Answers, Child, Client};
 use serde::{Deserialize, Serialize};
 use slint::ComponentHandle;
 
 use crate::browse::matching::{Found, lookup};
 use crate::browse::{self, Shared};
-use crate::{AppWindow, prefs};
+use crate::{AppWindow, answers, prefs};
 
 /// Songs starred in one call.
 const STAR_BATCH: usize = 50;
@@ -46,6 +50,61 @@ impl Kept {
     fn was_searched_lately(&self, recording: &str, now: u64) -> bool {
         (self.unmatched.get(recording)).is_some_and(|at| now < at + UNMATCHED_RECHECK_SECS)
     }
+}
+
+/// What ListenBrainz said the user loves, newest first, as kept on this
+/// device.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+struct Loved {
+    loves: Vec<lb::Feedback>,
+}
+
+impl Loved {
+    /// Whether `love` is of a recording loved already.
+    fn has(&self, love: &lb::Feedback) -> bool {
+        recording_of(love).is_some_and(|recording| self.has_recording(recording))
+    }
+
+    fn has_recording(&self, recording: &str) -> bool {
+        (self.loves.iter())
+            .any(|kept| recording_of(kept).is_some_and(|kept| kept.eq_ignore_ascii_case(recording)))
+    }
+
+    /// These loves with `newer` before them, unless ListenBrainz now counts
+    /// `total` others, as when one was taken back: then none.
+    fn with_newer(mut self, newer: Vec<lb::Feedback>, total: u32) -> Option<Loved> {
+        self.loves.splice(0..0, newer);
+        (self.loves.len() == total as usize).then_some(self)
+    }
+
+    /// These loves as they are once `score` was sent for `recording` from
+    /// here: loved first, else gone.
+    fn sent(&mut self, user: &str, recording: &str, score: lb::Score) {
+        self.loves.retain(|love| {
+            recording_of(love).is_none_or(|loved| !loved.eq_ignore_ascii_case(recording))
+        });
+        if score == lb::Score::Love {
+            let love = lb::Feedback {
+                user_id: user.to_owned(),
+                recording_mbid: Some(recording.to_owned()),
+                recording_msid: None,
+                score,
+                created: None,
+                track_metadata: None,
+            };
+            self.loves.insert(0, love);
+        }
+    }
+}
+
+/// The recording a love is of: its MusicBrainz ID, else ListenBrainz's own.
+fn recording_of(love: &lb::Feedback) -> Option<&str> {
+    (love.recording_mbid.as_deref()).or(love.recording_msid.as_deref())
+}
+
+/// Where the loves of `user` are kept.
+fn kept_under(user: &str) -> String {
+    format!("loves:{user}")
 }
 
 /// What each recording needs, by where it is loved, starred or was agreed.
@@ -128,6 +187,8 @@ pub struct Sides<'a> {
     pub user: &'a str,
     pub server: &'a Client,
     pub found: &'a Found,
+    /// What ListenBrainz answered, kept on this device.
+    pub answers: &'a Answers,
 }
 
 /// What a sync did.
@@ -182,7 +243,7 @@ pub async fn reconcile(sides: &Sides<'_>, kept: Kept, now: u64) -> Outcome {
 
 /// What ListenBrainz loves, by recording, and the server's starred songs.
 async fn fetch(sides: &Sides<'_>) -> Result<(BTreeMap<String, lb::Feedback>, Vec<Child>), String> {
-    let loves = (sides.listenbrainz.loved_recordings(sides.user).await)
+    let loves = (loves(sides).await)
         .map_err(|e| format!("loves couldn't be fetched from ListenBrainz: {e}"))?;
     let starred = (sides.server.get_starred2(None).await)
         .map_err(|e| format!("stars couldn't be fetched from the server: {e}"))?;
@@ -191,6 +252,66 @@ async fn fetch(sides: &Sides<'_>) -> Result<(BTreeMap<String, lb::Feedback>, Vec
         Some((recording, love))
     });
     Ok((loves.collect(), starred.song))
+}
+
+/// Every recording the user loves on ListenBrainz: those kept, while they
+/// are fresh; else those kept with the newer ones added, else all read
+/// anew, and kept.
+async fn loves(sides: &Sides<'_>) -> lb::Result<Vec<lb::Feedback>> {
+    let key = kept_under(sides.user);
+    let kept: Option<(Loved, bool)> = answers::find(sides.answers, &key);
+    if let Some((loved, false)) = kept {
+        return Ok(loved.loves);
+    }
+    let writes = sides.answers.writes();
+    let newer = match kept {
+        Some((loved, _)) => brought_up_to_date(sides, loved).await?,
+        None => None,
+    };
+    let loved = match newer {
+        Some(loved) => loved,
+        None => Loved {
+            loves: sides.listenbrainz.loved_recordings(sides.user).await?,
+        },
+    };
+    answers::keep(sides.answers, key, &loved, writes);
+    Ok(loved.loves)
+}
+
+/// `loved` with the loves added since, read newest first a page at a time
+/// until a page has one already loved; none when ListenBrainz then counts
+/// others.
+async fn brought_up_to_date(sides: &Sides<'_>, loved: Loved) -> lb::Result<Option<Loved>> {
+    let mut newer = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page = (sides.listenbrainz)
+            .user_feedback(
+                sides.user,
+                Some(lb::Score::Love),
+                Some(lb::FEEDBACK_PAGE),
+                Some(offset),
+            )
+            .await?;
+        let reaches_loved = page.feedback.iter().any(|love| loved.has(love));
+        offset += u32::try_from(page.feedback.len()).expect("a page holds at most a thousand");
+        let is_last = page.feedback.is_empty() || offset >= page.total_count;
+        newer.extend(page.feedback.into_iter().filter(|love| !loved.has(love)));
+        if reaches_loved || is_last {
+            return Ok(loved.with_newer(newer, page.total_count));
+        }
+    }
+}
+
+/// Notes on the loves kept that `score` was sent for `recording`, so the
+/// next sync agrees with it without asking ListenBrainz.
+fn note_sent(sides: &Sides<'_>, recording: &str, score: lb::Score) {
+    let key = kept_under(sides.user);
+    let Some((mut loved, _)) = answers::find::<Loved>(sides.answers, &key) else {
+        return;
+    };
+    loved.sent(sides.user, recording, score);
+    answers::amend(sides.answers, &key, &loved);
 }
 
 struct Run<'a, 'b> {
@@ -306,7 +427,10 @@ impl Run<'_, '_> {
             .listenbrainz
             .submit_feedback(recording, score)
             .await;
-        let Err(e) = sent else { return Some(true) };
+        let Err(e) = sent else {
+            note_sent(self.sides, recording, score);
+            return Some(true);
+        };
         self.fail("a heart couldn't be sent to ListenBrainz", &e);
         e.is_malformed_listen().then_some(false)
     }
@@ -354,7 +478,10 @@ pub fn sync(ui: &AppWindow, browser: &Shared) {
     let found = browse::found(browser);
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
-        let outcome = run(&client, name, &found).await;
+        let outcome = match browse::listenbrainz_answers(&browser).await {
+            Some(answers) => run(&client, name, &found, &answers).await,
+            None => None,
+        };
         if let (Some(outcome), Some(ui)) = (outcome, weak.upgrade()) {
             report(&outcome);
             browse::show_synced_hearts(
@@ -386,7 +513,7 @@ fn report(outcome: &Outcome) {
 }
 
 /// Syncs, or does nothing without a ListenBrainz token.
-async fn run(server: &Client, name: String, found: &Found) -> Option<Outcome> {
+async fn run(server: &Client, name: String, found: &Found, answers: &Answers) -> Option<Outcome> {
     let (listenbrainz, user) = crate::browse::created_for::account().await?;
     let name = match name.is_empty() {
         false => name,
@@ -404,6 +531,7 @@ async fn run(server: &Client, name: String, found: &Found) -> Option<Outcome> {
         user: &user,
         server,
         found,
+        answers,
     };
     let outcome = reconcile(&sides, prefs::kept_loves(&account), prefs::now()).await;
     prefs::save_kept_loves(&account, &outcome.kept);
@@ -709,6 +837,9 @@ mod tests {
         fn feedback(&self) -> Vec<String> {
             Self::calls(&self.listenbrainz, "recording-feedback")
         }
+        fn love_reads(&self) -> usize {
+            Self::calls(&self.listenbrainz, "get-feedback").len()
+        }
     }
 
     fn sync_with(
@@ -717,6 +848,19 @@ mod tests {
         refused: &'static [&'static str],
         starred: Vec<&'static str>,
         kept: Kept,
+    ) -> Setup {
+        let answers = Answers::new(|| NOW);
+        sync_keeping(loves, feedback_status, refused, starred, kept, &answers)
+    }
+
+    /// A sync with what ListenBrainz answered kept in `answers`.
+    fn sync_keeping(
+        loves: Vec<(&'static str, &'static str, &'static str)>,
+        feedback_status: u16,
+        refused: &'static [&'static str],
+        starred: Vec<&'static str>,
+        kept: Kept,
+        answers: &Answers,
     ) -> Setup {
         let (lb_address, listenbrainz) = listenbrainz_with(loves, feedback_status, refused);
         let (address, server) = server_with(library(), starred);
@@ -728,6 +872,7 @@ mod tests {
             user: "joe",
             server: &client,
             found: &found,
+            answers,
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let outcome = runtime.block_on(reconcile(&sides, kept, NOW));
@@ -874,6 +1019,7 @@ mod tests {
             user: "joe",
             server: &client,
             found: &found,
+            answers: &Answers::new(|| NOW),
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let outcome = runtime.block_on(reconcile(&sides, kept.clone(), NOW));
@@ -908,6 +1054,7 @@ mod tests {
             user: "joe",
             server: &client,
             found: &found,
+            answers: &Answers::new(|| NOW),
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let outcome = runtime.block_on(reconcile(&sides, kept, NOW));
@@ -918,6 +1065,108 @@ mod tests {
         let left = answers.unsaved().expect("kept without the pages").json;
         assert!(left.contains("album a2"));
         assert!(!left.contains("album a1") && !left.contains("playlist p1"));
+    }
+
+    fn love(recording: &str) -> lb::Feedback {
+        lb::Feedback {
+            user_id: "joe".into(),
+            recording_mbid: Some(recording.into()),
+            recording_msid: None,
+            score: lb::Score::Love,
+            created: None,
+            track_metadata: None,
+        }
+    }
+
+    fn recordings(loved: &Loved) -> Vec<&str> {
+        loved.loves.iter().filter_map(recording_of).collect()
+    }
+
+    #[test]
+    fn newer_loves_go_before_those_kept_while_the_count_agrees() {
+        let kept = Loved {
+            loves: vec![love("r2"), love("r3")],
+        };
+        assert!(kept.has(&love("R2")) && !kept.has(&love("r1")));
+        let added = kept.clone().with_newer(vec![love("r1")], 3).unwrap();
+        assert_eq!(recordings(&added), ["r1", "r2", "r3"]);
+        assert!(
+            kept.with_newer(vec![love("r1")], 2).is_none(),
+            "one was taken back"
+        );
+    }
+
+    #[test]
+    fn a_heart_sent_is_noted_on_the_loves_kept() {
+        let mut loved = Loved {
+            loves: vec![love("r2"), love("r3")],
+        };
+        loved.sent("joe", "r1", lb::Score::Love);
+        assert_eq!(recordings(&loved), ["r1", "r2", "r3"]);
+        loved.sent("joe", "R3", lb::Score::Clear);
+        assert_eq!(recordings(&loved), ["r1", "r2"]);
+        loved.sent("joe", "r2", lb::Score::Love);
+        assert_eq!(recordings(&loved), ["r2", "r1"], "loved once");
+    }
+
+    #[test]
+    fn loves_kept_are_used_for_an_hour_then_only_newer_ones_are_read() {
+        let answers = Answers::new(|| NOW);
+        let first = sync_keeping(
+            vec![FAMILIAR, GONE],
+            200,
+            &[],
+            vec![],
+            Kept::default(),
+            &answers,
+        );
+        assert_eq!(first.love_reads(), 1);
+        let kept = first.outcome.kept;
+        let fresh = sync_keeping(
+            vec![FAMILIAR, GONE],
+            200,
+            &[],
+            vec!["s1"],
+            kept.clone(),
+            &answers,
+        );
+        assert_eq!(fresh.love_reads(), 0, "kept and fresh");
+        assert!(fresh.unstars().is_empty() && fresh.feedback().is_empty());
+        // An hour on, Halo was loved: one page has it and those kept.
+        answers.age("loves:");
+        let halo = ("r5", "Halo", "Beyonce");
+        let newer = sync_keeping(
+            vec![halo, FAMILIAR, GONE],
+            200,
+            &[],
+            vec!["s1"],
+            kept.clone(),
+            &answers,
+        );
+        assert_eq!(newer.love_reads(), 1);
+        assert_eq!(newer.outcome.starred, ["s4"]);
+        // An hour on again, Familiar was taken back: the count differs, and
+        // every page is read again, which finds it gone.
+        answers.age("loves:");
+        let kept = newer.outcome.kept;
+        let taken_back = sync_keeping(vec![halo, GONE], 200, &[], vec!["s1", "s4"], kept, &answers);
+        assert_eq!(taken_back.love_reads(), 2);
+        assert_eq!(taken_back.outcome.unstarred, ["s1"]);
+    }
+
+    #[test]
+    fn a_heart_sent_counts_as_loved_while_the_loves_are_kept() {
+        let answers = Answers::new(|| NOW);
+        // Ritual is starred in the app and sent.
+        let first = sync_keeping(vec![], 200, &[], vec!["s3"], Kept::default(), &answers);
+        assert_eq!(first.feedback().len(), 1);
+        let kept = first.outcome.kept;
+        let again = sync_keeping(vec![], 200, &[], vec!["s3"], kept, &answers);
+        assert_eq!(again.love_reads(), 0);
+        assert!(
+            again.unstars().is_empty() && again.feedback().is_empty(),
+            "not taken for one taken back on ListenBrainz"
+        );
     }
 
     #[test]

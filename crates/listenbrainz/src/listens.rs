@@ -1,7 +1,7 @@
 //! The listens a user has sent, newest first, a page at a time. ListenBrainz
 //! pages them by when they were heard, not by an offset.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::playlist::Credit;
 use crate::{Client, PlaylistTrack, Result, send};
@@ -16,8 +16,11 @@ pub enum Around {
     After(i64),
 }
 
+/// The most listens ListenBrainz gives in one page.
+pub const MAX_LISTENS_PER_PAGE: u32 = 1000;
+
 /// A track the user listened to, and when they began, in seconds since 1970.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listened {
     pub listened_at: i64,
     pub track: PlaylistTrack,
@@ -36,6 +39,16 @@ pub struct ListensPage {
 #[derive(Deserialize)]
 struct Answer {
     payload: Payload,
+}
+
+#[derive(Deserialize)]
+struct CountAnswer {
+    payload: Count,
+}
+
+#[derive(Deserialize)]
+struct Count {
+    count: u64,
 }
 
 /// The page, and the times of the user's newest and oldest listen of all.
@@ -124,8 +137,8 @@ impl From<Payload> for ListensPage {
 }
 
 impl Client {
-    /// A page of `user`'s listens, at most `count` of them; ListenBrainz
-    /// gives no more than 1000 at a time.
+    /// A page of `user`'s listens, at most `count` of them, and no more
+    /// than [`MAX_LISTENS_PER_PAGE`].
     pub async fn listens(&self, user: &str, around: Around, count: u32) -> Result<ListensPage> {
         let mut query = vec![("count", count.to_string())];
         match around {
@@ -136,6 +149,13 @@ impl Client {
         let url = self.url(&["user", user, "listens"]);
         let answer: Answer = send(self.authorized(self.http.get(url).query(&query))).await?;
         Ok(answer.payload.into())
+    }
+
+    /// How many listens `user` has.
+    pub async fn listen_count(&self, user: &str) -> Result<u64> {
+        let url = self.url(&["user", user, "listen-count"]);
+        let answer: CountAnswer = send(self.authorized(self.http.get(url))).await?;
+        Ok(answer.payload.count)
     }
 }
 
@@ -185,6 +205,12 @@ mod tests {
         let track = &page(json).listens[0].track;
         assert_eq!(track.recording_mbid.as_deref(), Some("r1"));
         assert_eq!(track.artists, ["A", "B"]);
+    }
+
+    #[test]
+    fn a_count_is_read_from_its_payload() {
+        let answer: CountAnswer = serde_json::from_str(r#"{"payload":{"count":220287}}"#).unwrap();
+        assert_eq!(answer.payload.count, 220287);
     }
 
     #[test]

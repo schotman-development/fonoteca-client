@@ -145,6 +145,8 @@ pub struct Scrobbler {
     tracker: Tracker,
     /// The plays waiting for each account's server, by account.
     outboxes: HashMap<String, Rc<Outbox>>,
+    /// Told each time a server takes a play.
+    taken: Option<Rc<dyn Fn()>>,
     #[cfg(test)]
     looks: u32,
     #[cfg(test)]
@@ -152,6 +154,14 @@ pub struct Scrobbler {
 }
 
 impl Scrobbler {
+    /// One that tells `taken` each time a server takes a play.
+    pub fn new(taken: impl Fn() + 'static) -> Self {
+        Scrobbler {
+            taken: Some(Rc::new(taken)),
+            ..Self::default()
+        }
+    }
+
     /// Looks at what plays, `song` being the track playing, on `server`.
     /// Says when it began once it was heard long enough, with a server or
     /// without.
@@ -227,8 +237,13 @@ impl Scrobbler {
     /// The plays waiting for the server of `account`, read from this device
     /// the first time.
     fn outbox(&mut self, account: &str) -> Rc<Outbox> {
-        let outbox = (self.outboxes.entry(account.to_owned()))
-            .or_insert_with(|| Rc::new(Outbox::load(account)));
+        let taken = self.taken.clone();
+        let outbox = (self.outboxes.entry(account.to_owned())).or_insert_with(|| {
+            Rc::new(Outbox {
+                taken,
+                ..Outbox::load(account)
+            })
+        });
         outbox.clone()
     }
 
@@ -283,6 +298,8 @@ struct Outbox {
     is_sending: Cell<bool>,
     /// The last tries waiting for the send under way to end.
     send_ended: RefCell<Vec<Waker>>,
+    /// Told each time the server takes a play.
+    taken: Option<Rc<dyn Fn()>>,
 }
 
 impl Outbox {
@@ -292,6 +309,7 @@ impl Outbox {
             waiting: RefCell::new(prefs::waiting_plays(account)),
             is_sending: Cell::new(false),
             send_ended: RefCell::default(),
+            taken: None,
         }
     }
 
@@ -341,7 +359,11 @@ impl Outbox {
             };
             let time = Some(play.started_at * 1000);
             match server.scrobble(&play.id, time, true).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    if let Some(taken) = &self.taken {
+                        taken();
+                    }
+                }
                 Err(e) if is_refused_for_good(&e) => {
                     eprintln!("The server refused the play of {}: {e}", play.id);
                 }
@@ -760,6 +782,30 @@ mod tests {
             );
             assert!(prefs::waiting_plays(account).is_empty(), "{code}");
         }
+    }
+
+    #[test]
+    fn each_play_a_server_takes_is_told_and_none_it_does_not_take() {
+        let account = "taken-told";
+        let plays = [
+            waiting("gone", 1000),
+            waiting("s2", 2000),
+            waiting("s3", 3000),
+        ];
+        prefs::save_waiting_plays(account, &plays);
+        let times_told = Rc::new(Cell::new(0));
+        let mut scrobbler = Scrobbler::new({
+            let times_told = times_told.clone();
+            move || times_told.set(times_told.get() + 1)
+        });
+        let (server, told) = serve(vec![refused(NOT_FOUND), taken(), down()]);
+        let server = Server {
+            client: Arc::new(server),
+            account: account.into(),
+        };
+        runtime().block_on(scrobbler.send_waiting(server));
+        assert_eq!(told.lock().unwrap().len(), 3);
+        assert_eq!(times_told.get(), 1);
     }
 
     #[test]

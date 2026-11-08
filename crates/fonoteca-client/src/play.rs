@@ -110,6 +110,12 @@ pub type Shared = Rc<RefCell<Playing>>;
 /// for a sign out to reach the plays waiting for the server.
 pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
     let playing = Shared::default();
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let browser = browser.clone();
+        playing.borrow_mut().scrobbler =
+            scrobble::Scrobbler::new(move || browse::play_taken(&browser));
+    }
     #[cfg(test)]
     testing::keep(browser, &playing);
     #[cfg(not(target_family = "wasm"))]

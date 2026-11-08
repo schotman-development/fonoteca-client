@@ -7,12 +7,20 @@
 //! from elsewhere is greyed until the whole page is looked up in the library,
 //! and those it has light up together; [`matching`] says which songs are the
 //! library's.
+//!
+//! The listens are kept on this device as one unbroken run, which serves
+//! the pages it holds at once. An hour on, or once a listen was sent, the
+//! listens since its newest are put on top, as long as ListenBrainz's count
+//! of them agrees; else, as when listens came late with an older time, the
+//! newest page takes its place. Older pages are added below as they are
+//! seen.
 
 use std::cmp::Reverse;
 
 use listenbrainz as lb;
+use serde::{Deserialize, Serialize};
 
-use super::created_for::{account, is_missing, missing_row, missing_song};
+use super::created_for::{self, is_missing, missing_row, missing_song};
 use super::matching::{lookup, pick};
 use super::*;
 use crate::plays::{self, Play};
@@ -25,6 +33,126 @@ const DAY: i64 = 24 * 60 * 60;
 /// What the page says while it looks for the listens from elsewhere in the
 /// library.
 const FINDING: &str = "Finding these in your library…";
+/// Where the listens are kept, before the ListenBrainz user's name.
+pub(super) const KEPT_UNDER: &str = "listens:";
+
+/// A user's listens as kept on this device: one unbroken run of them, newest
+/// first, from the newest as of the last ask down to the oldest page seen;
+/// when ListenBrainz said the newest and oldest of all were heard; and how
+/// many it counted at the last ask.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+struct Run {
+    listens: Vec<lb::Listened>,
+    newest_at: Option<i64>,
+    oldest_at: Option<i64>,
+    count: u64,
+}
+
+impl Run {
+    fn new(page: lb::ListensPage, count: u64) -> Self {
+        Run {
+            listens: page.listens,
+            newest_at: page.newest_at,
+            oldest_at: page.oldest_at,
+            count,
+        }
+    }
+
+    /// When its newest and its oldest listen were heard.
+    fn newest(&self) -> Option<i64> {
+        self.listens.first().map(|listen| listen.listened_at)
+    }
+
+    fn oldest(&self) -> Option<i64> {
+        self.listens.last().map(|listen| listen.listened_at)
+    }
+
+    /// Whether it goes back to the user's first listen.
+    fn reaches_start(&self) -> bool {
+        match (self.oldest(), self.oldest_at) {
+            (Some(oldest), Some(first)) => oldest <= first,
+            _ => true,
+        }
+    }
+
+    /// The listens of the page `around` asks for, when the run holds them
+    /// all: the newest, the nearest before a time, or the nearest after one.
+    fn page(&self, around: lb::Around) -> Option<lb::ListensPage> {
+        let listens = match around {
+            lb::Around::Newest => self.listens.iter().take(PAGE).cloned().collect(),
+            lb::Around::Before(time) => {
+                let before: Vec<lb::Listened> = (self.listens.iter())
+                    .filter(|listen| listen.listened_at < time)
+                    .take(PAGE)
+                    .cloned()
+                    .collect();
+                if before.len() < PAGE && !self.reaches_start() {
+                    return None;
+                }
+                before
+            }
+            lb::Around::After(time) => {
+                let reaches_back = self.oldest().is_none_or(|oldest| oldest <= time);
+                if !reaches_back && !self.reaches_start() {
+                    return None;
+                }
+                let after = self
+                    .listens
+                    .iter()
+                    .filter(|listen| listen.listened_at > time);
+                let mut nearest: Vec<lb::Listened> = after.rev().take(PAGE).cloned().collect();
+                nearest.reverse();
+                nearest
+            }
+        };
+        Some(lb::ListensPage {
+            listens,
+            newest_at: self.newest_at,
+            oldest_at: self.oldest_at,
+        })
+    }
+
+    /// The run with `newer`, the listens heard since its newest, on top;
+    /// none when ListenBrainz now counts others, as when listens came late
+    /// with an older time or were deleted, or when as many came as a page
+    /// holds, which may leave some out.
+    fn with_newer(mut self, newer: lb::ListensPage, count: u64) -> Option<Run> {
+        let added = newer.listens.len();
+        let is_whole = added < lb::MAX_LISTENS_PER_PAGE as usize;
+        if !is_whole || self.count + added as u64 != count {
+            return None;
+        }
+        self.listens.splice(0..0, newer.listens);
+        self.count = count;
+        self.newest_at = newer.newest_at.or(self.newest_at);
+        self.oldest_at = newer.oldest_at.or(self.oldest_at);
+        Some(self)
+    }
+
+    /// When its oldest listen was heard, where the page `around` asks for
+    /// goes on below it, so that the page before that one is the run's next.
+    fn goes_on_below(&self, around: lb::Around) -> Option<i64> {
+        let lb::Around::Before(time) = around else {
+            return None;
+        };
+        self.oldest().filter(|&oldest| oldest <= time)
+    }
+
+    /// The run with `older`, the page before its oldest, at its end.
+    fn with_older(mut self, older: lb::ListensPage) -> Run {
+        let oldest = self.oldest();
+        let before = (older.listens.into_iter())
+            .filter(|listen| oldest.is_none_or(|oldest| listen.listened_at < oldest));
+        self.listens.extend(before);
+        self.oldest_at = older.oldest_at.or(self.oldest_at);
+        self
+    }
+}
+
+/// Where the listens of `user` are kept.
+fn kept_under(user: &str) -> String {
+    format!("{KEPT_UNDER}{user}")
+}
 
 /// A row of the history: a play on this device, or a listen ListenBrainz
 /// has from somewhere else.
@@ -193,7 +321,8 @@ fn still_on(weak: &slint::Weak<AppWindow>, browser: &Shared, visit: i32) -> Opti
 }
 
 /// Shows the page the link's `id` asks for: this device's plays at once,
-/// then with ListenBrainz's listens merged in, which it looks up.
+/// with ListenBrainz's listens kept merged in, then as ListenBrainz has them
+/// now where they are an hour old, which it looks up.
 pub(super) fn open_page(ui: &AppWindow, browser: &Shared, id: &str) {
     let visit = browser.borrow().visit;
     let around = around(id);
@@ -212,18 +341,39 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, id: &str) {
         };
         let played_here = merge(&plays, lb::ListensPage::default(), around, PAGE);
         show_timeline(&ui, &browser, &played_here);
-        let fetched = fetch(around).await;
+        let lb_account = created_for::account().await;
+        let answers = listenbrainz_answers(&browser).await;
+        let Some(ui) = still_on(&weak, &browser, visit) else {
+            return;
+        };
+        let (Some((client, user)), Some(answers)) = (lb_account, answers) else {
+            return ui.set_loading(false);
+        };
+        let kept = answers::find::<Run>(&answers, &kept_under(&user));
+        let kept_page = kept.as_ref().and_then(|(run, _)| run.page(around));
+        let shown = kept_page
+            .clone()
+            .map(|listens| merge(&plays, listens, around, PAGE));
+        if let Some(timeline) = &shown {
+            show_timeline(&ui, &browser, timeline);
+        }
+        let fetched = listens(&answers, &client, &user, around, kept).await;
         let Some(ui) = still_on(&weak, &browser, visit) else {
             return;
         };
         ui.set_loading(false);
-        let listens = match fetched {
-            Ok(Some(listens)) => listens,
-            Ok(None) => return,
-            Err(e) => return ui.set_page_problem(e.into()),
+        let listens = match (fetched, kept_page) {
+            (Ok(listens), _) => listens,
+            (Err(e), Some(kept)) => {
+                eprintln!("{e}; the listens kept stay");
+                kept
+            }
+            (Err(e), None) => return ui.set_page_problem(e.into()),
         };
         let timeline = merge(&plays, listens, around, PAGE);
-        show_timeline(&ui, &browser, &timeline);
+        if shown.as_ref() != Some(&timeline) {
+            show_timeline(&ui, &browser, &timeline);
+        }
         let has_elsewhere =
             (timeline.heard.iter()).any(|heard| matches!(heard, Heard::Elsewhere(_)));
         if has_elsewhere {
@@ -234,15 +384,72 @@ pub(super) fn open_page(ui: &AppWindow, browser: &Shared, id: &str) {
     .expect("the event loop is running");
 }
 
-/// ListenBrainz's page of the listens `around` asks for, none without a
-/// token.
-async fn fetch(around: lb::Around) -> Result<Option<lb::ListensPage>, String> {
-    let Some((client, user)) = account().await else {
-        return Ok(None);
+/// The listens of the page `around` asks for: from the run kept, brought up
+/// to date first when it is an hour old or there is none, and else from
+/// ListenBrainz. A page just before the run is added to it.
+async fn listens(
+    answers: &Answers,
+    client: &lb::Client,
+    user: &str,
+    around: lb::Around,
+    kept: Option<(Run, bool)>,
+) -> Result<lb::ListensPage, String> {
+    let problem = |e: lb::Error| format!("Your listens on ListenBrainz couldn't be fetched: {e}");
+    let run = match kept {
+        Some((run, false)) => run,
+        stale => {
+            let writes = answers.writes();
+            let run =
+                (refreshed(client, user, stale.map(|(run, _)| run)).await).map_err(problem)?;
+            answers::keep(answers, kept_under(user), &run, writes);
+            run
+        }
     };
-    (client.listens(&user, around, PAGE as u32).await)
-        .map(Some)
-        .map_err(|e| format!("Your listens on ListenBrainz couldn't be fetched: {e}"))
+    if let Some(page) = run.page(around) {
+        return Ok(page);
+    }
+    if let Some(oldest) = run.goes_on_below(around) {
+        let older = (client
+            .listens(user, lb::Around::Before(oldest), PAGE as u32)
+            .await)
+            .map_err(problem)?;
+        let run = run.with_older(older);
+        answers::amend(answers, &kept_under(user), &run);
+        if let Some(page) = run.page(around) {
+            return Ok(page);
+        }
+    }
+    // Pages apart from the run, as through Back after it was replaced, are
+    // shown but not kept, which would break it.
+    (client.listens(user, around, PAGE as u32).await).map_err(problem)
+}
+
+/// `run` with the listens heard since its newest on top, unless ListenBrainz
+/// counts others than it would then hold: then, or without a run, the newest
+/// page.
+async fn refreshed(client: &lb::Client, user: &str, run: Option<Run>) -> lb::Result<Run> {
+    let Some((run, newest)) = run.and_then(|run| run.newest().map(|newest| (run, newest))) else {
+        return newest_run(client, user, None).await;
+    };
+    let newer = (client.listens(user, lb::Around::After(newest), lb::MAX_LISTENS_PER_PAGE)).await?;
+    let count = client.listen_count(user).await?;
+    match run.with_newer(newer, count) {
+        Some(run) => Ok(run),
+        None => newest_run(client, user, Some(count)).await,
+    }
+}
+
+/// The newest page of listens as a run, with `count`, or the count
+/// ListenBrainz gives.
+async fn newest_run(client: &lb::Client, user: &str, count: Option<u64>) -> lb::Result<Run> {
+    let page = client
+        .listens(user, lb::Around::Newest, PAGE as u32)
+        .await?;
+    let count = match count {
+        Some(count) => count,
+        None => client.listen_count(user).await?,
+    };
+    Ok(Run::new(page, count))
 }
 
 /// Looks for the library's song of each listen from elsewhere, one search
@@ -313,6 +520,126 @@ mod tests {
             newest_at: Some(newest_at),
             oldest_at: Some(oldest_at),
         }
+    }
+
+    /// A run of listens at each of `times`, newest first, of `count`
+    /// listens heard between `newest_at` and `oldest_at`.
+    fn run(times: &[i64], newest_at: i64, oldest_at: i64, count: u64) -> Run {
+        let listens = times.iter().map(|&at| listened(at, "Halo", "Ann", None));
+        Run::new(page(listens.collect(), newest_at, oldest_at), count)
+    }
+
+    fn at(page: &lb::ListensPage) -> Vec<i64> {
+        page.listens
+            .iter()
+            .map(|listen| listen.listened_at)
+            .collect()
+    }
+
+    #[test]
+    fn the_run_kept_serves_the_pages_it_holds_whole() {
+        let times: Vec<i64> = (0..150).map(|n| 1000 - n).collect();
+        let kept = run(&times, 1000, 0, 400);
+        assert_eq!(at(&kept.page(lb::Around::Newest).unwrap()), times[..100]);
+        assert_eq!(
+            at(&kept.page(lb::Around::Before(1000 - 20)).unwrap()),
+            times[21..121]
+        );
+        assert!(
+            kept.page(lb::Around::Before(1000 - 99)).is_none(),
+            "fewer than a page below it, and more before the run"
+        );
+        assert_eq!(
+            at(&kept.page(lb::Around::After(1000 - 120)).unwrap()),
+            times[20..120]
+        );
+        assert!(
+            kept.page(lb::Around::After(10)).is_none(),
+            "from before the run"
+        );
+        let page = kept.page(lb::Around::Newest).unwrap();
+        assert_eq!((page.newest_at, page.oldest_at), (Some(1000), Some(0)));
+    }
+
+    #[test]
+    fn a_run_back_to_the_first_listen_serves_the_last_pages_short() {
+        let kept = run(&[30, 20, 10], 30, 10, 3);
+        assert_eq!(at(&kept.page(lb::Around::Before(25)).unwrap()), [20, 10]);
+        assert_eq!(at(&kept.page(lb::Around::After(5)).unwrap()), [30, 20, 10]);
+        let nothing_yet = Run::default();
+        assert!(
+            nothing_yet
+                .page(lb::Around::Newest)
+                .unwrap()
+                .listens
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn listens_since_go_on_top_while_the_count_agrees() {
+        let kept = run(&[30, 20], 30, 0, 10);
+        let newer = page(vec![listened(50, "Halo", "Ann", None)], 50, 0);
+        let up_to_date = kept.clone().with_newer(newer.clone(), 11).unwrap();
+        assert_eq!(
+            at(&up_to_date.page(lb::Around::Newest).unwrap()),
+            [50, 30, 20]
+        );
+        assert_eq!((up_to_date.newest_at, up_to_date.count), (Some(50), 11));
+        assert!(
+            kept.clone().with_newer(newer, 12).is_none(),
+            "one came late with an older time"
+        );
+        let none_since = page(Vec::new(), 30, 0);
+        assert_eq!(
+            kept.clone().with_newer(none_since.clone(), 10),
+            Some(kept.clone())
+        );
+        assert!(kept.with_newer(none_since, 9).is_none(), "one was deleted");
+    }
+
+    #[test]
+    fn as_many_listens_since_as_a_page_holds_replace_the_run() {
+        let kept = run(&[30], 30, 0, 1);
+        let full = lb::MAX_LISTENS_PER_PAGE as i64;
+        let listens = (0..full).map(|n| listened(100 + n, "Halo", "Ann", None));
+        let newer = page(listens.rev().collect(), 100 + full, 0);
+        assert!(kept.with_newer(newer, 1 + full as u64).is_none());
+    }
+
+    #[test]
+    fn a_page_from_the_oldest_kept_down_goes_on_below_the_run() {
+        let kept = run(&[30, 20], 30, 0, 4);
+        assert_eq!(kept.goes_on_below(lb::Around::Before(20)), Some(20));
+        assert_eq!(kept.goes_on_below(lb::Around::Before(25)), Some(20));
+        assert_eq!(
+            kept.goes_on_below(lb::Around::Before(15)),
+            None,
+            "apart from it"
+        );
+        assert_eq!(kept.goes_on_below(lb::Around::After(20)), None);
+        assert_eq!(Run::default().goes_on_below(lb::Around::Before(20)), None);
+    }
+
+    #[test]
+    fn the_page_before_the_run_goes_at_its_end() {
+        let kept = run(&[30, 20], 30, 0, 4);
+        let older = page(
+            vec![
+                listened(20, "Halo", "Ann", None),
+                listened(10, "Halo", "Ann", None),
+                listened(5, "Halo", "Ann", None),
+            ],
+            30,
+            5,
+        );
+        let longer = kept.with_older(older);
+        assert_eq!(
+            at(&longer.page(lb::Around::Newest).unwrap()),
+            [30, 20, 10, 5]
+        );
+        assert_eq!(longer.oldest_at, Some(5));
+        assert!(longer.reaches_start());
     }
 
     #[test]

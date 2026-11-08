@@ -113,7 +113,7 @@ pub struct Unsaved {
 }
 
 /// A kept answer, and whether it is aged.
-pub(crate) struct Found {
+pub struct Found {
     pub answer: Map<String, Value>,
     pub aged: bool,
 }
@@ -168,12 +168,12 @@ impl Answers {
     }
 
     /// Whether those saved are in, and calls need not wait.
-    pub(crate) fn is_loaded(&self) -> bool {
+    pub fn is_loaded(&self) -> bool {
         self.loaded.get().is_some()
     }
 
     /// Blocks until those saved are in.
-    pub(crate) fn wait_until_loaded(&self) {
+    pub fn wait_until_loaded(&self) {
         self.loaded.wait();
     }
 
@@ -212,6 +212,19 @@ impl Answers {
         kept.changes += 1;
     }
 
+    /// Ages the answers to the reads whose keys start with `reads`, as if
+    /// they came an hour ago, so that each is asked for again the next time
+    /// it is read.
+    pub fn age(&self, reads: &str) {
+        let an_hour_ago = (self.clock)().saturating_sub(FRESH_FOR);
+        let mut kept = self.lock();
+        let aged = (kept.answers.iter_mut()).filter(|(read, _)| read.starts_with(reads));
+        for (_, answer) in aged {
+            answer.at = an_hour_ago;
+        }
+        kept.changes += 1;
+    }
+
     /// Forgets every answer, on sign out, and has none saved from now on.
     pub fn forget(&self) {
         let mut kept = self.lock();
@@ -219,8 +232,18 @@ impl Answers {
         kept.forgotten = true;
     }
 
+    /// Forgets every answer, and those asked for before now, which
+    /// [`Answers::keep`] then refuses; those asked for from now on are kept
+    /// and saved as before.
+    pub fn clear(&self) {
+        let mut kept = self.lock();
+        kept.answers.clear();
+        kept.writes += 1;
+        kept.changes += 1;
+    }
+
     /// The answer kept for `read`, if one is and it can be read.
-    pub(crate) fn find(&self, read: &str) -> Option<Found> {
+    pub fn find(&self, read: &str) -> Option<Found> {
         let now = (self.clock)();
         let (text, aged) = {
             let mut kept = self.lock();
@@ -239,14 +262,14 @@ impl Answers {
     }
 
     /// How many calls changed the server so far, for [`Answers::keep`].
-    pub(crate) fn writes(&self) -> u64 {
+    pub fn writes(&self) -> u64 {
         self.lock().writes
     }
 
     /// Keeps `answer` for `read`, unless a call changed the server since
     /// there had been `writes`. Whether it says something else than the one
     /// kept before.
-    pub(crate) fn keep(&self, read: String, answer: &Map<String, Value>, writes: u64) -> bool {
+    pub fn keep(&self, read: String, answer: &Map<String, Value>, writes: u64) -> bool {
         let text: Arc<str> = serde_json::to_string(answer)
             .expect("answers are JSON")
             .into();
@@ -261,6 +284,25 @@ impl Answers {
             kept.trim();
         }
         is_news
+    }
+
+    /// Puts `answer` in place of the one kept for `read`, as old as that one,
+    /// for what was added to it without asking for it again. Nothing is kept
+    /// when none was.
+    pub fn amend(&self, read: &str, answer: &Map<String, Value>) {
+        let text: Arc<str> = serde_json::to_string(answer)
+            .expect("answers are JSON")
+            .into();
+        let mut kept = self.lock();
+        kept.shown += 1;
+        let shown = kept.shown;
+        let Some(old) = kept.answers.get_mut(read) else {
+            return;
+        };
+        old.text = text;
+        old.shown = shown;
+        kept.changes += 1;
+        kept.trim();
     }
 
     /// Forgets the answers that `call`, if it changes the server, makes out
@@ -828,6 +870,53 @@ mod tests {
         answers.age_all();
         assert!(answers.find(&read).unwrap().aged);
         assert!(answers.unsaved().is_some());
+    }
+
+    #[test]
+    fn aging_reads_ages_those_alone() {
+        let listens = "listens:joe";
+        let loves = "loves:joe";
+        let answers = kept(&[(listens, "{}"), (loves, "{}")]);
+        save(&answers);
+        answers.age("listens:");
+        assert!(answers.find(listens).unwrap().aged);
+        assert!(!answers.find(loves).unwrap().aged);
+        assert!(answers.unsaved().is_some(), "saved aged");
+    }
+
+    #[test]
+    fn clearing_forgets_them_and_those_on_their_way_and_keeps_on_keeping() {
+        let read = key("getGenres", &[]);
+        let answers = kept(&[(&read, "{}")]);
+        save(&answers);
+        let asked_before = answers.writes();
+        answers.clear();
+        assert!(answers.find(&read).is_none());
+        assert!(answers.unsaved().is_some(), "saved without them");
+        answers.keep(read.clone(), &answer("{}"), asked_before);
+        assert!(
+            answers.find(&read).is_none(),
+            "asked for before the clearing"
+        );
+        answers.keep(read.clone(), &answer("{}"), answers.writes());
+        assert!(answers.find(&read).is_some());
+        assert!(save(&answers).contains("getGenres"));
+    }
+
+    #[test]
+    fn amending_keeps_the_age_and_keeps_nothing_new() {
+        static CLOCK: AtomicU64 = AtomicU64::new(NOW);
+        let answers = Answers::new(|| CLOCK.load(Relaxed));
+        answers.keep("createdfor:joe".into(), &answer(r#"{"n":1}"#), 0);
+        CLOCK.store(NOW + FRESH_FOR, Relaxed);
+        save(&answers);
+        answers.amend("createdfor:joe", &answer(r#"{"n":2}"#));
+        let found = answers.find("createdfor:joe").unwrap();
+        assert_eq!(found.answer, answer(r#"{"n":2}"#));
+        assert!(found.aged, "as old as before");
+        assert!(answers.unsaved().is_some());
+        answers.amend("createdfor:ann", &answer("{}"));
+        assert!(answers.find("createdfor:ann").is_none());
     }
 
     #[test]

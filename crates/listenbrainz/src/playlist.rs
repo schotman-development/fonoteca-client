@@ -1,6 +1,6 @@
 //! The playlists ListenBrainz makes for a user, read as JSPF.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Client, Result, send};
 
@@ -9,7 +9,7 @@ use crate::{Client, Result, send};
 const EXPLORATION_PATCH: &str = "weekly-exploration";
 
 /// A playlist, without its tracks when it comes from a list.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
     pub mbid: String,
     pub title: String,
@@ -19,6 +19,8 @@ pub struct Playlist {
     pub source_patch: Option<String>,
     /// When it was made, as ISO 8601.
     pub date: Option<String>,
+    /// When ListenBrainz last changed it, as ISO 8601.
+    pub last_modified_at: Option<String>,
     pub tracks: Vec<PlaylistTrack>,
 }
 
@@ -48,7 +50,7 @@ impl Playlist {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaylistTrack {
     pub recording_mbid: Option<String>,
     pub title: String,
@@ -94,6 +96,7 @@ struct Extension {
 struct PlaylistMetadata {
     #[serde(default)]
     additional_metadata: AlgorithmParent,
+    last_modified_at: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -162,6 +165,7 @@ impl From<Jspf> for Playlist {
             title: jspf.title,
             annotation: jspf.annotation,
             date: jspf.date,
+            last_modified_at: jspf.extension.playlist.last_modified_at,
             source_patch: jspf
                 .extension
                 .playlist
@@ -222,6 +226,7 @@ mod tests {
       {"playlist":{"title":"Daily Jams for rob","identifier":"https://listenbrainz.org/playlist/a9b9f76f-7e1f-427b-9244-68dcf26cb43f",
         "annotation":"<p>Made for you</p>","date":"2026-11-04T23:02:06.186375+00:00","track":[],
         "extension":{"https://musicbrainz.org/doc/jspf#playlist":{"created_for":"rob",
+          "last_modified_at":"2026-11-04T23:02:06.186375+00:00",
           "additional_metadata":{"algorithm_metadata":{"source_patch":"daily-jams"}}}}}},
       {"playlist":{"title":"Weekly Exploration for rob","identifier":"https://listenbrainz.org/playlist/55f2a01f-3974-46ca-8461-a8a84886eba4",
         "extension":{"https://musicbrainz.org/doc/jspf#playlist":{
@@ -242,7 +247,12 @@ mod tests {
             playlists[0].date.as_deref(),
             Some("2026-11-04T23:02:06.186375+00:00")
         );
+        assert_eq!(
+            playlists[0].last_modified_at.as_deref(),
+            Some("2026-11-04T23:02:06.186375+00:00")
+        );
         assert_eq!(playlists[1].date, None);
+        assert_eq!(playlists[1].last_modified_at, None);
         assert_eq!(playlists[1].annotation, None);
         assert!(playlists[1].tracks.is_empty());
     }

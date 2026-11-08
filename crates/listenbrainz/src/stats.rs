@@ -6,8 +6,8 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use reqwest::Url;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use super::{Client, Result, exchange, send_checked};
 
@@ -30,7 +30,8 @@ pub enum Range {
 }
 
 impl Range {
-    fn as_str(self) -> &'static str {
+    /// ListenBrainz's own name of the range.
+    pub fn as_str(self) -> &'static str {
         match self {
             Range::ThisWeek => "this_week",
             Range::ThisMonth => "this_month",
@@ -40,7 +41,7 @@ impl Range {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopArtist {
     pub artist_name: String,
     /// The MusicBrainz ID, which ListenBrainz may not know.
@@ -49,7 +50,7 @@ pub struct TopArtist {
     pub listen_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopAlbum {
     pub release_group_name: String,
     pub artist_name: String,
@@ -74,7 +75,7 @@ pub struct GenreActivity {
 
 /// ListenBrainz has no top genres of a user: its genre statistic is the
 /// listens of each genre for each hour of the day, which `top_genres` adds up.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopGenre {
     pub genre: String,
     pub listen_count: u64,

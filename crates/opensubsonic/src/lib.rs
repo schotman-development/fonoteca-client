@@ -25,7 +25,7 @@ mod model;
 #[cfg(test)]
 mod spec_examples;
 
-pub use answers::{Answers, FRESH_FOR};
+pub use answers::{Answers, FRESH_FOR, Found};
 pub use api::*;
 pub use model::*;
 
