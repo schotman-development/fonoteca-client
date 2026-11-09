@@ -83,6 +83,11 @@ export struct MenuEntry {
     // A second, smaller line under the label, for entries the label alone
     // doesn't tell apart; the menu says so with `two-line`.
     detail: string,
+    // What the entry is where only its icon shows it, as "Bluetooth", which
+    // a screen reader says before its label.
+    kind: string,
+    // The one chosen of the entries, checked at its end.
+    checked: bool,
 }
 
 // An album or artist on a grid or shelf, and the page it opens; a folder of
@@ -115,11 +120,16 @@ export global Icons {
     out property <string> chevron-down: "M6 9l6 6 6-6";
     out property <string> chevron-up: "M6 15l6-6 6 6";
     out property <string> forward: "M9 5l7 7-7 7";
-    // Draws nothing, but takes the width of an icon, to line up the words of
-    // a menu's entries that have none beside those that have.
-    out property <string> blank: "M0 0";
     out property <string> speaker: "M4 9.5v5h4l5 4v-13l-5 4z M16.5 9.5a3.5 3.5 0 0 1 0 5 M19 7a7 7 0 0 1 0 10";
     out property <string> sound: "M6 4v16 M12 4v16 M18 4v16 M3.5 14h5 M9.5 8h5 M15.5 16h5";
+    // Sound devices by what they are; `speaker` stands for one the system
+    // says nothing of.
+    out property <string> loudspeaker: "M6 3h12v18H6z M12 9a1.5 1.5 0 1 1 0-3a1.5 1.5 0 1 1 0 3z M12 18a3.5 3.5 0 1 1 0-7a3.5 3.5 0 1 1 0 7z";
+    out property <string> headphones: "M4 14v-2a8 8 0 0 1 16 0v2 M4 14h2.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z M20 14h-2.5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1H19a1 1 0 0 0 1-1z";
+    out property <string> headset: "M4 13v-2a8 8 0 0 1 16 0v2 M4 13h2.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z M20 13h-2.5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1H19a1 1 0 0 0 1-1z M5.75 19c0 2 1.5 3 4 3h1.75 M12.5 23a1 1 0 1 1 0-2a1 1 0 1 1 0 2z";
+    out property <string> bluetooth: "M7 7l10 10-5 5V2l5 5L7 17";
+    out property <string> usb: "M12 2.5V18 M9.5 5L12 2.5 14.5 5 M12 22a2 2 0 1 1 0-4a2 2 0 1 1 0 4z M12 16l-5.5-3v-2 M6.5 11a1.5 1.5 0 1 1 0-3a1.5 1.5 0 1 1 0 3z M12 13.5l5.5-3V9 M16 6h3v3h-3z";
+    out property <string> display: "M3 5h18v11H3z M8 20h8 M12 16v4";
     out property <string> refresh: "M20 12a8 8 0 1 1-8-8c2.2 0 4.3.9 5.9 2.4L20 8.5 M20 3.5v5h-5";
     out property <string> up: "M12 19V5 M6 11l6-6 6 6";
     out property <string> down: "M12 5v14 M6 13l6 6 6-6";
@@ -601,6 +611,8 @@ component MenuRow {
     in property <string> label;
     in property <bool> danger;
     in property <string> detail;
+    in property <string> kind;
+    in property <bool> checked;
     in property <bool> strong;
     in property <bool> more;
     in property <bool> lit;
@@ -611,7 +623,7 @@ component MenuRow {
     callback clicked();
 
     accessible-role: button;
-    accessible-label: root.detail == "" ? root.label : root.label + ", " + root.detail;
+    accessible-label: (root.kind == "" ? "" : root.kind + ": ") + (root.detail == "" ? root.label : root.label + ", " + root.detail);
     accessible-expandable: root.more;
     accessible-action-default => { root.clicked(); }
 
@@ -653,6 +665,16 @@ component MenuRow {
                 vertical-alignment: center;
                 overflow: elide;
             }
+        }
+        if root.checked: Path {
+            cross-axis-self-alignment: center;
+            width: root.icon-size;
+            height: root.icon-size;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Icons.check;
+            stroke: Theme.accent;
+            stroke-width: 2px;
         }
         if root.more: Path {
             cross-axis-self-alignment: center;
@@ -910,6 +932,8 @@ export component MoreMenu {
                             icon: entry.icon;
                             label: entry.label;
                             detail: entry.detail;
+                            kind: entry.kind;
+                            checked: entry.checked;
                             danger: entry.danger;
                             more: entry.choices.length > 0;
                             lit: root.current == i;
@@ -986,6 +1010,8 @@ export component MoreMenu {
                             icon: entry.icon;
                             label: entry.label;
                             detail: entry.detail;
+                            kind: entry.kind;
+                            checked: entry.checked;
                             danger: entry.danger;
                             more: entry.choices.length > 0;
                             icon-size: Theme.phone-icon;
@@ -4213,11 +4239,15 @@ component NowPlayingDetails inherits VerticalLayout {
     }
 }
 
-// The sound device in use, named beside the button that opens the menu of the
-// outputs to play on, where there is room for the name.
+// The sound device in use, its kind's icon on the button that opens the menu
+// of the outputs to play on, and named beside it where there is room.
 export component OutputPicker inherits HorizontalLayout {
     in property <[MenuEntry]> output-devices;
     in property <string> output-name;
+    // The icon of the kind of device in use, and what the kind is called
+    // where its name doesn't say.
+    in property <string> output-icon;
+    in property <string> output-kind;
     in property <bool> named: true;
     callback list-devices();
     callback choose-output(index: int);
@@ -4227,7 +4257,10 @@ export component OutputPicker inherits HorizontalLayout {
     menu := MoreMenu {
         cross-axis-self-alignment: center;
         label: "Sound device";
-        icon: Icons.speaker;
+        icon: root.output-icon;
+        // Drawn in outline as in the menu: filled, a speaker's box and a
+        // screen would be solid.
+        filled: false;
         two-line: true;
         panel: 320px;
         entries: root.output-devices;
@@ -4239,6 +4272,7 @@ export component OutputPicker inherits HorizontalLayout {
         max-width: 240px;
         min-height: menu.height;
         text: root.output-name;
+        accessible-label: root.output-kind == "" ? root.output-name : root.output-kind + ": " + root.output-name;
         font-size: Theme.small;
         color: name-touch.has-hover ? Theme.text : Theme.muted;
         vertical-alignment: center;
@@ -4351,6 +4385,8 @@ export component PlayerBar inherits Rectangle {
     in property <bool> taggable;
     in property <[MenuEntry]> output-devices;
     in property <string> output-name;
+    in property <string> output-icon;
+    in property <string> output-kind;
     // Whether what plays is heard, with a sound device and settings for it:
     // not in the browser, which only shows what would play.
     in property <bool> has-sound;
@@ -4636,6 +4672,8 @@ export component PlayerBar inherits Rectangle {
                     named: root.roomy;
                     output-devices: root.output-devices;
                     output-name: root.output-name;
+                    output-icon: root.output-icon;
+                    output-kind: root.output-kind;
                     list-devices => { root.list-devices(); }
                     choose-output(index) => { root.choose-output(index); }
                 }

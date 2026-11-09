@@ -1409,9 +1409,12 @@ export component AppWindow inherits Window {
         { id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves },
     ] : root.tiles-queued ? root.queue-entries : root.tiles-moved ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
     // The sound devices to play on, the system's default first, and the one
-    // chosen; volume leveling: off, by track or by album.
+    // chosen, with the icon of its kind and what the kind is called; volume
+    // leveling: off, by track or by album.
     in property <[MenuEntry]> output-devices;
     in property <string> output-name;
+    in property <string> output-icon: Icons.speaker;
+    in property <string> output-kind;
     in-out property <int> leveling;
     // The streaming format and bitrate entries for wifi and for mobile data;
     // a device without mobile data has just the first.
@@ -3712,6 +3715,8 @@ export component AppWindow inherits Window {
                     taggable: root.tags-offered;
                     output-devices: root.output-devices;
                     output-name: root.output-name;
+                    output-icon: root.output-icon;
+                    output-kind: root.output-kind;
                     page-open: root.now-playing-open;
                     queue-open: root.queue-open;
                     paused: root.playing-paused;
@@ -4083,6 +4088,8 @@ export component AppWindow inherits Window {
                                             horizontal-stretch: 1;
                                             output-devices: root.output-devices;
                                             output-name: root.output-name;
+                                            output-icon: root.output-icon;
+                                            output-kind: root.output-kind;
                                             list-devices => { root.list-devices(); }
                                             choose-output(index) => { root.choose-output(index); }
                                         }

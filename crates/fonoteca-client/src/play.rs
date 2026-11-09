@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use opensubsonic::{Child, Client};
-#[cfg(not(target_family = "wasm"))]
-use playback::OutputDevice;
 use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
+#[cfg(not(target_family = "wasm"))]
+use playback::{OutputDevice, OutputKind};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
@@ -562,7 +562,11 @@ fn show_devices(
         devices.push(None);
         titles.push(SharedString::from("System default"));
         keys.push(SYSTEM_DEFAULT_KEY.to_owned());
-        entries.push((SharedString::from("System default"), SharedString::new()));
+        entries.push((
+            SharedString::from("System default"),
+            SharedString::new(),
+            OutputKind::Unknown,
+        ));
     }
     for device in found {
         let is_saved = saved
@@ -574,7 +578,7 @@ fn show_devices(
         if system.as_ref() == Some(&device.id) {
             system_at = Some(entries.len());
         }
-        entries.push((device.name.into(), device.detail.into()));
+        entries.push((device.name.into(), device.detail.into(), device.kind));
         titles.push(device.title.into());
         keys.push(device.key);
         devices.push(Some(device.id));
@@ -589,14 +593,17 @@ fn show_devices(
     let menu: Vec<MenuEntry> = entries
         .into_iter()
         .enumerate()
-        .map(|(index, (label, detail))| MenuEntry {
+        .map(|(index, (label, detail, kind))| MenuEntry {
             id: index.to_string().into(),
+            icon: kind_icon(&icons, kind),
+            kind: said_kind(kind, &label).into(),
+            checked: chosen == Some(index),
             label,
             detail,
-            icon: device_icon(&icons, chosen == Some(index)),
             ..Default::default()
         })
         .collect();
+    show_kind(ui, &icons, chosen.and_then(|at| menu.get(at)));
     ui.set_output_devices(ModelRc::new(VecModel::from(menu)));
     ui.set_output_name(
         chosen
@@ -636,30 +643,53 @@ fn save_output(device: Option<String>) {
     prefs::save(&saved);
 }
 
-/// Moves the menu's mark, and the name beside the button, to the device
-/// `chosen`.
+/// Moves the menu's mark, the name beside the button and its kind on the
+/// button, to the device `chosen`.
 #[cfg(not(target_family = "wasm"))]
 fn mark_device(ui: &AppWindow, playing: &Playing, chosen: usize) {
-    let icons = ui.global::<Icons>();
     let entries = ui.get_output_devices();
     for (index, mut entry) in entries.iter().enumerate() {
-        entry.icon = device_icon(&icons, index == chosen);
+        entry.checked = index == chosen;
         entries.set_row_data(index, entry);
     }
+    show_kind(ui, &ui.global::<Icons>(), entries.row_data(chosen).as_ref());
     if let Some(title) = playing.device_titles.get(chosen) {
         ui.set_output_name(title.clone());
     }
 }
 
-/// A check for the device in use; the others get a blank of its width, so
-/// their names line up with it.
+/// Puts the kind of the device `chosen` from the menu on the button that
+/// opens it; with none chosen, a plain sound device.
 #[cfg(not(target_family = "wasm"))]
-fn device_icon(icons: &Icons, in_use: bool) -> SharedString {
-    if in_use {
-        icons.get_check()
-    } else {
-        icons.get_blank()
+fn show_kind(ui: &AppWindow, icons: &Icons, chosen: Option<&MenuEntry>) {
+    let (icon, kind) = chosen.map_or_else(
+        || (kind_icon(icons, OutputKind::Unknown), SharedString::new()),
+        |entry| (entry.icon.clone(), entry.kind.clone()),
+    );
+    ui.set_output_icon(icon);
+    ui.set_output_kind(kind);
+}
+
+/// One of no known kind gets the plain sound device, never another kind's.
+#[cfg(not(target_family = "wasm"))]
+fn kind_icon(icons: &Icons, kind: OutputKind) -> SharedString {
+    match kind {
+        OutputKind::Unknown => icons.get_speaker(),
+        OutputKind::Speaker => icons.get_loudspeaker(),
+        OutputKind::Headphones => icons.get_headphones(),
+        OutputKind::Headset => icons.get_headset(),
+        OutputKind::Bluetooth => icons.get_bluetooth(),
+        OutputKind::Usb => icons.get_usb(),
+        OutputKind::Hdmi => icons.get_display(),
     }
+}
+
+/// What a screen reader says a device of the `kind` is before its `name`:
+/// nothing where the name says it already, as Android's for wired
+/// headphones does.
+#[cfg(not(target_family = "wasm"))]
+fn said_kind(kind: OutputKind, name: &str) -> &'static str {
+    if kind.name() == name { "" } else { kind.name() }
 }
 
 /// Plays `songs` from the `start`th, in place of what played: shuffled, the

@@ -78,39 +78,46 @@ export component Workbench inherits Window {
     ];
     property <int> quality-format: 1;
     property <int> quality-bitrate: 2;
-    property <int> output-device;
+    property <int> output-device: 1;
+    // One of each kind there is an icon for.
     property <[MenuEntry]> output-devices: [
-        { id: "0", label: "System default", icon: root.output-device == 0 ? Icons.check : Icons.blank },
-        { id: "1", label: "USB DAC", detail: "hw:CARD=DAC,DEV=0", icon: root.output-device == 1 ? Icons.check : Icons.blank },
-        { id: "2", label: "Built-in Audio Analog Stereo", detail: "hw:CARD=PCH,DEV=0", icon: root.output-device == 2 ? Icons.check : Icons.blank },
+        { id: "0", label: "System default", icon: Icons.speaker, checked: root.output-device == 0 },
+        { id: "1", label: "USB DAC", detail: "hw:CARD=DAC,DEV=0", icon: Icons.usb, kind: "USB", checked: root.output-device == 1 },
+        { id: "2", label: "Built-in Audio Analog Stereo", detail: "hw:CARD=PCH,DEV=0", icon: Icons.speaker, checked: root.output-device == 2 },
+        { id: "3", label: "WH-1000XM4", icon: Icons.bluetooth, kind: "Bluetooth", checked: root.output-device == 3 },
+        { id: "4", label: "Phone speaker", icon: Icons.loudspeaker, kind: "Speaker", checked: root.output-device == 4 },
+        { id: "5", label: "Headphones", icon: Icons.headphones, checked: root.output-device == 5 },
+        { id: "6", label: "Headset", icon: Icons.headset, checked: root.output-device == 6 },
+        { id: "7", label: "HDMI", icon: Icons.display, checked: root.output-device == 7 },
     ];
+    property <MenuEntry> output-chosen: root.output-devices[root.output-device];
     // What a laptop's ALSA lists: every card again as hw, plughw, dmix and so on.
     property <[MenuEntry]> many-devices: [
-        { id: "0", label: "System default", icon: Icons.check },
-        { id: "1", label: "HDA Intel PCH, ALC3246 Analog", detail: "hw:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "2", label: "HDA Intel PCH, ALC3246 Analog", detail: "plughw:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "3", label: "HDA Intel PCH, ALC3246 Analog", detail: "sysdefault:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "4", label: "HDA Intel PCH, ALC3246 Analog", detail: "front:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "5", label: "HDA Intel PCH, ALC3246 Analog", detail: "surround40:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "6", label: "HDA Intel PCH, ALC3246 Analog", detail: "iec958:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "7", label: "HDA Intel PCH, ALC3246 Analog", detail: "dmix:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "8", label: "HDA Intel PCH, ALC3246 Analog", detail: "dsnoop:CARD=PCH,DEV=0", icon: Icons.blank },
-        { id: "9", label: "USB Audio DAC, USB Audio", detail: "hw:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "10", label: "USB Audio DAC, USB Audio", detail: "plughw:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "11", label: "USB Audio DAC, USB Audio", detail: "sysdefault:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "12", label: "USB Audio DAC, USB Audio", detail: "front:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "13", label: "USB Audio DAC, USB Audio", detail: "surround40:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "14", label: "USB Audio DAC, USB Audio", detail: "iec958:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "15", label: "USB Audio DAC, USB Audio", detail: "dmix:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "16", label: "USB Audio DAC, USB Audio", detail: "dsnoop:CARD=DAC,DEV=0", icon: Icons.blank },
-        { id: "17", label: "HDA NVidia, HDMI 0", detail: "hw:CARD=HDMI,DEV=0", icon: Icons.blank },
-        { id: "18", label: "HDA NVidia, HDMI 0", detail: "plughw:CARD=HDMI,DEV=0", icon: Icons.blank },
-        { id: "19", label: "HDA NVidia, HDMI 0", detail: "sysdefault:CARD=HDMI,DEV=0", icon: Icons.blank },
-        { id: "20", label: "HDA NVidia, HDMI 0", detail: "front:CARD=HDMI,DEV=0", icon: Icons.blank },
-        { id: "21", label: "HDA NVidia, HDMI 0", detail: "surround40:CARD=HDMI,DEV=0", icon: Icons.blank },
-        { id: "22", label: "HDA NVidia, HDMI 0", detail: "iec958:CARD=HDMI,DEV=0", icon: Icons.blank },
-        { id: "23", label: "HDA NVidia, HDMI 0", detail: "dmix:CARD=HDMI,DEV=0", icon: Icons.blank },
-        { id: "24", label: "HDA NVidia, HDMI 0", detail: "dsnoop:CARD=HDMI,DEV=0", icon: Icons.blank },
+        { id: "0", label: "System default", icon: Icons.speaker, checked: true },
+        { id: "1", label: "HDA Intel PCH, ALC3246 Analog", detail: "hw:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "2", label: "HDA Intel PCH, ALC3246 Analog", detail: "plughw:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "3", label: "HDA Intel PCH, ALC3246 Analog", detail: "sysdefault:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "4", label: "HDA Intel PCH, ALC3246 Analog", detail: "front:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "5", label: "HDA Intel PCH, ALC3246 Analog", detail: "surround40:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "6", label: "HDA Intel PCH, ALC3246 Analog", detail: "iec958:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "7", label: "HDA Intel PCH, ALC3246 Analog", detail: "dmix:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "8", label: "HDA Intel PCH, ALC3246 Analog", detail: "dsnoop:CARD=PCH,DEV=0", icon: Icons.speaker },
+        { id: "9", label: "USB Audio DAC, USB Audio", detail: "hw:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "10", label: "USB Audio DAC, USB Audio", detail: "plughw:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "11", label: "USB Audio DAC, USB Audio", detail: "sysdefault:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "12", label: "USB Audio DAC, USB Audio", detail: "front:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "13", label: "USB Audio DAC, USB Audio", detail: "surround40:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "14", label: "USB Audio DAC, USB Audio", detail: "iec958:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "15", label: "USB Audio DAC, USB Audio", detail: "dmix:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "16", label: "USB Audio DAC, USB Audio", detail: "dsnoop:CARD=DAC,DEV=0", icon: Icons.speaker },
+        { id: "17", label: "HDA NVidia, HDMI 0", detail: "hw:CARD=HDMI,DEV=0", icon: Icons.speaker },
+        { id: "18", label: "HDA NVidia, HDMI 0", detail: "plughw:CARD=HDMI,DEV=0", icon: Icons.speaker },
+        { id: "19", label: "HDA NVidia, HDMI 0", detail: "sysdefault:CARD=HDMI,DEV=0", icon: Icons.speaker },
+        { id: "20", label: "HDA NVidia, HDMI 0", detail: "front:CARD=HDMI,DEV=0", icon: Icons.speaker },
+        { id: "21", label: "HDA NVidia, HDMI 0", detail: "surround40:CARD=HDMI,DEV=0", icon: Icons.speaker },
+        { id: "22", label: "HDA NVidia, HDMI 0", detail: "iec958:CARD=HDMI,DEV=0", icon: Icons.speaker },
+        { id: "23", label: "HDA NVidia, HDMI 0", detail: "dmix:CARD=HDMI,DEV=0", icon: Icons.speaker },
+        { id: "24", label: "HDA NVidia, HDMI 0", detail: "dsnoop:CARD=HDMI,DEV=0", icon: Icons.speaker },
     ];
     property <string> long-title: "An unusually long title that keeps going, to show where text wraps and where it is cut short";
     property <[Name]> many: [
@@ -759,7 +766,9 @@ export component Workbench inherits Window {
                             playlists: [{ label: "Road Trip", link: "1" }];
                             taggable: true;
                             output-devices: root.output-devices;
-                            output-name: "USB DAC (hw:CARD=DAC,DEV=0)";
+                            output-name: root.output-chosen.label;
+                            output-icon: root.output-chosen.icon;
+                            output-kind: root.output-chosen.kind;
                             paused: root.player-paused;
                             position: root.player-position;
                             duration: 271;
@@ -796,6 +805,7 @@ export component Workbench inherits Window {
                             live: true;
                             output-devices: root.output-devices;
                             output-name: "System default";
+                            output-icon: Icons.speaker;
                             quality: "Low quality";
                             level: 0;
                             path: [{ text: "AAC 48 kHz", quality: 0 }];
@@ -957,7 +967,9 @@ export component Workbench inherits Window {
                             OutputPicker {
                                 horizontal-stretch: 1;
                                 output-devices: root.long-text ? root.many-devices : root.output-devices;
-                                output-name: root.long-text ? "HDA Intel PCH, ALC3246 Analog (hw:CARD=PCH,DEV=0)" : "System default";
+                                output-name: root.long-text ? "HDA Intel PCH, ALC3246 Analog (hw:CARD=PCH,DEV=0)" : root.output-chosen.label;
+                                output-icon: root.long-text ? Icons.speaker : root.output-chosen.icon;
+                                output-kind: root.long-text ? "" : root.output-chosen.kind;
                                 list-devices => { root.event = "list devices"; }
                                 choose-output(index) => { root.output-device = index; }
                             }

@@ -496,7 +496,7 @@ fn default_sink(_pipewire: &cpal::Host) -> Option<String> {
 fn describe(device: &cpal::Device) -> Device {
     let id = device.id().map(|id| id.to_string()).unwrap_or_default();
     Device {
-        name: name(device),
+        name: listed_name(device),
         exclusive: outputs::exclusive(&id),
         supported: device
             .supported_output_configs()
@@ -505,11 +505,20 @@ fn describe(device: &cpal::Device) -> Device {
     }
 }
 
-/// The device's name as the system gives it, without ALSA's second line.
+/// The name the menu of devices gives the device, so that the signal path
+/// and its problems call it the same; the system's for one it doesn't list.
+fn listed_name(device: &cpal::Device) -> String {
+    found(device)
+        .and_then(|found| outputs::list(vec![found]).pop())
+        .map_or_else(|| name(device), |output| output.name)
+}
+
+/// The device's name as the system gives it, without ALSA's second line or
+/// the kind cpal prints after it.
 fn name(device: &cpal::Device) -> String {
     let name = device
         .description()
-        .map(|description| description.to_string())
+        .map(|description| description.name().to_owned())
         .unwrap_or_else(|_| device.to_string());
     name.lines().next().unwrap_or_default().to_owned()
 }
@@ -538,13 +547,11 @@ fn hosts() -> Vec<cpal::Host> {
 }
 
 fn found(device: &cpal::Device) -> Option<Found> {
-    let name = name(device);
     Some(Found {
         id: device.id().ok()?.to_string(),
         description: device
             .description()
-            .unwrap_or_else(|_| DeviceDescriptionBuilder::new(&name).build()),
-        name,
+            .unwrap_or_else(|_| DeviceDescriptionBuilder::new(name(device)).build()),
         safe_speaker: format!("{device:?}").contains("BuiltinSpeakerSafe"),
     })
 }

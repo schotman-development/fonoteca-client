@@ -3279,6 +3279,7 @@ mod tests {
                     name: name.into(),
                     detail: pcm.into(),
                     title: format!("{name} ({pcm})"),
+                    kind: playback::OutputKind::Unknown,
                     same_as: Vec::new(),
                 }
             };
@@ -4694,6 +4695,8 @@ mod tests {
                 // choice is kept as the settings once kept it, and opening the
                 // menu lists the devices again. There is no system default to
                 // choose: with none chosen, the system's own device is, by name.
+                // Each device shows its kind's icon, and the button the one in
+                // use's; a screen reader says the kind before the name.
                 let speakers = "alsa:hw:CARD=PCH,DEV=0";
                 let dac = "alsa:hw:CARD=DAC,DEV=0";
                 let merged_away = "alsa:plughw:CARD=DAC,DEV=0";
@@ -4707,6 +4710,7 @@ mod tests {
                                 name: "Speakers".into(),
                                 detail: "hw:CARD=PCH,DEV=0".into(),
                                 title: "Speakers (hw:CARD=PCH,DEV=0)".into(),
+                                kind: playback::OutputKind::Speaker,
                                 same_as: Vec::new(),
                             },
                             playback::OutputDevice {
@@ -4715,6 +4719,7 @@ mod tests {
                                 name: "USB DAC".into(),
                                 detail: "hw:CARD=DAC,DEV=0".into(),
                                 title: "USB DAC (hw:CARD=DAC,DEV=0)".into(),
+                                kind: playback::OutputKind::Usb,
                                 same_as: vec![merged_away.into()],
                             },
                         ],
@@ -4728,11 +4733,17 @@ mod tests {
                     crate::prefs::save(&saved);
                 };
                 let icons = ui.global::<Icons>();
-                let marked = || -> Vec<bool> {
-                    ui.get_output_devices()
-                        .iter()
-                        .map(|entry| entry.icon == icons.get_check())
-                        .collect()
+                let marked = || -> Vec<bool> { ui.get_output_devices().iter().map(|entry| entry.checked).collect() };
+                let named_in_use = |name: &str| {
+                    ui.root_element()
+                        .query_descendants()
+                        .match_accessible_role(AccessibleRole::Text)
+                        .match_predicate({
+                            let name = name.to_owned();
+                            move |text| text.accessible_label().is_some_and(|label| label == name)
+                        })
+                        .find_first()
+                        .is_some()
                 };
                 let listed = || -> Vec<String> {
                     ui.get_output_devices().iter().map(|entry| entry.label.into()).collect()
@@ -4744,9 +4755,14 @@ mod tests {
                     fake_devices();
                     assert_eq!(listed(), ["Speakers", "USB DAC"], "{width}px");
                     assert_eq!(marked(), [true, false], "{width}px");
+                    let kind_icons: Vec<_> = ui.get_output_devices().iter().map(|entry| entry.icon).collect();
+                    assert_eq!(kind_icons, [icons.get_loudspeaker(), icons.get_usb()], "{width}px");
+                    assert_eq!(ui.get_output_icon(), icons.get_loudspeaker(), "{width}px");
                     assert_eq!(ui.get_output_name(), "Speakers (hw:CARD=PCH,DEV=0)", "{width}px");
                     assert_eq!(crate::prefs::load().output_device.as_deref(), Some(speakers), "{width}px");
-                    if width == 1100.0 {
+                    // The bar names the device only from 1400px, the page always.
+                    let on_the_bar = width == 1100.0;
+                    if on_the_bar {
                         let picker = button(&ui, "Sound device");
                         let (top, bottom) = (picker.absolute_position().y, picker.absolute_position().y + picker.size().height);
                         let player_bar = 80.0;
@@ -4759,19 +4775,24 @@ mod tests {
                             delta_y: -100000.0,
                         });
                         idle(Duration::from_millis(100)).await;
+                        assert!(named_in_use("Speaker: Speakers (hw:CARD=PCH,DEV=0)"), "{width}px");
                     }
                     click(&ui, "Sound device");
                     wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
                     fake_devices();
-                    click(&ui, "USB DAC, hw:CARD=DAC,DEV=0");
+                    click(&ui, "USB: USB DAC, hw:CARD=DAC,DEV=0");
                     assert_eq!(crate::prefs::load().output_device.as_deref(), Some(dac), "{width}px");
                     assert_eq!(marked(), [false, true], "{width}px");
                     assert_eq!(ui.get_output_name(), "USB DAC (hw:CARD=DAC,DEV=0)", "{width}px");
+                    assert_eq!(ui.get_output_icon(), icons.get_usb(), "the button follows the choice at {width}px");
+                    if !on_the_bar {
+                        assert!(named_in_use("USB: USB DAC (hw:CARD=DAC,DEV=0)"), "{width}px");
+                    }
                     // Listed again at start-up or on opening, the one saved is the one marked.
                     fake_devices();
                     assert_eq!(marked(), [false, true], "{width}px");
                     click(&ui, "Sound device");
-                    click(&ui, "Speakers, hw:CARD=PCH,DEV=0");
+                    click(&ui, "Speaker: Speakers, hw:CARD=PCH,DEV=0");
                     assert_eq!(crate::prefs::load().output_device.as_deref(), Some(speakers), "{width}px");
                     assert_eq!(marked(), [true, false], "{width}px");
                     wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
@@ -4793,6 +4814,7 @@ mod tests {
                 fake_devices_beside(Some("alsa:default"));
                 assert_eq!(marked(), [false, false]);
                 assert_eq!(ui.get_output_name(), "");
+                assert_eq!(ui.get_output_icon(), icons.get_speaker(), "none in use is a plain sound device");
                 assert_eq!(crate::prefs::load().output_device, None);
                 ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
                 idle(Duration::from_millis(400)).await;

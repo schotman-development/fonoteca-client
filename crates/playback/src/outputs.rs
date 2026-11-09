@@ -8,10 +8,10 @@
 use cpal::{DeviceDescription, DeviceDirection, DeviceType, InterfaceType};
 
 /// An output to choose from: its `name` and a short `detail` to tell it from
-/// others of the name, and `title`, which says all of that in one line.
-/// `key` is what it goes by from one connection to the next, for what is
-/// kept about it. `same_as` holds the ids of the routes that were folded
-/// into it, which still play on it.
+/// others of the name, and `title`, which says all of that in one line;
+/// its `kind`, shown beside the name. `key` is what it goes by from one
+/// connection to the next, for what is kept about it. `same_as` holds the
+/// ids of the routes that were folded into it, which still play on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDevice {
     pub id: String,
@@ -19,14 +19,41 @@ pub struct OutputDevice {
     pub name: String,
     pub detail: String,
     pub title: String,
+    pub kind: OutputKind,
     pub same_as: Vec<String>,
+}
+
+/// What sort of output it is, as far as the system says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputKind {
+    #[default]
+    Unknown,
+    Speaker,
+    Headphones,
+    Headset,
+    Bluetooth,
+    Usb,
+    Hdmi,
+}
+
+impl OutputKind {
+    /// What the sort is called, or nothing for one not known.
+    pub fn name(self) -> &'static str {
+        match self {
+            OutputKind::Unknown => "",
+            OutputKind::Speaker => "Speaker",
+            OutputKind::Headphones => "Headphones",
+            OutputKind::Headset => "Headset",
+            OutputKind::Bluetooth => "Bluetooth",
+            OutputKind::Usb => "USB",
+            OutputKind::Hdmi => "HDMI",
+        }
+    }
 }
 
 /// What the host says of one output.
 pub(crate) struct Found {
     pub id: String,
-    /// The name the host gives it, as ALSA's is shown.
-    pub name: String,
     pub description: DeviceDescription,
     /// cpal turns Android's safe speaker into a plain speaker, and only its
     /// debug output tells them apart.
@@ -106,13 +133,10 @@ fn worth_listing(found: Vec<Found>) -> Vec<Found> {
 
 impl From<Found> for Output {
     fn from(found: Found) -> Self {
-        let android = found.id.starts_with(ANDROID_HOST_PREFIX);
         Output {
-            name: if android {
-                found.description.name().to_owned()
-            } else {
-                found.name
-            },
+            // Not the description as cpal prints it, which adds its kind
+            // after the name, as "via Bluetooth": the kind is an icon.
+            name: found.description.name().to_owned(),
             id: found.id,
             kind: found.description.device_type(),
             interface: found.description.interface_type(),
@@ -182,12 +206,13 @@ fn rank(output: &Output) -> u8 {
     u8::from(output.safe_speaker || output.kind == DeviceType::Headset)
 }
 
-/// A name for the listener and a short kind to tell outputs apart by.
+/// A name for the listener, and what sort of output it is.
 fn describe(output: Output) -> OutputDevice {
     let key = key(&output);
+    let kind = kind_of(output.kind, output.interface);
     let (name, detail, title) = if output.id.starts_with(ANDROID_HOST_PREFIX) {
-        let (name, detail) = android_words(&output);
-        (name.clone(), detail, name)
+        let name = android_name(&output);
+        (name.clone(), String::new(), name)
     } else if output.id.starts_with(PIPEWIRE_HOST_PREFIX) {
         (output.name.clone(), String::new(), output.name)
     } else {
@@ -205,6 +230,7 @@ fn describe(output: Output) -> OutputDevice {
         name,
         detail,
         title,
+        kind,
         same_as: output.same_as,
     }
 }
@@ -227,22 +253,35 @@ fn key(output: &Output) -> String {
     }
 }
 
-/// What the output is, by what Android says it is: its own name is the
-/// phone's model for the speaker and the earpiece alike.
-fn android_words(output: &Output) -> (String, String) {
-    let product = product_name(output);
+/// What sort of output the system says it is: how it is connected first,
+/// since a Bluetooth or USB one is often a speaker or headphones too. ALSA
+/// and macOS say neither, and an output on a PCI card may be the speaker,
+/// the headphone jack or a screen's HDMI, so those stay unknown.
+fn kind_of(kind: DeviceType, interface: InterfaceType) -> OutputKind {
+    match (kind, interface) {
+        (_, InterfaceType::Bluetooth) => OutputKind::Bluetooth,
+        (_, InterfaceType::Usb) => OutputKind::Usb,
+        (_, InterfaceType::Hdmi) => OutputKind::Hdmi,
+        (DeviceType::Speaker, _) => OutputKind::Speaker,
+        (DeviceType::Headphones, _) => OutputKind::Headphones,
+        (DeviceType::Headset, _) => OutputKind::Headset,
+        _ => OutputKind::Unknown,
+    }
+}
+
+/// What the output is called, by what Android says it is: its own name is
+/// the phone's model for the speaker and the earpiece alike, and a wired
+/// one's has nothing of the headphones in it.
+fn android_name(output: &Output) -> String {
     match (output.kind, output.interface) {
-        (DeviceType::Speaker, InterfaceType::BuiltIn) => {
-            ("Phone speaker".into(), "Built-in".into())
-        }
-        (_, InterfaceType::Bluetooth) => (format!("Bluetooth: {product}"), "Bluetooth".into()),
-        (_, InterfaceType::Usb) => (format!("USB: {product}"), "USB".into()),
-        (_, InterfaceType::Hdmi) => ("HDMI".into(), "HDMI".into()),
-        (DeviceType::Headphones, _) => ("Headphones".into(), "Wired".into()),
-        (DeviceType::Headset, _) => ("Headset".into(), "Wired".into()),
-        (DeviceType::HearingAid, _) => ("Hearing aid".into(), String::new()),
-        (DeviceType::Dock, _) => ("Dock".into(), String::new()),
-        _ => (product, String::new()),
+        (DeviceType::Speaker, InterfaceType::BuiltIn) => "Phone speaker".into(),
+        (_, InterfaceType::Bluetooth | InterfaceType::Usb) => product_name(output),
+        (_, InterfaceType::Hdmi) => OutputKind::Hdmi.name().into(),
+        (DeviceType::Headphones, _) => OutputKind::Headphones.name().into(),
+        (DeviceType::Headset, _) => OutputKind::Headset.name().into(),
+        (DeviceType::HearingAid, _) => "Hearing aid".into(),
+        (DeviceType::Dock, _) => "Dock".into(),
+        _ => product_name(output),
     }
 }
 
@@ -278,7 +317,6 @@ mod tests {
         }
         Found {
             id: id.to_owned(),
-            name: name.to_owned(),
             description: description.build(),
             safe_speaker: false,
         }
@@ -297,6 +335,13 @@ mod tests {
         list(found)
             .into_iter()
             .map(|output| (output.name, output.detail))
+            .collect()
+    }
+
+    fn kinds(found: Vec<Found>) -> Vec<(String, OutputKind)> {
+        list(found)
+            .into_iter()
+            .map(|output| (output.name, output.kind))
             .collect()
     }
 
@@ -396,11 +441,8 @@ mod tests {
                 "card=1",
             ),
         ]);
-        assert_eq!(words[0].0, "Bluetooth: Pixel Buds");
-        assert_eq!(
-            words[1].0, "USB: Dongle (USB)",
-            "only the type's own words go"
-        );
+        assert_eq!(words[0].0, "Pixel Buds");
+        assert_eq!(words[1].0, "Dongle (USB)", "only the type's own words go");
     }
 
     #[test]
@@ -478,15 +520,29 @@ mod tests {
         ));
         outputs.push(buds_call_route());
         outputs.push(buds_music_route());
+        outputs.push(found(
+            "aaudio:13",
+            "TV",
+            DeviceType::Unknown,
+            InterfaceType::Hdmi,
+            "",
+        ));
         let expected = [
-            ("Phone speaker", "Built-in"),
-            ("Headphones", "Wired"),
-            ("USB: USB DAC", "USB"),
-            ("Bluetooth: Buds Pro", "Bluetooth"),
+            ("Phone speaker", OutputKind::Speaker),
+            ("Headphones", OutputKind::Headphones),
+            ("USB DAC", OutputKind::Usb),
+            ("Buds Pro", OutputKind::Bluetooth),
+            ("HDMI", OutputKind::Hdmi),
         ];
-        assert_eq!(
-            words(outputs),
-            expected.map(|(name, detail)| (name.to_owned(), detail.to_owned()))
+        let listed = list(outputs);
+        let named: Vec<_> = listed
+            .iter()
+            .map(|output| (output.name.as_str(), output.kind))
+            .collect();
+        assert_eq!(named, expected);
+        assert!(
+            listed.iter().all(|output| output.detail.is_empty()),
+            "the kind's icon says what a line under the name would"
         );
     }
 
@@ -525,6 +581,64 @@ mod tests {
     }
 
     #[test]
+    fn how_an_output_is_connected_comes_before_what_it_is() {
+        let cases = [
+            (
+                DeviceType::Headset,
+                InterfaceType::Bluetooth,
+                OutputKind::Bluetooth,
+            ),
+            (
+                DeviceType::Speaker,
+                InterfaceType::Bluetooth,
+                OutputKind::Bluetooth,
+            ),
+            (DeviceType::Headset, InterfaceType::Usb, OutputKind::Usb),
+            (DeviceType::Unknown, InterfaceType::Hdmi, OutputKind::Hdmi),
+            (
+                DeviceType::Speaker,
+                InterfaceType::BuiltIn,
+                OutputKind::Speaker,
+            ),
+            (
+                DeviceType::Headphones,
+                InterfaceType::Unknown,
+                OutputKind::Headphones,
+            ),
+            (
+                DeviceType::Headset,
+                InterfaceType::Unknown,
+                OutputKind::Headset,
+            ),
+        ];
+        for (kind, interface, expected) in cases {
+            assert_eq!(
+                kind_of(kind, interface),
+                expected,
+                "{kind:?} on {interface:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_output_the_system_says_too_little_of_is_of_no_known_kind() {
+        for (kind, interface) in [
+            (DeviceType::Unknown, InterfaceType::Unknown),
+            (DeviceType::Unknown, InterfaceType::Pci),
+            (DeviceType::Unknown, InterfaceType::BuiltIn),
+            (DeviceType::Unknown, InterfaceType::Line),
+            (DeviceType::HearingAid, InterfaceType::Unknown),
+            (DeviceType::Dock, InterfaceType::Unknown),
+        ] {
+            assert_eq!(
+                kind_of(kind, interface),
+                OutputKind::Unknown,
+                "{kind:?} on {interface:?}"
+            );
+        }
+    }
+
+    #[test]
     fn no_name_carries_an_internal_id_or_type_tags() {
         for (name, detail) in words(phone()) {
             for text in [name, detail] {
@@ -533,12 +647,21 @@ mod tests {
         }
     }
 
+    /// cpal types a PipeWire output's interface by its bus, and Bluetooth
+    /// by its API.
     fn pipewire(id: &str, name: &str, direction: DeviceDirection) -> Found {
+        let interface = if id.starts_with("bluez_output.") {
+            InterfaceType::Bluetooth
+        } else if id.starts_with("alsa_output.pci-") {
+            InterfaceType::Pci
+        } else {
+            InterfaceType::Unknown
+        };
         Found {
             id: format!("pipewire:{id}"),
-            name: name.to_owned(),
             description: DeviceDescriptionBuilder::new(name)
                 .direction(direction)
+                .interface_type(interface)
                 .build(),
             safe_speaker: false,
         }
@@ -613,6 +736,24 @@ mod tests {
         assert_eq!(
             ids(routes.map(alsa).into()),
             routes.map(|pcm| format!("alsa:{pcm}"))
+        );
+    }
+
+    #[test]
+    fn pipewires_and_alsas_outputs_are_of_the_kind_cpal_says() {
+        assert_eq!(
+            kinds(laptop_with_pipewire()),
+            [
+                (
+                    "Built-in Audio Analog Stereo".to_owned(),
+                    OutputKind::Unknown
+                ),
+                ("WH-1000XM4".to_owned(), OutputKind::Bluetooth),
+                (
+                    "HDA Intel PCH, ALC3246 Analog".to_owned(),
+                    OutputKind::Unknown
+                ),
+            ]
         );
     }
 
