@@ -1,5 +1,5 @@
 import { LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
 
 export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine }
 
@@ -4035,7 +4035,12 @@ export component AppWindow inherits Window {
                                         note: root.playing-lyrics-note;
                                     }
                                 }
+                                // It fills the page's first screen and no more
+                                // where the cover can give way, so the queue's
+                                // button stays in sight under the controls.
                                 if !root.docked && !root.lyrics-on-sheet: VerticalLayout {
+                                    preferred-height: sheet-scroll.visible-height - sheet-stage.padding-top - sheet-stage.padding-bottom;
+                                    alignment: start;
                                     spacing: 24px;
                                     NowPlaying {
                                         active: root.now-playing-open;
@@ -4128,7 +4133,8 @@ export component AppWindow inherits Window {
                                     }
                                     if !root.playing-live: HorizontalLayout {
                                         alignment: center;
-                                        Button {
+                                        GhostButton {
+                                            icon: Icons.queue;
                                             text: "Queue";
                                             clicked => { root.show-queue(); }
                                         }

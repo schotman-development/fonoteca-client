@@ -3590,6 +3590,43 @@ export component Button inherits StdButton {
     ]
 }
 
+// A button drawn as its icon and its words alone, with neither border nor
+// background but the tint an icon button has under the pointer: Material's
+// text button, as small as its words on a phone are.
+export component GhostButton inherits Pressable {
+    in property <string> icon;
+    in property <string> text;
+    label: self.text;
+    height: Screen.phone ? Theme.phone-target : 32px;
+
+    Rectangle {
+        border-radius: self.height / 2;
+        background: root.hovered ? Theme.hover : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 8px;
+        Path {
+            cross-axis-self-alignment: center;
+            width: Screen.phone ? 20px : 16px;
+            height: self.width;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.icon;
+            stroke: Theme.text;
+            stroke-width: 1.75px;
+        }
+        Text {
+            text: root.text;
+            font-size: Theme.detail;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component Switch inherits StdSwitch {
     states [
         phone when Screen.phone: { min-height: Theme.phone-target; }
@@ -4156,10 +4193,12 @@ export component OutputPicker inherits HorizontalLayout {
 }
 
 // What plays, large, on a phone's or a tablet's now playing page: its cover
-// as wide as the page, which opens its album, and its words under it.
+// as wide as the page, which opens its album, and its words under it. On a
+// page too short for all it holds, the cover gives way to what comes under
+// it, down to `least-cover`.
 export component NowPlaying inherits VerticalLayout {
-    // The page's width for it, which it can't read from its own: its
-    // height follows from it.
+    // The page's width for it, which it can't read from its own: the
+    // cover's height follows from it.
     in property <length> available;
     in property <image> cover;
     in property <string> title;
@@ -4172,17 +4211,23 @@ export component NowPlaying inherits VerticalLayout {
     in property <Name> album;
     in property <bool> active;
     callback open(link: string);
+    property <length> least-cover: 160px;
     spacing: 24px;
 
-    Pressable {
-        width: root.available;
-        height: root.available;
-        label: "Album cover";
-        enabled: root.album.link != "";
-        clicked => { root.open(root.album.link); }
-        Artwork {
-            size: root.available;
-            source: root.cover;
+    Rectangle {
+        min-height: min(root.least-cover, root.available);
+        preferred-height: root.available;
+        Pressable {
+            x: (parent.width - self.width) / 2;
+            width: min(parent.width, parent.height);
+            height: self.width;
+            label: "Album cover";
+            enabled: root.album.link != "";
+            clicked => { root.open(root.album.link); }
+            Artwork {
+                size: parent.width;
+                source: root.cover;
+            }
         }
     }
     // Measured at its preferred width, the words would count as one line

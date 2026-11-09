@@ -6874,7 +6874,9 @@ mod tests {
                 QueueLine::default(),
                 QueueLine::default(),
             ])));
-            again.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            // Short enough that the page goes on past the sheet's edge, with
+            // its cover at its smallest.
+            again.window().set_size(slint::LogicalSize::new(360.0, 480.0));
             click(&again, "Now playing");
             idle(Duration::from_millis(400)).await;
             let (y, to) = scrub().await;
@@ -8270,6 +8272,17 @@ mod tests {
                 play::testing::show_song(&ui, vec![harbour()], 0);
                 idle(Duration::from_millis(100)).await;
                 assert!(album_under_cover() < with_part_line, "no line for a part over the album at {width}px");
+            }
+            // The queue's button stays wholly in sight under the controls, on
+            // a phone and a tablet, with a work too: the cover gives way.
+            play::testing::show_song(&ui, vec![work(), long_song()], 0);
+            for (width, height) in [(360.0, 800.0), (412.0, 915.0), (600.0, 960.0), (800.0, 1280.0)] {
+                ui.window().set_size(slint::LogicalSize::new(width, height));
+                idle(Duration::from_millis(400)).await;
+                let queue = on_sheet("Queue").unwrap_or_else(|| panic!("no queue's button in sight at {width}x{height}"));
+                let bottom = queue.absolute_position().y + queue.size().height;
+                assert!(bottom <= height, "the queue's button down to {bottom} at {width}x{height}");
+                assert!(sheet_top("Album cover").is_some_and(|top| top >= 0.0), "the cover in sight at {width}x{height}");
             }
             play::testing::show_song(&ui, vec![harbour()], 0);
             press(&ui, slint::platform::Key::Escape);
