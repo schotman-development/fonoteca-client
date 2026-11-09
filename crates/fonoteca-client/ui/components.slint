@@ -667,6 +667,35 @@ component MenuRow {
     }
 }
 
+// What a phone's popup opens as, so it stays on the screen: a sheet from the
+// bottom of the window, over the dimmed rest of it, which a tap on closes.
+// It is as tall as its children, `content-height` high, up to three
+// quarters of the window, past which they scroll.
+component Sheet inherits Rectangle {
+    in property <length> content-height;
+    callback dismissed();
+
+    background: #0000004d;
+    TouchArea {
+        clicked => { root.dismissed(); }
+    }
+    Rectangle {
+        y: parent.height - self.height;
+        height: min(root.content-height, Screen.height * 75%) + Screen.bottom;
+        background: Palette.background;
+        border-top-left-radius: 12px;
+        border-top-right-radius: 12px;
+        // Keeps taps on the sheet from closing it.
+        TouchArea { }
+        Flickable {
+            y: 0;
+            height: parent.height - Screen.bottom;
+            content-height: root.content-height;
+            @children
+        }
+    }
+}
+
 // The 3-dot button and its menu. On a desktop the menu opens under the
 // button, or over it near the window's bottom, and a submenu beside it on
 // the side with room. On a phone the menu is a sheet from the bottom of the
@@ -851,13 +880,9 @@ export component MoreMenu {
                 reject
             }
 
-            // Off the menu a click closes it, as one outside the popup does;
-            // on a phone that is the dimmed window above the sheet.
-            Rectangle {
-                background: Screen.phone ? #0000004d : transparent;
-                TouchArea {
-                    clicked => { popup.close(); }
-                }
+            // Off the menu a click closes it, as one outside the popup does.
+            if !Screen.phone: TouchArea {
+                clicked => { popup.close(); }
             }
 
             if !Screen.phone: Rectangle {
@@ -946,57 +971,47 @@ export component MoreMenu {
                 }
             }
 
-            if Screen.phone: Rectangle {
-                y: parent.height - self.height;
-                height: min(sheet-list.preferred-height, Screen.height * 75%) + Screen.bottom;
-                background: Palette.background;
-                border-top-left-radius: 12px;
-                border-top-right-radius: 12px;
-                // Keeps taps on the sheet from closing it.
-                TouchArea { }
-                Flickable {
-                    y: 0;
-                    height: parent.height - Screen.bottom;
-                    content-height: sheet-list.preferred-height;
-                    sheet-list := VerticalLayout {
-                        padding: 8px;
-                        if root.open < 0: VerticalLayout {
-                            for entry[i] in root.entries: MenuRow {
-                                height: root.sheet-entry-height;
-                                icon: entry.icon;
-                                label: entry.label;
-                                detail: entry.detail;
-                                danger: entry.danger;
-                                more: entry.choices.length > 0;
-                                icon-size: Theme.phone-icon;
-                                font-size: Theme.body;
-                                lit: root.current == i;
-                                keyed: root.keyed;
-                                clicked => { root.choose(i); }
+            if Screen.phone: Sheet {
+                content-height: sheet-list.preferred-height;
+                dismissed => { popup.close(); }
+                sheet-list := VerticalLayout {
+                    padding: 8px;
+                    if root.open < 0: VerticalLayout {
+                        for entry[i] in root.entries: MenuRow {
+                            height: root.sheet-entry-height;
+                            icon: entry.icon;
+                            label: entry.label;
+                            detail: entry.detail;
+                            danger: entry.danger;
+                            more: entry.choices.length > 0;
+                            icon-size: Theme.phone-icon;
+                            font-size: Theme.body;
+                            lit: root.current == i;
+                            keyed: root.keyed;
+                            clicked => { root.choose(i); }
+                        }
+                    }
+                    if root.open >= 0: VerticalLayout {
+                        // Back to the entries.
+                        MenuRow {
+                            height: root.sheet-row-height;
+                            icon: Icons.back;
+                            label: root.entries[root.open].label;
+                            strong: true;
+                            icon-size: Theme.phone-icon;
+                            font-size: Theme.body;
+                            clicked => {
+                                root.open = -1;
+                                root.choice = -1;
                             }
                         }
-                        if root.open >= 0: VerticalLayout {
-                            // Back to the entries.
-                            MenuRow {
-                                height: root.sheet-row-height;
-                                icon: Icons.back;
-                                label: root.entries[root.open].label;
-                                strong: true;
-                                icon-size: Theme.phone-icon;
-                                font-size: Theme.body;
-                                clicked => {
-                                    root.open = -1;
-                                    root.choice = -1;
-                                }
-                            }
-                            for choice[j] in root.choices: MenuRow {
-                                height: root.sheet-row-height;
-                                label: choice.label;
-                                font-size: Theme.body;
-                                lit: root.choice == j;
-                                keyed: root.keyed;
-                                clicked => { root.pick(j); }
-                            }
+                        for choice[j] in root.choices: MenuRow {
+                            height: root.sheet-row-height;
+                            label: choice.label;
+                            font-size: Theme.body;
+                            lit: root.choice == j;
+                            keyed: root.keyed;
+                            clicked => { root.pick(j); }
                         }
                     }
                 }
@@ -3918,15 +3933,40 @@ export component PlayerControls inherits VerticalLayout {
     }
 }
 
+// The steps of a signal path, each with its light.
+component PathSteps inherits VerticalLayout {
+    in property <[PathStep]> path;
+    padding: 12px;
+    for step in root.path: HorizontalLayout {
+        height: 28px;
+        spacing: 8px;
+        Rectangle {
+            cross-axis-self-alignment: center;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: Theme.quality-colors[step.quality];
+        }
+        Text {
+            text: step.text;
+            font-size: Theme.small;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
 // The light of a signal path, by its quality's name or without it, which
-// opens the steps of the path in a popup.
+// opens the steps of the path in a popup, or on a phone in a sheet, as the
+// menus do.
 export component SignalPathLight inherits Pressable {
     in property <string> quality;
     in property <int> level;
     in property <[PathStep]> path;
     in property <bool> dot-only;
     // Whether the steps open above the light and end where it does, or below
-    // it and start where it does.
+    // it and start where it does, where they aren't a sheet.
     in property <bool> opens-upward: true;
     property <brush> light: Theme.quality-colors[root.level];
 
@@ -3971,38 +4011,40 @@ export component SignalPathLight inherits Pressable {
     }
     steps := PopupWindow {
         in property <length> list-height: 24px + root.path.length * 28px;
-        x: root.opens-upward ? parent.width - self.width : 0px;
-        y: root.opens-upward ? -self.height - 8px : parent.height + 8px;
-        width: min(480px, Screen.width - 32px);
-        height: self.list-height;
+        x: Screen.phone ? -root.absolute-position.x : root.opens-upward ? parent.width - self.width : 0px;
+        y: Screen.phone ? -root.absolute-position.y : root.opens-upward ? -self.height - 8px : parent.height + 8px;
+        width: Screen.phone ? Screen.width : min(480px, Screen.width - 32px);
+        height: Screen.phone ? Screen.height : self.list-height;
         close-policy: PopupClosePolicy.close-on-click-outside;
-        Rectangle {
-            background: Palette.background;
-            border-radius: Theme.radius;
-            border-width: 1px;
-            border-color: Theme.hover;
-            drop-shadow-blur: 16px;
-            drop-shadow-offset-y: 4px;
-            drop-shadow-color: #0000004d;
-            VerticalLayout {
-                padding: 12px;
-                for step in root.path: HorizontalLayout {
-                    height: 28px;
-                    spacing: 8px;
-                    Rectangle {
-                        cross-axis-self-alignment: center;
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: Theme.quality-colors[step.quality];
-                    }
-                    Text {
-                        text: step.text;
-                        font-size: Theme.small;
-                        color: Theme.text;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
+        forward-focus: keys;
+
+        keys := FocusScope {
+            // Slint lets an Escape close it, but not Android's back.
+            key-pressed(event) => {
+                if event.text == Key.Back {
+                    steps.close();
+                    return accept;
+                }
+                reject
+            }
+
+            if !Screen.phone: Rectangle {
+                background: Palette.background;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.hover;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #0000004d;
+                PathSteps {
+                    path: root.path;
+                }
+            }
+            if Screen.phone: Sheet {
+                content-height: steps.list-height;
+                dismissed => { steps.close(); }
+                PathSteps {
+                    path: root.path;
                 }
             }
         }

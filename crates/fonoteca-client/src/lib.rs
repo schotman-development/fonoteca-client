@@ -9080,6 +9080,57 @@ mod tests {
             assert_eq!(ui.get_playing_waveform(), "");
             SLOW_WAVEFORM.store(false, Relaxed);
 
+            // A phone's signal path opens in the sheet its menus open in,
+            // wholly in sight, and Android's back closes it; a wider window
+            // keeps the popup by the light.
+            let steps = [
+                "FLAC 24-bit 96 kHz",
+                "Volume leveling",
+                "Shared: USB DAC (48 kHz 24-bit)",
+                "Android's mixer handles the stream and may change its rate",
+            ];
+            let path = steps.map(|text| PathStep { text: text.into(), quality: 2 });
+            ui.set_playing_path(slint::ModelRc::new(slint::VecModel::from(path.to_vec())));
+            ui.set_playing_quality("High quality".into());
+            ui.set_playing_level(2);
+            ui.set_playing(true);
+            let sheet = || {
+                ui.root_element()
+                    .query_descendants()
+                    .match_inherits("Sheet")
+                    .find_first()
+            };
+            ui.window().set_size(slint::LogicalSize::new(412.0, 915.0));
+            idle(Duration::from_millis(400)).await;
+            click(&ui, "Signal path: High quality");
+            idle(Duration::from_millis(100)).await;
+            let opened = sheet().expect("the signal path's sheet");
+            assert_eq!(
+                (opened.absolute_position(), opened.size()),
+                (slint::LogicalPosition::new(0.0, 0.0), slint::LogicalSize::new(412.0, 915.0)),
+                "over the whole window"
+            );
+            for step in steps {
+                let top = text_top(&ui, step).unwrap_or_else(|| panic!("{step} out of sight"));
+                assert!(top > 915.0 / 2.0, "{step} at {top}, in the sheet at the bottom");
+            }
+            press(&ui, slint::platform::Key::Back);
+            idle(Duration::from_millis(100)).await;
+            assert!(sheet().is_none(), "Back closes it");
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(400)).await;
+            click(&ui, "Signal path: High quality");
+            idle(Duration::from_millis(100)).await;
+            assert!(sheet().is_none(), "no sheet on a desktop");
+            assert!(text_top(&ui, steps[0]).is_some(), "the popup");
+            press(&ui, slint::platform::Key::Escape);
+            idle(Duration::from_millis(100)).await;
+            assert!(text_top(&ui, steps[0]).is_none(), "Escape closes it");
+            ui.set_playing(false);
+            ui.set_playing_quality("".into());
+            ui.set_playing_level(-1);
+            ui.set_playing_path(slint::ModelRc::default());
+
             // Without the extension the still cover stays and none is asked for.
             let asked = MOTIONS_ASKED.load(Relaxed);
             let waveforms_asked = WAVEFORMS_ASKED.load(Relaxed);
