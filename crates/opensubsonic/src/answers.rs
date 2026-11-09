@@ -29,9 +29,12 @@ const MOST_KEPT: usize = 64 * 1024 * 1024;
 const FORMAT: u32 = 1;
 /// The calls whose answers are kept: what the pages read to draw themselves.
 /// Searches aren't, not even the empty one the tracks page lists every song
-/// with: on a library of 9,000 songs that is 21 MB. Neither are songs,
-/// covers, or what the server is doing.
-const KEPT: [&str; 20] = [
+/// with: on a library of 9,000 songs that is 21 MB. Neither are songs or
+/// covers. The scan status is, so that Home shows the last known track count
+/// the moment the app opens; the Settings page asks the server every time,
+/// with [`crate::Client::asking_the_server`], as a kept answer says nothing
+/// of what it is doing now.
+const KEPT: [&str; 21] = [
     "getAlbumList2",
     "getAlbum",
     "getAlbumInfo2",
@@ -52,6 +55,7 @@ const KEPT: [&str; 20] = [
     "getCompositions",
     "getInternetRadioStations",
     "getRadioCatalogue",
+    "getScanStatus",
 ];
 /// The kept answers, and the clock that says how old they are.
 pub struct Answers {
@@ -380,6 +384,18 @@ pub(crate) fn read_key(call: &str, params: &[(&str, String)]) -> Option<String> 
     Some(format!("{call}{params}"))
 }
 
+/// Whether the answer says something that stops being true within the hour
+/// it would be kept for: a scan under way, whose count is a partial one and
+/// which nothing would age when it ends.
+pub(crate) fn is_unsettled(call: &str, answer: &Map<String, Value>) -> bool {
+    call == "getScanStatus"
+        && answer
+            .get("scanStatus")
+            .and_then(|status| status.get("scanning"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
 /// Whether an answer that came at `at` is fresh `now`. One from later than
 /// now, as when the device's clock was set back, isn't.
 fn is_fresh(at: u64, now: u64) -> bool {
@@ -561,19 +577,13 @@ mod tests {
     #[test]
     fn page_reads_are_kept_and_searches_are_not() {
         assert_eq!(key("getAlbum", &[("id", "a1")]), r#"getAlbum[["id","a1"]]"#);
+        assert!(read_key("getScanStatus", &[]).is_some());
         assert_ne!(
             key("getAlbum", &[("id", "a1")]),
             key("getAlbum", &[("id", "a2")])
         );
         // The stars are asked for as they are now, to sync hearts by.
-        let calls = [
-            "search3",
-            "getCoverArt",
-            "getScanStatus",
-            "getUser",
-            "star",
-            "getStarred2",
-        ];
+        let calls = ["search3", "getCoverArt", "getUser", "star", "getStarred2"];
         for call in calls {
             assert!(read_key(call, &[]).is_none(), "{call}");
         }

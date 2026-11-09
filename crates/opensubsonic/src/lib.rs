@@ -422,7 +422,7 @@ impl Client {
         }
         let writes = answers.writes();
         let answer = self.ask(endpoint, params).await?;
-        if answers.keep(read, &answer, writes) {
+        if !answers::is_unsettled(endpoint, &answer) && answers.keep(read, &answer, writes) {
             self.heard_news.store(true, Relaxed);
         }
         Ok(answer)
@@ -1122,6 +1122,56 @@ mod tests {
         // One asked for anew is, though another is kept and fresh.
         client.asking_the_server().get_album("a1").await.unwrap();
         assert_eq!(asked(), 7);
+    }
+
+    #[tokio::test]
+    async fn a_kept_scan_status_shows_at_once_and_asking_the_server_sees_the_live_one() {
+        use std::sync::atomic::AtomicU64;
+        static COUNT: AtomicU64 = AtomicU64::new(0);
+        let (server, log) = serve(|_| {
+            let count = COUNT.fetch_add(1, Relaxed) + 1;
+            json(&format!(
+                r#"{{"subsonic-response":{{"status":"ok","version":"1.16.1","scanStatus":{{"scanning":false,"count":{count}}}}}}}"#
+            ))
+        });
+        let asked = || log.lock().unwrap().len();
+        let answers = Arc::new(Answers::new(|| 1000));
+        let client = Client::new(&server, Auth::None)
+            .unwrap()
+            .keeping_answers_in(answers);
+
+        assert_eq!(client.get_scan_status().await.unwrap().count, Some(1));
+        let reader = client.reader(true);
+        assert_eq!(reader.get_scan_status().await.unwrap().count, Some(1));
+        assert_eq!(asked(), 1, "the kept count shows without asking");
+        let live = client.asking_the_server().get_scan_status().await.unwrap();
+        assert_eq!(live.count, Some(2), "polling asks every time");
+        assert_eq!(client.get_scan_status().await.unwrap().count, Some(2));
+        client.start_scan().await.unwrap();
+        assert_eq!(asked(), 3);
+        client.get_scan_status().await.unwrap();
+        assert_eq!(asked(), 4, "a scan wipes the kept count");
+    }
+
+    #[tokio::test]
+    async fn a_scan_under_way_is_not_kept_as_the_scan_status() {
+        use std::sync::atomic::AtomicU64;
+        static ASKED: AtomicU64 = AtomicU64::new(0);
+        let (server, _log) = serve(|_| {
+            let scanning = ASKED.fetch_add(1, Relaxed) == 0;
+            let count = if scanning { 3 } else { 230 };
+            json(&format!(
+                r#"{{"subsonic-response":{{"status":"ok","version":"1.16.1","scanStatus":{{"scanning":{scanning},"count":{count}}}}}}}"#
+            ))
+        });
+        let client = Client::new(&server, Auth::None)
+            .unwrap()
+            .keeping_answers_in(Arc::new(Answers::new(|| 1000)));
+
+        let under_way = client.get_scan_status().await.unwrap();
+        assert!(under_way.scanning, "the live answer is handed out");
+        let done = client.get_scan_status().await.unwrap();
+        assert_eq!(done.count, Some(230), "a partial count isn't kept as fresh");
     }
 
     #[tokio::test]

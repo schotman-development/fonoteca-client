@@ -9475,6 +9475,9 @@ mod tests {
             let asked = SCAN_ASKS.load(Relaxed);
             SCANNING.store(true, Relaxed);
             ui.invoke_open("albums".into());
+            // The count kept is fresh, so Home would not ask: refreshing
+            // ages it, which shows it at once and asks again.
+            ui.invoke_refresh();
             ui.invoke_open("home".into());
             wait_for("home's look at the scan", || SCAN_ASKS.load(Relaxed) > asked).await;
             idle(Duration::from_millis(500)).await;

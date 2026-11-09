@@ -5498,12 +5498,12 @@ fn mark_tagged(ui: &AppWindow, browser: &Shared, tag: &str, songs: &[String], on
 }
 
 /// Asks the server how its scan of the libraries stands, for the settings
-/// page.
+/// page. Always the server: a kept answer says nothing of the scan now.
 fn scan_status(ui: &AppWindow, browser: &Shared) {
     aside(
         ui,
         browser,
-        |client| async move { client.get_scan_status().await },
+        |client| async move { client.asking_the_server().get_scan_status().await },
         show_scan,
     );
 }
