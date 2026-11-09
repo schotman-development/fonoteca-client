@@ -86,6 +86,10 @@ pub struct Playing {
     /// What names each of `devices` beside the button that opens their menu.
     #[cfg(not(target_family = "wasm"))]
     device_titles: Vec<SharedString>,
+    /// What the sound presets know each of `devices` by, from one connection
+    /// to the next.
+    #[cfg(not(target_family = "wasm"))]
+    device_keys: Vec<String>,
     /// The device the player last said it plays on, by cpal id.
     #[cfg(not(target_family = "wasm"))]
     output: Option<String>,
@@ -296,8 +300,12 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
         move |index| {
             let p = playing.borrow();
             let device = p.devices.get(index as usize).cloned().flatten();
-            mark_device(&weak.unwrap(), &p, index as usize);
+            let ui = weak.unwrap();
+            mark_device(&ui, &p, index as usize);
             save_output(device.clone());
+            // The device's own processing first, so that none of the old is
+            // heard on it.
+            follow_device(&ui, &p, index as usize);
             if let Some(player) = &p.player {
                 player.set_device(device);
             }
@@ -502,6 +510,10 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
 /// the sound to another.
 #[cfg(not(target_family = "wasm"))]
 const SYSTEM_DEFAULT_LISTED: bool = cfg!(target_os = "android");
+/// What the sound presets know the system's default by, where it is listed.
+/// No device's key is this short: they start with their host's name.
+#[cfg(not(target_family = "wasm"))]
+const SYSTEM_DEFAULT_KEY: &str = "default";
 
 /// Puts the sound devices there are now in the now playing sheet's menu, with
 /// the one chosen marked. Looking for them can take a moment, so it happens
@@ -530,7 +542,8 @@ fn list_devices(ui: &AppWindow, playing: &Shared) {
 /// chosen marked; a choice saved as a route that was folded into another is
 /// that other. With none saved or the one saved not there now, the
 /// system's is the choice: its default on Android, elsewhere the `system`
-/// device, saved as the choice where it is listed.
+/// device, saved as the choice where it is listed. The sound processing
+/// follows the one chosen.
 #[cfg(not(target_family = "wasm"))]
 fn show_devices(
     ui: &AppWindow,
@@ -541,12 +554,14 @@ fn show_devices(
     let saved = prefs::load().output_device;
     let mut devices = Vec::new();
     let mut titles = Vec::new();
+    let mut keys = Vec::new();
     let mut entries = Vec::new();
     let (mut saved_at, mut system_at) = (None, None);
     if SYSTEM_DEFAULT_LISTED {
         system_at = Some(entries.len());
         devices.push(None);
         titles.push(SharedString::from("System default"));
+        keys.push(SYSTEM_DEFAULT_KEY.to_owned());
         entries.push((SharedString::from("System default"), SharedString::new()));
     }
     for device in found {
@@ -561,6 +576,7 @@ fn show_devices(
         }
         entries.push((device.name.into(), device.detail.into()));
         titles.push(device.title.into());
+        keys.push(device.key);
         devices.push(Some(device.id));
     }
     let chosen = saved_at.or(system_at);
@@ -588,9 +604,28 @@ fn show_devices(
             .cloned()
             .unwrap_or_default(),
     );
+    let names = titles.iter().zip(&keys).map(|(title, key)| Name {
+        label: title.clone(),
+        link: key.into(),
+    });
+    sound::show_devices(ui, names.collect());
     let mut p = playing.borrow_mut();
     p.devices = devices;
     p.device_titles = titles;
+    p.device_keys = keys;
+    if let Some(chosen) = chosen {
+        follow_device(ui, &p, chosen);
+    }
+}
+
+/// Has the sound processing follow the `chosen` device as it becomes the
+/// output: the preset linked to it, or no processing at all.
+#[cfg(not(target_family = "wasm"))]
+fn follow_device(ui: &AppWindow, playing: &Playing, chosen: usize) {
+    let followed = (playing.device_keys.get(chosen)).and_then(|key| sound::use_device(ui, key));
+    if let (Some(dsp), Some(player)) = (followed, &playing.player) {
+        player.set_dsp(dsp);
+    }
 }
 
 /// Keeps `device` as the one chosen, by cpal id.

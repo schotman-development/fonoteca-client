@@ -3248,6 +3248,79 @@ mod tests {
             assert_eq!(ui.get_eq_bands().row_count(), expected.bands.len(), "its bands in rows");
             assert_eq!(ui.get_eq_points().row_count(), expected.bands.len(), "its points on the graph");
             assert_ne!(ui.get_eq_curve(), "");
+            // Every setting is saved as a preset, which is linked to the sound
+            // devices it is for: a device becoming the output takes its preset
+            // up, one without plays with no processing, and what wasn't saved
+            // goes either way. Listing the devices again changes nothing.
+            let device = |id: &str, name: &str| {
+                let pcm = id.trim_start_matches("alsa:");
+                playback::OutputDevice {
+                    id: id.into(),
+                    key: id.into(),
+                    name: name.into(),
+                    detail: pcm.into(),
+                    title: format!("{name} ({pcm})"),
+                    same_as: Vec::new(),
+                }
+            };
+            let (speakers, dac) = (device("alsa:hw:CARD=PCH,DEV=0", "Speakers"), device("alsa:hw:CARD=DAC,DEV=0", "USB DAC"));
+            let list_devices = || {
+                play::testing::show_devices(&ui, vec![speakers.clone(), dac.clone()], Some(speakers.id.clone()));
+            };
+            let no_processing = prefs::Sound::default();
+            let headphone_sound = prefs::load().sound;
+            scroll_page(&ui, TOP_OF_PAGE);
+            idle(Duration::from_millis(100)).await;
+            assert!(find_combo(&ui, "Sound preset"));
+            assert!(ui.get_sound_unsaved(), "the headphone's EQ is in no preset yet");
+            click(&ui, "Sound presets");
+            click(&ui, "Save as new preset");
+            type_into(&ui, "Name", "Headphones").await;
+            click(&ui, "Save");
+            assert_eq!(prefs::load().sound_preset.as_deref(), Some("Headphones"));
+            assert_eq!((ui.get_sound_preset(), ui.get_sound_unsaved()), (1, false));
+            let mut saved = prefs::load();
+            saved.output_device = Some(dac.id.clone());
+            prefs::save(&saved);
+            list_devices();
+            assert_eq!(prefs::load().sound, no_processing, "the DAC has no preset");
+            assert_eq!((ui.get_sound_preset(), ui.get_eq_on()), (0, false));
+            ui.invoke_choose_sound_preset(1);
+            assert_eq!(prefs::load().sound, headphone_sound);
+            click(&ui, "Sound presets");
+            click(&ui, "Link to USB DAC (hw:CARD=DAC,DEV=0)");
+            assert_eq!(ui.get_sound_links(), "Linked to USB DAC (hw:CARD=DAC,DEV=0).");
+            ui.invoke_choose_crossfeed(2);
+            assert!(ui.get_sound_unsaved());
+            assert!(text_top(&ui, "Unsaved changes, lost when the sound device changes.").is_some());
+            list_devices();
+            assert_eq!(prefs::load().sound.crossfeed, 2, "the same device, listed again");
+            ui.invoke_choose_output(0);
+            assert_eq!(prefs::load().sound, no_processing, "the speakers have no preset");
+            assert!(!ui.get_sound_unsaved());
+            ui.invoke_choose_output(1);
+            assert_eq!(prefs::load().sound, headphone_sound, "the DAC's preset, without what wasn't saved");
+            assert_eq!(ui.get_sound_preset(), 1);
+            // One preset for several devices, whose links follow a rename.
+            click(&ui, "Sound presets");
+            click(&ui, "Link a device");
+            click(&ui, "Speakers (hw:CARD=PCH,DEV=0)");
+            assert_eq!(ui.get_sound_links(), "Linked to USB DAC (hw:CARD=DAC,DEV=0) and Speakers (hw:CARD=PCH,DEV=0).");
+            click(&ui, "Sound presets");
+            click(&ui, "Rename preset");
+            type_into(&ui, "Name", "Desk").await;
+            click(&ui, "Rename");
+            ui.invoke_choose_output(0);
+            assert_eq!(prefs::load().sound_preset.as_deref(), Some("Desk"));
+            assert_eq!(prefs::load().sound, headphone_sound);
+            click(&ui, "Sound presets");
+            click(&ui, "Unlink a device");
+            click(&ui, "Speakers (hw:CARD=PCH,DEV=0)");
+            assert_eq!(ui.get_sound_links(), "Linked to USB DAC (hw:CARD=DAC,DEV=0).");
+            click(&ui, "Sound presets");
+            click(&ui, "Delete preset");
+            assert!(prefs::load().sound_presets.is_empty());
+            assert!(prefs::load().device_presets.is_empty());
             ui.invoke_back();
             assert_eq!(ui.get_page(), Page::Settings);
             click(&ui, "Library");

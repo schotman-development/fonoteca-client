@@ -12,7 +12,9 @@ use playback::{Band, Crossfeed, Dsp, Equalizer, Filter};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::prefs::{self, EqBand, Prefs, Sound};
-use crate::{AppWindow, EqBandLine, EqGridLine, EqPoint, eq_graph, headphones, sound_presets};
+use crate::{
+    AppWindow, EqBandLine, EqGridLine, EqPoint, Name, eq_graph, headphones, sound_presets,
+};
 
 /// The settings' headroom, crossfeed and filter entries, in their order.
 const HEADROOM: [f64; 8] = [0.0, -1.0, -2.0, -3.0, -4.5, -6.0, -9.0, -12.0];
@@ -70,6 +72,28 @@ fn band(band: &EqBand) -> Band {
         gain: band.gain,
         q: band.q,
     }
+}
+
+/// Lists the sound devices there are now, by name and key, for the presets
+/// to be linked to.
+pub fn show_devices(ui: &AppWindow, devices: Vec<Name>) {
+    ui.set_sound_devices(ModelRc::new(VecModel::from(devices)));
+    show_links(ui, &prefs::load());
+}
+
+/// The device with the key `device` is the output. When it wasn't before,
+/// the settings become the preset linked to it, or no processing at all,
+/// and what the player is to play with is handed back.
+pub fn use_device(ui: &AppWindow, device: &str) -> Option<Dsp> {
+    if ui.get_sound_device() == device {
+        return None;
+    }
+    ui.set_sound_device(device.into());
+    let mut saved = prefs::load();
+    sound_presets::use_device(&mut saved, device);
+    prefs::save(&saved);
+    show(ui, &saved);
+    Some(dsp_of(&saved.sound))
 }
 
 /// Shows the settings and has each change saved and handed to `apply`.
@@ -257,6 +281,20 @@ fn wire_presets(ui: &AppWindow, apply: Rc<impl Fn(Dsp) + 'static>) {
             SharedString::new()
         }
     });
+    ui.on_link_sound_preset({
+        let (weak, presets_changed) = (ui.as_weak(), presets_changed.clone());
+        move |device| {
+            let name = (weak.unwrap().get_sound_devices().iter())
+                .find(|listed| listed.link == device)
+                .map(|listed| listed.label)
+                .unwrap_or_default();
+            presets_changed(&|saved| sound_presets::link(saved, &device, &name));
+        }
+    });
+    ui.on_unlink_sound_preset({
+        let presets_changed = presets_changed.clone();
+        move |device| presets_changed(&|saved| sound_presets::unlink(saved, &device))
+    });
     ui.on_delete_sound_preset(move || presets_changed(&sound_presets::delete));
 }
 
@@ -366,6 +404,51 @@ fn show_presets(ui: &AppWindow, saved: &Prefs) {
     });
     ui.set_sound_preset(picked.map_or(0, |index| index as i32 + 1));
     ui.set_sound_unsaved(sound_presets::unsaved(saved));
+    show_links(ui, saved);
+}
+
+/// What the preset picked can be linked to: the device in use, unless it is
+/// linked already, and the other devices there are now it isn't linked to;
+/// and the devices it is linked to, there or not, in a line too.
+fn show_links(ui: &AppWindow, saved: &Prefs) {
+    let picked = saved.sound_preset.as_deref().unwrap_or_default();
+    let linked: Vec<Name> = sound_presets::linked(saved, picked)
+        .map(|(key, link)| Name {
+            label: link.device_name.as_str().into(),
+            link: key.as_str().into(),
+        })
+        .collect();
+    let in_use = ui.get_sound_device();
+    let (mut here, mut others) = (Name::default(), Vec::new());
+    for device in ui.get_sound_devices().iter() {
+        if linked.iter().any(|link| link.link == device.link) {
+            continue;
+        }
+        if device.link == in_use {
+            here = device;
+        } else {
+            others.push(device);
+        }
+    }
+    ui.set_sound_link_in_use(here);
+    ui.set_sound_linkable(ModelRc::new(VecModel::from(others)));
+    let names: Vec<&str> = linked.iter().map(|link| link.label.as_str()).collect();
+    let line = if saved.sound_preset.is_some() {
+        links_line(&names)
+    } else {
+        String::new()
+    };
+    ui.set_sound_links(line.into());
+    ui.set_sound_linked(ModelRc::new(VecModel::from(linked)));
+}
+
+/// The devices a preset is linked to, in a line.
+fn links_line(names: &[&str]) -> String {
+    match names {
+        [] => "Not linked to a sound device.".into(),
+        [one] => format!("Linked to {one}."),
+        [rest @ .., last] => format!("Linked to {} and {last}.", rest.join(", ")),
+    }
 }
 
 fn band_line(band: &EqBand) -> EqBandLine {
@@ -478,6 +561,12 @@ fn unreadable(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_preset_processes_nothing() {
+        assert_eq!(dsp_of(&Sound::default()), Dsp::default());
+        assert_eq!(links_line(&["A", "B", "C"]), "Linked to A, B and C.");
+    }
 
     #[test]
     fn autoeqs_settings_become_the_eq() {

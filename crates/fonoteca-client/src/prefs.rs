@@ -6,7 +6,7 @@
 //! settings folder keep them, and the browser preview its localStorage.
 //! Where neither works they last until the app closes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,9 @@ pub struct Prefs {
     pub sound_preset: Option<String>,
     #[serde(alias = "eq_presets")]
     pub sound_presets: Vec<SoundPreset>,
+    /// The preset each sound device takes up as it becomes the output, by
+    /// the device's key; one not here plays with no processing at all.
+    pub device_presets: BTreeMap<String, DevicePreset>,
     /// Whether the queue repeats: not, all of it, or the track playing.
     pub repeat: i32,
     /// The works of the queue saved on the server whose rows the now playing
@@ -96,6 +99,15 @@ pub struct Sound {
 
 fn eq_on_unsaid() -> bool {
     true
+}
+
+/// The preset a sound device is linked to, by name, and what the device was
+/// called then, to name it by while it isn't there.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DevicePreset {
+    pub device_name: String,
+    pub preset: String,
 }
 
 /// A parametric EQ: its preamp in dB and its bands.

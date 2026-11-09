@@ -1424,6 +1424,16 @@ export component AppWindow inherits Window {
     in property <[string]> sound-presets;
     in-out property <int> sound-preset;
     in property <bool> sound-unsaved;
+    // The sound devices there are now, by name and key, and the key of the
+    // one in use, which the links' lists are made from. For the preset
+    // picked: the device in use unless it is linked to it, the others there
+    // are now that it isn't linked to, those it is, and those in a line.
+    in property <[Name]> sound-devices;
+    in property <string> sound-device;
+    in property <Name> sound-link-in-use;
+    in property <[Name]> sound-linkable;
+    in property <[Name]> sound-linked;
+    in property <string> sound-links;
     in-out property <int> headroom;
     in-out property <int> crossfeed;
     in-out property <int> upsampling;
@@ -1661,6 +1671,9 @@ export component AppWindow inherits Window {
     callback save-sound-preset-as(name: string);
     callback rename-sound-preset(name: string) -> string;
     callback delete-sound-preset();
+    // Links the preset picked to a sound device, by its key, and unlinks it.
+    callback link-sound-preset(device: string);
+    callback unlink-sound-preset(device: string);
     callback import-eq(text: string) -> string;
     callback open-headphones();
     callback search-headphones(text: string);
@@ -3235,6 +3248,8 @@ export component AppWindow inherits Window {
                             MoreMenu {
                                 cross-axis-self-alignment: center;
                                 label: "Sound presets";
+                                // As wide as the sound device menu, for the same device names.
+                                panel: 320px;
                                 opening => {
                                     self.entries = [];
                                     if root.sound-preset > 0 && root.sound-unsaved {
@@ -3243,11 +3258,26 @@ export component AppWindow inherits Window {
                                     self.entries.push({ id: "save-as", label: "Save as new preset", icon: Icons.plus });
                                     if root.sound-preset > 0 {
                                         self.entries.push({ id: "rename", label: "Rename preset", icon: Icons.pencil });
+                                        if root.sound-link-in-use.link != "" {
+                                            self.entries.push({ id: "link-in-use", label: "Link to " + root.sound-link-in-use.label, icon: Icons.speaker });
+                                        }
+                                        if root.sound-linkable.length > 0 {
+                                            self.entries.push({ id: "link", label: "Link a device", icon: Icons.speaker, choices: root.sound-linkable });
+                                        }
+                                        if root.sound-linked.length > 0 {
+                                            self.entries.push({ id: "unlink", label: "Unlink a device", icon: Icons.close, choices: root.sound-linked });
+                                        }
                                         self.entries.push({ id: "delete", label: "Delete preset", icon: Icons.trash, danger: true });
                                     }
                                 }
-                                activated(id) => {
-                                    if id == "save" {
+                                activated(id, choice) => {
+                                    if id == "link-in-use" {
+                                        root.link-sound-preset(root.sound-link-in-use.link);
+                                    } else if id == "link" {
+                                        root.link-sound-preset(choice);
+                                    } else if id == "unlink" {
+                                        root.unlink-sound-preset(choice);
+                                    } else if id == "save" {
                                         root.save-sound-preset();
                                     } else if id == "save-as" {
                                         root.asked-name = "";
@@ -3263,6 +3293,9 @@ export component AppWindow inherits Window {
                         }
                         if root.can-play && root.sound-unsaved: Note {
                             text: "Unsaved changes, lost when the sound device changes.";
+                        }
+                        if root.can-play && root.sound-links != "": Note {
+                            text: root.sound-links;
                         }
                         if root.can-play: Text {
                             text: "Headroom, to leave room for the EQ's boosts";
