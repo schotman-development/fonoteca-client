@@ -54,6 +54,9 @@ use std::sync::Arc;
 use opensubsonic::{Auth, Client, SignIn};
 use serde::{Deserialize, Serialize};
 
+/// How a seek bar draws its waveform, which the workbench's need too.
+pub use waveform::path as waveform_path;
+
 /// What the onboarding sets up, kept by [`store`].
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
@@ -602,6 +605,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
     let playing = play::wire(&ui, &browser);
+    waveform::wire(&ui);
     #[cfg(not(target_family = "wasm"))]
     downloads::wire(&ui, &browser);
     #[cfg(target_os = "android")]
@@ -9066,9 +9070,16 @@ mod tests {
             // one that comes late for a song left behind doesn't show.
             let asked = WAVEFORMS_ASKED.load(Relaxed);
             play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
-            wait_for("its waveform", || !ui.get_playing_waveform().is_empty()).await;
+            wait_for("its waveform", || ui.get_playing_waveform().row_count() > 0).await;
+            // Its bars keep their width whatever the bar's: a wider one has
+            // more of them.
+            let bars = |width: f32| {
+                let path = ui.global::<Waveform>().invoke_path(ui.get_playing_waveform(), width);
+                path.matches('M').count()
+            };
+            assert_eq!((bars(300.0), bars(900.0)), (100, 300));
             play::testing::show_song(&ui, vec![song("w2", "a1")], 0);
-            assert_eq!(ui.get_playing_waveform(), "", "the last song's is gone");
+            assert_eq!(ui.get_playing_waveform().row_count(), 0, "the last song's is gone");
             wait_for("the waveform asked for", || {
                 WAVEFORMS_ASKED.load(Relaxed) == asked + 2
             })
@@ -9077,7 +9088,7 @@ mod tests {
             play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
             play::testing::show_song(&ui, vec![song("w2", "a1")], 0);
             idle(Duration::from_millis(1000)).await;
-            assert_eq!(ui.get_playing_waveform(), "");
+            assert_eq!(ui.get_playing_waveform().row_count(), 0);
             SLOW_WAVEFORM.store(false, Relaxed);
 
             // A phone's signal path opens in the sheet its menus open in,
@@ -9178,7 +9189,7 @@ mod tests {
             NO_MOTION.store(false, Relaxed);
             play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
             idle(Duration::from_millis(300)).await;
-            assert_eq!(ui.get_playing_waveform(), "");
+            assert_eq!(ui.get_playing_waveform().row_count(), 0);
             assert_eq!(WAVEFORMS_ASKED.load(Relaxed), waveforms_asked);
             NO_WAVEFORM.store(false, Relaxed);
             QUEUED.store(false, Relaxed);

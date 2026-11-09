@@ -1205,7 +1205,7 @@ fn show_station(ui: &AppWindow, browser: &browse::Shared, tuned: &Tuned) {
     ui.set_playing_loved(false);
     ui.set_playing_shown(ui.get_playing_shown() + 1);
     ui.set_playing_duration(0.0);
-    ui.set_playing_waveform("".into());
+    ui.set_playing_waveform(ModelRc::default());
     ui.set_playing_cover(tuned.cover.clone());
     ui.set_playing_art(tuned.cover.clone());
     ui.set_playing_banner(Image::default());

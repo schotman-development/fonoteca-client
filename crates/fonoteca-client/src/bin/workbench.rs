@@ -3,5 +3,9 @@
 include!(concat!(env!("OUT_DIR"), "/workbench.rs"));
 
 fn main() -> Result<(), slint::PlatformError> {
-    Workbench::new()?.run()
+    let workbench = Workbench::new()?;
+    workbench
+        .global::<Waveform>()
+        .on_path(fonoteca_client::waveform_path);
+    workbench.run()
 }

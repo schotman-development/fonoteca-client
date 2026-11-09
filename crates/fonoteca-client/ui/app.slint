@@ -1,7 +1,7 @@
 import { LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker } from "components.slint";
+import { AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine }
+export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -1345,7 +1345,7 @@ export component AppWindow inherits Window {
     in property <float> playing-duration;
     // A live radio station plays: no length, no seeking, no other track.
     in property <bool> playing-live;
-    in property <string> playing-waveform;
+    in property <[float]> playing-waveform;
     in property <string> playing-quality;
     in property <int> playing-level: -1;
     in property <[PathStep]> playing-path;
