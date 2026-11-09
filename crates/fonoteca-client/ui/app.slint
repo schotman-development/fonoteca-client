@@ -1336,6 +1336,9 @@ export component AppWindow inherits Window {
     // Which movement of the work in the title plays, and its place in it.
     in property <string> playing-movement;
     in property <string> playing-movement-place;
+    // Whether the queue holds a work, whose songs' line for the part now
+    // playing keeps for every song, so that the lines under it stay put.
+    in property <bool> queue-holds-works;
     in property <[Name]> playing-names;
     in property <bool> playing-paused;
     in property <float> playing-position;
@@ -4041,6 +4044,7 @@ export component AppWindow inherits Window {
                                         title: root.playing-title;
                                         movement: root.playing-movement;
                                         movement-place: root.playing-movement-place;
+                                        keeps-part-line: root.queue-holds-works;
                                         names: root.playing-names;
                                         album: root.playing-album;
                                         open(link) => { root.open-from-now-playing(link); }

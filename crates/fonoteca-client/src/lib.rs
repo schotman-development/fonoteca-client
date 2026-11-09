@@ -4921,8 +4921,8 @@ mod tests {
 
                 // The seek bar has a row of its own: no title, artist, album
                 // or time runs under or over it, whatever the width; nor do
-                // the buttons of a desktop's bar, which shows the first
-                // artist only.
+                // the buttons of a desktop's bar. The artists keep to one row,
+                // which shows the first.
                 let long = |what: &str| format!("{what} that keeps going and going until it has to wrap");
                 let long_names = [long("An artist"), long("Another artist"), long("A third artist")];
                 ui.set_playing_title(long("A song title").into());
@@ -4944,17 +4944,15 @@ mod tests {
                 let labels = [
                     long("A song title"),
                     long_names[0].clone(),
-                    long_names[1].clone(),
-                    long_names[2].clone(),
                     long("An album"),
                     "Position".to_owned(),
                     "1:05".to_owned(),
                     "4:31".to_owned(),
                 ];
                 let title_menu = format!("More for {}", long("A song title"));
-                let bar_labels: Vec<String> = [&labels[..2], &labels[4..]]
-                    .concat()
-                    .into_iter()
+                let bar_labels: Vec<String> = labels
+                    .iter()
+                    .cloned()
                     .chain(["Sound device", "Sound processing", "Lyrics", "Queue", title_menu.as_str()].map(String::from))
                     .collect();
                 for (width, height) in [(412.0, 915.0), (800.0, 1280.0), (900.0, 760.0), (1100.0, 760.0), (1600.0, 900.0)] {
@@ -8211,6 +8209,71 @@ mod tests {
                     idle(Duration::from_millis(400)).await;
                 }
             }
+            // On a phone and a tablet, Now playing keeps each of its parts in
+            // place from song to song: whether the song is part of a work or
+            // not, its title long or short, by one artist or by several, whose
+            // chips keep to one row. Among works a song that is none keeps the
+            // line of the part; in a queue without works there is no such line.
+            let on_sheet = |label: &str| -> Option<ElementHandle> {
+                let wanted = label.to_owned();
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Main)
+                    .match_predicate(|page| page.accessible_label().is_some_and(|l| l == "Now playing"))
+                    .find_first()?
+                    .query_descendants()
+                    .match_predicate(move |e| e.accessible_label().is_some_and(|l| l == wanted))
+                    .find_first()
+            };
+            let sheet_top = |label: &str| on_sheet(label).map(|e| e.absolute_position().y);
+            // How far down the cover, the album, the first artist, the
+            // position, the controls and the lyrics' button are.
+            let places = || -> Vec<Option<f32>> {
+                let album = ui.get_playing_album().label.to_string();
+                let artist = ui.get_playing_names().row_data(0).unwrap().label.to_string();
+                ["Album cover", album.as_str(), artist.as_str(), "Position", "Previous", "Lyrics"]
+                    .map(&sheet_top)
+                    .to_vec()
+            };
+            // How far under the cover the album is.
+            let album_under_cover = || {
+                let cover = on_sheet("Album cover").unwrap();
+                let album = sheet_top(ui.get_playing_album().label.as_str()).unwrap();
+                album - cover.absolute_position().y - cover.size().height
+            };
+            let work = || -> opensubsonic::Child {
+                serde_json::from_str(
+                    r#"{"id":"w2","isDir":false,"title":"Sonata: Andante","album":"Symphonies","albumId":"a2","artists":[{"id":"r1","name":"Mara Lind"},{"id":"r2","name":"Ove Strand"},{"id":"r3","name":"Anna Bach"},{"id":"r4","name":"The Harbour Town Chamber Orchestra"}],"works":[{"name":"Sonata"}],"movements":[{"name":"Andante","number":2,"count":3}]}"#,
+                )
+                .unwrap()
+            };
+            let long_song = || {
+                let mut song = harbour();
+                song.title = "Harbour Lights over the water, all the way home again".into();
+                song
+            };
+            for (width, height) in [(412.0, 915.0), (800.0, 1280.0)] {
+                ui.window().set_size(slint::LogicalSize::new(width, height));
+                idle(Duration::from_millis(400)).await;
+                if !ui.get_now_playing_open() {
+                    click(&ui, "Now playing");
+                    idle(Duration::from_millis(400)).await;
+                }
+                play::testing::show_song(&ui, vec![work(), long_song()], 0);
+                idle(Duration::from_millis(100)).await;
+                let among_works = places();
+                assert!(among_works.iter().all(Option::is_some), "all in sight at {width}px: {among_works:?}");
+                let with_part_line = album_under_cover();
+                play::testing::show_song(&ui, vec![work(), long_song()], 1);
+                idle(Duration::from_millis(100)).await;
+                assert_eq!(places(), among_works, "a song among works at {width}px");
+                play::testing::show_song(&ui, vec![harbour()], 0);
+                idle(Duration::from_millis(100)).await;
+                assert!(album_under_cover() < with_part_line, "no line for a part over the album at {width}px");
+            }
+            play::testing::show_song(&ui, vec![harbour()], 0);
+            press(&ui, slint::platform::Key::Escape);
+            assert!(!ui.get_now_playing_open());
             // Where the app has no say in how the sound reaches the
             // speakers, as in a browser, neither a desktop's bar nor a
             // phone's page offers to choose it.

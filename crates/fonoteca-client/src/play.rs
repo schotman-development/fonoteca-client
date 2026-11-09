@@ -1195,6 +1195,7 @@ fn show_station(ui: &AppWindow, browser: &browse::Shared, tuned: &Tuned) {
     ui.set_playing_title(tuned.station.name.as_str().into());
     ui.set_playing_movement("".into());
     ui.set_playing_movement_place("".into());
+    ui.set_queue_holds_works(false);
     let line = Name {
         label: LIVE_RADIO.into(),
         link: SharedString::new(),
@@ -1254,6 +1255,7 @@ fn show_song(
             .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
     });
     ui.set_playing_loved(song.starred.is_some());
+    ui.set_queue_holds_works(p.queue.songs().any(|song| !song.works.is_empty()));
     ui.set_playing_shown(ui.get_playing_shown() + 1);
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);
     ui.set_playing_cover(Image::default());

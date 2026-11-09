@@ -4068,11 +4068,15 @@ export component NameChips inherits FlexboxLayout {
 }
 
 // The title of what plays with the part of it that plays, and its album and
-// its artists, which open their pages.
+// its artists, which open their pages. Each line stays where it is from song
+// to song: the artists keep to one row, which scrolls sideways where they
+// don't all fit, and while `keeps-part-line` a song that is no part of a work
+// keeps the line of the part, empty.
 component NowPlayingDetails inherits VerticalLayout {
     in property <string> title;
     in property <string> movement;
     in property <string> movement-place;
+    in property <bool> keeps-part-line;
     in property <[Name]> names;
     in property <Name> album;
     // Whether the sheet is open, which the titles scroll only while.
@@ -4087,7 +4091,7 @@ component NowPlayingDetails inherits VerticalLayout {
         font-size: Theme.title;
         font-weight: 700;
     }
-    if root.movement != "" || root.movement-place != "": Ticker {
+    if root.keeps-part-line || root.movement != "" || root.movement-place != "": Ticker {
         active: root.active;
         text: root.movement != "" && root.movement-place != "" ? root.movement + " · " + root.movement-place : root.movement + root.movement-place;
         font-size: Theme.body;
@@ -4100,9 +4104,17 @@ component NowPlayingDetails inherits VerticalLayout {
             clicked => { root.open(root.album.link); }
         }
     }
-    if root.names.length > 0: NameChips {
-        names: root.names;
-        open(link) => { root.open(link); }
+    if root.names.length > 0: Flickable {
+        property <[Name]> names: root.names;
+        height: chips.preferred-height;
+        content-width: chips.preferred-width;
+        // Another song's artists start from the first.
+        changed names => { self.content-x = 0; }
+        chips := NameChips {
+            flex-wrap: no-wrap;
+            names: root.names;
+            open(link) => { root.open(link); }
+        }
     }
 }
 
@@ -4153,6 +4165,9 @@ export component NowPlaying inherits VerticalLayout {
     in property <string> title;
     in property <string> movement;
     in property <string> movement-place;
+    // Whether a song that is no part of a work keeps the line of the part,
+    // as one among works does, so that what follows stays in place.
+    in property <bool> keeps-part-line;
     in property <[Name]> names;
     in property <Name> album;
     in property <bool> active;
@@ -4178,6 +4193,7 @@ export component NowPlaying inherits VerticalLayout {
         title: root.title;
         movement: root.movement;
         movement-place: root.movement-place;
+        keeps-part-line: root.keeps-part-line;
         names: root.names;
         album: root.album;
         open(link) => { root.open(link); }
