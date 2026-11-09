@@ -2679,6 +2679,8 @@ export component PlayButton inherits HorizontalLayout {
 // text moves under the artwork. Children go in a row under the facts.
 export component PageHeader inherits FlexboxLayout {
     in property <image> artwork;
+    // A page whose banner stands in for the cover leaves the cover out.
+    in property <bool> show-artwork: true;
     in property <bool> round;
     in property <string> kind;
     in property <string> title;
@@ -2690,7 +2692,7 @@ export component PageHeader inherits FlexboxLayout {
     cross-axis-alignment: start;
     spacing: 24px;
 
-    Artwork {
+    if root.show-artwork: Artwork {
         size: 220px;
         round: root.round;
         source: root.artwork;

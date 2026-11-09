@@ -2428,6 +2428,7 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;
+                        show-artwork: !root.created-for;
                         round: root.page == Page.artist || root.page == Page.composer;
                         kind: root.page == Page.artist ? "Artist" : root.page == Page.playlist ? (root.created-for ? "Created for you" : "Playlist") : root.page == Page.composer ? "Composer" : root.page == Page.composition ? "Composition" : root.page == Page.track ? "Track" : "Album";
                         title: root.header-title;

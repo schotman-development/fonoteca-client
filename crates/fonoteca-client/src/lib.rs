@@ -2350,6 +2350,21 @@ mod tests {
             .find_first()
     }
 
+    /// Whether the page header shows a cover square.
+    fn header_has_cover(ui: &AppWindow) -> bool {
+        let header = ui
+            .root_element()
+            .query_descendants()
+            .match_inherits("PageHeader")
+            .find_first()
+            .expect("the page header");
+        header
+            .query_descendants()
+            .match_inherits("Artwork")
+            .find_first()
+            .is_some()
+    }
+
     /// Whether a drop-down with `label` is in sight.
     fn find_combo(ui: &AppWindow, label: &str) -> bool {
         let label = label.to_owned();
@@ -7250,6 +7265,7 @@ mod tests {
             assert_eq!(ui.get_created_for_banner().size().width, 0);
             let banner = mix_banner(&ui).expect("the banner");
             assert_eq!(banner.accessible_label().as_deref(), Some("Weekly Jams"));
+            assert!(!header_has_cover(&ui), "a mix has its banner, not a cover");
             wait_for("its banner", || ui.get_created_for_banner().size().width > 0).await;
             assert!(!LATER_ANSWERED.load(Relaxed));
             wait_for("the last playlist", || LATER_ANSWERED.load(Relaxed)).await;
@@ -7477,6 +7493,7 @@ mod tests {
             })
             .await;
             assert!(mix_banner(&ui).is_none());
+            assert!(header_has_cover(&ui), "a library playlist keeps its cover");
 
             // A playlist none of whose tracks the library has saves nothing.
             ui.invoke_open("createdfor:exploring".into());
