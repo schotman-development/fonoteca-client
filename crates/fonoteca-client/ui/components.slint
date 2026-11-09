@@ -4090,25 +4090,32 @@ component NameChip inherits Pressable {
     }
 }
 
-// One chip for each of `names`, a long list going on in the next row.
-export component NameChips inherits FlexboxLayout {
+// One chip for each of `names`, in one row that scrolls sideways where they
+// don't all fit.
+export component NameChips inherits Flickable {
     in property <[Name]> names;
     in property <length> pill: Screen.phone ? 32px : 24px;
     callback open(link: string);
-    spacing: 8px;
+    height: row.preferred-height;
+    content-width: row.preferred-width;
+    // Another song's artists start from the first.
+    changed names => { self.content-x = 0; }
 
-    for name in root.names: NameChip {
-        name: name;
-        pill: root.pill;
-        clicked => { root.open(name.link); }
+    row := HorizontalLayout {
+        width: self.preferred-width;
+        spacing: 8px;
+        for name in root.names: NameChip {
+            name: name;
+            pill: root.pill;
+            clicked => { root.open(name.link); }
+        }
     }
 }
 
 // The title of what plays with the part of it that plays, and its album and
 // its artists, which open their pages. Each line stays where it is from song
-// to song: the artists keep to one row, which scrolls sideways where they
-// don't all fit, and while `keeps-part-line` a song that is no part of a work
-// keeps the line of the part, empty.
+// to song: the artists keep to one row, and while `keeps-part-line` a song
+// that is no part of a work keeps the line of the part, empty.
 component NowPlayingDetails inherits VerticalLayout {
     in property <string> title;
     in property <string> movement;
@@ -4141,17 +4148,9 @@ component NowPlayingDetails inherits VerticalLayout {
             clicked => { root.open(root.album.link); }
         }
     }
-    if root.names.length > 0: Flickable {
-        property <[Name]> names: root.names;
-        height: chips.preferred-height;
-        content-width: chips.preferred-width;
-        // Another song's artists start from the first.
-        changed names => { self.content-x = 0; }
-        chips := NameChips {
-            flex-wrap: no-wrap;
-            names: root.names;
-            open(link) => { root.open(link); }
-        }
+    if root.names.length > 0: NameChips {
+        names: root.names;
+        open(link) => { root.open(link); }
     }
 }
 
@@ -4464,8 +4463,8 @@ export component PlayerBar inherits Rectangle {
                     source: root.cover;
                 }
             }
-            // Long titles and names are cut short, so they don't size it; the
-            // artists that don't fit on one row are left out.
+            // Long titles are cut short and the artists scroll sideways, so
+            // they don't size it.
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
@@ -4500,14 +4499,10 @@ export component PlayerBar inherits Rectangle {
                     color: Theme.danger;
                     overflow: elide;
                 }
-                if root.problem == "" && root.names.length > 0: Rectangle {
-                    height: 22px;
-                    clip: true;
-                    NameChips {
-                        names: root.names;
-                        pill: 22px;
-                        open(link) => { root.open(link); }
-                    }
+                if root.problem == "" && root.names.length > 0: NameChips {
+                    names: root.names;
+                    pill: 22px;
+                    open(link) => { root.open(link); }
                 }
             }
         }

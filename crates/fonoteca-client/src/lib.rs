@@ -4922,7 +4922,7 @@ mod tests {
                 // The seek bar has a row of its own: no title, artist, album
                 // or time runs under or over it, whatever the width; nor do
                 // the buttons of a desktop's bar. The artists keep to one row,
-                // which shows the first.
+                // which shows the first; a desktop's bar draws them within it.
                 let long = |what: &str| format!("{what} that keeps going and going until it has to wrap");
                 let long_names = [long("An artist"), long("Another artist"), long("A third artist")];
                 ui.set_playing_title(long("A song title").into());
@@ -4950,9 +4950,9 @@ mod tests {
                     "4:31".to_owned(),
                 ];
                 let title_menu = format!("More for {}", long("A song title"));
-                let bar_labels: Vec<String> = labels
-                    .iter()
-                    .cloned()
+                let bar_labels: Vec<String> = [&labels[..1], &labels[2..]]
+                    .concat()
+                    .into_iter()
                     .chain(["Sound device", "Sound processing", "Lyrics", "Queue", title_menu.as_str()].map(String::from))
                     .collect();
                 for (width, height) in [(412.0, 915.0), (800.0, 1280.0), (900.0, 760.0), (1100.0, 760.0), (1600.0, 900.0)] {
@@ -4967,7 +4967,7 @@ mod tests {
                         });
                         idle(Duration::from_millis(100)).await;
                     }
-                    let boxes: Vec<_> = if docked { &bar_labels[..] } else { &labels[..] }
+                    let mut boxes: Vec<_> = if docked { &bar_labels[..] } else { &labels[..] }
                         .iter()
                         .map(|label| {
                             let element = ui
@@ -4982,6 +4982,15 @@ mod tests {
                             (label, element.absolute_position(), element.size())
                         })
                         .collect();
+                    if docked {
+                        let row = ui
+                            .root_element()
+                            .query_descendants()
+                            .match_inherits("NameChips")
+                            .find_first()
+                            .unwrap_or_else(|| panic!("no artists at {width}"));
+                        boxes.push((&long_names[0], row.absolute_position(), row.size()));
+                    }
                     for (i, (one, at, size)) in boxes.iter().enumerate() {
                         for (other, other_at, other_size) in &boxes[i + 1..] {
                             let apart = at.x + size.width <= other_at.x
@@ -8287,6 +8296,100 @@ mod tests {
             play::testing::show_song(&ui, vec![harbour()], 0);
             press(&ui, slint::platform::Key::Escape);
             assert!(!ui.get_now_playing_open());
+            // Each artist of what plays has a chip that opens their page, on
+            // a phone and a desktop, for a finger and a mouse: in one row,
+            // which they drag sideways to the chips it has no room for.
+            play::testing::show_song(&ui, vec![work()], 0);
+            let artists: Vec<String> = ui.get_playing_names().iter().map(|name| name.label.to_string()).collect();
+            assert_eq!(artists.len(), 4);
+            let input = ui.global::<Input>();
+            for (width, height) in [(412.0, 915.0), (1100.0, 760.0)] {
+                ui.window().set_size(slint::LogicalSize::new(width, height));
+                idle(Duration::from_millis(400)).await;
+                for finger in [false, true] {
+                    let how = if finger { "a finger" } else { "a mouse" };
+                    for (index, artist) in artists.iter().enumerate() {
+                        if !ui.get_now_playing_open() {
+                            click(&ui, "Now playing");
+                            idle(Duration::from_millis(400)).await;
+                        }
+                        input.set_touch(finger);
+                        input.set_finger(finger);
+                        // Where to tap the chip once as much of it is in sight
+                        // as the row has room for.
+                        let mut tap_at = None;
+                        for _ in 0..8 {
+                            let rows: Vec<ElementHandle> = ui
+                                .root_element()
+                                .query_descendants()
+                                .match_inherits("NameChips")
+                                .find_all()
+                                .into_iter()
+                                .filter(|row| (0.0..height).contains(&row.absolute_position().y))
+                                .collect();
+                            assert_eq!(rows.len(), 1, "one row of artists in sight at {width}px");
+                            let row = &rows[0];
+                            let (row_left, row_width) = (row.absolute_position().x, row.size().width);
+                            let row_right = row_left + row_width;
+                            let chips = row.query_descendants().match_accessible_role(AccessibleRole::Button).find_all();
+                            let seen = |chip: &ElementHandle| {
+                                let label = chip.accessible_label().unwrap_or_default();
+                                artists.iter().position(|name| name.as_str() == label.as_str())
+                            };
+                            let reach = row_width / 2.0 - 8.0;
+                            let by = match chips.iter().find(|chip| seen(chip) == Some(index)) {
+                                Some(chip) => {
+                                    let left = chip.absolute_position().x;
+                                    let right = left + chip.size().width;
+                                    if right.min(row_right) - left.max(row_left) >= chip.size().width.min(row_width) - 1.0 {
+                                        let x = (left.max(row_left) + right.min(row_right)) / 2.0;
+                                        tap_at = Some(slint::LogicalPosition::new(x, middle(chip).y));
+                                        break;
+                                    }
+                                    if right > row_right { row_right - right } else { row_left - left }
+                                }
+                                // Wholly out of sight, on the side of the chips
+                                // before or after it.
+                                None if chips.first().and_then(seen).is_some_and(|first| first > index) => reach,
+                                None => -reach,
+                            };
+                            let from = slint::LogicalPosition::new(row_left + row_width / 2.0, middle(row).y);
+                            let by = by.clamp(-reach, reach);
+                            let steps: Vec<(u64, f32, f32)> = (1..=8).map(|step| (16, by * step as f32 / 8.0, 0.0)).collect();
+                            drag(&ui, from, &steps, 300).await;
+                            idle(Duration::from_millis(600)).await;
+                            assert!(ui.get_now_playing_open(), "dragging the row at {width}px with {how} opens nothing");
+                        }
+                        let tap_at = tap_at.unwrap_or_else(|| panic!("{artist}'s chip out of reach at {width}px for {how}"));
+                        let visit = ui.get_visit();
+                        hold(&ui, tap_at, 0.0, 30).await;
+                        if finger {
+                            ui.window().dispatch_event(WindowEvent::PointerExited);
+                        }
+                        wait_for(&format!("{artist}'s page from {how} at {width}px"), || {
+                            ui.get_visit() != visit && ui.get_page() == Page::Artist
+                        })
+                        .await;
+                        input.set_touch(false);
+                        input.set_finger(false);
+                        let opened = ui.get_visit();
+                        ui.invoke_back();
+                        wait_for("the page before", || ui.get_visit() != opened).await;
+                        idle(Duration::from_millis(400)).await;
+                    }
+                }
+            }
+            // Another song's artists start from the first, wherever the row
+            // was dragged to.
+            play::testing::show_song(&ui, vec![harbour()], 0);
+            idle(Duration::from_millis(100)).await;
+            let row = ui.root_element().query_descendants().match_inherits("NameChips").find_first().unwrap();
+            let first = row
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::Button)
+                .find_first()
+                .expect("Mara Lind's chip in sight");
+            assert_eq!(first.absolute_position().x, row.absolute_position().x);
             // Where the app has no say in how the sound reaches the
             // speakers, as in a browser, neither a desktop's bar nor a
             // phone's page offers to choose it.
