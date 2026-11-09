@@ -9142,6 +9142,35 @@ mod tests {
             ui.set_playing_level(-1);
             ui.set_playing_path(slint::ModelRc::default());
 
+            // Shuffle and repeat name the state they are in, whose icon they
+            // show, and a press moves each on to its next, on a desktop's bar
+            // and a phone's now playing page alike.
+            ui.set_playing(true);
+            for (width, height) in [(1100.0, 760.0), (412.0, 915.0)] {
+                ui.window().set_size(slint::LogicalSize::new(width, height));
+                idle(Duration::from_millis(400)).await;
+                if width < 600.0 {
+                    click(&ui, "Now playing");
+                    idle(Duration::from_millis(400)).await;
+                }
+                let states = [
+                    ("Shuffle off", "Shuffle on"),
+                    ("Shuffle on", "Shuffle off"),
+                    ("Repeat off", "Repeat all"),
+                    ("Repeat all", "Repeat one"),
+                    ("Repeat one", "Repeat off"),
+                ];
+                for (state, next) in states {
+                    click(&ui, state);
+                    idle(Duration::from_millis(100)).await;
+                    assert!(find(&ui, next).is_some(), "{state} goes on to {next} at {width}px");
+                }
+            }
+            press(&ui, slint::platform::Key::Escape);
+            assert!(!ui.get_now_playing_open());
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            ui.set_playing(false);
+
             // Without the extension the still cover stays and none is asked for.
             let asked = MOTIONS_ASKED.load(Relaxed);
             let waveforms_asked = WAVEFORMS_ASKED.load(Relaxed);

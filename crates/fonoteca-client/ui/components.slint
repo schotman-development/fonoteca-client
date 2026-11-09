@@ -152,7 +152,11 @@ export global Icons {
     out property <string> queue: "M4 6h11 M4 11h11 M4 16h6 M14.5 13.5v7l6-3.5z";
     out property <string> lyrics: "M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z M18.5 11a6.5 6.5 0 0 1-13 0 M12 17.5V21";
     out property <string> shuffle: "M3 7h3.5l10 10H21 M3 17h3.5l3-3 M14 10l2.5-3H21 M18.5 4.5L21 7l-2.5 2.5 M18.5 14.5L21 17l-2.5 2.5";
+    // The shuffle's arrows uncrossed: in order.
+    out property <string> shuffle-off: "M3 7H21 M18.5 4.5L21 7l-2.5 2.5 M3 17H21 M18.5 14.5L21 17l-2.5 2.5";
     out property <string> repeat: "M4 11V9.5A2.5 2.5 0 0 1 6.5 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-2.5 2.5H5 M8 20l-3-3 3-3";
+    // The repeat struck through, its corners cut where the stroke crosses.
+    out property <string> repeat-off: "M4 11V9.5A2.5 2.5 0 0 1 4.34 8.24 M11 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-.34 1.26 M13 17H5 M8 20l-3-3 3-3 M3 3l18 18";
     out property <string> repeat-one: "M4 11V9.5A2.5 2.5 0 0 1 6.5 7H19 M16 4l3 3-3 3 M20 13v1.5a2.5 2.5 0 0 1-2.5 2.5H5 M8 20l-3-3 3-3 M11 11l1.5-1v4.5";
     // Filled.
     out property <string> play: "M7.5 4.5v15l12-7.5z";
@@ -3801,21 +3805,23 @@ export component EqBandRow inherits VerticalLayout {
     }
 }
 
-// Whether the queue is shuffled, lit when it is; a press turns it over.
+// Whether the queue is shuffled, lit when it is; a press turns it over. Its
+// icon says which too, as a colour alone is easy to miss, and its label
+// says it to a screen reader.
 component ShuffleButton inherits IconButton {
     in property <bool> shuffled;
-    icon: Icons.shuffle;
+    icon: root.shuffled ? Icons.shuffle : Icons.shuffle-off;
     color: root.shuffled ? Theme.accent : Theme.muted;
-    label: root.shuffled ? "Shuffle off" : "Shuffle";
+    label: root.shuffled ? "Shuffle on" : "Shuffle off";
 }
 
 // Whether the queue repeats: 0 not, 1 all of it, 2 the track; lit while it
-// does. A press goes on to the next.
+// does, with an icon and a label of each. A press goes on to the next.
 component RepeatButton inherits IconButton {
     in property <int> repeat;
-    icon: root.repeat == 2 ? Icons.repeat-one : Icons.repeat;
+    icon: root.repeat == 0 ? Icons.repeat-off : root.repeat == 1 ? Icons.repeat : Icons.repeat-one;
     color: root.repeat > 0 ? Theme.accent : Theme.muted;
-    label: root.repeat == 0 ? "Repeat all" : root.repeat == 1 ? "Repeat one" : "Repeat off";
+    label: root.repeat == 0 ? "Repeat off" : root.repeat == 1 ? "Repeat all" : "Repeat one";
 }
 
 // Plays or pauses, as a filled round button so it stands out from the
