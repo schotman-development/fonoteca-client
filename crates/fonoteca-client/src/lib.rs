@@ -41,6 +41,8 @@ mod radio;
 mod scrobble;
 #[cfg(not(target_family = "wasm"))]
 mod sound;
+#[cfg(not(target_family = "wasm"))]
+mod sound_presets;
 mod store;
 mod waveform;
 mod zone;
@@ -3038,7 +3040,7 @@ mod tests {
                     )
                 }
             };
-            let saved_band = || prefs::load().eq.bands.first().cloned();
+            let saved_band = || prefs::load().sound.eq.bands.first().cloned();
             let (window, left) = (ui.window(), PointerEventButton::Left);
             let at = graph();
             // The page holds a press back a moment, to see if it scrolls.
@@ -3136,26 +3138,26 @@ mod tests {
             assert_eq!(ui.get_eq_points().row_data(1).unwrap().y, 0.5);
             ui.invoke_move_band(1, 0.1, 0.0);
             ui.invoke_release_band();
-            let pass = prefs::load().eq.bands[1].clone();
+            let pass = prefs::load().sound.eq.bands[1].clone();
             assert_eq!((pass.frequency, pass.gain), (40.0, 6.0));
 
             click(&ui, "Remove band 2 from the graph");
             assert_eq!(ui.get_eq_bands().row_count(), 1);
-            let left_over = prefs::load().eq.bands[0].clone();
+            let left_over = prefs::load().sound.eq.bands[0].clone();
             assert_eq!((left_over.filter, left_over.frequency), (0, 1_000.0), "the picked band went");
             assert_eq!(ui.get_eq_selected(), -1);
-            assert_eq!(prefs::load().eq.bands.len(), 1);
+            assert_eq!(prefs::load().sound.eq.bands.len(), 1);
             // A band that goes from before the picked one leaves it picked.
             ui.invoke_add_band_at(0.2, 0.5);
             ui.invoke_add_band_at(0.7, 0.5);
-            let before = prefs::load().eq.bands;
+            let before = prefs::load().sound.eq.bands;
             assert_eq!(ui.get_eq_selected(), 2);
             ui.invoke_remove_band(1);
-            let after = prefs::load().eq.bands;
+            let after = prefs::load().sound.eq.bands;
             assert_eq!(after, [before[0].clone(), before[2].clone()]);
             assert_eq!(ui.get_eq_selected(), 1, "the picked band is still the one picked");
             ui.invoke_remove_band(1);
-            assert_eq!((ui.get_eq_selected(), prefs::load().eq.bands.len()), (-1, 1));
+            assert_eq!((ui.get_eq_selected(), prefs::load().sound.eq.bands.len()), (-1, 1));
             // While a point is dragged the player is handed the EQ now and
             // then, not at each move, and the saved one once it is let go.
             let heard: std::rc::Rc<std::cell::RefCell<Vec<playback::Dsp>>> = Default::default();
@@ -3174,7 +3176,7 @@ mod tests {
             wait_for("the player to follow", || !heard.borrow().is_empty()).await;
             assert!(started.elapsed() >= Duration::from_millis(400), "{:?}", started.elapsed());
             assert_eq!((heard.borrow().len(), band_heard(0)), (1, 159.0));
-            assert_eq!(prefs::load().eq.bands[0].frequency, 1_000.0, "saved once let go");
+            assert_eq!(prefs::load().sound.eq.bands[0].frequency, 1_000.0, "saved once let go");
             for _ in 0..5 {
                 other.invoke_move_band(0, 0.35, 0.4);
             }
@@ -3191,7 +3193,7 @@ mod tests {
             other.invoke_release_band();
             wait_for("the saved EQ", || heard.borrow().len() == followed + 1).await;
             assert_eq!(band_heard(followed), 224.0);
-            assert_eq!(prefs::load().eq.bands[0].frequency, 224.0);
+            assert_eq!(prefs::load().sound.eq.bands[0].frequency, 224.0);
             // A finger dragging a point, or the graph's empty part, with some
             // drift up or down moves the point and leaves the page where it
             // is; the next finger elsewhere scrolls it.
@@ -3240,8 +3242,8 @@ mod tests {
                 .unwrap();
             ui.invoke_load_headphone(0);
             assert_eq!((ui.get_page(), ui.get_shown_id()), (Page::Setting, "sound".into()));
-            assert_eq!(prefs::load().eq, expected);
-            assert!(prefs::load().eq_on);
+            assert_eq!(prefs::load().sound.eq, expected);
+            assert!(prefs::load().sound.eq_on);
             assert!(!expected.bands.is_empty());
             assert_eq!(ui.get_eq_bands().row_count(), expected.bands.len(), "its bands in rows");
             assert_eq!(ui.get_eq_points().row_count(), expected.bands.len(), "its points on the graph");

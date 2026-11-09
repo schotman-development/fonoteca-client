@@ -51,14 +51,14 @@ pub struct Prefs {
     pub download_quality: StreamQuality,
     /// Whether songs may be downloaded over mobile data; wifi only without.
     pub download_on_mobile_data: bool,
-    /// The sound processing's entries in the settings: headroom, crossfeed
-    /// and upsampling; the EQ, whether it is on, and the EQs saved by name.
-    pub headroom: i32,
-    pub crossfeed: i32,
-    pub upsampling: i32,
-    pub eq_on: bool,
-    pub eq: Equalizer,
-    pub eq_presets: Vec<EqPreset>,
+    /// The sound processing as it is now; the preset it was last set from
+    /// or saved as, by name; and the presets saved, which an earlier version
+    /// kept as EQs alone.
+    #[serde(flatten)]
+    pub sound: Sound,
+    pub sound_preset: Option<String>,
+    #[serde(alias = "eq_presets")]
+    pub sound_presets: Vec<SoundPreset>,
     /// Whether the queue repeats: not, all of it, or the track playing.
     pub repeat: i32,
     /// The works of the queue saved on the server whose rows the now playing
@@ -76,6 +76,26 @@ pub struct Prefs {
 pub struct StreamQuality {
     pub format: i32,
     pub bitrate: i32,
+}
+
+/// The sound processing's entries in the settings: headroom, crossfeed and
+/// upsampling, and the EQ and whether it is on. The default processes
+/// nothing.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sound {
+    pub headroom: i32,
+    pub crossfeed: i32,
+    pub upsampling: i32,
+    /// On where it isn't said: an earlier version's presets held just the
+    /// EQ, and were saved while it was on.
+    #[serde(default = "eq_on_unsaid")]
+    pub eq_on: bool,
+    pub eq: Equalizer,
+}
+
+fn eq_on_unsaid() -> bool {
+    true
 }
 
 /// A parametric EQ: its preamp in dB and its bands.
@@ -97,11 +117,13 @@ pub struct EqBand {
     pub q: f64,
 }
 
+/// The sound processing saved by name.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct EqPreset {
+pub struct SoundPreset {
     pub name: String,
-    pub eq: Equalizer,
+    #[serde(flatten)]
+    pub sound: Sound,
 }
 
 /// The preferences saved, or the first choices when there are none.
@@ -403,5 +425,20 @@ mod tests {
         assert!(missing.missing_lately());
         missing.checked -= 2 * 24 * 60 * 60;
         assert!(!missing.missing_lately());
+    }
+
+    #[test]
+    fn an_earlier_versions_sound_and_eq_presets_are_kept() {
+        let earlier = r#"{"headroom": 2, "eq_on": false, "eq": {"preamp": -3.0},
+            "eq_presets": [{"name": "HD 650", "eq": {"preamp": -6.0}}]}"#;
+        let prefs: Prefs = serde_json::from_str(earlier).unwrap();
+        assert_eq!((prefs.sound.headroom, prefs.sound.eq_on), (2, false));
+        assert_eq!(prefs.sound.eq.preamp, -3.0);
+        let preset = &prefs.sound_presets[0];
+        assert_eq!(preset.name, "HD 650");
+        assert_eq!((preset.sound.eq.preamp, preset.sound.eq_on), (-6.0, true));
+        assert_eq!(preset.sound.headroom, 0);
+        let again: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(again, prefs);
     }
 }

@@ -12,7 +12,7 @@ export enum Page { home, albums, artists, tracks, playlists, album, artist, play
 // new password for the account signed in; a new radio station, changes to
 // one, or whether to delete one; a new tag, a tag's new name, or whether to
 // delete it; and which tags songs have.
-enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-eq-preset, import-eq, remove-download, remove-all-downloads, download }
+enum Asking { nothing, new-playlist, rename-playlist, delete-playlist, new-folder, rename-folder, delete-folder, own-password, new-station, edit-station, delete-station, new-tag, rename-tag, delete-tag, tag-songs, save-preset, rename-preset, import-eq, remove-download, remove-all-downloads, download }
 
 // A headphone found in OPRA's presets, and one of the presets it has. The
 // summary is its bands in words; the problem is why the EQ can't hold it,
@@ -1417,9 +1417,13 @@ export component AppWindow inherits Window {
     in-out property <int> wifi-bitrate;
     in-out property <int> mobile-format;
     in-out property <int> mobile-bitrate;
-    // The sound processing: the headroom's, crossfeed's and upsampling's
-    // entries; whether the EQ is on, its preamp and bands as typed, its
-    // presets after a first "Custom" entry, and which of them it is.
+    // The sound processing: its presets after a first "No preset" entry, the
+    // one it was last set from or saved as, and whether it changed since;
+    // the headroom's, crossfeed's and upsampling's entries; whether the EQ
+    // is on, and its preamp and bands as typed.
+    in property <[string]> sound-presets;
+    in-out property <int> sound-preset;
+    in property <bool> sound-unsaved;
     in-out property <int> headroom;
     in-out property <int> crossfeed;
     in-out property <int> upsampling;
@@ -1432,8 +1436,6 @@ export component AppWindow inherits Window {
     in property <string> eq-curve;
     in property <[EqGridLine]> eq-grid;
     in-out property <int> eq-selected: -1;
-    in property <[string]> eq-presets;
-    in-out property <int> eq-preset;
     // The headphone presets page: what is typed, the headphones that match
     // it, a line on what that is, the headphone picked and its presets.
     in-out property <string> headphone-filter;
@@ -1651,9 +1653,14 @@ export component AppWindow inherits Window {
     callback move-band(row: int, x: float, y: float);
     callback release-band();
     callback remove-band(row: int);
-    callback choose-eq-preset(index: int);
-    callback save-eq-preset(name: string);
-    callback delete-eq-preset();
+    // A preset picked becomes the settings; the settings are saved over the
+    // preset they were set from or as a new one, which is renamed, answering
+    // what is wrong with the name or nothing, or deleted.
+    callback choose-sound-preset(index: int);
+    callback save-sound-preset();
+    callback save-sound-preset-as(name: string);
+    callback rename-sound-preset(name: string) -> string;
+    callback delete-sound-preset();
     callback import-eq(text: string) -> string;
     callback open-headphones();
     callback search-headphones(text: string);
@@ -1721,7 +1728,7 @@ export component AppWindow inherits Window {
     property <string> asked-text;
     property <string> asked-problem;
     property <bool> asks-station: root.asking == Asking.new-station || root.asking == Asking.edit-station;
-    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag || root.asking == Asking.save-eq-preset;
+    property <bool> asks-name: root.asking == Asking.new-playlist || root.asking == Asking.rename-playlist || root.asking == Asking.new-folder || root.asking == Asking.rename-folder || root.asks-station || root.asking == Asking.new-tag || root.asking == Asking.rename-tag || root.asking == Asking.save-preset || root.asking == Asking.rename-preset;
     property <bool> asks-password: root.asking == Asking.own-password;
     property <bool> deleting: root.asking == Asking.delete-playlist || root.asking == Asking.delete-folder || root.asking == Asking.delete-station || root.asking == Asking.delete-tag || root.asking == Asking.remove-download || root.asking == Asking.remove-all-downloads;
 
@@ -1806,8 +1813,13 @@ export component AppWindow inherits Window {
             root.confirm-download();
         } else if root.asking == Asking.remove-all-downloads {
             root.remove-all-downloads();
-        } else if root.asking == Asking.save-eq-preset {
-            root.save-eq-preset(root.asked-name);
+        } else if root.asking == Asking.save-preset {
+            root.save-sound-preset-as(root.asked-name);
+        } else if root.asking == Asking.rename-preset {
+            root.asked-problem = root.rename-sound-preset(root.asked-name);
+            if root.asked-problem != "" {
+                return;
+            }
         } else if root.asking == Asking.import-eq {
             root.asked-problem = root.import-eq(root.asked-text);
             if root.asked-problem != "" {
@@ -1829,7 +1841,8 @@ export component AppWindow inherits Window {
         if root.asking == Asking.own-password { return "Change your password"; }
         if root.asking == Asking.new-station { return "New radio station"; }
         if root.asking == Asking.edit-station { return "Edit radio station"; }
-        if root.asking == Asking.save-eq-preset { return "Save EQ as preset"; }
+        if root.asking == Asking.save-preset { return "Save as new preset"; }
+        if root.asking == Asking.rename-preset { return "Rename preset"; }
         if root.asking == Asking.import-eq { return "Paste AutoEQ settings"; }
         if root.asking == Asking.remove-download { return "Remove the download of “" + root.header-title + "”?"; }
         if root.asking == Asking.remove-all-downloads { return "Remove all downloads?"; }
@@ -1840,9 +1853,9 @@ export component AppWindow inherits Window {
     function asked-action() -> string {
         if root.asking == Asking.remove-download || root.asking == Asking.remove-all-downloads { return "Remove"; }
         if root.deleting { return "Delete"; }
-        if root.asking == Asking.rename-playlist || root.asking == Asking.rename-folder || root.asking == Asking.rename-tag { return "Rename"; }
+        if root.asking == Asking.rename-playlist || root.asking == Asking.rename-folder || root.asking == Asking.rename-tag || root.asking == Asking.rename-preset { return "Rename"; }
         if root.asking == Asking.tag-songs { return "Done"; }
-        if root.asking == Asking.edit-station || root.asking == Asking.save-eq-preset { return "Save"; }
+        if root.asking == Asking.edit-station || root.asking == Asking.save-preset { return "Save"; }
         if root.asking == Asking.import-eq { return "Use"; }
         if root.asking == Asking.download { return "Download"; }
         if root.asking == Asking.own-password { return "Change"; }
@@ -3198,11 +3211,59 @@ export component AppWindow inherits Window {
                             chosen(format, bitrate) => { root.choose-stream-quality(true, format, bitrate); }
                         }
                     }
-                    // Each entry's order is the one sound.rs takes them in.
+                    // Each entry's order is the one sound.rs takes them in. A
+                    // preset holds every setting under it.
                     if root.page == Page.setting && root.shown-id == "sound": VerticalLayout {
                         max-width: 480px;
                         spacing: 12px;
                         Heading { text: "Sound processing"; }
+                        if root.can-play: Text {
+                            text: "Preset";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                        }
+                        if root.can-play: HorizontalLayout {
+                            spacing: 8px;
+                            Choice {
+                                horizontal-stretch: 1;
+                                accessible-label: "Sound preset";
+                                model: root.sound-presets;
+                                current-index <=> root.sound-preset;
+                                enabled: !Input.modal;
+                                selected => { root.choose-sound-preset(self.current-index); }
+                            }
+                            MoreMenu {
+                                cross-axis-self-alignment: center;
+                                label: "Sound presets";
+                                opening => {
+                                    self.entries = [];
+                                    if root.sound-preset > 0 && root.sound-unsaved {
+                                        self.entries.push({ id: "save", label: "Save changes", icon: Icons.check });
+                                    }
+                                    self.entries.push({ id: "save-as", label: "Save as new preset", icon: Icons.plus });
+                                    if root.sound-preset > 0 {
+                                        self.entries.push({ id: "rename", label: "Rename preset", icon: Icons.pencil });
+                                        self.entries.push({ id: "delete", label: "Delete preset", icon: Icons.trash, danger: true });
+                                    }
+                                }
+                                activated(id) => {
+                                    if id == "save" {
+                                        root.save-sound-preset();
+                                    } else if id == "save-as" {
+                                        root.asked-name = "";
+                                        root.open-dialog(Asking.save-preset);
+                                    } else if id == "rename" {
+                                        root.asked-name = root.sound-presets[root.sound-preset];
+                                        root.open-dialog(Asking.rename-preset);
+                                    } else {
+                                        root.delete-sound-preset();
+                                    }
+                                }
+                            }
+                        }
+                        if root.can-play && root.sound-unsaved: Note {
+                            text: "Unsaved changes, lost when the sound device changes.";
+                        }
                         if root.can-play: Text {
                             text: "Headroom, to leave room for the EQ's boosts";
                             font-size: Theme.body;
@@ -3248,6 +3309,7 @@ export component AppWindow inherits Window {
                         }
                         if root.can-play && root.eq-on: HorizontalLayout {
                             alignment: start;
+                            spacing: 8px;
                             Button {
                                 text: "Headphone presets";
                                 enabled: !Input.modal;
@@ -3256,37 +3318,10 @@ export component AppWindow inherits Window {
                                     root.open-headphones();
                                 }
                             }
-                        }
-                        if root.can-play && root.eq-on: HorizontalLayout {
-                            spacing: 8px;
-                            Choice {
-                                horizontal-stretch: 1;
-                                accessible-label: "EQ preset";
-                                model: root.eq-presets;
-                                current-index <=> root.eq-preset;
+                            Button {
+                                text: "Paste AutoEQ settings";
                                 enabled: !Input.modal;
-                                selected => { root.choose-eq-preset(self.current-index); }
-                            }
-                            MoreMenu {
-                                cross-axis-self-alignment: center;
-                                label: "EQ presets";
-                                opening => {
-                                    self.entries = [{ id: "save", label: "Save as preset", icon: Icons.plus }];
-                                    if root.eq-preset > 0 {
-                                        self.entries.push({ id: "delete", label: "Delete preset", icon: Icons.trash, danger: true });
-                                    }
-                                    self.entries.push({ id: "import", label: "Paste AutoEQ settings", icon: Icons.pencil });
-                                }
-                                activated(id) => {
-                                    if id == "save" {
-                                        root.asked-name = root.eq-preset > 0 ? root.eq-presets[root.eq-preset] : "";
-                                        root.open-dialog(Asking.save-eq-preset);
-                                    } else if id == "delete" {
-                                        root.delete-eq-preset();
-                                    } else {
-                                        root.open-dialog(Asking.import-eq);
-                                    }
-                                }
+                                clicked => { root.open-dialog(Asking.import-eq); }
                             }
                         }
                         if root.can-play && root.eq-on: EqGraph {
@@ -4465,6 +4500,7 @@ export component AppWindow inherits Window {
                             placeholder-text: "Name";
                             accessible-label: self.placeholder-text;
                             init => { self.focus(); }
+                            edited => { root.asked-problem = ""; }
                             accepted => {
                                 if root.may-answer() {
                                     root.answer();
@@ -4518,7 +4554,7 @@ export component AppWindow inherits Window {
                             init => { self.focus(); }
                             edited => { root.asked-problem = ""; }
                         }
-                        if root.asking == Asking.import-eq && root.asked-problem != "": Problem { text: root.asked-problem; }
+                        if (root.asking == Asking.import-eq || root.asking == Asking.rename-preset) && root.asked-problem != "": Problem { text: root.asked-problem; }
                         if root.asking == Asking.delete-tag: Note { text: "The tags in it go too. The tracks stay."; }
                         // Each tick puts a tag on the songs or takes it off at once;
                         // a name typed below makes a tag and ticks it.

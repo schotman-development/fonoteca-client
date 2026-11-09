@@ -1,6 +1,7 @@
 //! The sound processing in the settings: headroom, a parametric EQ with
-//! presets and AutoEQ's settings pasted in, crossfeed and upsampling. They
-//! are kept in the preferences and handed to the player as they change.
+//! AutoEQ's settings pasted in, crossfeed and upsampling, and presets of
+//! them all. They are kept in the preferences and handed to the player as
+//! they change.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -10,8 +11,8 @@ use std::time::Duration;
 use playback::{Band, Crossfeed, Dsp, Equalizer, Filter};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use crate::prefs::{self, EqBand, EqPreset, Prefs};
-use crate::{AppWindow, EqBandLine, EqGridLine, EqPoint, eq_graph, headphones};
+use crate::prefs::{self, EqBand, Prefs, Sound};
+use crate::{AppWindow, EqBandLine, EqGridLine, EqPoint, eq_graph, headphones, sound_presets};
 
 /// The settings' headroom, crossfeed and filter entries, in their order.
 const HEADROOM: [f64; 8] = [0.0, -1.0, -2.0, -3.0, -4.5, -6.0, -9.0, -12.0];
@@ -38,6 +39,8 @@ const NEW_BAND: EqBand = EqBand {
 /// How long typing pauses before what was typed is heard: each change
 /// opens the track again where it is.
 const SETTLE: Duration = Duration::from_millis(400);
+/// The presets picker's first entry, which processes nothing.
+const NO_PRESET: &str = "No preset";
 /// How often the player gets the EQ while a point is being dragged. Each
 /// new EQ opens the track again where it is, so this is how often the sound
 /// catches up, not how often the mouse moves.
@@ -45,18 +48,18 @@ const DRAG_FOLLOW: Duration = Duration::from_millis(500);
 
 /// The processing the settings ask for.
 pub fn dsp() -> Dsp {
-    dsp_of(&prefs::load())
+    dsp_of(&prefs::load().sound)
 }
 
-fn dsp_of(saved: &Prefs) -> Dsp {
+fn dsp_of(sound: &Sound) -> Dsp {
     Dsp {
-        headroom: HEADROOM[saved.headroom.clamp(0, 7) as usize],
-        eq: saved.eq_on.then(|| Equalizer {
-            preamp: saved.eq.preamp,
-            bands: saved.eq.bands.iter().map(band).collect(),
+        headroom: HEADROOM[sound.headroom.clamp(0, 7) as usize],
+        eq: sound.eq_on.then(|| Equalizer {
+            preamp: sound.eq.preamp,
+            bands: sound.eq.bands.iter().map(band).collect(),
         }),
-        crossfeed: CROSSFEED[saved.crossfeed.clamp(0, 3) as usize],
-        upsampling: saved.upsampling == 1,
+        crossfeed: CROSSFEED[sound.crossfeed.clamp(0, 3) as usize],
+        upsampling: sound.upsampling == 1,
     }
 }
 
@@ -77,11 +80,12 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
     // Saves `change` to the preferences, and has the player follow once it
     // has settled.
     let changed = {
-        let (settle, apply) = (settle.clone(), apply.clone());
+        let (weak, settle, apply) = (ui.as_weak(), settle.clone(), apply.clone());
         move |change: &dyn Fn(&mut Prefs)| {
             let mut saved = prefs::load();
             change(&mut saved);
             prefs::save(&saved);
+            show_presets(&weak.unwrap(), &saved);
             let apply = apply.clone();
             settle.start(TimerMode::SingleShot, SETTLE, move || apply(dsp()));
         }
@@ -90,26 +94,25 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
 
     ui.on_choose_headroom({
         let changed = changed.clone();
-        move |index| changed(&|saved| saved.headroom = index)
+        move |index| changed(&|saved| saved.sound.headroom = index)
     });
     ui.on_choose_crossfeed({
         let changed = changed.clone();
-        move |index| changed(&|saved| saved.crossfeed = index)
+        move |index| changed(&|saved| saved.sound.crossfeed = index)
     });
     ui.on_choose_upsampling({
         let changed = changed.clone();
-        move |index| changed(&|saved| saved.upsampling = index)
+        move |index| changed(&|saved| saved.sound.upsampling = index)
     });
     ui.on_toggle_eq({
         let changed = changed.clone();
-        move |on| changed(&|saved| saved.eq_on = on)
+        move |on| changed(&|saved| saved.sound.eq_on = on)
     });
     ui.on_edit_preamp({
-        let (weak, changed) = (ui.as_weak(), changed.clone());
+        let changed = changed.clone();
         move |text| {
             let Some(preamp) = number(&text) else { return };
-            changed(&|saved| saved.eq.preamp = preamp);
-            show_preset(&weak.unwrap(), &prefs::load());
+            changed(&|saved| saved.sound.eq.preamp = preamp);
         }
     });
     ui.on_edit_band({
@@ -132,19 +135,17 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
                 q,
             };
             changed(&|saved| {
-                if let Some(band) = saved.eq.bands.get_mut(row as usize) {
+                if let Some(band) = saved.sound.eq.bands.get_mut(row as usize) {
                     *band = edited.clone();
                 }
             });
-            let (ui, saved) = (weak.unwrap(), prefs::load());
-            show_graph(&ui, &saved.eq);
-            show_preset(&ui, &saved);
+            show_graph(&weak.unwrap(), &prefs::load().sound.eq);
         }
     });
     ui.on_add_band({
         let (weak, changed) = (ui.as_weak(), changed.clone());
         move || {
-            changed(&|saved| saved.eq.bands.push(NEW_BAND));
+            changed(&|saved| saved.sound.eq.bands.push(NEW_BAND));
             show(&weak.unwrap(), &prefs::load());
         }
     });
@@ -152,8 +153,8 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
         let (weak, changed) = (ui.as_weak(), changed.clone());
         move |row| {
             changed(&|saved| {
-                if (row as usize) < saved.eq.bands.len() {
-                    saved.eq.bands.remove(row as usize);
+                if (row as usize) < saved.sound.eq.bands.len() {
+                    saved.sound.eq.bands.remove(row as usize);
                 }
             });
             let ui = weak.unwrap();
@@ -168,56 +169,14 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
             show(&ui, &prefs::load());
         }
     });
-    ui.on_choose_eq_preset({
-        let (weak, changed) = (ui.as_weak(), changed.clone());
-        move |index| {
-            // The first entry is the EQ as it is.
-            changed(&|saved| {
-                if let Some(preset) = (index as usize)
-                    .checked_sub(1)
-                    .and_then(|index| saved.eq_presets.get(index))
-                {
-                    saved.eq = preset.eq.clone();
-                }
-            });
-            show(&weak.unwrap(), &prefs::load());
-        }
-    });
-    ui.on_save_eq_preset({
-        let weak = ui.as_weak();
-        move |name| {
-            let mut saved = prefs::load();
-            let preset = EqPreset {
-                name: name.trim().to_owned(),
-                eq: saved.eq.clone(),
-            };
-            if preset.name.is_empty() {
-                return;
-            }
-            match saved.eq_presets.iter_mut().find(|p| p.name == preset.name) {
-                Some(same) => *same = preset,
-                None => saved.eq_presets.push(preset),
-            }
-            prefs::save(&saved);
-            show(&weak.unwrap(), &saved);
-        }
-    });
-    ui.on_delete_eq_preset({
-        let weak = ui.as_weak();
-        move || {
-            let mut saved = prefs::load();
-            saved.eq_presets.retain(|preset| preset.eq != saved.eq);
-            prefs::save(&saved);
-            show(&weak.unwrap(), &saved);
-        }
-    });
+    wire_presets(ui, apply.clone());
     // Makes `eq` the EQ, and turns the EQ on to hear it.
     let load_eq = {
         let (weak, changed) = (ui.as_weak(), changed.clone());
         Rc::new(move |eq: prefs::Equalizer| {
             changed(&|saved| {
-                saved.eq = eq.clone();
-                saved.eq_on = true;
+                saved.sound.eq = eq.clone();
+                saved.sound.eq_on = true;
             });
             show(&weak.unwrap(), &prefs::load());
         })
@@ -243,6 +202,64 @@ pub fn wire(ui: &AppWindow, apply: impl Fn(Dsp) + 'static) {
     wire_graph(ui, changed, apply);
 }
 
+/// The presets' picker and menu: a preset chosen becomes the settings at
+/// once, and the settings are saved over the one they were set from, as a
+/// new one, renamed or deleted.
+fn wire_presets(ui: &AppWindow, apply: Rc<impl Fn(Dsp) + 'static>) {
+    ui.on_choose_sound_preset({
+        let weak = ui.as_weak();
+        move |index| {
+            let mut saved = prefs::load();
+            // The first entry is no preset.
+            let name = (index as usize)
+                .checked_sub(1)
+                .and_then(|index| saved.sound_presets.get(index))
+                .map(|preset| preset.name.clone());
+            sound_presets::choose(&mut saved, name.as_deref());
+            prefs::save(&saved);
+            show(&weak.unwrap(), &saved);
+            apply(dsp_of(&saved.sound));
+        }
+    });
+    // Saves what `change` does to the presets, and shows it.
+    let presets_changed = {
+        let weak = ui.as_weak();
+        Rc::new(move |change: &dyn Fn(&mut Prefs)| {
+            let mut saved = prefs::load();
+            change(&mut saved);
+            prefs::save(&saved);
+            show_presets(&weak.unwrap(), &saved);
+        })
+    };
+    ui.on_save_sound_preset({
+        let presets_changed = presets_changed.clone();
+        move || {
+            presets_changed(&|saved| {
+                if let Some(name) = saved.sound_preset.clone() {
+                    sound_presets::save_as(saved, &name);
+                }
+            })
+        }
+    });
+    ui.on_save_sound_preset_as({
+        let presets_changed = presets_changed.clone();
+        move |name| presets_changed(&|saved| sound_presets::save_as(saved, &name))
+    });
+    ui.on_rename_sound_preset({
+        let weak = ui.as_weak();
+        move |name| {
+            let mut saved = prefs::load();
+            if let Err(problem) = sound_presets::rename(&mut saved, &name) {
+                return problem.into();
+            }
+            prefs::save(&saved);
+            show_presets(&weak.unwrap(), &saved);
+            SharedString::new()
+        }
+    });
+    ui.on_delete_sound_preset(move || presets_changed(&sound_presets::delete));
+}
+
 /// The EQ's graph: a click adds a band, and a point dragged moves its band.
 /// The drag is kept apart from the saved preferences until it ends, so the
 /// disk is written once, and the player follows every `DRAG_FOLLOW` instead
@@ -262,7 +279,7 @@ fn wire_graph(
             })
             .collect::<Vec<_>>(),
     )));
-    let drag: Rc<RefCell<Option<Prefs>>> = Rc::default();
+    let drag: Rc<RefCell<Option<Sound>>> = Rc::default();
     let follow = Rc::new(Timer::default());
 
     ui.on_add_band_at({
@@ -274,17 +291,17 @@ fn wire_graph(
                 gain: moved.gain,
                 ..NEW_BAND
             };
-            changed(&|saved| saved.eq.bands.push(new.clone()));
+            changed(&|saved| saved.sound.eq.bands.push(new.clone()));
             let (ui, saved) = (weak.unwrap(), prefs::load());
             show(&ui, &saved);
-            ui.set_eq_selected(saved.eq.bands.len() as i32 - 1);
+            ui.set_eq_selected(saved.sound.eq.bands.len() as i32 - 1);
         }
     });
     ui.on_move_band({
         let (weak, drag, follow) = (ui.as_weak(), drag.clone(), follow.clone());
         move |row, x, y| {
             let mut dragged = drag.borrow_mut();
-            let editing = dragged.get_or_insert_with(prefs::load);
+            let editing = dragged.get_or_insert_with(|| prefs::load().sound);
             let Some(saved) = editing.eq.bands.get_mut(row as usize) else {
                 return;
             };
@@ -304,41 +321,51 @@ fn wire_graph(
             }
         }
     });
-    ui.on_release_band({
-        let weak = ui.as_weak();
-        move || {
-            follow.stop();
-            let Some(editing) = drag.borrow_mut().take() else {
-                return;
-            };
-            changed(&|saved| saved.eq = editing.eq.clone());
-            show_preset(&weak.unwrap(), &editing);
-        }
+    ui.on_release_band(move || {
+        follow.stop();
+        let Some(editing) = drag.borrow_mut().take() else {
+            return;
+        };
+        changed(&|saved| saved.sound.eq = editing.eq.clone());
     });
 }
 
 /// Puts the saved processing in the settings.
 fn show(ui: &AppWindow, saved: &Prefs) {
-    ui.set_headroom(saved.headroom.clamp(0, 7));
-    ui.set_crossfeed(saved.crossfeed.clamp(0, 3));
-    ui.set_upsampling(saved.upsampling.clamp(0, 1));
-    ui.set_eq_on(saved.eq_on);
-    ui.set_eq_preamp(decimal(saved.eq.preamp).into());
-    let lines: Vec<EqBandLine> = saved.eq.bands.iter().map(band_line).collect();
+    let sound = &saved.sound;
+    ui.set_headroom(sound.headroom.clamp(0, 7));
+    ui.set_crossfeed(sound.crossfeed.clamp(0, 3));
+    ui.set_upsampling(sound.upsampling.clamp(0, 1));
+    ui.set_eq_on(sound.eq_on);
+    ui.set_eq_preamp(decimal(sound.eq.preamp).into());
+    let lines: Vec<EqBandLine> = sound.eq.bands.iter().map(band_line).collect();
     ui.set_eq_bands(ModelRc::new(VecModel::from(lines)));
-    if ui.get_eq_selected() >= saved.eq.bands.len() as i32 {
+    if ui.get_eq_selected() >= sound.eq.bands.len() as i32 {
         ui.set_eq_selected(-1);
     }
-    show_graph(ui, &saved.eq);
-    let mut names = vec![SharedString::from("Custom")];
+    show_graph(ui, &sound.eq);
+    show_presets(ui, saved);
+}
+
+/// Lists the presets after no preset, with the one the settings were set
+/// from picked, and says whether they changed since.
+fn show_presets(ui: &AppWindow, saved: &Prefs) {
+    let mut names = vec![SharedString::from(NO_PRESET)];
     names.extend(
         saved
-            .eq_presets
+            .sound_presets
             .iter()
             .map(|preset| preset.name.as_str().into()),
     );
-    ui.set_eq_presets(ModelRc::new(VecModel::from(names)));
-    show_preset(ui, saved);
+    ui.set_sound_presets(ModelRc::new(VecModel::from(names)));
+    let picked = saved.sound_preset.as_deref().and_then(|name| {
+        saved
+            .sound_presets
+            .iter()
+            .position(|preset| preset.name == name)
+    });
+    ui.set_sound_preset(picked.map_or(0, |index| index as i32 + 1));
+    ui.set_sound_unsaved(sound_presets::unsaved(saved));
 }
 
 fn band_line(band: &EqBand) -> EqBandLine {
@@ -378,15 +405,6 @@ fn show_graph(ui: &AppWindow, eq: &prefs::Equalizer) {
         ui.set_eq_points(ModelRc::new(VecModel::from(points)));
     }
     ui.set_eq_curve(eq_graph::curve(&bands).into());
-}
-
-/// Selects the preset the EQ is, or the first entry when it is none.
-fn show_preset(ui: &AppWindow, saved: &Prefs) {
-    let preset = saved
-        .eq_presets
-        .iter()
-        .position(|preset| preset.eq == saved.eq);
-    ui.set_eq_preset(preset.map_or(0, |index| index as i32 + 1));
 }
 
 /// A number as typed, with a point or a comma before its fraction.
