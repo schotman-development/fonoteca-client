@@ -4611,6 +4611,7 @@ mod tests {
                         vec![
                             playback::OutputDevice {
                                 id: speakers.into(),
+                                key: speakers.into(),
                                 name: "Speakers".into(),
                                 detail: "hw:CARD=PCH,DEV=0".into(),
                                 title: "Speakers (hw:CARD=PCH,DEV=0)".into(),
@@ -4618,6 +4619,7 @@ mod tests {
                             },
                             playback::OutputDevice {
                                 id: dac.into(),
+                                key: dac.into(),
                                 name: "USB DAC".into(),
                                 detail: "hw:CARD=DAC,DEV=0".into(),
                                 title: "USB DAC (hw:CARD=DAC,DEV=0)".into(),

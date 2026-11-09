@@ -9,11 +9,13 @@ use cpal::{DeviceDescription, DeviceDirection, DeviceType, InterfaceType};
 
 /// An output to choose from: its `name` and a short `detail` to tell it from
 /// others of the name, and `title`, which says all of that in one line.
-/// `same_as` holds the ids of the routes that were folded into it, which
-/// still play on it.
+/// `key` is what it goes by from one connection to the next, for what is
+/// kept about it. `same_as` holds the ids of the routes that were folded
+/// into it, which still play on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDevice {
     pub id: String,
+    pub key: String,
     pub name: String,
     pub detail: String,
     pub title: String,
@@ -182,6 +184,7 @@ fn rank(output: &Output) -> u8 {
 
 /// A name for the listener and a short kind to tell outputs apart by.
 fn describe(output: Output) -> OutputDevice {
+    let key = key(&output);
     let (name, detail, title) = if output.id.starts_with(ANDROID_HOST_PREFIX) {
         let (name, detail) = android_words(&output);
         (name.clone(), detail, name)
@@ -198,10 +201,29 @@ fn describe(output: Output) -> OutputDevice {
     };
     OutputDevice {
         id: output.id,
+        key,
         name,
         detail,
         title,
         same_as: output.same_as,
+    }
+}
+
+/// What an output goes by from one connection to the next: its id, except on
+/// Android, which numbers its outputs anew each time one connects. There it
+/// is the address Android gives a headset or a USB card, or else its type
+/// and name, as for the speaker.
+fn key(output: &Output) -> String {
+    if !output.id.starts_with(ANDROID_HOST_PREFIX) {
+        return output.id.clone();
+    }
+    let interface = output.interface;
+    match &output.address {
+        Some(address) => format!("{ANDROID_HOST_PREFIX}{interface}/{address}"),
+        None => format!(
+            "{ANDROID_HOST_PREFIX}{interface}/{}/{}",
+            output.kind, output.name
+        ),
     }
 }
 
@@ -465,6 +487,40 @@ mod tests {
         assert_eq!(
             words(outputs),
             expected.map(|(name, detail)| (name.to_owned(), detail.to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_android_output_keeps_its_key_when_it_connects_again_under_another_id() {
+        let keys = |found: Vec<Found>| -> Vec<String> {
+            list(found).into_iter().map(|output| output.key).collect()
+        };
+        let mut buds_again = buds_music_route();
+        buds_again.id = "aaudio:15".into();
+        let before = keys(vec![speaker("aaudio:2"), buds_music_route()]);
+        assert_eq!(before, keys(vec![speaker("aaudio:3"), buds_again]));
+        assert_ne!(before[0], before[1]);
+        assert_eq!(
+            keys(vec![buds_call_route()]),
+            keys(vec![buds_music_route()]),
+            "one headset, whichever route lists it"
+        );
+        let other_buds = found(
+            "aaudio:16",
+            "Buds Pro",
+            DeviceType::Unknown,
+            InterfaceType::Bluetooth,
+            "CC:DD",
+        );
+        assert_ne!(
+            keys(vec![other_buds]),
+            keys(vec![buds_music_route()]),
+            "another of the same headset"
+        );
+        assert_eq!(
+            keys(vec![alsa("hw:CARD=PCH,DEV=0")]),
+            ["alsa:hw:CARD=PCH,DEV=0"],
+            "elsewhere its id"
         );
     }
 
