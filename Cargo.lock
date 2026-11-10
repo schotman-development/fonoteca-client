@@ -1710,6 +1710,7 @@ version = "0.0.0"
 dependencies = [
  "android-native-keyring-store",
  "apple-native-keyring-store",
+ "block2 0.6.2",
  "flate2",
  "i-slint-backend-testing",
  "image",
@@ -1718,6 +1719,10 @@ dependencies = [
  "keyring-core",
  "listenbrainz",
  "network-output",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "objc2-media-player",
  "opensubsonic",
  "playback",
  "radiobrowser",
@@ -4019,6 +4024,20 @@ dependencies = [
  "objc2 0.5.3",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-media-player"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85f2a98483f6e76313cb85a5a185eaa3cda86a177b13a8852d56cbd0085bf635"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

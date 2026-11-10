@@ -11,6 +11,8 @@ mod browse;
 #[cfg(target_family = "wasm")]
 mod browser_clock;
 mod catalogue;
+#[cfg(target_os = "macos")]
+mod desktop_media;
 #[cfg(not(target_family = "wasm"))]
 mod download_job;
 #[cfg(not(target_family = "wasm"))]
