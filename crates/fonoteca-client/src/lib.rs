@@ -9418,6 +9418,25 @@ mod tests {
             assert_eq!(ui.get_playing_waveform().row_count(), 0);
             SLOW_WAVEFORM.store(false, Relaxed);
 
+            // The simple bar asks for no waveform, and drops one that is on
+            // its way; the waveform asks again for the song on the bar.
+            SLOW_WAVEFORM.store(true, Relaxed);
+            play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
+            ui.set_simple_seek_bar(true);
+            ui.invoke_choose_simple_seek_bar(true);
+            idle(Duration::from_millis(1000)).await;
+            assert_eq!(ui.get_playing_waveform().row_count(), 0, "a reply on its way is dropped");
+            assert!(prefs::load().simple_seek_bar);
+            SLOW_WAVEFORM.store(false, Relaxed);
+            let asked = WAVEFORMS_ASKED.load(Relaxed);
+            play::testing::show_song(&ui, vec![song("w1", "a1")], 0);
+            idle(Duration::from_millis(500)).await;
+            assert_eq!(WAVEFORMS_ASKED.load(Relaxed), asked, "none is asked for");
+            ui.set_simple_seek_bar(false);
+            ui.invoke_choose_simple_seek_bar(false);
+            wait_for("the waveform again", || ui.get_playing_waveform().row_count() > 0).await;
+            assert!(!prefs::load().simple_seek_bar);
+
             // A phone's signal path opens in the sheet its menus open in,
             // wholly in sight, and Android's back closes it; a wider window
             // keeps the popup by the light.
