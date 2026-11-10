@@ -1,9 +1,9 @@
-//! The settings' Appearance page: the color scheme and the accent color,
-//! each kept in the preferences and applied at once.
+//! The settings' Appearance page: the color scheme, the accent color and
+//! the seek bar's style, each kept in the preferences and applied at once.
 
-use slint::{Color, ModelRc, VecModel};
+use slint::{Color, ComponentHandle, ModelRc, VecModel};
 
-use crate::{AccentChoice, AppWindow, prefs};
+use crate::{AccentChoice, AppWindow, browse, play, prefs};
 
 type Rgb = [u8; 3];
 
@@ -63,11 +63,12 @@ const ACCENTS: [Accent; 8] = [
 ];
 
 /// Wires the page up: shows what is saved and keeps what is chosen.
-pub fn wire(ui: &AppWindow) {
+pub fn wire(ui: &AppWindow, browser: &browse::Shared, playing: &play::Shared) {
     let saved = prefs::load();
     ui.set_accents(accent_choices());
     ui.set_color_scheme(saved.color_scheme.clamp(0, 2));
     ui.set_accent(saved.accent.clamp(0, ACCENTS.len() as i32));
+    ui.set_simple_seek_bar(saved.simple_seek_bar);
     ui.on_choose_color_scheme(|index| {
         let mut saved = prefs::load();
         saved.color_scheme = index;
@@ -77,6 +78,18 @@ pub fn wire(ui: &AppWindow) {
         let mut saved = prefs::load();
         saved.accent = index;
         prefs::save(&saved);
+    });
+    let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+    ui.on_choose_simple_seek_bar(move |simple| {
+        let mut saved = prefs::load();
+        saved.simple_seek_bar = simple;
+        prefs::save(&saved);
+        let Some(ui) = weak.upgrade() else { return };
+        if simple {
+            ui.set_playing_waveform(ModelRc::default());
+        } else {
+            play::show_waveform(&ui, &browser, &playing);
+        }
     });
 }
 

@@ -1217,6 +1217,18 @@ fn quality_name(quality: Quality) -> &'static str {
     }
 }
 
+/// Fetches the waveform of the song the bar shows, for a seek bar the
+/// settings just switched back from the simple one.
+pub fn show_waveform(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
+    let Some(id) = shown_song_id(&playing.borrow()) else {
+        return;
+    };
+    let (still_playing, shown) = (playing.clone(), id.clone());
+    waveform::show(ui, browse::client(browser), id, move || {
+        shown_song_id(&still_playing.borrow()).is_some_and(|id| id == shown)
+    });
+}
+
 /// The id of the song the bar shows.
 fn shown_song_id(p: &Playing) -> Option<String> {
     p.shown

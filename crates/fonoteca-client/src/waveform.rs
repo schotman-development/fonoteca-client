@@ -36,8 +36,9 @@ pub fn path(levels: ModelRc<f32>, width: f32) -> SharedString {
 }
 
 /// Shows the waveform of the song `id` once it comes, and the plain bar
-/// until then. `still_playing` says whether the song is still the one shown,
-/// for a reply that arrives after it moved on.
+/// until then, and for good when the settings ask for the simple bar.
+/// `still_playing` says whether the song is still the one shown, for a reply
+/// that arrives after it moved on.
 pub fn show(
     ui: &AppWindow,
     client: Option<Arc<Client>>,
@@ -45,6 +46,9 @@ pub fn show(
     still_playing: impl Fn() -> bool + 'static,
 ) {
     ui.set_playing_waveform(ModelRc::default());
+    if ui.get_simple_seek_bar() {
+        return;
+    }
     let Some(client) = client.filter(|client| client.supports(EXTENSION)) else {
         return;
     };
@@ -59,6 +63,10 @@ pub fn show(
         else {
             return;
         };
+        // The simple bar may have been chosen while the reply was on its way.
+        if ui.get_simple_seek_bar() {
+            return;
+        }
         ui.set_playing_waveform(ModelRc::new(VecModel::from(levels)));
     })
     .expect("the event loop is running");

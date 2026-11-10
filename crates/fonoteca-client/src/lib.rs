@@ -610,7 +610,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
     let playing = play::wire(&ui, &browser);
-    appearance::wire(&ui);
+    appearance::wire(&ui, &browser, &playing);
     waveform::wire(&ui);
     #[cfg(not(target_family = "wasm"))]
     downloads::wire(&ui, &browser);

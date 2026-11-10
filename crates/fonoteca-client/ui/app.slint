@@ -1417,10 +1417,11 @@ export component AppWindow inherits Window {
     in property <string> output-kind;
     in-out property <int> leveling;
     // The Appearance page's entries: the color scheme (the system's, light
-    // or dark) and the accent color (the system's, then the colors of
-    // `accents`).
+    // or dark), the accent color (the system's, then the colors of
+    // `accents`) and whether the seek bar is the plain bar.
     in-out property <int> color-scheme;
     in-out property <int> accent;
+    in-out property <bool> simple-seek-bar;
     in property <[AccentChoice]> accents;
     // The streaming format and bitrate entries for wifi and for mobile data;
     // a device without mobile data has just the first.
@@ -1694,6 +1695,7 @@ export component AppWindow inherits Window {
     callback choose-leveling(index: int);
     callback choose-color-scheme(index: int);
     callback choose-accent(index: int);
+    callback choose-simple-seek-bar(simple: bool);
     callback choose-stream-quality(mobile: bool, format: int, bitrate: int);
     callback add-selection-to-playlist(id: string);
     // Playlist folders: a new one with this name in the folder on screen;
@@ -3095,7 +3097,7 @@ export component AppWindow inherits Window {
                         SettingsRow {
                             icon: Icons.settings;
                             title: "Appearance";
-                            summary: "Color scheme and accent color";
+                            summary: "Color scheme, accent color and seek bar";
                             clicked => { root.open("setting:appearance"); }
                         }
                         if root.has-sound: SettingsRow {
@@ -3232,6 +3234,21 @@ export component AppWindow inherits Window {
                             picked(index) => {
                                 root.accent = index;
                                 root.choose-accent(index);
+                            }
+                        }
+                        Text {
+                            text: "Seek bar";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                        }
+                        Choice {
+                            accessible-label: "Seek bar";
+                            model: ["Waveform", "Simple bar"];
+                            current-index: root.simple-seek-bar ? 1 : 0;
+                            enabled: !Input.modal;
+                            selected => {
+                                root.simple-seek-bar = self.current-index == 1;
+                                root.choose-simple-seek-bar(root.simple-seek-bar);
                             }
                         }
                     }
