@@ -11,4 +11,4 @@ app_id=io.github.schotman_development.fonoteca
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak-builder --user --force-clean --install-deps-from=flathub --disable-rofiles-fuse \
   --repo="$work/repo" "$work/build" packaging/linux/$app_id.yml
-flatpak build-bundle "$work/repo" "target/Fonoteca-$version-linux-x86_64.flatpak" $app_id
+flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo "$work/repo" "target/Fonoteca-$version-linux-x86_64.flatpak" $app_id
