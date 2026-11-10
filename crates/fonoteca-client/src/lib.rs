@@ -10,8 +10,6 @@ mod bit_perfect;
 mod browse;
 #[cfg(target_family = "wasm")]
 mod browser_clock;
-#[cfg(not(target_family = "wasm"))]
-mod network_outputs;
 mod catalogue;
 #[cfg(not(target_family = "wasm"))]
 mod download_job;
@@ -30,6 +28,10 @@ mod lyrics;
 mod media;
 #[cfg(target_os = "android")]
 mod network;
+#[cfg(not(target_family = "wasm"))]
+mod network_outputs;
+#[cfg(not(target_family = "wasm"))]
+mod network_player;
 mod offline;
 #[cfg(not(target_family = "wasm"))]
 mod opra;
@@ -41,8 +43,6 @@ mod quality;
 mod queue;
 mod queue_drag;
 mod radio;
-#[cfg(not(target_family = "wasm"))]
-mod network_player;
 #[cfg(not(target_family = "wasm"))]
 mod scrobble;
 #[cfg(not(target_family = "wasm"))]
