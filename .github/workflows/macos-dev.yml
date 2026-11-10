@@ -53,12 +53,14 @@ jobs:
             cp -L "$lib" "$app/Contents/Frameworks/${name#@rpath/}"
           done
           cp target/macos-ffmpeg/notice/* "$app/Contents/Resources/ffmpeg/"
+          iconutil -c icns packaging/macos/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
           cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>CFBundleExecutable</key><string>fonoteca-client</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
             <key>CFBundleIdentifier</key><string>io.github.schotman-development.fonoteca.dev</string>
             <key>CFBundleName</key><string>Fonoteca Dev</string>
             <key>CFBundlePackageType</key><string>APPL</string>
