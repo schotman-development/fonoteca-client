@@ -34,6 +34,23 @@ pub enum OutputKind {
     Bluetooth,
     Usb,
     Hdmi,
+    /// Not a sound device of the system: a device on the network that is
+    /// played to over a protocol.
+    Network(NetworkProtocol),
+}
+
+/// The protocol a device on the network is played to over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkProtocol {
+    Cast,
+}
+
+impl NetworkProtocol {
+    pub fn name(self) -> &'static str {
+        match self {
+            NetworkProtocol::Cast => "Cast",
+        }
+    }
 }
 
 impl OutputKind {
@@ -47,6 +64,7 @@ impl OutputKind {
             OutputKind::Bluetooth => "Bluetooth",
             OutputKind::Usb => "USB",
             OutputKind::Hdmi => "HDMI",
+            OutputKind::Network(protocol) => protocol.name(),
         }
     }
 }

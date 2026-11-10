@@ -53,7 +53,7 @@ pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
 #[cfg(not(target_family = "wasm"))]
 pub use output::{SystemMixer, devices, system_output};
 #[cfg(not(target_family = "wasm"))]
-pub use outputs::{OutputDevice, OutputKind};
+pub use outputs::{NetworkProtocol, OutputDevice, OutputKind};
 
 #[cfg(not(target_family = "wasm"))]
 use decode::{Decoding, Stop};

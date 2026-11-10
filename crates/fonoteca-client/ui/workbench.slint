@@ -89,6 +89,7 @@ export component Workbench inherits Window {
         { id: "5", label: "Headphones", icon: Icons.headphones, checked: root.output-device == 5 },
         { id: "6", label: "Headset", icon: Icons.headset, checked: root.output-device == 6 },
         { id: "7", label: "HDMI", icon: Icons.display, checked: root.output-device == 7 },
+        { id: "8", label: "Living room", icon: Icons.cast, kind: "Cast", checked: root.output-device == 8 },
     ];
     property <MenuEntry> output-chosen: root.output-devices[root.output-device];
     // What a laptop's ALSA lists: every card again as hw, plughw, dmix and so on.

@@ -18,7 +18,7 @@ use std::time::Duration;
 use opensubsonic::{Child, Client};
 use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 #[cfg(not(target_family = "wasm"))]
-use playback::{OutputDevice, OutputKind};
+use playback::{NetworkProtocol, OutputDevice, OutputKind};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
@@ -687,6 +687,7 @@ fn kind_icon(icons: &Icons, kind: OutputKind) -> SharedString {
         OutputKind::Bluetooth => icons.get_bluetooth(),
         OutputKind::Usb => icons.get_usb(),
         OutputKind::Hdmi => icons.get_display(),
+        OutputKind::Network(NetworkProtocol::Cast) => icons.get_cast(),
     }
 }
 
