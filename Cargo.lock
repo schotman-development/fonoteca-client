@@ -1717,6 +1717,7 @@ dependencies = [
  "js-sys",
  "keyring-core",
  "listenbrainz",
+ "network-output",
  "opensubsonic",
  "playback",
  "radiobrowser",

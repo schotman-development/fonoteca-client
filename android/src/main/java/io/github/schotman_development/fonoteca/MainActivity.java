@@ -5,6 +5,7 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
@@ -99,6 +100,24 @@ public class MainActivity extends NativeActivity {
         return network != null && network.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR);
     }
 
+    private WifiManager.MulticastLock multicast;
+
+    /** Lets wifi multicast packets through for Rust's search for devices on the network (src/network.rs). */
+    public void holdMulticast() {
+        if (multicast == null) {
+            WifiManager wifi = getApplicationContext().getSystemService(WifiManager.class);
+            multicast = wifi.createMulticastLock("fonoteca-network-outputs");
+            multicast.setReferenceCounted(false);
+        }
+        multicast.acquire();
+    }
+
+    public void releaseMulticast() {
+        if (multicast != null && multicast.isHeld()) {
+            multicast.release();
+        }
+    }
+
     private BitPerfectOutput bitPerfect;
 
     /** What the USB output takes untouched, for Rust's player (src/bit_perfect.rs). */
@@ -128,6 +147,7 @@ public class MainActivity extends NativeActivity {
         super.onDestroy();
         PlaybackService.hide();
         bitPerfect.release();
+        releaseMulticast();
     }
 
     // Dark mode turned on or off doesn't restart the activity (see

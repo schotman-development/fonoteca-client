@@ -1,5 +1,6 @@
 slint::include_modules!();
 
+mod active;
 mod answers;
 mod appearance;
 #[cfg(any(target_os = "android", test))]
@@ -9,6 +10,8 @@ mod bit_perfect;
 mod browse;
 #[cfg(target_family = "wasm")]
 mod browser_clock;
+#[cfg(not(target_family = "wasm"))]
+mod network_outputs;
 mod catalogue;
 #[cfg(not(target_family = "wasm"))]
 mod download_job;
@@ -38,6 +41,8 @@ mod quality;
 mod queue;
 mod queue_drag;
 mod radio;
+#[cfg(not(target_family = "wasm"))]
+mod network_player;
 #[cfg(not(target_family = "wasm"))]
 mod scrobble;
 #[cfg(not(target_family = "wasm"))]
@@ -4856,6 +4861,59 @@ mod tests {
                     assert_eq!(marked(), [true, false], "{width}px");
                     wait_for("the devices listed again", || !listed().contains(&"USB DAC".to_owned())).await;
                 }
+                // A device on the network is listed beside the sound devices
+                // with its own icon and says what does not apply to it. Played
+                // to, it is the one marked, but never the choice kept: the
+                // sound device chosen before stays the one saved.
+                choose_saved(Some(speakers));
+                let kitchen = playback::OutputDevice {
+                    id: "network:cast:9f8e".into(),
+                    key: "network:cast:9f8e".into(),
+                    name: "Kitchen".into(),
+                    detail: "No sound processing, leveling or bit-perfect".into(),
+                    title: "Kitchen".into(),
+                    kind: playback::OutputKind::Network(playback::NetworkProtocol::Cast),
+                    same_as: Vec::new(),
+                };
+                let list_with_kitchen = || {
+                    play::testing::show_devices(
+                        &ui,
+                        vec![
+                            playback::OutputDevice {
+                                id: speakers.into(),
+                                key: speakers.into(),
+                                name: "Speakers".into(),
+                                detail: String::new(),
+                                title: "Speakers".into(),
+                                kind: playback::OutputKind::Speaker,
+                                same_as: Vec::new(),
+                            },
+                            kitchen.clone(),
+                        ],
+                        Some(speakers.to_owned()),
+                    );
+                };
+                list_with_kitchen();
+                assert_eq!(listed(), ["Speakers", "Kitchen"]);
+                assert_eq!(ui.get_output_devices().row_data(1).unwrap().icon, icons.get_cast());
+                assert_eq!(marked(), [true, false]);
+                play::testing::find_network_device(network_output::Device {
+                    protocol: network_output::Protocol::Cast,
+                    id: "9f8e".into(),
+                    name: "Kitchen".into(),
+                    model: None,
+                    address: std::net::Ipv4Addr::LOCALHOST,
+                    port: 8009,
+                });
+                ui.invoke_choose_output(1);
+                assert_eq!(marked(), [false, true]);
+                assert_eq!(ui.get_output_icon(), icons.get_cast());
+                assert_eq!(crate::prefs::load().output_device.as_deref(), Some(speakers));
+                list_with_kitchen();
+                assert_eq!(marked(), [false, true], "listed again, the one played to stays marked");
+                ui.invoke_choose_output(0);
+                assert_eq!(marked(), [true, false]);
+                assert_eq!(ui.get_output_icon(), icons.get_loudspeaker());
                 // A choice saved as a route that was folded into another is
                 // that other.
                 choose_saved(Some(merged_away));

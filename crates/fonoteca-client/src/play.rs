@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(not(target_family = "wasm"))]
+use std::time::Instant;
 
 use opensubsonic::{Child, Client};
 use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
@@ -21,6 +23,7 @@ use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use playback::{NetworkProtocol, OutputDevice, OutputKind};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
+use crate::active::Active;
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::radio;
 use crate::{
@@ -28,7 +31,7 @@ use crate::{
     waveform,
 };
 #[cfg(not(target_family = "wasm"))]
-use crate::{Icons, MenuEntry, quality, scrobble, sound};
+use crate::{Icons, MenuEntry, network_outputs, quality, scrobble, sound};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -55,7 +58,7 @@ const PREVIOUS_SHOWN: usize = 50;
 
 #[derive(Default)]
 pub struct Playing {
-    player: Option<Player>,
+    player: Option<Active>,
     /// The songs queued; the one the bar shows and the steps it shows for
     /// it.
     queue: Queue,
@@ -93,6 +96,17 @@ pub struct Playing {
     /// The device the player last said it plays on, by cpal id.
     #[cfg(not(target_family = "wasm"))]
     output: Option<String>,
+    /// The devices on the network found, while the search for them runs, and how often
+    /// to look at what it found.
+    #[cfg(not(target_family = "wasm"))]
+    networks: network_outputs::Finder,
+    #[cfg(not(target_family = "wasm"))]
+    network_watch: Timer,
+    /// The device on the network the queue plays on instead of a sound device, while
+    /// one is chosen. Not kept from one start to the next: a device is only
+    /// there once found.
+    #[cfg(not(target_family = "wasm"))]
+    network_target: Option<network_output::Device>,
     tick: Timer,
     #[cfg(not(target_family = "wasm"))]
     scrobbler: scrobble::Scrobbler,
@@ -188,7 +202,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
                 return;
             }
             resume(&weak.unwrap(), &browser, &playing, true);
-            playing.borrow().player.iter().for_each(Player::previous)
+            playing.borrow().player.iter().for_each(Active::previous)
         }
     });
     ui.on_next_track({
@@ -198,7 +212,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
                 return;
             }
             resume(&weak.unwrap(), &browser, &playing, true);
-            playing.borrow().player.iter().for_each(Player::next)
+            playing.borrow().player.iter().for_each(Active::next)
         }
     });
     ui.on_seek({
@@ -298,24 +312,16 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
     #[cfg(not(target_family = "wasm"))]
     ui.on_list_devices({
         let (weak, playing) = (ui.as_weak(), playing.clone());
-        move || list_devices(&weak.unwrap(), &playing)
+        move || {
+            let ui = weak.unwrap();
+            search_networks(&ui, &playing);
+            list_devices(&ui, &playing);
+        }
     });
     #[cfg(not(target_family = "wasm"))]
     ui.on_choose_output({
-        let (weak, playing) = (ui.as_weak(), playing.clone());
-        move |index| {
-            let p = playing.borrow();
-            let device = p.devices.get(index as usize).cloned().flatten();
-            let ui = weak.unwrap();
-            mark_device(&ui, &p, index as usize);
-            save_output(device.clone());
-            // The device's own processing first, so that none of the old is
-            // heard on it.
-            follow_device(&ui, &p, index as usize);
-            if let Some(player) = &p.player {
-                player.set_device(device);
-            }
-        }
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |index| choose_output(&weak.unwrap(), &browser, &playing, index as usize)
     });
     ui.on_choose_leveling({
         let playing = playing.clone();
@@ -539,7 +545,8 @@ fn list_devices(ui: &AppWindow, playing: &Shared) {
             return;
         };
         let Some(ui) = weak.upgrade() else { return };
-        show_devices(&ui, &playing, found, system);
+        let networks = listed_networks(&playing.borrow());
+        show_devices(&ui, &playing, [found, networks].concat(), system);
     })
     .expect("the event loop is running");
 }
@@ -558,11 +565,16 @@ fn show_devices(
     system: Option<String>,
 ) {
     let saved = prefs::load().output_device;
+    let playing_to = playing
+        .borrow()
+        .network_target
+        .as_ref()
+        .map(network_outputs::output_id);
     let mut devices = Vec::new();
     let mut titles = Vec::new();
     let mut keys = Vec::new();
     let mut entries = Vec::new();
-    let (mut saved_at, mut system_at) = (None, None);
+    let (mut saved_at, mut system_at, mut playing_to_at) = (None, None, None);
     if SYSTEM_DEFAULT_LISTED {
         system_at = Some(entries.len());
         devices.push(None);
@@ -584,13 +596,17 @@ fn show_devices(
         if system.as_ref() == Some(&device.id) {
             system_at = Some(entries.len());
         }
+        if playing_to.as_ref() == Some(&device.id) {
+            playing_to_at = Some(entries.len());
+        }
         entries.push((device.name.into(), device.detail.into(), device.kind));
         titles.push(device.title.into());
         keys.push(device.key);
         devices.push(Some(device.id));
     }
-    let chosen = saved_at.or(system_at);
+    let chosen = playing_to_at.or(saved_at).or(system_at);
     if saved_at.is_none()
+        && playing_to_at.is_none()
         && let Some(Some(device)) = chosen.and_then(|at| devices.get(at))
     {
         save_output(Some(device.clone()));
@@ -617,18 +633,118 @@ fn show_devices(
             .cloned()
             .unwrap_or_default(),
     );
-    let names = titles.iter().zip(&keys).map(|(title, key)| Name {
-        label: title.clone(),
-        link: key.into(),
-    });
+    // A device on the network gets the file as it is: no sound preset to keep for it.
+    let names = (titles.iter().zip(&keys))
+        .filter(|(_, key)| !network_outputs::is_network(key))
+        .map(|(title, key)| Name {
+            label: title.clone(),
+            link: key.into(),
+        });
     sound::show_devices(ui, names.collect());
     let mut p = playing.borrow_mut();
     p.devices = devices;
     p.device_titles = titles;
     p.device_keys = keys;
-    if let Some(chosen) = chosen {
+    if let Some(chosen) = chosen.filter(|_| playing_to_at.is_none()) {
         follow_device(ui, &p, chosen);
     }
+}
+
+/// How often what the search for devices on the network found is looked at.
+#[cfg(not(target_family = "wasm"))]
+const NETWORK_LOOK_EVERY: Duration = Duration::from_secs(2);
+
+/// Looks for devices on the network, or goes on looking, and has the menu follow
+/// those that come and go. The search ends by itself once the menu has not
+/// been opened for a while and no device is played to.
+#[cfg(not(target_family = "wasm"))]
+fn search_networks(ui: &AppWindow, playing: &Shared) {
+    let mut p = playing.borrow_mut();
+    p.networks.keep_searching(Instant::now());
+    let (weak, shared) = (ui.as_weak(), playing.clone());
+    p.network_watch
+        .start(TimerMode::Repeated, NETWORK_LOOK_EVERY, move || {
+            if let Some(ui) = weak.upgrade() {
+                look_at_networks(&ui, &shared);
+            }
+        });
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn look_at_networks(ui: &AppWindow, playing: &Shared) {
+    let looked = {
+        let mut p = playing.borrow_mut();
+        let playing_to = p.network_target.is_some();
+        p.networks.look(Instant::now(), playing_to)
+    };
+    match looked {
+        network_outputs::Search::Quiet => {}
+        network_outputs::Search::Changed => list_devices(ui, playing),
+        network_outputs::Search::Ended => {
+            playing.borrow().network_watch.stop();
+            list_devices(ui, playing);
+        }
+    }
+}
+
+/// The devices on the network found as outputs, and the one played to even when it
+/// is no longer found, so the choice stays where it is.
+#[cfg(not(target_family = "wasm"))]
+fn listed_networks(playing: &Playing) -> Vec<OutputDevice> {
+    let mut found = playing.networks.devices();
+    let played_to = playing.network_target.as_ref();
+    if let Some(target) = played_to.filter(|target| found.iter().all(|d| d.id != target.id)) {
+        found.push(target.clone());
+    }
+    found.iter().map(network_outputs::output_device).collect()
+}
+
+/// Plays on the output at `index` of the menu: a sound device is kept as the
+/// choice, a device on the network is only played to for as long as it is there. Moving
+/// to or from a device on the network is another player, which carries on from where
+/// the last was heard; between sound devices the one player moves.
+#[cfg(not(target_family = "wasm"))]
+fn choose_output(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, index: usize) {
+    let mut p = playing.borrow_mut();
+    let device = p.devices.get(index).cloned().flatten();
+    let was_remote = p.player.as_ref().is_some_and(Active::is_network);
+    let network = device
+        .as_deref()
+        .filter(|id| network_outputs::is_network(id));
+    let found = network.and_then(|id| {
+        let known = p
+            .networks
+            .devices()
+            .into_iter()
+            .chain(p.network_target.clone());
+        known
+            .into_iter()
+            .find(|d| network_outputs::output_id(d) == id)
+    });
+    if network.is_some() && found.is_none() {
+        // It went away since the menu was filled.
+        drop(p);
+        return list_devices(ui, playing);
+    }
+    p.network_target = found;
+    mark_device(ui, &p, index);
+    if network.is_none() {
+        save_output(device.clone());
+        // The device's own processing first, so that none of the old is
+        // heard on it.
+        follow_device(ui, &p, index);
+    }
+    let changes_player = (was_remote || p.network_target.is_some()) && p.station.is_none();
+    let Some(player) = &p.player else { return };
+    if !changes_player {
+        return player.set_device(device);
+    }
+    let heard = player.status();
+    player.stop();
+    let queue = std::mem::take(&mut p.queue);
+    drop(p);
+    let at = (heard.index.unwrap_or(0), heard.position);
+    begin(ui, browser, playing, queue, at, heard.paused || heard.ended);
 }
 
 /// Has the sound processing follow the `chosen` device as it becomes the
@@ -844,7 +960,7 @@ fn begin(
     // lets the device go first, since a device played on directly can only
     // be open once.
     playing.borrow_mut().player = None;
-    let player = song_player(client, browser);
+    let player = song_output(ui, browser, playing, client);
     player.set_leveling(LEVELING[ui.get_leveling().clamp(0, 2) as usize]);
     player.set_repeat(REPEAT[ui.get_repeat().clamp(0, 2) as usize]);
     player.play(tracks(&queue), start, seconds);
@@ -862,7 +978,14 @@ fn tune(
     cover: Image,
 ) {
     playing.borrow_mut().player = None;
-    let player = station_player(&station);
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(device) = &playing.borrow().network_target {
+        // A live stream is played as it arrives, which a file served to a
+        // device is not.
+        let text = format!("Radio plays on this device, not on {}.", device.name);
+        browse::notify(ui, browser, text);
+    }
+    let player = Active::Local(station_player(&station));
     player.play(vec![radio::track(&station)], 0, 0.0);
     adopt(
         ui,
@@ -872,6 +995,40 @@ fn tune(
         Queue::default(),
         Some(Tuned { station, cover }),
     );
+}
+
+/// The player for songs from `client`: on the device on the network chosen, or if none
+/// is or it can't be played to, on this device's sound output.
+#[cfg(not(target_family = "wasm"))]
+fn song_output(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    client: Arc<Client>,
+) -> Active {
+    let target = playing.borrow().network_target.clone();
+    let Some(device) = target else {
+        return Active::Local(song_player(client, browser));
+    };
+    let fetch = fetch(client.clone(), browse::downloads(browser));
+    match network_outputs::player(&device, fetch, cache()) {
+        Ok(player) => Active::Network(player),
+        Err(problem) => {
+            let text = format!("{} can't be played to: {problem}", device.name);
+            browse::notify(ui, browser, text);
+            Active::Local(song_player(client, browser))
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn song_output(
+    _ui: &AppWindow,
+    browser: &browse::Shared,
+    _playing: &Shared,
+    client: Arc<Client>,
+) -> Active {
+    Active::Local(song_player(client, browser))
 }
 
 /// A player for songs from `client`, or from their downloads, on the sound
@@ -912,7 +1069,7 @@ fn adopt(
     ui: &AppWindow,
     browser: &browse::Shared,
     playing: &Shared,
-    player: Player,
+    player: Active,
     queue: Queue,
     station: Option<Tuned>,
 ) {
@@ -1927,6 +2084,13 @@ pub(crate) mod testing {
         super::show_devices(ui, &playing, found, system);
     }
 
+    /// Has the device found by the search for devices on the network, as
+    /// one would be once found.
+    pub(crate) fn find_network_device(device: network_output::Device) {
+        let (_, playing) = handles();
+        playing.borrow_mut().network_target = Some(device);
+    }
+
     /// Queues `songs` and shows the `index`th, as when the player moves on.
     pub(crate) fn show_song(ui: &AppWindow, songs: Vec<Child>, index: usize) {
         let (browser, playing) = handles();
@@ -2020,7 +2184,7 @@ pub(crate) mod testing {
     /// What the player says, while there is one.
     pub(crate) fn player_status() -> Option<playback::Status> {
         let (_, playing) = handles();
-        playing.borrow().player.as_ref().map(Player::status)
+        playing.borrow().player.as_ref().map(Active::status)
     }
 
     /// Fetches the song `id` from `seconds` into it as the player does, once

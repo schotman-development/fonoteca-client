@@ -249,7 +249,7 @@ const AHEAD: f64 = 5.0;
 
 /// Before this many seconds into a track, Previous goes to the track
 /// before; after, back to its start.
-const RESTART_AFTER: f64 = 3.0;
+pub const RESTART_AFTER: f64 = 3.0;
 
 #[cfg(not(target_family = "wasm"))]
 impl Player {

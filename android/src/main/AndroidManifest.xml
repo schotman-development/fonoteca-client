@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- To tell the mobile network from wifi when choosing the streaming quality. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- To let wifi multicast packets through while the app looks for Cast
+         devices, which announce themselves in them. ACCESS_LOCAL_NETWORK is
+         not asked for: it exists from Android 17 and is requested only by
+         apps that target it; targeting 36, INTERNET covers the local
+         network. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- PlaybackService's, which keeps playing with the screen off. Its
          notification needs no POST_NOTIFICATIONS: a media session's is let
          through. -->

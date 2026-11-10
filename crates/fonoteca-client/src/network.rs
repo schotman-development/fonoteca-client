@@ -1,7 +1,8 @@
-//! Which network Android sends the app's traffic over, asked through
-//! MainActivity.
+//! What the app asks of Android's network, through MainActivity: which
+//! network its traffic goes over, and letting multicast packets through.
 
-use jni::{JavaVM, jni_sig, jni_str};
+use jni::objects::JObject;
+use jni::{Env, JavaVM, jni_sig, jni_str};
 
 use crate::media::ACTIVITY;
 
@@ -20,4 +21,38 @@ pub fn on_mobile_data() -> bool {
         eprintln!("Android's network: {problem}");
         false
     })
+}
+
+/// Wifi multicast packets get through while this is held. Android filters
+/// them out to save power, and with them the announcements that devices on
+/// the network make of themselves.
+pub struct MulticastHold;
+
+impl MulticastHold {
+    pub fn acquire() -> Self {
+        call_activity(|env, activity| {
+            env.call_method(activity, jni_str!("holdMulticast"), jni_sig!("()V"), &[])?;
+            Ok(())
+        });
+        MulticastHold
+    }
+}
+
+impl Drop for MulticastHold {
+    fn drop(&mut self) {
+        call_activity(|env, activity| {
+            env.call_method(activity, jni_str!("releaseMulticast"), jni_sig!("()V"), &[])?;
+            Ok(())
+        });
+    }
+}
+
+fn call_activity(f: impl FnOnce(&mut Env, &JObject) -> jni::errors::Result<()>) {
+    let activity = ACTIVITY.read().unwrap();
+    let (Some(activity), Ok(vm)) = (activity.as_ref(), JavaVM::singleton()) else {
+        return;
+    };
+    if let Err(problem) = vm.attach_current_thread(|env| f(env, activity)) {
+        eprintln!("Android's multicast lock: {problem}");
+    }
 }
