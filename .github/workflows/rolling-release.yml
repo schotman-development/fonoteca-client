@@ -117,8 +117,38 @@ jobs:
           path: target/Fonoteca-${{ env.APP_VERSION }}-linux-x86_64.AppImage
           retention-days: 1
 
+  # The binary is built in Debian 12 as for the AppImage, and packed in a
+  # privileged container, where flatpak-builder can start its sandbox.
+  flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name the build
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "APP_VERSION=$version-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Build the app
+        run: |
+          docker run --rm -v "$PWD":/work -w /work \
+            docker.io/library/rust:slim-bookworm@sha256:392f221964669402bf4ae133d2a46c3ae270f64734133f4b2703d40019235c1a \
+            scripts/flatpak-stage.sh
+
+      - name: Build the Flatpak
+        run: |
+          docker run --rm --privileged -v "$PWD":/work -w /work docker.io/library/ubuntu:24.04 sh -c '
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends flatpak flatpak-builder appstream ca-certificates >/dev/null
+            scripts/flatpak.sh "$1"' sh "$APP_VERSION"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Fonoteca-${{ env.APP_VERSION }}-linux-x86_64-flatpak
+          path: target/Fonoteca-${{ env.APP_VERSION }}-linux-x86_64.flatpak
+          retention-days: 1
+
   publish:
-    needs: [android, macos, linux]
+    needs: [android, macos, linux, flatpak]
     if: ${{ !cancelled() && needs.android.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
@@ -141,7 +171,7 @@ jobs:
           mv builds/android-apk/fonoteca-release.apk "$apk"
           shopt -s nullglob
           macos=(builds/Fonoteca-*-macos-arm64/*.zip)
-          linux=(builds/Fonoteca-*-linux-x86_64/*.AppImage)
+          linux=(builds/Fonoteca-*-linux-x86_64/*.AppImage builds/Fonoteca-*-linux-x86_64-flatpak/*.flatpak)
           gh release delete edge --yes --cleanup-tag || true
           gh release create edge "$apk" "${macos[@]}" "${linux[@]}" --prerelease --target "$GITHUB_SHA" --title "$APP_VERSION" \
             --notes "A development build of $GITHUB_SHA, replaced on every push to main. Not a release."
