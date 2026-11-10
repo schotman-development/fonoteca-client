@@ -621,6 +621,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let playing = play::wire(&ui, &browser);
     appearance::wire(&ui, &browser, &playing);
     waveform::wire(&ui);
+    lyrics::wire(&ui);
     #[cfg(not(target_family = "wasm"))]
     downloads::wire(&ui, &browser);
     #[cfg(target_os = "android")]
@@ -1511,6 +1512,24 @@ mod tests {
     /// of the Netherlands, one of Dutch jazz, two named News, the countries'
     /// names, three languages, one without a code, and a picture of each
     /// station.
+    static LRCLIB_ASKED: AtomicUsize = AtomicUsize::new(0);
+
+    /// LRCLIB with words for "Moonlit" only; its other songs are a 404.
+    fn lyrics_service(request: &str) -> Vec<u8> {
+        LRCLIB_ASKED.fetch_add(1, Relaxed);
+        if request.contains("track_name=Moonlit") && request.contains("duration=200") {
+            json(
+                r#"{"id":1,"instrumental":false,"plainLyrics":"Moon on the water","syncedLyrics":"[00:01.00] Moon on the water"}"#,
+            )
+        } else {
+            reply(
+                "404 Not Found",
+                "application/json",
+                br#"{"message":"Failed to find specified track","name":"TrackNotFound","statusCode":404}"#,
+            )
+        }
+    }
+
     fn radio_directory(request: &str) -> Vec<u8> {
         let target = request.split_whitespace().nth(1).unwrap_or_default();
         let host = request
@@ -2658,6 +2677,7 @@ mod tests {
         let _runtime = runtime.enter();
         let server = serve(flaky);
         *browse::DIRECTORY_ROOT.lock().unwrap() = format!("{}/json/", serve(radio_directory));
+        *lyrics::LRCLIB_ROOT.lock().unwrap() = format!("{}/api/", serve(lyrics_service));
         let statistics = serve(listenbrainz_statistics);
         *browse::LISTENBRAINZ_ROOTS.lock().unwrap() =
             (format!("{statistics}/1/"), format!("{statistics}/"));
@@ -8574,6 +8594,32 @@ mod tests {
             assert_eq!(ui.get_playing_banner().size().width, 0, "no artist, no banner");
             wait_for("the note", || ui.get_playing_lyrics_note() == "No lyrics for this song.").await;
             assert!(text_in_sight("No lyrics for this song."));
+
+            // LRCLIB is asked only once the setting allows it, for a song the
+            // server has no words for, and each song only once.
+            let by_mara = |title: &str| -> opensubsonic::Child {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"{title}","isDir":false,"title":"{title}","artist":"Mara Lind","album":"Night Harbour","duration":200}}"#
+                ))
+                .unwrap()
+            };
+            play::testing::show_song(&ui, vec![by_mara("Moonlit")], 0);
+            wait_for("the note", || ui.get_playing_lyrics_note() == "No lyrics for this song.").await;
+            assert_eq!(LRCLIB_ASKED.load(Relaxed), 0, "off, so nothing is sent");
+            ui.invoke_choose_look_up_lyrics(true);
+            play::testing::show_song(&ui, vec![by_mara("Moonlit")], 0);
+            wait_for("LRCLIB's words", || ui.get_playing_lyrics() == "Moon on the water").await;
+            play::testing::show_song(&ui, vec![harbour()], 0);
+            wait_for("the server's words first", || ui.get_playing_lyrics() == words).await;
+            assert_eq!(LRCLIB_ASKED.load(Relaxed), 1, "the server had words");
+            play::testing::show_song(&ui, vec![by_mara("Moonlit")], 0);
+            wait_for("the kept words", || ui.get_playing_lyrics() == "Moon on the water").await;
+            play::testing::show_song(&ui, vec![by_mara("Silent")], 0);
+            wait_for("no words found", || ui.get_playing_lyrics_note() == "No lyrics for this song.").await;
+            play::testing::show_song(&ui, vec![by_mara("Silent")], 0);
+            wait_for("no words kept", || ui.get_playing_lyrics_note() == "No lyrics for this song.").await;
+            assert_eq!(LRCLIB_ASKED.load(Relaxed), 2, "one ask per song, even for none");
+            ui.invoke_choose_look_up_lyrics(false);
 
             // On a desktop the bar's cover and album open the album, and an
             // artist's chip the artist's page; so do a phone's page's.

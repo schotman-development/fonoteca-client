@@ -77,6 +77,9 @@ pub struct Prefs {
     pub accent: i32,
     /// Whether the seek bar is a plain bar, with no waveform to fetch.
     pub simple_seek_bar: bool,
+    /// Whether LRCLIB is asked for the lyrics the server hasn't got, which
+    /// tells it the song's artist, title, album and length.
+    pub look_up_lyrics: bool,
 }
 
 /// A streaming format's entry in the settings, and its bitrate's; the first
@@ -251,6 +254,17 @@ fn all_kept_loves() -> HashMap<String, crate::loves::Kept> {
     read(KEPT_LOVES)
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default()
+}
+
+/// What LRCLIB had for the song kept in `file`, if it was asked about.
+pub fn kept_lyrics(file: &str) -> Option<crate::lyrics::kept::Kept> {
+    read(file).and_then(|json| serde_json::from_str(&json).ok())
+}
+
+pub fn save_kept_lyrics(file: &str, kept: &crate::lyrics::kept::Kept) {
+    if let Ok(json) = serde_json::to_string(kept) {
+        write(file, &json);
+    }
 }
 
 /// What the radio directory had for a saved station the server has no

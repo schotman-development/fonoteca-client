@@ -1359,6 +1359,9 @@ export component AppWindow inherits Window {
     in property <image> playing-banner;
     in property <string> playing-lyrics;
     in property <string> playing-lyrics-note;
+    // Whether LRCLIB is asked for the lyrics the server hasn't got.
+    in-out property <bool> look-up-lyrics;
+    callback choose-look-up-lyrics(allowed: bool);
     in property <bool> playing-loved;
     callback toggle-playing-love();
     // A song was loved or unloved, whatever the page; for the sheet's heart.
@@ -3118,6 +3121,12 @@ export component AppWindow inherits Window {
                             summary: "Headroom, crossfeed, upsampling and EQ";
                             clicked => { root.open("setting:sound"); }
                         }
+                        SettingsRow {
+                            icon: Icons.lyrics;
+                            title: "Lyrics";
+                            summary: "Look up lyrics the server hasn't got";
+                            clicked => { root.open("setting:lyrics"); }
+                        }
                     }
                     if root.page == Page.setting && root.shown-id == "listenbrainz": VerticalLayout {
                         max-width: 480px;
@@ -3304,6 +3313,23 @@ export component AppWindow inherits Window {
                             bitrate <=> root.mobile-bitrate;
                             enabled: !Input.modal;
                             chosen(format, bitrate) => { root.choose-stream-quality(true, format, bitrate); }
+                        }
+                    }
+                    if root.page == Page.setting && root.shown-id == "lyrics": VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        Heading { text: "Lyrics"; }
+                        Switch {
+                            text: "Look up lyrics on LRCLIB";
+                            checked <=> root.look-up-lyrics;
+                            enabled: !Input.modal;
+                            toggled => { root.choose-look-up-lyrics(self.checked); }
+                        }
+                        Text {
+                            text: "When the server has no lyrics for a song, the artist, title, album and length of the song are sent to lrclib.net, a public lyrics service, to find them. The server's own lyrics always come first. What is found, and that nothing was, is kept on this device, so a song is looked up once.";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                            wrap: word-wrap;
                         }
                     }
                     // Each entry's order is the one sound.rs takes them in. A

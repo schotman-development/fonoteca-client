@@ -1,12 +1,15 @@
 //! The words of what plays: the song's own lyrics on servers with
-//! `songLyrics`, else those found by its artist and title.
+//! `songLyrics`, else those found by its artist and title. Where the server
+//! has none and the setting allows it, LRCLIB is asked, once per song.
+
+pub mod kept;
 
 use std::sync::Arc;
 
 use opensubsonic::{Child, Client, LyricsList};
 use slint::ComponentHandle;
 
-use crate::AppWindow;
+use crate::{AppWindow, browse, prefs};
 
 const EXTENSION: &str = "songLyrics";
 const LOOKING: &str = "Looking for the lyrics…";
@@ -23,21 +26,11 @@ pub fn show(
     still_playing: impl Fn() -> bool + 'static,
 ) {
     ui.set_playing_lyrics("".into());
-    let Some(client) = client else {
-        ui.set_playing_lyrics_note(NONE_FOUND.into());
-        return;
-    };
     ui.set_playing_lyrics_note(LOOKING.into());
     let weak = ui.as_weak();
-    let (id, artist, title) = (song.id.clone(), song.artist.clone(), song.title.clone());
+    let song = song.clone();
     slint::spawn_local(async move {
-        let found = if client.supports(EXTENSION) {
-            let list = client.get_lyrics_by_song_id(&id, false).await;
-            list.map(|list| words(&list))
-        } else {
-            let lyrics = client.get_lyrics(artist.as_deref(), Some(&title)).await;
-            lyrics.map(|lyrics| lyrics.value)
-        };
+        let found = words_of(client, &song).await;
         let (Some(ui), true) = (weak.upgrade(), still_playing()) else {
             return;
         };
@@ -45,12 +38,112 @@ pub fn show(
             Ok(lyrics) if !lyrics.trim().is_empty() => ui.set_playing_lyrics(lyrics.into()),
             Ok(_) => ui.set_playing_lyrics_note(NONE_FOUND.into()),
             Err(problem) => {
-                eprintln!("The lyrics of {id}: {problem}");
+                eprintln!("The lyrics of {}: {problem}", song.id);
                 ui.set_playing_lyrics_note(UNANSWERED.into());
             }
         }
     })
     .expect("the event loop is running");
+}
+
+/// The server's words for `song`, else, where the setting allows it, LRCLIB's.
+/// A server that didn't answer still leaves LRCLIB's words to show, as
+/// offline; without any, its problem is what is returned.
+async fn words_of(client: Option<Arc<Client>>, song: &Child) -> Result<String, String> {
+    let server = words_from_server(client, song).await;
+    if has_words(&server) || !prefs::load().look_up_lyrics {
+        return server;
+    }
+    match words_from_lrclib(song).await {
+        Some(words) => Ok(words),
+        None => server,
+    }
+}
+
+fn has_words(found: &Result<String, String>) -> bool {
+    found.as_ref().is_ok_and(|words| !words.trim().is_empty())
+}
+
+async fn words_from_server(client: Option<Arc<Client>>, song: &Child) -> Result<String, String> {
+    let Some(client) = client else {
+        return Ok(String::new());
+    };
+    if client.supports(EXTENSION) {
+        let list = client.get_lyrics_by_song_id(&song.id, false).await;
+        return list.map(|list| words(&list)).map_err(|e| e.to_string());
+    }
+    let lyrics = client
+        .get_lyrics(song.artist.as_deref(), Some(&song.title))
+        .await;
+    lyrics.map(|lyrics| lyrics.value).map_err(|e| e.to_string())
+}
+
+/// What LRCLIB has for `song`, from this device when it was asked about
+/// before. A failed ask is not kept, so the next play asks again.
+async fn words_from_lrclib(song: &Child) -> Option<String> {
+    let asked = asked_about(song)?;
+    let key = kept::key(asked);
+    if let Some(words) = kept::load(&key) {
+        return words;
+    }
+    let lrclib = lrclib::Client::with_root(&lrclib_root(), browse::USER_AGENT);
+    let found = match lrclib {
+        Ok(lrclib) => lrclib.words(asked).await,
+        Err(problem) => Err(problem),
+    };
+    match found {
+        Ok(words) => {
+            kept::save(&key, words.as_deref());
+            words
+        }
+        Err(problem) => {
+            eprintln!("LRCLIB's lyrics of {}: {problem}", song.id);
+            None
+        }
+    }
+}
+
+/// `song` as LRCLIB is asked about it; None for a song without an artist or
+/// a title, which it can't match.
+fn asked_about(song: &Child) -> Option<lrclib::Song<'_>> {
+    let artist = song
+        .artist
+        .as_deref()
+        .filter(|artist| !artist.trim().is_empty())?;
+    let title = Some(song.title.as_str()).filter(|title| !title.trim().is_empty())?;
+    Some(lrclib::Song {
+        artist,
+        title,
+        album: song
+            .album
+            .as_deref()
+            .filter(|album| !album.trim().is_empty()),
+        seconds: song.duration,
+    })
+}
+
+#[cfg(not(test))]
+fn lrclib_root() -> String {
+    lrclib::API_ROOT.into()
+}
+
+/// Where the tests' LRCLIB answers.
+#[cfg(test)]
+pub static LRCLIB_ROOT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[cfg(test)]
+fn lrclib_root() -> String {
+    LRCLIB_ROOT.lock().unwrap().clone()
+}
+
+/// Shows the setting that lets LRCLIB be asked, and keeps what is chosen.
+pub fn wire(ui: &AppWindow) {
+    ui.set_look_up_lyrics(prefs::load().look_up_lyrics);
+    ui.on_choose_look_up_lyrics(|allowed| {
+        let mut saved = prefs::load();
+        saved.look_up_lyrics = allowed;
+        prefs::save(&saved);
+    });
 }
 
 /// Shows no lyrics and no note, for what has no words to look for, as a

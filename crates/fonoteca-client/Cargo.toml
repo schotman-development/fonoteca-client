@@ -10,6 +10,7 @@ default-run = "fonoteca-client"
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 listenbrainz = { path = "../listenbrainz" }
+lrclib = { path = "../lrclib" }
 opensubsonic = { path = "../opensubsonic" }
 playback = { path = "../playback" }
 radiobrowser = { path = "../radiobrowser" }
