@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.schotman_development.fonoteca</id>
+  <name>Fonoteca</name>
+  <summary>A music player for OpenSubsonic servers</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.schotman-development">
+    <name>Schotman Development</name>
+  </developer>
+  <description>
+    <p>
+      Browse your library the way Roon does: every name leads somewhere, from an
+      album to its performers, from a composer to their works, and back. Plays
+      from Fonoteca and other OpenSubsonic servers, such as Navidrome, with
+      gapless, bit-perfect output.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.schotman_development.fonoteca.desktop</launchable>
+  <url type="homepage">https://github.com/schotman-development/fonoteca-client</url>
+  <url type="bugtracker">https://github.com/schotman-development/fonoteca-client/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/schotman-development/fonoteca-client/main/docs/screenshots/desktop-album-light.webp</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>fonoteca-client</binary>
+  </provides>
+</component>

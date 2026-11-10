@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Fonoteca
+GenericName=Music Player
+Comment=A music player for OpenSubsonic servers
+Exec=fonoteca-client
+Icon=io.github.schotman_development.fonoteca
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;
+Keywords=music;player;opensubsonic;subsonic;navidrome;fonoteca;
+StartupWMClass=io.github.schotman_development.fonoteca
