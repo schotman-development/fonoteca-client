@@ -147,8 +147,10 @@ music server's address or your sign-in. Play, pause, seek, next and previous
 reach the device. What the audio engine does does not: sound processing,
 volume leveling, bit-perfect output and the app's own transcoding do not apply,
 and tracks do not play gaplessly. The volume is the Cast device's own, and
-radio plays on this device. If the Cast device goes away, playback pauses and tells you. On Android the app asks for
-permission to find devices on your local network the first time the menu opens.
+radio plays on this device. If the Cast device goes away, playback pauses and
+tells you. On Android the app needs no permission for this yet: Android asks for
+local network access only from apps that target Android 17, and this one will
+ask when it does.
 
 ## Servers
 
@@ -209,7 +211,7 @@ The repository holds these crates:
 | [`opensubsonic`](crates/opensubsonic) | An async client for the OpenSubsonic API, checked against the spec's own examples |
 | [`listenbrainz`](crates/listenbrainz) | A client for ListenBrainz: it checks a user token and reads back the user's top albums, artists and genres |
 | [`playback`](crates/playback) | The audio player: FFmpeg decodes, the sound device plays each track in its own format where it can |
-| [`cast`](crates/cast) | Finds Cast devices on the network, plays a file to one, and serves the file to it |
+| [`network-output`](crates/network-output) | Finds devices on the network (Cast so far), plays a file to one, and serves the file to it |
 
 The Android app is built by [`.github/workflows/rolling-release.yml`](.github/workflows/rolling-release.yml)
 and packaged by Gradle in [`android/`](android).
