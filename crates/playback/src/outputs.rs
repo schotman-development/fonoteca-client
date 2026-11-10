@@ -43,12 +43,14 @@ pub enum OutputKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkProtocol {
     Cast,
+    AirPlay,
 }
 
 impl NetworkProtocol {
     pub fn name(self) -> &'static str {
         match self {
             NetworkProtocol::Cast => "Cast",
+            NetworkProtocol::AirPlay => "AirPlay",
         }
     }
 }

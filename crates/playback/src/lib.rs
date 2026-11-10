@@ -22,6 +22,8 @@ mod dsp;
 mod output;
 #[cfg(not(target_family = "wasm"))]
 mod outputs;
+#[cfg(not(target_family = "wasm"))]
+mod pcm;
 #[cfg(target_os = "linux")]
 mod pipewire_default;
 #[cfg(any(target_family = "wasm", test))]
@@ -54,6 +56,8 @@ pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
 pub use output::{SystemMixer, devices, system_output};
 #[cfg(not(target_family = "wasm"))]
 pub use outputs::{NetworkProtocol, OutputDevice, OutputKind};
+#[cfg(not(target_family = "wasm"))]
+pub use pcm::{Pcm, open as open_pcm};
 
 #[cfg(not(target_family = "wasm"))]
 use decode::{Decoding, Stop};
