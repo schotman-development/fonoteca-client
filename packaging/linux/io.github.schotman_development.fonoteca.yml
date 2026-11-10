@@ -1,0 +1,37 @@
+# Installs what scripts/flatpak-stage.sh built into target/flatpak/stage; see
+# scripts/flatpak.sh. The sandbox sets XDG_CONFIG_HOME, XDG_CACHE_HOME and
+# XDG_DATA_HOME to ~/.var/app/<app id>/, which the app already honours and
+# updates leave alone.
+app-id: io.github.schotman_development.fonoteca
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: fonoteca-client
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # The graphics driver, and the ALSA hardware devices the sound device list shows.
+  - --device=all
+  - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0
+  # The sign-in is kept in the host's GNOME Keyring, KWallet or KeePassXC.
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: fonoteca
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 stage/bin/fonoteca-client /app/bin/fonoteca-client
+      - mkdir -p /app/lib && cp -a stage/lib/. /app/lib/
+      - mkdir -p /app/share/licenses/fonoteca && cp stage/licenses/* /app/share/licenses/fonoteca/
+      - install -Dm644 packaging/io.github.schotman_development.fonoteca.desktop /app/share/applications/io.github.schotman_development.fonoteca.desktop
+      - install -Dm644 packaging/io.github.schotman_development.fonoteca.metainfo.xml /app/share/metainfo/io.github.schotman_development.fonoteca.metainfo.xml
+      - mkdir -p /app/share/icons && cp -r packaging/hicolor /app/share/icons/
+    sources:
+      - type: dir
+        path: ../../target/flatpak/stage
+        dest: stage
+      - type: dir
+        path: .
+        dest: packaging
