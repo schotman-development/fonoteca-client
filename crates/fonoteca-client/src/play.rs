@@ -52,6 +52,9 @@ const LINE_COVER_SIZE: f32 = 40.0;
 const QUEUE_SHOWN: usize = 100;
 /// What the line under a station's name says.
 const LIVE_RADIO: &str = "Live radio";
+/// The width of the cover Control Center is given, in pixels.
+#[cfg(target_os = "macos")]
+const CONTROLS_COVER_PIXELS: u32 = 600;
 
 /// How many rows of the songs played before the one playing the sheet lists.
 const PREVIOUS_SHOWN: usize = 50;
@@ -110,6 +113,9 @@ pub struct Playing {
     tick: Timer,
     #[cfg(not(target_family = "wasm"))]
     scrobbler: scrobble::Scrobbler,
+    /// What the Mac's media keys and Control Center have been told plays.
+    #[cfg(target_os = "macos")]
+    controls: crate::now_playing::Announcer<crate::desktop_media::SystemControls>,
 }
 
 /// A station playing, and the picture of it that was on its tile.
@@ -160,8 +166,19 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
         move || {
             let player = playing.borrow_mut().player.take();
             player.into_iter().for_each(Active::close);
+            #[cfg(target_os = "macos")]
+            crate::desktop_media::remove_covers();
         }
     });
+    #[cfg(target_os = "macos")]
+    {
+        let weak = ui.as_weak();
+        crate::desktop_media::listen(move |command| {
+            // Once the app has quit, nobody is left to press for.
+            weak.upgrade_in_event_loop(move |ui| press(&ui, command))
+                .ok();
+        });
+    }
     ui.on_play_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |row| {
@@ -233,6 +250,9 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
             if resume(&weak.unwrap(), &browser, &playing, true) {
                 return;
             }
+            #[cfg(target_os = "macos")]
+            let mut p = playing.borrow_mut();
+            #[cfg(not(target_os = "macos"))]
             let p = playing.borrow();
             let Some(player) = &p.player else { return };
             player.seek(seconds);
@@ -240,6 +260,15 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
             save(&browser, &p, &playing, status.index, seconds);
             #[cfg(target_os = "android")]
             announce(&p, status.index, status.paused || status.ended, seconds);
+            #[cfg(target_os = "macos")]
+            announce_to_controls(
+                &browser,
+                &playing,
+                &mut p,
+                status.index,
+                status.paused || status.ended,
+                seconds,
+            );
         }
     });
     ui.on_toggle_playing_love({
@@ -1191,6 +1220,8 @@ fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     #[cfg(target_os = "android")]
     crate::media::hide();
     let mut p = playing.borrow_mut();
+    #[cfg(target_os = "macos")]
+    hide_from_controls(&mut p);
     p.player = None;
     p.tick.stop();
     p.queue = Queue::default();
@@ -1288,6 +1319,8 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         ui.set_playing(false);
         #[cfg(target_os = "android")]
         crate::media::hide();
+        #[cfg(target_os = "macos")]
+        hide_from_controls(&mut p);
         return;
     }
     let Some(player) = &p.player else { return };
@@ -1316,6 +1349,12 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     let due = last.is_none_or(|(index, paused, at)| {
         (index, paused) != state || !paused && (status.position - at).abs() >= SAVE_EVERY
     });
+    // The save's cadence also corrects the position Control Center counts
+    // on its own.
+    #[cfg(target_os = "macos")]
+    if due {
+        announce_to_controls(browser, playing, &mut p, state.0, state.1, status.position);
+    }
     if due {
         save(browser, &p, playing, status.index, status.position);
         p.saved = Some((state.0, state.1, status.position));
@@ -1726,11 +1765,134 @@ fn announce(p: &Playing, index: Option<usize>, paused: bool, seconds: f64) {
     crate::media::show(&song.title, artists, !paused, duration, seconds);
 }
 
+/// What the media controls show of what plays, with the id of its cover.
+#[cfg(target_os = "macos")]
+fn controls_track(
+    p: &Playing,
+    index: Option<usize>,
+) -> Option<(String, crate::now_playing::Track, Option<String>)> {
+    use crate::now_playing::Track;
+    if let Some(tuned) = &p.station {
+        let track = Track {
+            title: tuned.station.name.clone(),
+            artist: LIVE_RADIO.into(),
+            album: String::new(),
+            duration: 0.0,
+            cover: None,
+            live: true,
+        };
+        return Some((format!("radio:{}", tuned.station.name), track, None));
+    }
+    let song = index.and_then(|index| p.queue.get(index))?;
+    let track = Track {
+        title: song.title.clone(),
+        artist: song.artist.clone().unwrap_or_default(),
+        album: song.album.clone().unwrap_or_default(),
+        duration: song.duration.unwrap_or_default() as f64,
+        cover: None,
+        live: false,
+    };
+    Some((song.id.clone(), track, song.cover_art.clone()))
+}
+
+/// Tells the Mac's media keys and Control Center what plays, the title and
+/// artist at once and the cover when it has come.
+#[cfg(target_os = "macos")]
+fn announce_to_controls(
+    browser: &browse::Shared,
+    playing: &Shared,
+    p: &mut Playing,
+    index: Option<usize>,
+    paused: bool,
+    seconds: f64,
+) {
+    let Some((id, track, cover)) = controls_track(p, index) else {
+        return hide_from_controls(p);
+    };
+    if !p.controls.announce(&id, &track, !paused, seconds) {
+        return;
+    }
+    if let Some(cover) = cover {
+        show_cover_on_controls(browser, playing, id, cover, track);
+    }
+}
+
+/// Fetches the cover `cover` of the track `id`, for the controls to show
+/// from a file: they are never given the server's address, which carries
+/// the account's credentials.
+#[cfg(target_os = "macos")]
+fn show_cover_on_controls(
+    browser: &browse::Shared,
+    playing: &Shared,
+    id: String,
+    cover: String,
+    track: crate::now_playing::Track,
+) {
+    let (browser, playing) = (browser.clone(), playing.clone());
+    slint::spawn_local(async move {
+        let Some(client) = browse::client(&browser) else {
+            return;
+        };
+        let bytes = match client
+            .get_cover_art(&cover, Some(CONTROLS_COVER_PIXELS))
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(problem) => return eprintln!("The cover for the media controls: {problem}"),
+        };
+        // A cover that comes after the controls were cleared or moved on
+        // would only leave a file behind.
+        if !playing.borrow().controls.shows(&id) {
+            return;
+        }
+        let path = match crate::desktop_media::store_cover(&cover, &bytes) {
+            Ok(path) => path,
+            Err(problem) => return eprintln!("The cover for the media controls: {problem}"),
+        };
+        let mut p = playing.borrow_mut();
+        let Some(status) = p.player.as_ref().map(Active::status) else {
+            return;
+        };
+        let track = crate::now_playing::Track {
+            cover: Some(path),
+            ..track
+        };
+        let playing = !(status.paused || status.ended);
+        p.controls
+            .cover_ready(&id, &track, playing, status.position);
+    })
+    .expect("the event loop is running");
+}
+
+/// Takes what was told to the media controls down, with the covers kept
+/// for them, and lets the keys go back to whichever app played last.
+#[cfg(target_os = "macos")]
+fn hide_from_controls(p: &mut Playing) {
+    p.controls.clear();
+    crate::desktop_media::remove_covers();
+}
+
+/// What a media key or Control Center's button asked for, done as the bar's
+/// own controls do it.
+#[cfg(target_os = "macos")]
+fn press(ui: &AppWindow, command: crate::now_playing::Command) {
+    use crate::now_playing::{Action, action};
+    match action(command, ui.get_playing_paused()) {
+        Some(Action::TogglePause) => ui.invoke_toggle_pause(),
+        Some(Action::Next) => ui.invoke_next_track(),
+        Some(Action::Previous) => ui.invoke_previous_track(),
+        Some(Action::Seek(seconds)) => ui.invoke_seek(seconds as f32),
+        None => {}
+    }
+}
+
 /// Takes up the queue saved on the server, paused on the bar where it left
 /// off, in place of anything from the account signed in before.
 fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     #[cfg(target_os = "android")]
     crate::media::hide();
+    #[cfg(target_os = "macos")]
+    hide_from_controls(&mut playing.borrow_mut());
     #[cfg(not(target_family = "wasm"))]
     if let Some(server) = server(browser) {
         let sending = playing.borrow_mut().scrobbler.send_waiting(server);
