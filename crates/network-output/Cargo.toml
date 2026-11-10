@@ -1,0 +1,18 @@
+[package]
+name = "network-output"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# The browser can neither browse the network nor open a socket: there the
+# crate is empty.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+mdns-sd = { version = "0.21", default-features = false }
+rust_cast = "0.21"
+
+# The test device is a TLS server, as a Cast device is.
+[dev-dependencies]
+rcgen = "0.14"
+rustls = "0.23"
