@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds the LGPL FFmpeg the player links against, for Android arm64 or macOS
-# on Apple silicon, with only the audio decoders, demuxers, parsers and
+# Builds the LGPL FFmpeg the player links against, for Android arm64, macOS
+# on Apple silicon or Linux on x86_64, with only the audio decoders, demuxers, parsers and
 # filters it uses, as shared libraries in target/<platform>-ffmpeg/prefix
 # (FFMPEG_DIR for cargo), with its licence and configure line in
 # target/<platform>-ffmpeg/notice. For Android it copies the libraries into
@@ -33,8 +33,13 @@ case $platform in
     set -- --install-name-dir=@rpath \
       --extra-cflags=-mmacosx-version-min=11.0 --extra-ldflags=-mmacosx-version-min=11.0
     ;;
+  linux)
+    # Plain shared libraries; the AppImage script sets where they look for
+    # each other.
+    set --
+    ;;
   *)
-    echo "usage: $0 android|macos" >&2
+    echo "usage: $0 android|macos|linux" >&2
     exit 2
     ;;
 esac
