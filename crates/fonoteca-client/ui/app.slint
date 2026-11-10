@@ -3925,6 +3925,13 @@ export component AppWindow inherits Window {
     // in place of Now playing.
     property <bool> queue-on-sheet: !root.docked && root.queue-open;
     property <bool> lyrics-on-sheet: !root.docked && root.lyrics-open;
+    // The song going back before its first line, or a new one, shows the
+    // lyrics from the top again.
+    changed playing-lyric-current => {
+        if root.playing-lyric-current < 0 && (root.docked || root.lyrics-on-sheet) {
+            sheet-scroll.content-y = 0;
+        }
+    }
     // Counts the times the queue was opened, which brings it to what plays.
     property <int> queue-asked;
     // A desktop's queue panel, beside the pages and under the top bar.

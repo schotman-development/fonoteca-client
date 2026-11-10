@@ -4752,7 +4752,8 @@ export component LyricsView inherits VerticalLayout {
     // the page to scroll to.
     callback sung(top: length);
 
-    spacing: 12px;
+    // The rows have no gap between them, so that a tap always lands on one.
+    spacing: 0;
 
     if root.lines.length == 0 && root.lyrics != "": Text {
         preferred-width: root.available;
@@ -4763,7 +4764,9 @@ export component LyricsView inherits VerticalLayout {
     }
     for line[index] in root.lines: row := Rectangle {
         property <bool> sung: index == root.current;
-        height: words.preferred-height;
+        // A finger's target on a phone, and the lines' old gap on a desktop;
+        // the text is centred in it.
+        height: max(words.preferred-height + (Screen.phone ? 8px : 12px), Screen.phone ? Theme.phone-target : 0px);
         accessible-role: button;
         accessible-label: line.text;
         accessible-action-default => { root.seek(line.start); }
@@ -4773,6 +4776,8 @@ export component LyricsView inherits VerticalLayout {
         changed height => { root.sing-from(self.sung, self.absolute-position.y); }
         words := Text {
             width: root.available;
+            height: self.preferred-height;
+            y: (parent.height - self.height) / 2;
             text: line.text;
             font-size: Theme.heading;
             font-weight: row.sung ? 700 : 400;
