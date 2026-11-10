@@ -155,22 +155,25 @@ ask when it does.
 ### AirPlay receivers
 
 The same menu lists AirPlay receivers, with the AirPlay icon. The app plays
-to the first generation of AirPlay (RAOP), unencrypted and without a
-password, which these receivers do:
+to the first generation of AirPlay (RAOP). A receiver is listed when it
+accepts unencrypted audio (its `et` includes 0), takes Apple Lossless at
+44.1 kHz, 16-bit, stereo over UDP, and has no password. That covers:
 
 - shairport-sync and other open-source receivers (an AirPlay 2 receiver that
   still takes the first generation counts),
-- third-party speakers and receivers with AirPlay 1 that ask for neither a
-  password nor a key.
+- third-party speakers and receivers with AirPlay 1 that take unencrypted
+  audio,
+- an AirPort Express or an Apple TV (3rd generation) that advertises
+  unencrypted audio as well as the RSA key, as AirPort Express models
+  commonly do. None has been tried, so whether one plays is not known yet.
 
 These are not listed, because they ask for what the app does not do yet:
 
+- a receiver that only accepts the RSA-encrypted stream (`et` 1 without 0; a
+  later step),
+- a receiver with a password,
 - a HomePod, an Apple TV (4th generation and later) and speakers that only
-  speak AirPlay 2, which pair with the sender first,
-- an AirPort Express and an Apple TV (3rd generation), which want audio
-  encrypted with an RSA key (a later step),
-- any receiver with a password, or that does not take Apple Lossless at
-  44.1 kHz, 16-bit, stereo.
+  speak AirPlay 2, which pair with the sender first.
 
 An AirPlay receiver cannot be told to fetch a file, so the app decodes each
 track and sends it, uncompressed, over the network in real time; the sound
