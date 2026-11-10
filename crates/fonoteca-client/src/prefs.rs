@@ -70,6 +70,13 @@ pub struct Prefs {
     pub expanded_works: Vec<String>,
     /// The settings' entry for the most the downloads may take.
     pub download_limit: i32,
+    /// The color scheme's entry in the settings: the system's, light or
+    /// dark.
+    pub color_scheme: i32,
+    /// The accent color's entry: the system's, then the app's own colors.
+    pub accent: i32,
+    /// Whether the seek bar is a plain bar, with no waveform to fetch.
+    pub simple_seek_bar: bool,
 }
 
 /// A streaming format's entry in the settings, and its bitrate's; the first
@@ -452,5 +459,25 @@ mod tests {
         assert_eq!(preset.sound.headroom, 0);
         let again: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
         assert_eq!(again, prefs);
+    }
+
+    #[test]
+    fn the_appearance_starts_as_the_systems_with_the_waveform() {
+        let earlier: Prefs = serde_json::from_str(r#"{"repeat": 1}"#).unwrap();
+        assert_eq!(
+            (
+                earlier.color_scheme,
+                earlier.accent,
+                earlier.simple_seek_bar
+            ),
+            (0, 0, false)
+        );
+        let chosen: Prefs =
+            serde_json::from_str(r#"{"color_scheme": 2, "accent": 3, "simple_seek_bar": true}"#)
+                .unwrap();
+        assert_eq!(
+            (chosen.color_scheme, chosen.accent, chosen.simple_seek_bar),
+            (2, 3, true)
+        );
     }
 }
