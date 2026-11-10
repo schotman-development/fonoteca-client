@@ -4766,7 +4766,7 @@ export component LyricsView inherits VerticalLayout {
         property <bool> sung: index == root.current;
         // A finger's target on a phone, and the lines' old gap on a desktop;
         // the text is centred in it.
-        height: max(words.preferred-height + (Screen.phone ? 8px : 12px), Screen.phone ? Theme.phone-target : 0px);
+        height: max(words.preferred-height + (Screen.phone ? 8px : 12px), (Screen.phone ? Theme.phone-target : 0px) * Theme.zoom);
         accessible-role: button;
         accessible-label: line.text;
         accessible-action-default => { root.seek(line.start); }
