@@ -533,6 +533,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     browser_clock::install();
 
     let ui = start()?;
+    // Desktop environments match the window to its .desktop file by this; it
+    // needs the window system, so only once the window exists.
+    #[cfg(target_os = "linux")]
+    slint::set_xdg_app_id("io.github.schotman_development.fonoteca")?;
     ui.run()?;
     #[cfg(not(target_family = "wasm"))]
     ui.invoke_event_loop_ended();
