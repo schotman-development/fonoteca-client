@@ -32,6 +32,8 @@ mod network;
 mod network_outputs;
 #[cfg(not(target_family = "wasm"))]
 mod network_player;
+#[cfg(any(target_os = "macos", test))]
+mod now_playing;
 mod offline;
 #[cfg(not(target_family = "wasm"))]
 mod opra;
