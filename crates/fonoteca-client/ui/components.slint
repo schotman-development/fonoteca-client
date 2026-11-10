@@ -4055,21 +4055,29 @@ export component LineEdit inherits Rectangle {
     }
 }
 
-// The accent colors to pick from, the system's first, as a row of discs in
-// the colour each has in the scheme in use. `chosen` is the one in use.
-export component AccentSwatches inherits HorizontalLayout {
+// The accent colors to pick from, the system's first, as discs in the colour
+// each has in the scheme in use, in as many rows as the width needs so that
+// none is out of reach. `chosen` is the one in use.
+export component AccentSwatches {
     in property <[AccentChoice]> choices;
     in property <int> chosen;
     in property <bool> enabled: true;
     callback picked(index: int);
-    spacing: 8px;
-    alignment: start;
 
-    for index in root.choices.length + 1: Pressable {
+    property <length> size: Screen.phone ? 48px : 36px;
+    property <length> gap: 8px;
+    property <int> count: root.choices.length + 1;
+    property <int> columns: max(1, floor((root.width + root.gap) / (root.size + root.gap)));
+    property <int> rows: ceil(root.count / root.columns);
+    height: root.rows * (root.size + root.gap) - root.gap;
+
+    for index in root.count: Pressable {
+        x: mod(index, root.columns) * (root.size + root.gap);
+        y: floor(index / root.columns) * (root.size + root.gap);
+        width: root.size;
+        height: root.size;
         label: index == 0 ? "System accent" : root.choices[index - 1].name;
         enabled: root.enabled;
-        width: Screen.phone ? 48px : 36px;
-        height: self.width;
         clicked => { root.picked(index); }
 
         Rectangle {
