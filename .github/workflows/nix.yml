@@ -17,5 +17,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
-      - run: nix build --print-build-logs .#default
+      # In a container rather than a Nix action from a third party. The
+      # container has no user namespaces for Nix's own sandbox; the runner is
+      # the sandbox. The copy keeps Nix from writing into the checkout, and
+      # `path:` lets it read a tree that is not a git repository.
+      - name: Build the package
+        run: |
+          docker run --rm --volume "$PWD:/source:ro" \
+            --env NIX_CONFIG="experimental-features = nix-command flakes
+          sandbox = false" \
+            docker.io/nixos/nix:latest@sha256:b49cb33f3a7e5cf3933ad8774529de0e3807ec5cf54987aa7ccdfb49f2fc55ed \
+            sh -c 'cp -r /source /work && cd /work && nix build --print-build-logs path:.#default'
