@@ -4,6 +4,16 @@
 
 import { Button as StdButton, CheckBox as StdCheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch as StdSwitch } from "std-widgets.slint";
 
+// An accent color the settings offer, in the shade for a light scheme and the
+// one for a dark one, with the color of what is drawn on each.
+export struct AccentChoice {
+    name: string,
+    light: color,
+    dark: color,
+    on-light: color,
+    on-dark: color,
+}
+
 export global Theme {
     // How much bigger the phone's or the desktop's text size setting makes
     // text, which the window sets: at least 1.
@@ -14,7 +24,20 @@ export global Theme {
     out property <brush> muted: Palette.foreground.transparentize(35%);
     out property <brush> hover: Palette.foreground.transparentize(92%);
     out property <brush> surface: Palette.alternate-background;
-    out property <brush> accent: Palette.accent-background;
+    // The accent colors on offer, and the settings' entry for the one in
+    // use: 0 is the system's, then the colors in order.
+    in property <[AccentChoice]> accents;
+    in property <int> accent-choice;
+    // Whether the scheme is dark. A scheme left to the system reads as
+    // unknown, but the style's own colors still follow the system's.
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark
+        || (Palette.color-scheme == ColorScheme.unknown && root.page.to-hsv().value < 0.5);
+    property <color> page: Palette.background;
+    out property <brush> accent: root.accent-choice == 0 ? Palette.accent-background
+        : root.dark ? root.accents[root.accent-choice - 1].dark : root.accents[root.accent-choice - 1].light;
+    // What is drawn on the accent: icons, text and the bars of its colour.
+    out property <brush> on-accent: root.accent-choice == 0 ? Palette.accent-foreground
+        : root.dark ? root.accents[root.accent-choice - 1].on-dark : root.accents[root.accent-choice - 1].on-light;
 
     // The least a finger's target is on a phone, and an icon's size there,
     // as Material 3 sets them.
@@ -41,10 +64,10 @@ export global Theme {
     // the phone's bottom bar.
     out property <length> bar-height: 64px;
 
-    out property <brush> danger: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
+    out property <brush> danger: root.dark ? #ff6b6b : #c42b1c;
     // The signal path's lights, as Roon colours them, worst first: a lossy
     // file, changed for the device, changed as asked, untouched.
-    out property <[color]> quality-colors: Palette.color-scheme == ColorScheme.dark
+    out property <[color]> quality-colors: root.dark
         ? [#f2c94c, #4cd07d, #5aa9ff, #b38cff]
         : [#a87b00, #1b8a45, #1f6fd1, #7c3aed];
 }
@@ -1164,7 +1187,7 @@ export component CoverTile inherits Pressable {
                     viewbox-width: 24;
                     viewbox-height: 24;
                     commands: Icons.check;
-                    stroke: Palette.accent-foreground;
+                    stroke: Theme.on-accent;
                     stroke-width: 3px;
                 }
             }
@@ -2589,7 +2612,7 @@ export component SelectionBar inherits Rectangle {
             text: root.count + " selected";
             font-size: Theme.body;
             font-weight: 600;
-            color: Palette.accent-foreground;
+            color: Theme.on-accent;
             vertical-alignment: center;
             accessible-live-region: polite;
         }
@@ -2600,8 +2623,8 @@ export component SelectionBar inherits Rectangle {
             cross-axis-self-alignment: center;
             icon: Icons.close;
             label: "Clear selection";
-            color: Palette.accent-foreground;
-            ring-color: Palette.accent-foreground;
+            color: Theme.on-accent;
+            ring-color: Theme.on-accent;
             clicked => { root.clear(); }
         }
     }
@@ -2623,7 +2646,7 @@ export component PlayButton inherits HorizontalLayout {
     property <brush> segment: root.enabled ? Theme.accent : Theme.accent.transparentize(50%);
     // Lightens a segment under the pointer, more while pressed.
     function shade(hovered: bool, pressed: bool) -> brush {
-        Palette.accent-foreground.transparentize(pressed ? 70% : hovered ? 85% : 100%)
+        Theme.on-accent.transparentize(pressed ? 70% : hovered ? 85% : 100%)
     }
 
     spacing: 0;
@@ -2662,13 +2685,13 @@ export component PlayButton inherits HorizontalLayout {
                 viewbox-width: 24;
                 viewbox-height: 24;
                 commands: Icons.play;
-                fill: Palette.accent-foreground;
+                fill: Theme.on-accent;
             }
             Text {
                 text: "Play";
                 font-size: Theme.detail;
                 font-weight: 600;
-                color: Palette.accent-foreground;
+                color: Theme.on-accent;
                 vertical-alignment: center;
             }
         }
@@ -2680,7 +2703,7 @@ export component PlayButton inherits HorizontalLayout {
         Rectangle {
             y: 6px;
             height: parent.height - 12px;
-            background: Palette.accent-foreground.transparentize(60%);
+            background: Theme.on-accent.transparentize(60%);
         }
     }
     Rectangle {
@@ -2706,7 +2729,7 @@ export component PlayButton inherits HorizontalLayout {
             label: "More ways to play";
             icon: Icons.chevron;
             filled: false;
-            color: Palette.accent-foreground;
+            color: Theme.on-accent;
             hover-color: transparent;
             entries: [
                 { id: "next", label: "Play next", icon: Icons.next },
@@ -3451,7 +3474,7 @@ component EqBadge inherits Rectangle {
         vertical-alignment: center;
         font-size: Theme.small;
         font-weight: 700;
-        color: root.selected ? Palette.accent-foreground : Theme.text;
+        color: root.selected ? Theme.on-accent : Theme.text;
     }
 }
 
@@ -3699,6 +3722,35 @@ export component CheckBox inherits StdCheckBox {
 // one, where Slint's Material style draws it 22px high.
 export component Choice inherits ComboBox {
     min-height: Screen.phone ? 56px : 0px;
+}
+
+// The accent colors to pick from, the system's first, as a row of discs in
+// the colour each has in the scheme in use. `chosen` is the one in use.
+export component AccentSwatches inherits HorizontalLayout {
+    in property <[AccentChoice]> choices;
+    in property <int> chosen;
+    in property <bool> enabled: true;
+    callback picked(index: int);
+    spacing: 8px;
+    alignment: start;
+
+    for index in root.choices.length + 1: Pressable {
+        label: index == 0 ? "System accent" : root.choices[index - 1].name;
+        enabled: root.enabled;
+        width: Screen.phone ? 48px : 36px;
+        height: self.width;
+        clicked => { root.picked(index); }
+
+        Rectangle {
+            width: parent.width - 8px;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: index == 0 ? Palette.accent-background
+                : Theme.dark ? root.choices[index - 1].dark : root.choices[index - 1].light;
+            border-width: index == root.chosen ? 3px : 0;
+            border-color: Theme.text;
+        }
+    }
 }
 
 // A format and quality to take audio in, for the settings: Original, which

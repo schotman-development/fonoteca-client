@@ -1,6 +1,7 @@
 slint::include_modules!();
 
 mod answers;
+mod appearance;
 #[cfg(any(target_os = "android", test))]
 mod back;
 #[cfg(target_os = "android")]
@@ -609,6 +610,7 @@ fn start() -> Result<AppWindow, slint::PlatformError> {
     let browser = browse::Shared::default();
     browse::wire(&ui, &browser);
     let playing = play::wire(&ui, &browser);
+    appearance::wire(&ui);
     waveform::wire(&ui);
     #[cfg(not(target_family = "wasm"))]
     downloads::wire(&ui, &browser);

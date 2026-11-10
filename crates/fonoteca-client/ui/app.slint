@@ -1,7 +1,7 @@
 import { LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -237,7 +237,7 @@ component GestureHint inherits Rectangle {
         viewbox-width: 24;
         viewbox-height: 24;
         commands: root.icon;
-        stroke: root.ready ? Palette.accent-foreground : Theme.text;
+        stroke: root.ready ? Theme.on-accent : Theme.text;
         stroke-width: 1.75px;
         fill: transparent;
     }
@@ -1416,6 +1416,12 @@ export component AppWindow inherits Window {
     in property <string> output-icon: Icons.speaker;
     in property <string> output-kind;
     in-out property <int> leveling;
+    // The Appearance page's entries: the color scheme (the system's, light
+    // or dark) and the accent color (the system's, then the colors of
+    // `accents`).
+    in-out property <int> color-scheme;
+    in-out property <int> accent;
+    in property <[AccentChoice]> accents;
     // The streaming format and bitrate entries for wifi and for mobile data;
     // a device without mobile data has just the first.
     in property <bool> has-mobile-data;
@@ -1686,6 +1692,8 @@ export component AppWindow inherits Window {
     callback pick-headphone(row: int);
     callback load-headphone(row: int);
     callback choose-leveling(index: int);
+    callback choose-color-scheme(index: int);
+    callback choose-accent(index: int);
     callback choose-stream-quality(mobile: bool, format: int, bitrate: int);
     callback add-selection-to-playlist(id: string);
     // Playlist folders: a new one with this name in the folder on screen;
@@ -1907,6 +1915,19 @@ export component AppWindow inherits Window {
     init => {
         root.share-size();
         Theme.zoom = root.text-zoom;
+        root.apply-color-scheme();
+        root.apply-accents();
+    }
+    changed color-scheme => { root.apply-color-scheme(); }
+    changed accent => { root.apply-accents(); }
+    changed accents => { root.apply-accents(); }
+
+    function apply-color-scheme() {
+        Palette.color-scheme = root.color-scheme == 1 ? ColorScheme.light : root.color-scheme == 2 ? ColorScheme.dark : ColorScheme.unknown;
+    }
+    function apply-accents() {
+        Theme.accents = root.accents;
+        Theme.accent-choice = root.accent;
     }
 
     // How much bigger than its usual 14px the system's text size setting
@@ -3071,6 +3092,12 @@ export component AppWindow inherits Window {
                             summary: "The token that connects your ListenBrainz account";
                             clicked => { root.open("setting:listenbrainz"); }
                         }
+                        SettingsRow {
+                            icon: Icons.settings;
+                            title: "Appearance";
+                            summary: "Color scheme and accent color";
+                            clicked => { root.open("setting:appearance"); }
+                        }
                         if root.has-sound: SettingsRow {
                             icon: Icons.play;
                             title: "Playback";
@@ -3174,6 +3201,37 @@ export component AppWindow inherits Window {
                                 text: "Remove all downloads";
                                 enabled: root.download-songs > 0 && !Input.modal;
                                 clicked => { root.open-dialog(Asking.remove-all-downloads); }
+                            }
+                        }
+                    }
+                    if root.page == Page.setting && root.shown-id == "appearance": VerticalLayout {
+                        max-width: 480px;
+                        spacing: 12px;
+                        Heading { text: "Appearance"; }
+                        Text {
+                            text: "Color scheme";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                        }
+                        Choice {
+                            accessible-label: "Color scheme";
+                            model: ["Follow the system", "Light", "Dark"];
+                            current-index <=> root.color-scheme;
+                            enabled: !Input.modal;
+                            selected => { root.choose-color-scheme(self.current-index); }
+                        }
+                        Text {
+                            text: "Accent color";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                        }
+                        AccentSwatches {
+                            choices: root.accents;
+                            chosen: root.accent;
+                            enabled: !Input.modal;
+                            picked(index) => {
+                                root.accent = index;
+                                root.choose-accent(index);
                             }
                         }
                     }
@@ -3773,8 +3831,8 @@ export component AppWindow inherits Window {
         if root.selection-queued || root.playlist-targets.length > 0 || root.tags-offered || root.selection-moves.length > 0: MoreMenu {
             cross-axis-self-alignment: center;
             label: "More for the selection";
-            color: Palette.accent-foreground;
-            ring-color: Palette.accent-foreground;
+            color: Theme.on-accent;
+            ring-color: Theme.on-accent;
             opening => {
                 self.entries = [];
                 if root.selection-queued {
