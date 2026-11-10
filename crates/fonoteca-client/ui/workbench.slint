@@ -1024,6 +1024,17 @@ export component Workbench inherits Window {
                         }
                         LyricsView {
                             available: 360px;
+                            lyrics: "Synced";
+                            lines: [
+                                { text: "Let the northern lights", start: 0 },
+                                { text: root.long-text ? root.long-title : "Show us the way home", start: 4 },
+                                { text: "Over the frozen sea", start: 9 },
+                            ];
+                            current: 1;
+                            seek(seconds) => { root.player-position = seconds; }
+                        }
+                        LyricsView {
+                            available: 360px;
                             note: "No lyrics for this song.";
                         }
                         // A live station: no album, no position, only play.

@@ -4729,21 +4729,60 @@ export component NowPlaying inherits VerticalLayout {
     }
 }
 
+// A line of synced lyrics and the second it starts at.
+export struct LyricLine {
+    text: string,
+    start: float,
+}
+
 // The words of what plays, or a note in their place while they are on their
-// way or where there are none.
+// way or where there are none. Synced lyrics are a line to a row, the one
+// sung now in the text colour and bold, and a row seeks to its line.
 export component LyricsView inherits VerticalLayout {
     in property <string> lyrics;
     in property <string> note;
+    in property <[LyricLine]> lines;
+    // The row sung now, or -1.
+    in property <int> current: -1;
     // The width the lines wrap at, which it can't read from its own: its
     // height follows from it.
     in property <length> available;
+    callback seek(seconds: float);
+    // The row sung now is at `top`, in the window, or has moved there; for
+    // the page to scroll to.
+    callback sung(top: length);
 
-    if root.lyrics != "": Text {
+    spacing: 12px;
+
+    if root.lines.length == 0 && root.lyrics != "": Text {
         preferred-width: root.available;
         text: root.lyrics;
         font-size: Theme.heading;
         color: Theme.text;
         wrap: word-wrap;
+    }
+    for line[index] in root.lines: row := Rectangle {
+        property <bool> sung: index == root.current;
+        height: words.preferred-height;
+        accessible-role: button;
+        accessible-label: line.text;
+        accessible-action-default => { root.seek(line.start); }
+        init => { root.sing-from(self.sung, self.absolute-position.y); }
+        changed sung => { root.sing-from(self.sung, self.absolute-position.y); }
+        changed y => { root.sing-from(self.sung, self.absolute-position.y); }
+        changed height => { root.sing-from(self.sung, self.absolute-position.y); }
+        words := Text {
+            width: root.available;
+            text: line.text;
+            font-size: Theme.heading;
+            font-weight: row.sung ? 700 : 400;
+            color: row.sung ? Theme.text : Theme.muted;
+            wrap: word-wrap;
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.seek(line.start); }
+        }
     }
     if root.lyrics == "": Text {
         preferred-width: root.available;
@@ -4752,6 +4791,12 @@ export component LyricsView inherits VerticalLayout {
         color: Theme.muted;
         wrap: word-wrap;
         accessible-live-region: polite;
+    }
+
+    function sing-from(sung: bool, top: length) {
+        if sung {
+            root.sung(top);
+        }
     }
 }
 

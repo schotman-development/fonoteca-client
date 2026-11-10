@@ -1372,6 +1372,7 @@ fn show(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     ui.set_playing(true);
     ui.set_playing_paused(status.paused || status.ended);
     ui.set_playing_position(status.position as f32);
+    lyrics::follow(ui);
     let problem = match (status.problem, &status.skipped) {
         (Some(problem), _) => problem,
         (None, Some((index, why))) => match p.queue.get(*index) {
@@ -1946,6 +1947,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
         ui.set_playing(true);
         ui.set_playing_paused(true);
         ui.set_playing_position(seconds as f32);
+        lyrics::follow(&ui);
         ui.set_playing_problem("".into());
         ui.set_playing_quality("".into());
         ui.set_playing_level(-1);

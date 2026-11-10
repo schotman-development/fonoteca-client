@@ -2,6 +2,7 @@
 //! song, so that a song is asked about once and its words show offline. A song
 //! LRCLIB had nothing for is kept too.
 
+use lrclib::{Lyrics, TimedLine};
 use serde::{Deserialize, Serialize};
 
 /// The folder in the app's settings folder, and the browser's key prefix,
@@ -14,8 +15,11 @@ pub struct Kept {
     /// shared by two songs gives one of them nothing instead of the other's
     /// words.
     pub key: String,
-    /// None when LRCLIB had no words.
+    /// None when LRCLIB had no words. Files kept before the lines had times
+    /// hold just the text.
     pub words: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timed: Vec<TimedLine>,
 }
 
 /// The song's words as LRCLIB was asked for them: its artist, title, album
@@ -38,15 +42,25 @@ pub fn file_name(key: &str) -> String {
 
 /// What is kept for `key`: `Some(None)` is a song LRCLIB had nothing for and
 /// `None` a song not asked about yet.
-pub fn load(key: &str) -> Option<Option<String>> {
+pub fn load(key: &str) -> Option<Option<Lyrics>> {
     let kept = crate::prefs::kept_lyrics(&file_name(key))?;
-    (kept.key == key).then_some(kept.words)
+    if kept.key != key {
+        return None;
+    }
+    let lyrics = kept.words.map(|text| Lyrics {
+        text,
+        timed: kept.timed,
+    });
+    Some(lyrics)
 }
 
-pub fn save(key: &str, words: Option<&str>) {
+pub fn save(key: &str, lyrics: Option<&Lyrics>) {
     let kept = Kept {
         key: key.to_owned(),
-        words: words.map(str::to_owned),
+        words: lyrics.map(|lyrics| lyrics.text.clone()),
+        timed: lyrics
+            .map(|lyrics| lyrics.timed.clone())
+            .unwrap_or_default(),
     };
     crate::prefs::save_kept_lyrics(&file_name(key), &kept);
 }
@@ -71,10 +85,27 @@ mod tests {
             key(song("Missing", Some(200))),
         );
         assert_eq!(load(&found), None, "not asked yet");
-        save(&found, Some("Some words"));
+        let words = Lyrics {
+            text: "Some words".into(),
+            timed: vec![TimedLine {
+                seconds: 1.5,
+                text: "Some words".into(),
+            }],
+        };
+        save(&found, Some(&words));
         save(&missing, None);
-        assert_eq!(load(&found), Some(Some("Some words".to_owned())));
+        assert_eq!(load(&found), Some(Some(words)));
         assert_eq!(load(&missing), Some(None));
+    }
+
+    #[test]
+    fn a_file_kept_before_lines_had_times_still_reads() {
+        let old = key(song("Old", Some(200)));
+        let earlier = format!(r#"{{"key":{old:?},"words":"Kept text"}}"#);
+        let kept: Kept = serde_json::from_str(&earlier).unwrap();
+        crate::prefs::save_kept_lyrics(&file_name(&old), &kept);
+        let lyrics = load(&old).unwrap().unwrap();
+        assert_eq!((lyrics.text.as_str(), lyrics.timed.len()), ("Kept text", 0));
     }
 
     #[test]
@@ -87,6 +118,7 @@ mod tests {
             &Kept {
                 key: "another song".into(),
                 words: Some("its words".into()),
+                timed: Vec::new(),
             },
         );
         assert_eq!(load(&clashing), None);

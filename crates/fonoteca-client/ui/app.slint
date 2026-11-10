@@ -1,7 +1,7 @@
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AccentChoice, AlbumTile, Drag, Icons, Input, MenuEntry, Name, NavEntry, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, Drag, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -1359,6 +1359,10 @@ export component AppWindow inherits Window {
     in property <image> playing-banner;
     in property <string> playing-lyrics;
     in property <string> playing-lyrics-note;
+    // The lyrics' lines with their times where the song has them synced, and
+    // the one sung now, or -1.
+    in property <[LyricLine]> playing-lyric-lines;
+    in-out property <int> playing-lyric-current: -1;
     // Whether LRCLIB is asked for the lyrics the server hasn't got.
     in-out property <bool> look-up-lyrics;
     callback choose-look-up-lyrics(allowed: bool);
@@ -4139,6 +4143,16 @@ export component AppWindow inherits Window {
                                         width: self.available;
                                         lyrics: root.playing-lyrics;
                                         note: root.playing-lyrics-note;
+                                        lines: root.playing-lyric-lines;
+                                        current: root.playing-lyric-current;
+                                        seek(seconds) => { root.seek(seconds); }
+                                        // Keeps the line sung a third of the way
+                                        // down the page, as far as the page goes.
+                                        sung(top) => {
+                                            sheet-scroll.content-y = max(
+                                                min(0px, sheet-scroll.visible-height - sheet-scroll.content-height),
+                                                min(0px, sheet-scroll.content-y - (top - sheet-scroll.absolute-position.y - sheet-scroll.visible-height / 3)));
+                                        }
                                     }
                                 }
                                 // It fills the page's first screen and no more

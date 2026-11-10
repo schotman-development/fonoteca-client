@@ -8,7 +8,7 @@
 use std::fmt;
 
 use reqwest::{RequestBuilder, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const API_ROOT: &str = "https://lrclib.net/api/";
 
@@ -18,7 +18,6 @@ const LENGTHS: std::ops::RangeInclusive<i64> = 1..=3600;
 /// The most of an answer read, in bytes; no song's words come near it.
 const ANSWER_BYTES: usize = 512 * 1024;
 
-#[cfg(not(target_family = "wasm"))]
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -46,24 +45,39 @@ impl Client {
 
     /// The same at another server, such as a test's.
     pub fn with_root(root: &str, user_agent: &str) -> Result<Self> {
-        let builder = reqwest::Client::builder().user_agent(user_agent);
-        #[cfg(not(target_family = "wasm"))]
-        let builder = builder.timeout(PATIENCE);
         Ok(Self {
-            http: builder.build()?,
+            http: reqwest::Client::builder().user_agent(user_agent).build()?,
             root: Url::parse(root).map_err(|e| Error::Address(e.to_string()))?,
         })
     }
 
-    /// The words of `song` as lines of text, or `None` when LRCLIB has none:
-    /// no record, or one of an instrumental.
-    pub async fn words(&self, song: Song<'_>) -> Result<Option<String>> {
+    /// The lyrics of `song`, or `None` when LRCLIB has none: no record, or
+    /// one of an instrumental.
+    pub async fn lyrics(&self, song: Song<'_>) -> Result<Option<Lyrics>> {
         let url = self.root.join("get").expect("get is a relative path");
-        let response = exchange(self.http.get(url).query(&query(song))).await?;
+        let request = self.http.get(url).query(&query(song)).timeout(PATIENCE);
+        let response = exchange(request).await?;
         let status = response.status().as_u16();
         let body = response.bytes().await?;
-        words_in_answer(status, &body)
+        lyrics_in_answer(status, &body)
     }
+}
+
+/// A song's words, and the line each starts at where the song has them
+/// synced.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Lyrics {
+    /// One line of text to a line, with no times.
+    pub text: String,
+    /// In the order they are sung, none where the lyrics aren't synced.
+    pub timed: Vec<TimedLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimedLine {
+    /// Where in the song the line starts, in seconds.
+    pub seconds: f64,
+    pub text: String,
 }
 
 fn query(song: Song<'_>) -> Vec<(&'static str, String)> {
@@ -80,9 +94,9 @@ fn query(song: Song<'_>) -> Vec<(&'static str, String)> {
     query
 }
 
-/// The words in LRCLIB's answer: none for a 404, which is how it says it
+/// The lyrics in LRCLIB's answer: none for a 404, which is how it says it
 /// has no record.
-fn words_in_answer(status: u16, body: &[u8]) -> Result<Option<String>> {
+fn lyrics_in_answer(status: u16, body: &[u8]) -> Result<Option<Lyrics>> {
     if status == 404 {
         return Ok(None);
     }
@@ -93,7 +107,7 @@ fn words_in_answer(status: u16, body: &[u8]) -> Result<Option<String>> {
         return Err(Error::TooLarge);
     }
     let record: Record = serde_json::from_slice(body).map_err(Error::Unreadable)?;
-    Ok(record.words())
+    Ok(record.lyrics())
 }
 
 /// The fields of a lyrics record that matter here; the ones LRCLIB sends as
@@ -107,44 +121,76 @@ struct Record {
 }
 
 impl Record {
-    /// The plain lyrics, else the synced ones without their times, as the
-    /// server's synced lyrics are shown. None when there is no text.
-    fn words(self) -> Option<String> {
+    /// The plain lyrics, or the synced ones' text where there are no plain;
+    /// the synced lyrics' times go with either. None when there is no text.
+    fn lyrics(self) -> Option<Lyrics> {
         if self.instrumental {
             return None;
         }
-        let plain = self.plain_lyrics.filter(|text| !text.trim().is_empty());
-        let words = plain.or_else(|| self.synced_lyrics.as_deref().map(without_times));
-        words
-            .map(|text| text.trim().to_owned())
-            .filter(|text| !text.is_empty())
+        let timed = self
+            .synced_lyrics
+            .as_deref()
+            .map(parse_lrc)
+            .unwrap_or_default();
+        let plain = self.plain_lyrics.map(|text| text.trim().to_owned());
+        let text = match plain.filter(|text| !text.is_empty()) {
+            Some(text) => text,
+            None => timed
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        (!text.is_empty()).then_some(Lyrics { text, timed })
     }
 }
 
-/// LRC text as plain lines: each line loses the `[mm:ss.xx]` times in front
-/// of it.
-fn without_times(lrc: &str) -> String {
-    let lines: Vec<&str> = lrc.lines().map(without_leading_times).collect();
-    lines.join("\n")
+/// The lines of LRC text with their times. A line may start with several
+/// times, which repeats it, as a chorus is; a line of text-less times, and a
+/// tag such as `[ar:Artist]` or `[ti:Title]`, adds nothing. Sorted by time.
+fn parse_lrc(lrc: &str) -> Vec<TimedLine> {
+    let mut lines: Vec<TimedLine> = lrc.lines().flat_map(parse_lrc_line).collect();
+    lines.sort_by(|a, b| a.seconds.total_cmp(&b.seconds));
+    lines
 }
 
-fn without_leading_times(line: &str) -> &str {
+fn parse_lrc_line(line: &str) -> Vec<TimedLine> {
     let mut rest = line.trim_start();
-    while let Some(after_tag) = rest.strip_prefix('[').and_then(strip_time_tag) {
+    let mut times = Vec::new();
+    while let Some((time, after_tag)) = rest.strip_prefix('[').and_then(time_tag) {
+        times.push(time);
         rest = after_tag.trim_start();
     }
-    rest.trim_end()
+    let text = rest.trim_end();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    times
+        .into_iter()
+        .map(|seconds| TimedLine {
+            seconds,
+            text: text.to_owned(),
+        })
+        .collect()
 }
 
-/// What follows the `[` of a time such as `00:17.12]`, or `None` when the
-/// tag isn't a time.
-fn strip_time_tag(after_bracket: &str) -> Option<&str> {
+/// The seconds in a time tag such as `00:17.12]`, and what follows the tag;
+/// None when the tag isn't a time.
+fn time_tag(after_bracket: &str) -> Option<(f64, &str)> {
     let (tag, rest) = after_bracket.split_once(']')?;
-    let is_time = tag.contains(':')
-        && tag
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == ':' || c == '.');
-    is_time.then_some(rest)
+    let (minutes, seconds) = tag.split_once(':')?;
+    let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    if !digits(minutes) || !digits(whole) || !(fraction.is_empty() || digits(fraction)) {
+        return None;
+    }
+    let fraction = if fraction.is_empty() {
+        0.0
+    } else {
+        fraction.parse::<f64>().ok()? / 10f64.powi(fraction.len() as i32)
+    };
+    let time = minutes.parse::<f64>().ok()? * 60.0 + whole.parse::<f64>().ok()? + fraction;
+    Some((time, rest))
 }
 
 /// Sends `request` from the runtime's threads. Connecting checks the
@@ -208,58 +254,89 @@ impl From<reqwest::Error> for Error {
 mod tests {
     use super::*;
 
-    fn words(json: &str) -> Result<Option<String>> {
-        words_in_answer(200, json.as_bytes())
+    fn lyrics(json: &str) -> Result<Option<Lyrics>> {
+        lyrics_in_answer(200, json.as_bytes())
+    }
+
+    fn line(seconds: f64, text: &str) -> TimedLine {
+        TimedLine {
+            seconds,
+            text: text.to_owned(),
+        }
     }
 
     #[test]
-    fn the_plain_lyrics_are_the_words() {
+    fn the_plain_lyrics_are_the_text_and_the_synced_ones_give_the_times() {
         let json = r#"{"id":1,"instrumental":false,"plainLyrics":"First\nSecond\n","syncedLyrics":"[00:01.00] First\n[00:02.50] Second"}"#;
-        assert_eq!(words(json).unwrap().as_deref(), Some("First\nSecond"));
+        let found = lyrics(json).unwrap().unwrap();
+        assert_eq!(found.text, "First\nSecond");
+        assert_eq!(found.timed, [line(1.0, "First"), line(2.5, "Second")]);
     }
 
     #[test]
-    fn synced_lyrics_alone_lose_their_times() {
-        let json = r#"{"plainLyrics":null,"syncedLyrics":"[00:17.12] I feel your breath\n[01:02.5][01:30.00] Again\n[03:25.72] "}"#;
+    fn synced_lyrics_alone_give_their_text_without_times() {
+        let json =
+            r#"{"plainLyrics":null,"syncedLyrics":"[00:17.12] I feel your breath\n[03:25.72] "}"#;
+        let found = lyrics(json).unwrap().unwrap();
+        assert_eq!(found.text, "I feel your breath");
+        assert_eq!(found.timed, [line(17.12, "I feel your breath")]);
+    }
+
+    #[test]
+    fn plain_lyrics_alone_have_no_times() {
+        let found = lyrics(r#"{"plainLyrics":"La la","syncedLyrics":null}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.text.as_str(), found.timed.len()), ("La la", 0));
+    }
+
+    #[test]
+    fn a_line_with_several_times_is_repeated_and_the_lines_come_sorted() {
+        let lrc = "[01:30.00][00:10.5] Chorus\n[00:05] Verse\n[01:00.250]Bridge";
         assert_eq!(
-            words(json).unwrap().as_deref(),
-            Some("I feel your breath\nAgain")
+            parse_lrc(lrc),
+            [
+                line(5.0, "Verse"),
+                line(10.5, "Chorus"),
+                line(60.25, "Bridge"),
+                line(90.0, "Chorus"),
+            ]
         );
     }
 
     #[test]
-    fn a_line_that_starts_with_a_bracketed_word_keeps_it() {
-        let json = r#"{"syncedLyrics":"[00:05.00] [Chorus] Sing"}"#;
-        assert_eq!(words(json).unwrap().as_deref(), Some("[Chorus] Sing"));
+    fn tags_that_are_not_times_are_not_lines_and_stay_in_the_text() {
+        let lrc = "[ar:Artist]\n[ti:Title]\n[length: 03:25]\n[offset:+100]\n[00:05.00] [Chorus] Sing\n[x:1] [00:06]\nno time";
+        assert_eq!(parse_lrc(lrc), [line(5.0, "[Chorus] Sing")]);
     }
 
     #[test]
-    fn an_instrumental_or_an_empty_record_has_no_words() {
+    fn an_instrumental_or_an_empty_record_has_no_lyrics() {
         assert_eq!(
-            words(r#"{"instrumental":true,"plainLyrics":"la"}"#).unwrap(),
+            lyrics(r#"{"instrumental":true,"plainLyrics":"la"}"#).unwrap(),
             None
         );
         assert_eq!(
-            words(r#"{"plainLyrics":"  \n","syncedLyrics":null}"#).unwrap(),
+            lyrics(r#"{"plainLyrics":"  \n","syncedLyrics":null}"#).unwrap(),
             None
         );
-        assert_eq!(words("{}").unwrap(), None);
+        assert_eq!(lyrics("{}").unwrap(), None);
     }
 
     #[test]
     fn a_404_is_no_record_and_other_failures_are_errors() {
         let missing = br#"{"message":"Failed to find specified track","name":"TrackNotFound","statusCode":404}"#;
-        assert_eq!(words_in_answer(404, missing).unwrap(), None);
+        assert_eq!(lyrics_in_answer(404, missing).unwrap(), None);
         assert!(matches!(
-            words_in_answer(503, b""),
+            lyrics_in_answer(503, b""),
             Err(Error::Refused(503))
         ));
         assert!(matches!(
-            words_in_answer(200, b"<html>"),
+            lyrics_in_answer(200, b"<html>"),
             Err(Error::Unreadable(_))
         ));
         let huge = vec![b' '; ANSWER_BYTES + 1];
-        assert!(matches!(words_in_answer(200, &huge), Err(Error::TooLarge)));
+        assert!(matches!(lyrics_in_answer(200, &huge), Err(Error::TooLarge)));
     }
 
     #[test]

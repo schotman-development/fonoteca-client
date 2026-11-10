@@ -1519,7 +1519,7 @@ mod tests {
         LRCLIB_ASKED.fetch_add(1, Relaxed);
         if request.contains("track_name=Moonlit") && request.contains("duration=200") {
             json(
-                r#"{"id":1,"instrumental":false,"plainLyrics":"Moon on the water","syncedLyrics":"[00:01.00] Moon on the water"}"#,
+                r#"{"id":1,"instrumental":false,"plainLyrics":"Moon on the water\nUnder the stars","syncedLyrics":"[ar:Mara Lind]\n[00:01.00] Moon on the water\n[00:05.00] Under the stars"}"#,
             )
         } else {
             reply(
@@ -8603,17 +8603,28 @@ mod tests {
                 ))
                 .unwrap()
             };
+            let moonlit = "Moon on the water\nUnder the stars";
             play::testing::show_song(&ui, vec![by_mara("Moonlit")], 0);
             wait_for("the note", || ui.get_playing_lyrics_note() == "No lyrics for this song.").await;
             assert_eq!(LRCLIB_ASKED.load(Relaxed), 0, "off, so nothing is sent");
             ui.invoke_choose_look_up_lyrics(true);
+            ui.set_playing_position(0.0);
             play::testing::show_song(&ui, vec![by_mara("Moonlit")], 0);
-            wait_for("LRCLIB's words", || ui.get_playing_lyrics() == "Moon on the water").await;
+            wait_for("LRCLIB's words", || ui.get_playing_lyrics() == moonlit).await;
+            assert_eq!(ui.get_playing_lyric_lines().row_count(), 2, "the synced lines");
+            assert_eq!(ui.get_playing_lyric_current(), -1, "none sung before the first");
+            for (position, sung) in [(1.0, 0), (4.9, 0), (5.0, 1), (0.5, -1)] {
+                ui.set_playing_position(position);
+                lyrics::follow(&ui);
+                assert_eq!(ui.get_playing_lyric_current(), sung, "sung at {position}");
+            }
+            assert!(text_in_sight("Under the stars"), "each timed line is a button of its own");
             play::testing::show_song(&ui, vec![harbour()], 0);
             wait_for("the server's words first", || ui.get_playing_lyrics() == words).await;
             assert_eq!(LRCLIB_ASKED.load(Relaxed), 1, "the server had words");
             play::testing::show_song(&ui, vec![by_mara("Moonlit")], 0);
-            wait_for("the kept words", || ui.get_playing_lyrics() == "Moon on the water").await;
+            wait_for("the kept words", || ui.get_playing_lyrics() == moonlit).await;
+            assert_eq!(ui.get_playing_lyric_lines().row_count(), 2, "and their times");
             play::testing::show_song(&ui, vec![by_mara("Silent")], 0);
             wait_for("no words found", || ui.get_playing_lyrics_note() == "No lyrics for this song.").await;
             play::testing::show_song(&ui, vec![by_mara("Silent")], 0);
