@@ -19,7 +19,7 @@
         in
         {
           default = pkgs.callPackage ./package.nix {
-            src = pkgs.lib.fileset.toSource {
+            source = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions [
                 ./Cargo.toml

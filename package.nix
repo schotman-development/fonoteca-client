@@ -1,5 +1,5 @@
 # Written the way nixpkgs expects, so it can be sent there as it is. flake.nix
-# calls it with the working tree as `src`; the fetched source is for nixpkgs.
+# calls it with the working tree as `source`; the fetched source is for nixpkgs.
 {
   lib,
   rustPlatform,
@@ -17,7 +17,7 @@
   libxcursor,
   libxi,
   libxrender,
-  src ? fetchFromGitHub {
+  source ? fetchFromGitHub {
     owner = "schotman-development";
     repo = "fonoteca-client";
     rev = "1faed1ba9ffbf5a491e1bdbae9ebf670b142e650";
@@ -48,9 +48,9 @@ rustPlatform.buildRustPackage {
   pname = "fonoteca-client";
   version = "0.0.0";
 
-  inherit src;
+  src = source;
 
-  cargoLock.lockFile = "${src}/Cargo.lock";
+  cargoLock.lockFile = "${source}/Cargo.lock";
 
   cargoBuildFlags = [
     "-p"
