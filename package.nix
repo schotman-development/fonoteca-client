@@ -76,6 +76,7 @@ rustPlatform.buildRustPackage {
 
   postInstall = ''
     install -Dm644 packaging/linux/${appId}.desktop -t $out/share/applications
+    install -Dm644 packaging/linux/${appId}.metainfo.xml -t $out/share/metainfo
     mkdir -p $out/share/icons
     cp -r packaging/linux/hicolor $out/share/icons/
   '';
