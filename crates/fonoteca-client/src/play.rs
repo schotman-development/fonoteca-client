@@ -836,6 +836,7 @@ fn kind_icon(icons: &Icons, kind: OutputKind) -> SharedString {
         OutputKind::Usb => icons.get_usb(),
         OutputKind::Hdmi => icons.get_display(),
         OutputKind::Network(NetworkProtocol::Cast) => icons.get_cast(),
+        OutputKind::Network(NetworkProtocol::AirPlay) => icons.get_airplay(),
     }
 }
 

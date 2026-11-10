@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use network_output::{Device, Media, NetworkOutput, OutputState, OutputStatus, Protocol};
+use network_output::{Device, Media, NetworkOutput, OpenPcm, OutputState, OutputStatus, Protocol};
 use rust_cast::message_manager::{CastMessage, CastMessagePayload, MessageManager};
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
@@ -188,9 +188,15 @@ fn media_status(request_id: &str, player: &Player) -> (String, String) {
     )
 }
 
+/// A Cast device fetches the file itself and is never sent audio.
+fn no_pcm() -> OpenPcm {
+    Arc::new(|_, _| Err("A Cast device is not sent audio.".into()))
+}
+
 fn song(start: f64, paused: bool) -> Media {
     Media {
         url: "http://127.0.0.1:1/token".into(),
+        path: "unused".into(),
         content_type: "audio/flac".into(),
         start,
         paused,
@@ -216,7 +222,7 @@ fn wait_for(session: &dyn NetworkOutput, wanted: impl Fn(&OutputStatus) -> bool)
 #[test]
 fn a_session_loads_pauses_and_seeks_on_the_device_and_reports_what_it_answers() {
     let fake = FakeDevice::start();
-    let mut session = fake.device().connect();
+    let mut session = fake.device().connect(no_pcm());
     assert_eq!(session.status().unwrap().state, OutputState::Loading);
 
     session.load(song(12.0, false));
@@ -245,7 +251,7 @@ fn a_session_loads_pauses_and_seeks_on_the_device_and_reports_what_it_answers() 
 #[test]
 fn a_song_loaded_paused_waits_for_play_and_one_the_device_finished_says_so() {
     let fake = FakeDevice::start();
-    let mut session = fake.device().connect();
+    let mut session = fake.device().connect(no_pcm());
     session.load(song(0.0, true));
     wait_for(session.as_ref(), |s| {
         s.loads == 1 && s.state == OutputState::Paused
@@ -261,7 +267,7 @@ fn a_song_loaded_paused_waits_for_play_and_one_the_device_finished_says_so() {
 #[test]
 fn a_device_that_hangs_up_is_unavailable() {
     let fake = FakeDevice::start();
-    let mut session = fake.device().connect();
+    let mut session = fake.device().connect(no_pcm());
     session.load(song(0.0, false));
     wait_for(session.as_ref(), |s| s.state == OutputState::Playing);
     fake.hang_up.store(true, Ordering::SeqCst);
@@ -278,7 +284,7 @@ fn a_device_that_hangs_up_is_unavailable() {
 #[test]
 fn dropping_a_session_pauses_the_device() {
     let fake = FakeDevice::start();
-    let mut session = fake.device().connect();
+    let mut session = fake.device().connect(no_pcm());
     session.load(song(0.0, false));
     wait_for(session.as_ref(), |s| s.state == OutputState::Playing);
     drop(session);
@@ -300,7 +306,7 @@ fn a_device_that_is_not_there_is_unavailable() {
         address: Ipv4Addr::LOCALHOST,
         port: unused,
     }
-    .connect();
+    .connect(no_pcm());
     let deadline = Instant::now() + Duration::from_secs(10);
     while session.status().is_ok() {
         assert!(

@@ -2,8 +2,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use crate::cast;
-use crate::output::NetworkOutput;
+use crate::output::{NetworkOutput, OpenPcm};
+use crate::{airplay, cast};
 
 /// The protocols a device is played to over, each announced under its own
 /// mDNS service.
@@ -11,15 +11,19 @@ use crate::output::NetworkOutput;
 pub enum Protocol {
     /// Google's, of a Chromecast or a speaker with Chromecast built in.
     Cast,
+    /// Apple's, of the first generation: an AirPort Express, shairport-sync
+    /// and the speakers that carry it.
+    AirPlay,
 }
 
 impl Protocol {
-    pub const ALL: [Protocol; 1] = [Protocol::Cast];
+    pub const ALL: [Protocol; 2] = [Protocol::Cast, Protocol::AirPlay];
 
     /// The mDNS services a device of the protocol announces itself under.
     pub fn service_types(self) -> &'static [&'static str] {
         match self {
             Protocol::Cast => &["_googlecast._tcp.local."],
+            Protocol::AirPlay => &["_raop._tcp.local.", "_airplay._tcp.local."],
         }
     }
 
@@ -27,6 +31,7 @@ impl Protocol {
     pub fn name(self) -> &'static str {
         match self {
             Protocol::Cast => "Cast",
+            Protocol::AirPlay => "AirPlay",
         }
     }
 }
@@ -43,10 +48,12 @@ pub struct Device {
 }
 
 impl Device {
-    /// An output to play on, connecting to it in the background.
-    pub fn connect(&self) -> Box<dyn NetworkOutput> {
+    /// An output to play on, connecting to it in the background. `pcm` is
+    /// how a device that is sent the audio gets it.
+    pub fn connect(&self, pcm: OpenPcm) -> Box<dyn NetworkOutput> {
         match self.protocol {
             Protocol::Cast => Box::new(cast::CastSession::connect(self)),
+            Protocol::AirPlay => Box::new(airplay::AirPlaySession::connect(self, pcm)),
         }
     }
 }
@@ -60,13 +67,6 @@ pub(crate) struct Announcement<'a> {
 }
 
 impl Announcement<'_> {
-    /// None for an announcement a connection can't be made from.
-    pub(crate) fn device(&self, protocol: Protocol) -> Option<Device> {
-        match protocol {
-            Protocol::Cast => cast::device(self),
-        }
-    }
-
     /// The first IPv4 address: a link-local IPv6 one needs the interface it
     /// came in on.
     pub(crate) fn ipv4(&self) -> Option<Ipv4Addr> {

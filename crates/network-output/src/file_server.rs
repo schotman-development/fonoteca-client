@@ -65,17 +65,20 @@ impl FileServer {
         let hosted = Hosted {
             url: format!("http://{}/{}", self.address, served.token),
             content_type: served.content_type,
+            path: served.path.clone(),
         };
         *self.served.lock().unwrap() = Some(served);
         Ok(hosted)
     }
 }
 
-/// Where a device finds a file, and what it is told the file is.
+/// Where a device finds a file, and what it is told the file is; and the file
+/// itself, for a device that is sent its audio.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hosted {
     pub url: String,
     pub content_type: &'static str,
+    pub path: PathBuf,
 }
 
 impl Drop for FileServer {

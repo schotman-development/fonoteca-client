@@ -3,11 +3,21 @@
 //! [`NetworkOutput::status`] says what it last said.
 
 use std::fmt;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-/// A file the device is to fetch and play.
+/// Opens the file at a path as 44.1 kHz, 16-bit, stereo samples in the
+/// machine's byte order, from the given second: for a device that is sent the
+/// audio instead of fetching the file.
+pub type OpenPcm = Arc<dyn Fn(&Path, f64) -> Result<Box<dyn Read + Send>, String> + Send + Sync>;
+
+/// A file the device is to play: it fetches the file from `url`, or is sent
+/// what is decoded from the file at `path`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Media {
     pub url: String,
+    pub path: PathBuf,
     pub content_type: String,
     /// Seconds into the file to begin at.
     pub start: f64,

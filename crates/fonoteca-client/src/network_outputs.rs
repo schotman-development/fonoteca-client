@@ -3,12 +3,13 @@
 //! to, listed beside the sound devices, and played to through a
 //! [`NetworkPlayer`].
 
-use std::io;
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use network_output::{Device, Discovery, FileServer, Protocol};
+use network_output::{Device, Discovery, FileServer, OpenPcm, Protocol};
 use playback::{Fetch, NetworkProtocol, OutputDevice, OutputKind};
 
 #[cfg(target_os = "android")]
@@ -21,6 +22,8 @@ const ID_PREFIX: &str = "network:";
 /// What the menu says does not apply to a device on the network, which gets
 /// the file as it is.
 const NOT_APPLIED: &str = "No sound processing, leveling or bit-perfect";
+/// An AirPlay receiver is sent the track decoded, in the one format it takes.
+const AIRPLAY_FORMAT: &str = "sent as 44.1 kHz 16-bit";
 /// How long the search goes on after the menu was last opened, when no
 /// device is played to.
 const SEARCH_FOR: Duration = Duration::from_secs(60);
@@ -44,10 +47,14 @@ pub fn output_device(device: &Device) -> OutputDevice {
         key: id.clone(),
         id,
         name: device.name.clone(),
-        detail: NOT_APPLIED.to_owned(),
+        detail: match device.protocol {
+            Protocol::Cast => NOT_APPLIED.to_owned(),
+            Protocol::AirPlay => format!("{NOT_APPLIED}, {AIRPLAY_FORMAT}"),
+        },
         title: device.name.clone(),
         kind: OutputKind::Network(match device.protocol {
             Protocol::Cast => NetworkProtocol::Cast,
+            Protocol::AirPlay => NetworkProtocol::AirPlay,
         }),
         same_as: Vec::new(),
     }
@@ -132,7 +139,7 @@ impl Finder {
 pub fn player(device: &Device, fetch: Fetch, folder: PathBuf) -> io::Result<NetworkPlayer> {
     let files = FileServer::start(address_towards(device.address)?)?;
     let target = device.clone();
-    let connect: Connect = Box::new(move || target.connect());
+    let connect: Connect = Box::new(move || target.connect(decode_to_pcm()));
     Ok(NetworkPlayer::new(
         device.name.clone(),
         connect,
@@ -140,6 +147,15 @@ pub fn player(device: &Device, fetch: Fetch, folder: PathBuf) -> io::Result<Netw
         fetch,
         folder,
     ))
+}
+
+/// How a receiver that is sent its audio gets it: decoded by the player's own
+/// decoder.
+fn decode_to_pcm() -> OpenPcm {
+    Arc::new(|path: &Path, start| {
+        let pcm = playback::open_pcm(path, start)?;
+        Ok(Box::new(pcm) as Box<dyn Read + Send>)
+    })
 }
 
 /// This device's address on the network that reaches `device`, which is
@@ -181,6 +197,24 @@ mod tests {
         assert!(listed.detail.contains("bit-perfect"));
         assert!(is_network(&listed.id));
         assert!(!is_network("alsa:hw:CARD=PCH,DEV=0"));
+    }
+
+    #[test]
+    fn an_airplay_receiver_is_listed_with_its_own_kind_and_says_what_it_is_sent() {
+        let airplay = Device {
+            protocol: Protocol::AirPlay,
+            id: "A1B2C3D4E5F6".into(),
+            ..kitchen()
+        };
+        let listed = output_device(&airplay);
+        assert_eq!(
+            (listed.id.as_str(), listed.kind),
+            (
+                "network:airplay:A1B2C3D4E5F6",
+                OutputKind::Network(NetworkProtocol::AirPlay)
+            )
+        );
+        assert!(listed.detail.contains("bit-perfect") && listed.detail.contains("16-bit"));
     }
 
     #[test]

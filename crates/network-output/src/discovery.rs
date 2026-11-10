@@ -6,12 +6,17 @@ use std::sync::{Arc, Mutex};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 
+use crate::airplay::{self, Record};
+use crate::cast;
 use crate::device::{Announcement, Device, Protocol};
 
 #[derive(Default)]
 struct Found {
     /// By the announcement's full name, which is all a removal says.
     devices: BTreeMap<String, Device>,
+    /// What each announcement of an AirPlay receiver says, by full name: one
+    /// device is made of those that share its id.
+    receivers: BTreeMap<String, Record>,
     /// How many times `devices` changed.
     changes: u64,
 }
@@ -27,8 +32,28 @@ impl Found {
         self.changes += u64::from(changed);
     }
 
+    fn heard_receiver(&mut self, fullname: &str, record: Option<Record>) {
+        let changed = match record {
+            Some(record) => {
+                self.receivers.insert(fullname.to_owned(), record.clone()) != Some(record)
+            }
+            None => self.receivers.remove(fullname).is_some(),
+        };
+        self.changes += u64::from(changed);
+    }
+
     fn removed(&mut self, fullname: &str) {
-        self.changes += u64::from(self.devices.remove(fullname).is_some());
+        let gone =
+            self.devices.remove(fullname).is_some() | self.receivers.remove(fullname).is_some();
+        self.changes += u64::from(gone);
+    }
+
+    fn all(&self) -> Vec<Device> {
+        self.devices
+            .values()
+            .cloned()
+            .chain(airplay::merge(self.receivers.values()))
+            .collect()
     }
 }
 
@@ -62,14 +87,7 @@ impl Discovery {
 
     /// The devices found so far, by name.
     pub fn devices(&self) -> Vec<Device> {
-        let mut devices: Vec<Device> = self
-            .found
-            .lock()
-            .unwrap()
-            .devices
-            .values()
-            .cloned()
-            .collect();
+        let mut devices = self.found.lock().unwrap().all();
         devices.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
         devices
     }
@@ -98,7 +116,12 @@ fn apply(found: &mut Found, protocol: Protocol, event: ServiceEvent) {
                 addresses: service.addresses.iter().map(|ip| ip.to_ip_addr()).collect(),
                 text: &text,
             };
-            found.resolved(&service.fullname, announcement.device(protocol));
+            match protocol {
+                Protocol::Cast => found.resolved(&service.fullname, cast::device(&announcement)),
+                Protocol::AirPlay => {
+                    found.heard_receiver(&service.fullname, airplay::record(&announcement));
+                }
+            }
         }
         ServiceEvent::ServiceRemoved(_, fullname) => found.removed(&fullname),
         _ => {}

@@ -341,6 +341,7 @@ impl Worker {
                     self.loads += 1;
                     self.output.load(Media {
                         url: hosted.url,
+                        path: hosted.path,
                         content_type: hosted.content_type.to_owned(),
                         start: seconds,
                         paused: self.paused,
