@@ -18,3 +18,8 @@ ffmpeg-next = { version = "9", default-features = false, features = ["codec", "f
 alsa = "0.11"
 cpal = { version = "0.18", features = ["pipewire"] }
 pipewire = "0.10"
+
+# cpal keeps what a Mac's output is connected by to itself, and Core Audio
+# knows.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio = "0.3"

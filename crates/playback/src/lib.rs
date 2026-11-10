@@ -28,6 +28,8 @@ mod pipewire_default;
 mod silent;
 #[cfg(not(target_family = "wasm"))]
 mod switches;
+#[cfg(any(target_os = "macos", test))]
+mod transport;
 
 #[cfg(not(target_family = "wasm"))]
 use std::collections::VecDeque;

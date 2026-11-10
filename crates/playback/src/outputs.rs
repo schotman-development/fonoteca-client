@@ -256,12 +256,13 @@ fn key(output: &Output) -> String {
 /// What sort of output the system says it is: how it is connected first,
 /// since a Bluetooth or USB one is often a speaker or headphones too. ALSA
 /// and macOS say neither, and an output on a PCI card may be the speaker,
-/// the headphone jack or a screen's HDMI, so those stay unknown.
+/// the headphone jack or a screen's HDMI, so those stay unknown. A
+/// DisplayPort output is a screen too and shares HDMI's icon.
 fn kind_of(kind: DeviceType, interface: InterfaceType) -> OutputKind {
     match (kind, interface) {
         (_, InterfaceType::Bluetooth) => OutputKind::Bluetooth,
         (_, InterfaceType::Usb) => OutputKind::Usb,
-        (_, InterfaceType::Hdmi) => OutputKind::Hdmi,
+        (_, InterfaceType::Hdmi | InterfaceType::DisplayPort) => OutputKind::Hdmi,
         (DeviceType::Speaker, _) => OutputKind::Speaker,
         (DeviceType::Headphones, _) => OutputKind::Headphones,
         (DeviceType::Headset, _) => OutputKind::Headset,
@@ -595,6 +596,11 @@ mod tests {
             ),
             (DeviceType::Headset, InterfaceType::Usb, OutputKind::Usb),
             (DeviceType::Unknown, InterfaceType::Hdmi, OutputKind::Hdmi),
+            (
+                DeviceType::Unknown,
+                InterfaceType::DisplayPort,
+                OutputKind::Hdmi,
+            ),
             (
                 DeviceType::Speaker,
                 InterfaceType::BuiltIn,

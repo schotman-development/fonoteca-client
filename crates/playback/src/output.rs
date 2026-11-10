@@ -547,11 +547,14 @@ fn hosts() -> Vec<cpal::Host> {
 }
 
 fn found(device: &cpal::Device) -> Option<Found> {
+    let description = device
+        .description()
+        .unwrap_or_else(|_| DeviceDescriptionBuilder::new(name(device)).build());
+    #[cfg(target_os = "macos")]
+    let description = crate::transport::with_interface(device, description);
     Some(Found {
         id: device.id().ok()?.to_string(),
-        description: device
-            .description()
-            .unwrap_or_else(|_| DeviceDescriptionBuilder::new(name(device)).build()),
+        description,
         safe_speaker: format!("{device:?}").contains("BuiltinSpeakerSafe"),
     })
 }
