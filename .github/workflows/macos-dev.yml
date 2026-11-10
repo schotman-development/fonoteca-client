@@ -1,13 +1,15 @@
 # Builds the macOS app for Apple silicon from a dev/macos branch, for trying
-# it on a Mac before it reaches main. Signed ad hoc, not by a developer, so
-# macOS asks once in Privacy & Security before it opens. The build is the
-# run's artifact; the version stays as it is in Cargo.toml.
+# it on a Mac before it reaches main, and for the rolling release to call.
+# Signed ad hoc, not by a developer, so macOS asks once in Privacy & Security
+# before it opens. The build is the run's artifact; the version stays as it is
+# in Cargo.toml.
 name: macOS dev build
 
 on:
   push:
     branches: ["dev/macos*"]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read

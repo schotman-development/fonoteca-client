@@ -1,7 +1,8 @@
-# Builds the Android app on every push to main and puts it in the one `edge`
-# pre-release, replacing the build before. The version stays as it is in
-# Cargo.toml; each build is called <version>-dev.<run number>, which is also
-# the release's title, for Obtainium's "Use release title as version string".
+# Builds the Android and macOS apps on every push to main and puts them in
+# the one `edge` pre-release, replacing the build before. The version stays as
+# it is in Cargo.toml; each build is called <version>-dev.<run number>, which
+# is also the release's title, for Obtainium's "Use release title as version
+# string". A macOS build that fails leaves the Android one published.
 name: Rolling release
 
 on:
@@ -85,12 +86,39 @@ jobs:
           cd android
           ./gradlew --no-daemon assembleRelease -PappVersion="$APP_VERSION" -PappVersionCode="$GITHUB_RUN_NUMBER"
 
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-apk
+          path: android/build/outputs/apk/release/fonoteca-release.apk
+          retention-days: 1
+
+  macos:
+    uses: ./.github/workflows/macos-dev.yml
+
+  publish:
+    needs: [android, macos]
+    if: ${{ !cancelled() && needs.android.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name the build
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "APP_VERSION=$version-dev.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: builds
+
       - name: Replace the edge release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           apk="fonoteca-$APP_VERSION.apk"
-          cp android/build/outputs/apk/release/fonoteca-release.apk "$apk"
+          mv builds/android-apk/fonoteca-release.apk "$apk"
+          shopt -s nullglob
+          macos=(builds/Fonoteca-*-macos-arm64/*.zip)
           gh release delete edge --yes --cleanup-tag || true
-          gh release create edge "$apk" --prerelease --target "$GITHUB_SHA" --title "$APP_VERSION" \
+          gh release create edge "$apk" "${macos[@]}" --prerelease --target "$GITHUB_SHA" --title "$APP_VERSION" \
             --notes "A development build of $GITHUB_SHA, replaced on every push to main. Not a release."
