@@ -120,6 +120,16 @@ impl Active {
         }
     }
 
+    /// Lets the player go for the app to end: a device on the network is
+    /// told to pause before it returns, which dropping does not wait for.
+    pub fn close(self) {
+        match self {
+            Active::Local(_) => {}
+            #[cfg(not(target_family = "wasm"))]
+            Active::Network(player) => player.close(),
+        }
+    }
+
     pub fn status(&self) -> Status {
         match self {
             Active::Local(player) => player.status(),

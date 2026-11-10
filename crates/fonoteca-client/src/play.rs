@@ -157,7 +157,10 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
     // A player left behind would play on beside the next start's.
     ui.on_event_loop_ended({
         let playing = playing.clone();
-        move || playing.borrow_mut().player = None
+        move || {
+            let player = playing.borrow_mut().player.take();
+            player.into_iter().for_each(Active::close);
+        }
     });
     ui.on_play_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());

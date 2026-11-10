@@ -12,9 +12,9 @@
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use network_output::{FileServer, Media, NetworkOutput, OutputState};
@@ -22,6 +22,8 @@ use playback::{Fetch, RESTART_AFTER, Repeat, Status, Track};
 
 /// How often the device is asked how it is.
 const TICK: Duration = Duration::from_millis(250);
+/// How long closing a player waits for the device to be told to pause.
+const CLOSE_WAIT: Duration = Duration::from_secs(3);
 
 /// Connects to the device again, for playing on once it is back.
 pub type Connect = Box<dyn FnMut() -> Box<dyn NetworkOutput> + Send>;
@@ -41,7 +43,11 @@ enum Command {
 pub struct NetworkPlayer {
     status: Arc<Mutex<Status>>,
     commands: Sender<Command>,
-    worker: Option<JoinHandle<()>>,
+    /// Set once the player is let go, so that what the worker was busy
+    /// fetching is not loaded on the device.
+    cancelled: Arc<AtomicBool>,
+    /// Closes when the worker has ended.
+    ended: Receiver<()>,
 }
 
 impl NetworkPlayer {
@@ -57,6 +63,8 @@ impl NetworkPlayer {
     ) -> Self {
         let status = Arc::new(Mutex::new(Status::default()));
         let (commands, received) = channel();
+        let (ending, ended) = channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
         let worker = Worker {
             name,
             output: connect(),
@@ -73,15 +81,18 @@ impl NetworkPlayer {
             loads: 0,
             unavailable: false,
             status: status.clone(),
+            cancelled: cancelled.clone(),
+            _ending: ending,
         };
-        let worker = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("network-player".into())
             .spawn(move || worker.run(&received))
             .expect("a thread for the network player");
         NetworkPlayer {
             status,
             commands,
-            worker: Some(worker),
+            cancelled,
+            ended,
         }
     }
 
@@ -132,17 +143,29 @@ impl NetworkPlayer {
     }
 }
 
-impl Drop for NetworkPlayer {
-    /// Waits for the worker, which has the device told to pause as it goes.
-    fn drop(&mut self) {
-        // Closing the channel ends the worker.
-        let (closed, _) = channel();
-        self.commands = closed;
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            eprintln!("The network player ended in a panic.");
+impl NetworkPlayer {
+    /// Lets the player go and waits, for a moment, for the device to be told
+    /// to pause: for when the app ends, which would take the worker with it.
+    pub fn close(mut self) {
+        self.release();
+        if let Err(RecvTimeoutError::Timeout) = self.ended.recv_timeout(CLOSE_WAIT) {
+            eprintln!("A network output didn't answer to being paused.");
         }
+    }
+
+    fn release(&mut self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        // Closing the channel ends the worker.
+        self.commands = channel().0;
+    }
+}
+
+impl Drop for NetworkPlayer {
+    /// The worker ends and pauses the device on its own thread: it may be
+    /// in the middle of fetching a track, which the UI thread must not wait
+    /// for.
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
@@ -167,6 +190,9 @@ struct Worker {
     loads: u64,
     unavailable: bool,
     status: Arc<Mutex<Status>>,
+    cancelled: Arc<AtomicBool>,
+    /// Closes with the worker, which is what [`NetworkPlayer::close`] waits for.
+    _ending: Sender<()>,
 }
 
 impl Worker {
@@ -309,6 +335,8 @@ impl Worker {
     fn settle(&mut self) {
         while let Some((index, seconds)) = self.pending.take() {
             match self.host(index) {
+                // Fetched for a player that was let go meanwhile.
+                Ok(_) if self.cancelled.load(Ordering::SeqCst) => return,
                 Ok(hosted) => {
                     self.loads += 1;
                     self.output.load(Media {
@@ -561,6 +589,8 @@ mod tests {
                 loads: 0,
                 unavailable: false,
                 status: Arc::default(),
+                cancelled: Arc::default(),
+                _ending: channel().0,
             };
             Setup {
                 worker,
@@ -795,6 +825,54 @@ mod tests {
         assert_eq!(kept(&setup.folder), 1);
         setup.run(Command::Jump(1));
         assert_eq!(kept(&setup.folder), 1);
+    }
+
+    #[test]
+    fn letting_a_player_go_waits_for_no_track_being_fetched_and_loads_none() {
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("network-player-go-{}", std::process::id())));
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let source = scratch.0.join("source");
+        std::fs::write(&source, b"fLaC and then the music").unwrap();
+        let told = Arc::new(Mutex::new(Told::default()));
+        let (finish_fetch, fetching) = channel::<()>();
+        let (fetch_started, started) = channel();
+        let fetch: Fetch = Box::new(move |_, _| {
+            fetch_started.send(()).unwrap();
+            fetching.recv().unwrap();
+            playback::open_file(&source).map_err(|e| e.to_string())
+        });
+        let device = told.clone();
+        let connect: Connect = Box::new(move || Box::new(StandIn(device.clone())));
+        let player = NetworkPlayer::new(
+            "Kitchen".into(),
+            connect,
+            FileServer::start([127, 0, 0, 1].into()).unwrap(),
+            fetch,
+            scratch.0.clone(),
+        );
+        player.play(tracks(&["a"]), 0, 0.0);
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        let before = std::time::Instant::now();
+        drop(player);
+        assert!(
+            before.elapsed() < Duration::from_millis(500),
+            "dropping waited for the fetch"
+        );
+        finish_fetch.send(()).unwrap();
+        // The worker ends, and with it its hold on the device.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&told) > 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never ended"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            told.lock().unwrap().loads.is_empty(),
+            "a track fetched too late was loaded"
+        );
     }
 
     #[test]
