@@ -152,6 +152,37 @@ tells you. On Android the app needs no permission for this yet: Android asks for
 local network access only from apps that target Android 17, and this one will
 ask when it does.
 
+### AirPlay receivers
+
+The same menu lists AirPlay receivers, with the AirPlay icon. The app plays
+to the first generation of AirPlay (RAOP), unencrypted and without a
+password, which these receivers do:
+
+- shairport-sync and other open-source receivers (an AirPlay 2 receiver that
+  still takes the first generation counts),
+- third-party speakers and receivers with AirPlay 1 that ask for neither a
+  password nor a key.
+
+These are not listed, because they ask for what the app does not do yet:
+
+- a HomePod, an Apple TV (4th generation and later) and speakers that only
+  speak AirPlay 2, which pair with the sender first,
+- an AirPort Express and an Apple TV (3rd generation), which want audio
+  encrypted with an RSA key (a later step),
+- any receiver with a password, or that does not take Apple Lossless at
+  44.1 kHz, 16-bit, stereo.
+
+An AirPlay receiver cannot be told to fetch a file, so the app decodes each
+track and sends it, uncompressed, over the network in real time; the sound
+processing, volume leveling, bit-perfect output and gapless playback do not
+apply, as for Cast. Play, pause, seek, next and previous reach the receiver.
+Each session starts at a fixed, moderate volume, and the receiver's own volume
+control changes it from there. The sound reaches the receiver about two
+seconds before it is heard, as AirPlay does, so a pause or a seek takes that
+long to show in the app's position. If the receiver goes away, playback
+pauses and tells you. This is checked against a stand-in receiver and
+shairport-sync, not yet against Apple's own hardware.
+
 ## Servers
 
 Any server that speaks the [OpenSubsonic API](https://opensubsonic.netlify.app)
@@ -211,7 +242,7 @@ The repository holds these crates:
 | [`opensubsonic`](crates/opensubsonic) | An async client for the OpenSubsonic API, checked against the spec's own examples |
 | [`listenbrainz`](crates/listenbrainz) | A client for ListenBrainz: it checks a user token and reads back the user's top albums, artists and genres |
 | [`playback`](crates/playback) | The audio player: FFmpeg decodes, the sound device plays each track in its own format where it can |
-| [`network-output`](crates/network-output) | Finds devices on the network (Cast so far), plays a file to one, and serves the file to it |
+| [`network-output`](crates/network-output) | Finds devices on the network (Cast and AirPlay 1), plays a file or decoded audio to one, and serves the file to Cast devices |
 
 The Android app is built by [`.github/workflows/rolling-release.yml`](.github/workflows/rolling-release.yml)
 and packaged by Gradle in [`android/`](android).
