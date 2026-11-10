@@ -136,6 +136,20 @@ them, on Debian and Ubuntu), though not PipeWire itself running. Where it runs, 
 every output PipeWire has, Bluetooth included, beside ALSA's direct ones to
 the hardware; elsewhere, ALSA's outputs.
 
+### Chromecast and other Cast devices
+
+The sound device menu lists the Cast devices on your network (a Chromecast, or
+a speaker with Chromecast built in) beside the sound devices, with their own
+icon, while the menu is in use or one is played to. The app fetches each track
+itself and serves it to the device from a small web server on your own
+network, under an address only the device is told; the device never gets the
+music server's address or your sign-in. Play, pause, seek, next and previous
+reach the device. What the audio engine does does not: sound processing,
+volume leveling, bit-perfect output and the app's own transcoding do not apply,
+and tracks do not play gaplessly. The volume is the Cast device's own, and
+radio plays on this device. If the Cast device goes away, playback pauses and tells you. On Android the app asks for
+permission to find devices on your local network the first time the menu opens.
+
 ## Servers
 
 Any server that speaks the [OpenSubsonic API](https://opensubsonic.netlify.app)
@@ -195,6 +209,7 @@ The repository holds these crates:
 | [`opensubsonic`](crates/opensubsonic) | An async client for the OpenSubsonic API, checked against the spec's own examples |
 | [`listenbrainz`](crates/listenbrainz) | A client for ListenBrainz: it checks a user token and reads back the user's top albums, artists and genres |
 | [`playback`](crates/playback) | The audio player: FFmpeg decodes, the sound device plays each track in its own format where it can |
+| [`cast`](crates/cast) | Finds Cast devices on the network, plays a file to one, and serves the file to it |
 
 The Android app is built by [`.github/workflows/rolling-release.yml`](.github/workflows/rolling-release.yml)
 and packaged by Gradle in [`android/`](android).
