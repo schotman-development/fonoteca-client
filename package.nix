@@ -20,8 +20,8 @@
   src ? fetchFromGitHub {
     owner = "schotman-development";
     repo = "fonoteca-client";
-    rev = "77b024e9eb6df81bb0c5fa72a405f7e390bf1db4";
-    hash = "sha256-R6sjNyxPJnDiXWyp1GZWB0t7bR8OCRpeFxR02ay8IrA=";
+    rev = "1faed1ba9ffbf5a491e1bdbae9ebf670b142e650";
+    hash = "sha256-LyhBAElvcQ2pji3uMDUf1cyxKT0nanEuhXsWXK9YZDM=";
   },
 }:
 
