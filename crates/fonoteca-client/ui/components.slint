@@ -2,7 +2,7 @@
 // `link` names where it leads (such as "artist:<id>"), and the component hands
 // it to `open`.
 
-import { Button as StdButton, CheckBox as StdCheckBox, ComboBox, LineEdit, Palette, ScrollView, Switch as StdSwitch } from "std-widgets.slint";
+import { Palette, ScrollView } from "std-widgets.slint";
 
 // An accent color the settings offer, in the shade for a light scheme and the
 // one for a dark one, with the color of what is drawn on each.
@@ -3659,14 +3659,38 @@ component EqFieldLabel inherits Text {
     color: Theme.muted;
 }
 
-// Slint's controls, a finger's target high on a phone. Material 3 draws a
-// Button 40px high, a Switch 32px and a CheckBox 18px, and takes taps in
-// 48px around each, which Slint's Material style leaves out. A state leaves
-// the desktop's own heights alone.
-export component Button inherits StdButton {
-    states [
-        phone when Screen.phone: { min-height: Theme.phone-target; }
-    ]
+// The controls are drawn here rather than taken from Slint's styles, whose
+// accent the app can't change. A finger's target is high on a phone, as
+// Material 3 sets it: a Button 40px drawn in 48px, a Switch 32px and a
+// CheckBox 18px, which Slint's Material style takes taps for in less.
+export component Button inherits Pressable {
+    in property <string> text;
+    in property <bool> primary;
+    label: root.text;
+    ring-color: root.primary ? Theme.text : Theme.accent;
+    height: Screen.phone ? Theme.phone-target : 32px;
+    opacity: root.enabled ? 1 : 0.4;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        border-width: root.primary ? 0 : 1px;
+        border-color: Theme.text.transparentize(75%);
+        background: root.primary
+            ? (root.pressed ? Theme.accent.darker(20%) : root.hovered ? Theme.accent.darker(10%) : Theme.accent)
+            : (root.pressed ? Theme.text.transparentize(80%) : root.hovered ? Theme.hover : transparent);
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        Text {
+            accessible-role: none;
+            text: root.text;
+            font-size: Theme.detail;
+            color: root.primary ? Theme.on-accent : Theme.text;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
 }
 
 // A button drawn as its icon and its words alone, with neither border nor
@@ -3706,22 +3730,329 @@ export component GhostButton inherits Pressable {
     }
 }
 
-export component Switch inherits StdSwitch {
-    states [
-        phone when Screen.phone: { min-height: Theme.phone-target; }
-    ]
+// A row of a Switch or a CheckBox: its mark, then its words. A press turns it
+// over and says `toggled`.
+component Toggle inherits Pressable {
+    in-out property <bool> checked;
+    in property <string> text;
+    callback toggled();
+    label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    min-height: Screen.phone ? Theme.phone-target : 32px;
+    opacity: root.enabled ? 1 : 0.4;
+    clicked => {
+        root.checked = !root.checked;
+        root.toggled();
+    }
 }
 
-export component CheckBox inherits StdCheckBox {
-    states [
-        phone when Screen.phone: { min-height: Theme.phone-target; }
-    ]
+export component Switch inherits Toggle {
+    accessible-role: switch;
+    property <length> track-height: Screen.phone ? 32px : 20px;
+    property <length> knob: root.track-height - 8px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        Rectangle {
+            cross-axis-self-alignment: center;
+            width: root.track-height * 2;
+            height: root.track-height;
+            border-radius: self.height / 2;
+            border-width: 2px;
+            border-color: root.checked ? Theme.accent : Theme.muted;
+            background: root.checked ? Theme.accent : transparent;
+            Rectangle {
+                x: root.checked ? parent.width - self.width - 4px - 2px : 4px - 2px;
+                width: root.knob;
+                height: root.knob;
+                border-radius: self.height / 2;
+                background: root.checked ? Theme.on-accent : Theme.muted;
+                animate x { duration: 100ms; }
+            }
+        }
+        Text {
+            accessible-role: none;
+            text: root.text;
+            font-size: Theme.body;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
 }
 
-// A ComboBox as high on a phone as a text field, as Material's dropdown is
-// one, where Slint's Material style draws it 22px high.
-export component Choice inherits ComboBox {
-    min-height: Screen.phone ? 56px : 0px;
+export component CheckBox inherits Toggle {
+    accessible-role: checkbox;
+    property <length> box: Screen.phone ? 24px : 18px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        Rectangle {
+            cross-axis-self-alignment: center;
+            width: root.box;
+            height: root.box;
+            border-radius: 4px;
+            border-width: 2px;
+            border-color: root.checked ? Theme.accent : Theme.muted;
+            background: root.checked ? Theme.accent : transparent;
+            if root.checked: Path {
+                width: parent.width;
+                height: parent.height;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: "M5 12.5 L10 17.5 L19 7";
+                stroke: Theme.on-accent;
+                stroke-width: 3px;
+            }
+        }
+        Text {
+            accessible-role: none;
+            text: root.text;
+            font-size: Theme.body;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A row of a Choice's list: the words, a tick on the one in use, and a tint
+// on the one the keys or the pointer are on.
+component ChoiceRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> lit;
+    in property <bool> chosen;
+    callback clicked();
+    out property <bool> hovered: touch.has-hover;
+    border-radius: Theme.radius - 2px;
+    background: root.lit ? Theme.hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text {
+            accessible-role: none;
+            text: root.text;
+            font-size: Theme.body;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Path {
+            cross-axis-self-alignment: center;
+            width: 16px;
+            height: 16px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M5 12.5 L10 17.5 L19 7";
+            stroke: root.chosen ? Theme.accent : transparent;
+            stroke-width: 3px;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A choice from a list, which opens under it. Up and Down move along the
+// list, Return takes the entry, and Escape closes it.
+export component Choice inherits Pressable {
+    in property <[string]> model;
+    in-out property <int> current-index: -1;
+    out property <string> current-value: root.model[root.current-index];
+    callback selected(value: string);
+
+    property <length> row-height: (Screen.phone ? 48px : 32px) * Theme.zoom;
+    property <length> pad: 4px;
+    property <int> lit;
+
+    label: root.current-value;
+    accessible-role: combobox;
+    accessible-value: root.current-value;
+    accessible-expandable: true;
+    accessible-expanded: popup.is-open;
+    min-height: Screen.phone ? 56px : 32px;
+    opacity: root.enabled ? 1 : 0.4;
+    clicked => {
+        root.lit = max(0, root.current-index);
+        popup.show();
+    }
+
+    function step(by: int) {
+        root.lit = clamp(root.lit + by, 0, root.model.length - 1);
+    }
+    function pick(index: int) {
+        root.current-index = index;
+        root.selected(root.model[index]);
+        popup.close();
+    }
+
+    Rectangle {
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: popup.is-open || root.focused ? Theme.accent : Theme.text.transparentize(75%);
+        background: root.hovered ? Theme.hover : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text {
+            accessible-role: none;
+            text: root.current-value;
+            font-size: Theme.body;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Path {
+            cross-axis-self-alignment: center;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M5 9 L12 16 L19 9";
+            stroke: Theme.muted;
+            stroke-width: 2.5px;
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 2px;
+        width: root.width;
+        height: min(2 * root.pad + root.model.length * root.row-height, 320px);
+        close-policy: close-on-click-outside;
+        forward-focus: keys;
+
+        keys := FocusScope {
+            accessible-role: list;
+            accessible-label: root.label;
+            accessible-delegate-focus: root.lit;
+            key-pressed(event) => {
+                if event.text == Key.DownArrow {
+                    root.step(1);
+                    return accept;
+                }
+                if event.text == Key.UpArrow {
+                    root.step(-1);
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == Key.Space {
+                    root.pick(root.lit);
+                    return accept;
+                }
+                // Slint lets an Escape close the popup, but not Android's back.
+                if event.text == Key.Back {
+                    popup.close();
+                    return accept;
+                }
+                reject
+            }
+
+            Rectangle {
+                background: Palette.background;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.hover;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #0000004d;
+                scroll := Flickable {
+                    content-height: 2 * root.pad + root.model.length * root.row-height;
+                    VerticalLayout {
+                        padding: root.pad;
+                        for entry[i] in root.model: ChoiceRow {
+                            height: root.row-height;
+                            text: entry;
+                            lit: root.lit == i;
+                            chosen: root.current-index == i;
+                            // Scrolled into view when the keys light it.
+                            changed lit => {
+                                if self.lit {
+                                    scroll.content-y = clamp(scroll.content-y, scroll.height - self.y - self.height, -self.y);
+                                }
+                            }
+                            changed hovered => {
+                                if self.hovered {
+                                    root.lit = i;
+                                }
+                            }
+                            clicked => { root.pick(i); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A line of text to type in, with its words in the accent colour once
+// selected, and a border in it while it has the keys.
+export component LineEdit inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder-text;
+    in property <InputType> input-type: InputType.text;
+    in property <bool> enabled: true;
+    out property <bool> has-focus: input.has-focus;
+    callback accepted(text: string);
+    callback edited(text: string);
+    callback key-pressed(event: KeyEvent) -> EventResult;
+
+    forward-focus: input;
+    min-height: Screen.phone ? 56px : 32px;
+    border-radius: Theme.radius;
+    border-width: root.has-focus ? 2px : 1px;
+    border-color: root.has-focus ? Theme.accent : Theme.text.transparentize(75%);
+    background: Theme.hover;
+    opacity: root.enabled ? 1 : 0.5;
+    clip: true;
+    accessible-role: text-input;
+    accessible-enabled: root.enabled;
+    accessible-value: input.text;
+    accessible-placeholder-text: root.placeholder-text;
+    accessible-action-set-value(value) => {
+        input.text = value;
+        root.edited(value);
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+    if input.text == "": Text {
+        accessible-role: none;
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.placeholder-text;
+        font-size: Theme.body;
+        color: Theme.muted;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    input := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        single-line: true;
+        enabled: root.enabled;
+        input-type: root.input-type;
+        font-size: Theme.body;
+        color: Theme.text;
+        vertical-alignment: center;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.on-accent;
+        accessible-role: none;
+        accepted => { root.accepted(self.text); }
+        edited => { root.edited(self.text); }
+        key-pressed(event) => { root.key-pressed(event) }
+    }
 }
 
 // The accent colors to pick from, the system's first, as a row of discs in
@@ -3828,7 +4159,7 @@ export component EqBandRow inherits VerticalLayout {
             number: root.number;
             selected: root.selected;
         }
-        filter := ComboBox {
+        filter := Choice {
             horizontal-stretch: 1;
             accessible-label: root.name + " filter";
             // In the order sound.rs's `FILTERS` takes them.
