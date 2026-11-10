@@ -1,0 +1,21 @@
+# Checks on every push that package.nix still builds, the package flake.nix
+# gives `nix run` and nixpkgs would take.
+name: Nix package
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - run: nix build --print-build-logs .#default
