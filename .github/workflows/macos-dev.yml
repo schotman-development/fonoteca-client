@@ -1,7 +1,10 @@
 # Builds the macOS app for Apple silicon from a dev/macos branch, for trying
 # it on a Mac before it reaches main, and for the rolling release to call.
-# Signed ad hoc, not by a developer, so macOS asks once in Privacy & Security
-# before it opens. The build is the run's artifact; the version stays as it is
+# Signed with one fixed self-signed certificate (repo secrets), so the
+# designated requirement stays the same from build to build and the Keychain
+# items one build made are trusted by the next. Without the secrets (a fork, a
+# pull request) it signs ad hoc. Not notarized, so macOS asks once in Privacy &
+# Security before it opens. The build is the run's artifact; the version stays as it is
 # in Cargo.toml.
 name: macOS dev build
 
@@ -41,6 +44,9 @@ jobs:
         run: cargo build --locked --release -p fonoteca-client --bin fonoteca-client
 
       - name: Put it in an app
+        env:
+          SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
         run: |
           app="target/Fonoteca Dev.app"
           rm -rf "$app"
@@ -74,10 +80,32 @@ jobs:
           # Every library the binary names must be in the bundle.
           otool -L "$app/Contents/MacOS/fonoteca-client" | awk '/@rpath/ { sub("@rpath/", "", $1); print $1 }' |
             while read -r name; do test -f "$app/Contents/Frameworks/$name" || { echo "missing $name"; exit 1; }; done
-          codesign --force --sign - "$app"/Contents/Frameworks/*.dylib
-          codesign --force --sign - "$app"
+          identity=-
+          if [ -n "$SIGNING_P12" ]; then
+            keychain="$RUNNER_TEMP/signing.keychain-db"
+            keychain_password=$(openssl rand -hex 16)
+            echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security set-keychain-settings -lut 3600 "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            echo "$SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+            security import "$RUNNER_TEMP/signing.p12" -P "$SIGNING_P12_PASSWORD" -k "$keychain" -T /usr/bin/codesign
+            rm "$RUNNER_TEMP/signing.p12"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+            identity=$(security find-identity -p codesigning "$keychain" | awk '/^ +1\)/ { print $2 }')
+            test -n "$identity" || { echo "no signing identity in the certificate"; exit 1; }
+          fi
+          echo "Signing with identity $identity"
+          codesign --force --sign "$identity" "$app"/Contents/Frameworks/*.dylib
+          codesign --force --sign "$identity" "$app"
           codesign --verify --strict "$app"
+          codesign -d -r- "$app"
           ditto -c -k --keepParent "$app" "target/Fonoteca-$APP_VERSION-macos-arm64.zip"
+
+      - name: Delete the signing keychain
+        if: always()
+        run: test -z "$SIGNING_KEYCHAIN" || security delete-keychain "$SIGNING_KEYCHAIN"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

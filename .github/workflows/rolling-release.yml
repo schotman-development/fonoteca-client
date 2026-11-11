@@ -95,6 +95,7 @@ jobs:
 
   macos:
     uses: ./.github/workflows/macos-dev.yml
+    secrets: inherit
 
   # In Debian 12, whose glibc 2.36 the AppImage then needs at least.
   linux:
