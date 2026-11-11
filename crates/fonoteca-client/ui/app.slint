@@ -1,3 +1,4 @@
+import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
 import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
@@ -1164,6 +1165,8 @@ component OverviewControls inherits VerticalLayout {
 
 export component AppWindow inherits Window {
     title: "Fonoteca";
+    // The system's own sans font differs per OS (Helvetica on a Mac).
+    default-font-family: "Inter";
     icon: @image-url("../../../packaging/linux/hicolor/128x128/apps/io.github.schotman_development.fonoteca.png");
     preferred-width: 1100px;
     preferred-height: 760px;

@@ -1,12 +1,13 @@
 # Font notice
 
-The browser build carries these fonts for the scripts and emoji that Inter,
-the one font Slint has in a browser, lacks. Native builds use the system's
-fonts and leave these out. Each file is unchanged from its source; only the
-emoji font's file name is changed.
+Every build carries Inter, so the text looks the same on each system. The
+browser build also carries the other fonts, for the scripts and emoji that
+Inter lacks; native builds use the system's fonts for these. Each file is
+unchanged from its source; only the emoji font's file name is changed.
 
 | File | Font, version | Source |
 | --- | --- | --- |
+| `Inter-VariableFont.ttf` | Inter, as bundled in Slint 1.18.1 | `i-slint-common` 1.18.1, `sharedfontique/Inter-VariableFont.ttf` (copyright 2020 The Inter Project Authors, OFL-1.1) |
 | `NotoSansJP-Regular.otf` | Noto Sans JP 2.004 | [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk), tag `Sans2.004`, `Sans/SubsetOTF/JP/NotoSansJP-Regular.otf` |
 | `NotoSansKR-Regular.otf` | Noto Sans KR 2.004 | [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk), tag `Sans2.004`, `Sans/SubsetOTF/KR/NotoSansKR-Regular.otf` |
 | `NotoSansArabic-Regular.ttf` | Noto Sans Arabic 2.013 | [notofonts/arabic](https://github.com/notofonts/arabic), release `NotoSansArabic-v2.013`, `NotoSansArabic/hinted/ttf/NotoSansArabic-Regular.ttf` in its zip |
