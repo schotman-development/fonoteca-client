@@ -1556,6 +1556,14 @@ export struct TrackLine {
     artists: [Name],
     link: string,
     downloaded: bool,
+    // Whether its song was kept on its own, not only with an album or a
+    // playlist.
+    downloaded-alone: bool,
+    // Whether the library lacks its song: greyed, and it can't be played,
+    // selected or opened.
+    unavailable: bool,
+    // The song's place among the songs the table lists, before sorting.
+    position: int,
 }
 
 // One item of a list, such as a user: its name, a link to its page when it
@@ -1803,10 +1811,16 @@ export component TrackMenu inherits MoreMenu {
     in property <bool> playable;
     in property <bool> selectable: true;
     in property <bool> downloadable;
+    // Whether it downloads and takes back the download of a song, which a
+    // playlist's table offers, and whether it takes the song off the
+    // playlist.
+    in property <bool> downloadable-songs;
+    in property <bool> removable;
     callback open(link: string);
     callback toggle-love();
     callback select(range: bool);
     callback add-to-playlist(id: string);
+    callback remove();
     callback tag();
     callback play();
     // Puts the song in the queue, to play next or at the end.
@@ -1834,8 +1848,17 @@ export component TrackMenu inherits MoreMenu {
         if root.playlists.length > 0 {
             self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlists });
         }
+        if root.removable {
+            self.entries.push({ id: "remove", label: "Remove from playlist", icon: Icons.unlist });
+        }
         if root.taggable {
             self.entries.push({ id: "tags", label: "Tags", icon: Icons.tag });
+        }
+        if root.downloadable-songs && !root.line.folder && !root.line.downloaded {
+            self.entries.push({ id: "download", label: "Download", icon: Icons.download });
+        }
+        if root.downloadable-songs && root.line.downloaded-alone {
+            self.entries.push({ id: "remove-download", label: "Remove download", icon: Icons.trash });
         }
         if root.line.folder && root.downloadable && root.line.downloaded {
             self.entries.push({ id: "remove-download", label: "Remove download", icon: Icons.trash });
@@ -1859,6 +1882,8 @@ export component TrackMenu inherits MoreMenu {
             root.open(choice != "" ? choice : root.line.artists[0].link);
         } else if id == "playlist" {
             root.add-to-playlist(choice);
+        } else if id == "remove" {
+            root.remove();
         } else if id == "tags" {
             root.tag();
         } else if id == "download" {
@@ -1891,11 +1916,16 @@ export component TrackLineRow inherits Rectangle {
     // Whether its menu plays the songs from it on, and downloads a folder.
     in property <bool> playable;
     in property <bool> downloadable;
+    // The same for a song of a playlist's table, which its menu can also
+    // take off the playlist.
+    in property <bool> downloadable-songs;
+    in property <bool> removable;
     callback open(link: string);
     callback toggle-love();
     // With Shift held, everything from the row last picked to this one.
     callback select(range: bool);
     callback add-to-playlist(id: string);
+    callback remove();
     callback tag();
     callback play();
     // Puts its song in the queue, to play next or at the end.
@@ -1911,6 +1941,7 @@ export component TrackLineRow inherits Rectangle {
     accessible-label: root.line.title;
     accessible-item-selectable: root.selecting;
     accessible-item-selected: root.line.selected;
+    opacity: root.line.unavailable ? 0.45 : 1;
 
     if root.line.selected: SelectedRowOutline {
         joined-above: root.joined-above;
@@ -1919,6 +1950,7 @@ export component TrackLineRow inherits Rectangle {
 
     // The row's content sits in it, so the row stays hovered over its links.
     touch := TouchArea {
+        enabled: !root.line.unavailable;
         mouse-cursor: root.selecting ? MouseCursor.pointer : MouseCursor.default;
         clicked => {
             if root.selecting && !hold.done {
@@ -1953,6 +1985,8 @@ export component TrackLineRow inherits Rectangle {
                 if column.heart: IconButton {
                     y: (parent.height - self.height) / 2;
                     width: Screen.phone ? 40px : 32px;
+                    visible: !root.line.unavailable;
+                    enabled: !root.line.unavailable;
                     icon: Icons.heart;
                     filled: root.line.loved;
                     color: root.line.loved ? Theme.accent : Theme.muted;
@@ -1991,15 +2025,20 @@ export component TrackLineRow inherits Rectangle {
             }
             TrackMenu {
                 cross-axis-self-alignment: center;
+                // Hidden, not left out, so the columns keep their places.
+                visible: !root.line.unavailable;
                 line: root.line;
                 playlists: root.playlists;
                 taggable: root.taggable;
                 playable: root.playable;
                 downloadable: root.downloadable;
+                downloadable-songs: root.downloadable-songs;
+                removable: root.removable;
                 open(link) => { root.open(link); }
                 toggle-love => { root.toggle-love(); }
                 select(range) => { root.select(range); }
                 add-to-playlist(id) => { root.add-to-playlist(id); }
+                remove => { root.remove(); }
                 tag => { root.tag(); }
                 play => { root.play(); }
                 queue(next) => { root.queue(next); }

@@ -301,6 +301,9 @@ pub struct Browser {
     piece_table: Table,
     /// The same for the folders' tables, of `COLUMNS` too.
     entry_table: Table,
+    /// And for a playlist's, one for all playlists. Not sorted, it lists the
+    /// songs in the playlist's order.
+    playlist_table: Table,
     /// The filter of the albums or artists page on screen, and what it
     /// shows, as indexes into `library` or `artists` in the page's order.
     filter: String,
@@ -630,15 +633,24 @@ pub fn show_downloads(ui: &AppWindow, browser: &Shared) {
             b.tiles.set_row_data(row, tile);
         }
     }
+    let page = ui.get_page();
+    if page == Page::Compositions {
+        return;
+    }
+    let (songs, order) = listed(&b, page);
     for row in 0..b.lines.row_count() {
-        let Some(mut line) = b.lines.row_data(row).filter(|line| line.folder) else {
+        let Some(song) = order.get(row).and_then(|&song| songs.get(song)) else {
             continue;
         };
-        let kept = b.downloads.is_kept(&line.link);
-        if line.downloaded != kept {
-            line.downloaded = kept;
-            b.lines.set_row_data(row, line);
-        }
+        let (downloaded, downloaded_alone) = kept_state(&b, song);
+        let Some(mut line) = (b.lines.row_data(row)).filter(|line| {
+            (line.downloaded, line.downloaded_alone) != (downloaded, downloaded_alone)
+        }) else {
+            continue;
+        };
+        line.downloaded = downloaded;
+        line.downloaded_alone = downloaded_alone;
+        b.lines.set_row_data(row, line);
     }
 }
 
@@ -670,24 +682,38 @@ pub fn told_play(browser: &Shared) {
 }
 
 /// The songs on screen in their rows' order, and where the `row`th row is
-/// among them: an album's, a playlist's (ListenBrainz's without the songs the
-/// library lacks) or an artist's top songs, or the
-/// songs of the tracks, folders or a tag's page as filtered and sorted,
-/// without the folders between them.
+/// among them: an album's or an artist's top songs, or the songs of a table
+/// (the tracks, folders, a tag's or a playlist's page) as filtered and
+/// sorted. Without the folders between them, and the songs ListenBrainz
+/// lists that the library lacks.
 pub fn songs(browser: &Shared, page: Page, row: usize) -> (Vec<Child>, usize) {
     let b = browser.borrow();
-    if !matches!(page, Page::Tracks | Page::Folders | Page::Tag) {
-        let is_playable = |song: &&Child| !created_for::is_missing(song);
-        let before = b.songs.iter().take(row).filter(is_playable).count();
-        return (
-            b.songs.iter().filter(is_playable).cloned().collect(),
-            before,
-        );
-    }
-    let (songs, order) = listed(&b, page);
-    let rows = order.iter().map(|&song| &songs[song]);
-    let start = rows.clone().take(row).filter(|song| !song.is_dir).count();
-    (rows.filter(|song| !song.is_dir).cloned().collect(), start)
+    let is_playable = |song: &Child| !song.is_dir && !created_for::is_missing(song);
+    let shown: Vec<&Child> = if is_song_table(page) {
+        let (songs, order) = listed(&b, page);
+        order.iter().map(|&song| &songs[song]).collect()
+    } else {
+        b.songs.iter().collect()
+    };
+    let before = shown
+        .iter()
+        .take(row)
+        .filter(|song| is_playable(song))
+        .count();
+    let playable = (shown.into_iter())
+        .filter(|song| is_playable(song))
+        .cloned()
+        .collect();
+    (playable, before)
+}
+
+/// Whether `page` is a table of songs, of `COLUMNS`, rather than rows of an
+/// album's style.
+fn is_song_table(page: Page) -> bool {
+    matches!(
+        page,
+        Page::Tracks | Page::Folders | Page::Tag | Page::Playlist
+    )
 }
 
 /// Fetches a cover `logical` pixels wide and hands it to `done`.
@@ -1268,9 +1294,11 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
     let mut b = browser.borrow_mut();
     let links = table_links(&b, page);
     let lines = b.lines.clone();
-    for (row, selected) in pick(&mut b, &links, row, range) {
+    let picked = pick(&mut b, &links, row, range);
+    created_for::forget_missing(&mut b);
+    for (row, selected) in picked {
         if let Some(mut line) = lines.row_data(row) {
-            line.selected = selected;
+            line.selected = selected && !line.unavailable;
             lines.set_row_data(row, line);
         }
     }
@@ -1535,7 +1563,7 @@ fn in_page_order(b: &Browser, page: Page) -> Vec<String> {
 fn selectable_links(b: &Browser, page: Page) -> Vec<String> {
     if matches!(
         page,
-        Page::Tracks | Page::Compositions | Page::Folders | Page::Tag
+        Page::Tracks | Page::Compositions | Page::Folders | Page::Tag | Page::Playlist
     ) {
         return table_links(b, page);
     }
@@ -3009,6 +3037,23 @@ impl Table {
         (0..self.shown.len()).filter(|&c| self.shown[c]).collect()
     }
 
+    /// What a click on the heading of `column` does: sorts by it, in the
+    /// direction its values are first wanted in (`descending_first`), or
+    /// turns the order around when it is sorted by it already. Where the
+    /// table has an order of its own (`has_own_order`), a click after the
+    /// turn goes back to that.
+    fn click(&mut self, column: usize, descending_first: bool, has_own_order: bool) {
+        if self.sort != Some(column) {
+            self.sort = Some(column);
+            self.descending = descending_first;
+        } else if has_own_order && self.descending != descending_first {
+            self.sort = None;
+            self.descending = false;
+        } else {
+            self.descending = !self.descending;
+        }
+    }
+
     /// The table of its first `count` columns only.
     fn first(&self, count: usize) -> Table {
         Table {
@@ -3035,22 +3080,25 @@ fn offered_piece_table(table: &Table, counts_plays: bool) -> Table {
     }
 }
 
-/// The songs a table of `COLUMNS` on `page` lists and their order there: the
-/// folder's or tag's entries on the folders or a tag's page, else every song.
+/// The songs a table of `COLUMNS` on `page` lists and their order there, as
+/// indexes into them: the folder's or tag's entries on the folders or a tag's
+/// page, a playlist's songs on its page (an index is a song's place in the
+/// playlist), else every song.
 fn listed(b: &Browser, page: Page) -> (&[Child], &[usize]) {
-    if matches!(page, Page::Folders | Page::Tag) {
-        (&b.entries, &b.view)
-    } else {
-        (&b.song_list, &b.song_view)
+    match page {
+        Page::Folders | Page::Tag => (&b.entries, &b.view),
+        Page::Playlist => (&b.songs, &b.view),
+        _ => (&b.song_list, &b.song_view),
     }
 }
 
-/// The table of `COLUMNS` on `page`: the folders', else the tracks page's.
+/// The table of `COLUMNS` on `page`: the folders', the playlists', else the
+/// tracks page's.
 fn song_table(b: &Browser, page: Page) -> &Table {
-    if page == Page::Folders {
-        &b.entry_table
-    } else {
-        &b.track_table
+    match page {
+        Page::Folders => &b.entry_table,
+        Page::Playlist => &b.playlist_table,
+        _ => &b.track_table,
     }
 }
 
@@ -3059,6 +3107,7 @@ fn table_mut(b: &mut Browser, page: Page) -> &mut Table {
     match page {
         Page::Compositions => &mut b.piece_table,
         Page::Folders => &mut b.entry_table,
+        Page::Playlist => &mut b.playlist_table,
         _ => &mut b.track_table,
     }
 }
@@ -3304,9 +3353,15 @@ fn set_columns<T>(ui: &AppWindow, all: &[Column<T>], table: &Table) {
     ui.set_track_choices(ModelRc::new(VecModel::from(choices)));
 }
 
-/// The tracks table's row for a song, with its cover if it was fetched
-/// before at `size`, and whether it is selected.
-fn track_line(b: &Browser, song: &Child, columns: &[usize], size: u32) -> TrackLine {
+/// The tracks table's row for the `position`th of its songs, with its cover
+/// if it was fetched before at `size`, and whether it is selected.
+fn track_line(
+    b: &Browser,
+    song: &Child,
+    position: usize,
+    columns: &[usize],
+    size: u32,
+) -> TrackLine {
     let cells: Vec<ModelRc<Name>> = columns
         .iter()
         .map(|&c| names((COLUMNS[c].cell)(song)))
@@ -3316,6 +3371,7 @@ fn track_line(b: &Browser, song: &Child, columns: &[usize], size: u32) -> TrackL
         .as_ref()
         .and_then(|cover| b.pictures.get(&(cover.clone(), size)).cloned());
     let link = song_link(song);
+    let (downloaded, downloaded_alone) = kept_state(b, song);
     let album = album_name(song).filter(|album| !album.link.is_empty());
     let artists: Vec<Name> = song_names(song)
         .into_iter()
@@ -3327,12 +3383,28 @@ fn track_line(b: &Browser, song: &Child, columns: &[usize], size: u32) -> TrackL
         loved: song.starred.is_some(),
         cover: cover.unwrap_or_default(),
         folder: song.is_dir,
-        selected: b.selected.contains(&link),
+        selected: b.selected.contains(&link) && !created_for::is_missing(song),
         album: album.unwrap_or_default(),
         artists: names(artists),
-        downloaded: song.is_dir && b.downloads.is_kept(&link),
+        downloaded,
+        downloaded_alone,
+        unavailable: created_for::is_missing(song),
+        position: position as i32,
         link: link.into(),
     }
+}
+
+/// Whether a song, or a folder, is kept on this device, and whether the song
+/// was asked for on its own.
+fn kept_state(b: &Browser, song: &Child) -> (bool, bool) {
+    if song.is_dir {
+        return (b.downloads.is_kept(&song_link(song)), false);
+    }
+    let downloaded = b.downloads.local(&song.id).is_some();
+    (
+        downloaded,
+        downloaded && b.downloads.is_kept_alone(&song.id),
+    )
 }
 
 /// The compositions table's row for a composition, as `track_line` for a
@@ -3364,6 +3436,7 @@ fn piece_line(b: &Browser, piece: &Composition, columns: &[usize], size: u32) ->
         artists: names(composers),
         downloaded: false,
         link: link.into(),
+        ..TrackLine::default()
     }
 }
 
@@ -3640,10 +3713,10 @@ fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
         if !kept {
             clear_lines(ui, &mut b);
         }
-        if matches!(page, Page::Folders | Page::Tag) {
-            b.view = view;
-        } else {
+        if page == Page::Tracks {
             b.song_view = view;
+        } else {
+            b.view = view;
         }
         shown
     };
@@ -3661,7 +3734,8 @@ fn show_lines(ui: &AppWindow, browser: &Shared, upto: usize) {
         let start = b.lines.row_count().min(end);
         let columns = song_table(&b, page).shown();
         for &song in &order[start..end] {
-            b.lines.push(track_line(&b, &songs[song], &columns, size));
+            b.lines
+                .push(track_line(&b, &songs[song], song, &columns, size));
         }
         // The folder's entries arrive at once, the songs a part at a time.
         let tracks = page == Page::Tracks;
@@ -3728,25 +3802,23 @@ fn last_if_empty<T>(a: &Option<T>, b: &Option<T>, order: impl Fn(&T, &T) -> Orde
     }
 }
 
-/// Sorts the tracks or compositions table by its `index`th column shown, or
-/// turns the order around when it already is.
+/// Sorts the tracks, compositions or playlist table by its `index`th column
+/// shown, or turns the order around when it already is; a playlist's, a third
+/// click goes back to the playlist's order.
 fn sort_tracks(ui: &AppWindow, browser: &Shared, index: usize) {
-    let pieces = ui.get_page() == Page::Compositions;
+    let page = ui.get_page();
+    let pieces = page == Page::Compositions;
     {
         let mut b = browser.borrow_mut();
-        let table = table_mut(&mut b, ui.get_page());
+        let table = table_mut(&mut b, page);
         let Some(&column) = table.shown().get(index) else {
             return;
         };
-        if table.sort == Some(column) {
-            table.descending = !table.descending;
-        } else {
-            table.sort = Some(column);
-            table.descending = match pieces {
-                true => PIECE_COLUMNS[column].is_count,
-                false => COLUMNS[column].is_count,
-            };
-        }
+        let descending_first = match pieces {
+            true => PIECE_COLUMNS[column].is_count,
+            false => COLUMNS[column].is_count,
+        };
+        table.click(column, descending_first, page == Page::Playlist);
         // From the top, where the page scrolls to.
         clear_lines(ui, &mut b);
     }
@@ -3785,7 +3857,7 @@ fn toggle_column(ui: &AppWindow, browser: &Shared, index: usize) {
             let (songs, order) = listed(&b, page);
             order[..rows]
                 .iter()
-                .map(|&song| track_line(&b, &songs[song], &columns, size))
+                .map(|&song| track_line(&b, &songs[song], song, &columns, size))
                 .collect()
         };
         b.lines.set_vec(lines);
@@ -3819,6 +3891,12 @@ fn load_prefs(ui: &AppWindow, browser: &Shared) {
         &prefs.folder_sort,
         prefs.folder_descending,
     );
+    b.playlist_table = saved_table(
+        COLUMNS,
+        &prefs.playlist_columns,
+        &prefs.playlist_sort,
+        prefs.playlist_descending,
+    );
     // Each Sort menu has the most played last.
     ui.set_album_sort(prefs.album_sort.clamp(0, MOST_PLAYED_ALBUMS));
     ui.set_album_descending(prefs.album_descending);
@@ -3851,13 +3929,14 @@ fn saved_table<T>(
     }
 }
 
-/// Saves the order of the albums, artists, composers, tracks, compositions
-/// and folders and the tables' columns on this device.
+/// Saves the order of the albums, artists, composers, tracks, compositions,
+/// folders and playlists and the tables' columns on this device.
 fn save_prefs(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let (track_columns, track_sort) = titles(COLUMNS, &b.track_table);
     let (composition_columns, composition_sort) = titles(PIECE_COLUMNS, &b.piece_table);
     let (folder_columns, folder_sort) = titles(COLUMNS, &b.entry_table);
+    let (playlist_columns, playlist_sort) = titles(COLUMNS, &b.playlist_table);
     prefs::save(&prefs::Prefs {
         album_sort: ui.get_album_sort(),
         album_descending: ui.get_album_descending(),
@@ -3874,6 +3953,9 @@ fn save_prefs(ui: &AppWindow, browser: &Shared) {
         folder_columns: Some(folder_columns),
         folder_sort,
         folder_descending: b.entry_table.descending,
+        playlist_columns: Some(playlist_columns),
+        playlist_sort,
+        playlist_descending: b.playlist_table.descending,
         radio_languages: b.languages.clone(),
         ..prefs::load()
     });
@@ -3989,6 +4071,10 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
     ui.set_page_problem("".into());
     if ui.get_page() == Page::Home {
         return home(ui, browser);
+    }
+    if ui.get_page() == Page::Playlist && ui.get_more_tiles() {
+        let shown = browser.borrow().lines.row_count();
+        return show_lines(ui, browser, shown + TILES_AT_ONCE);
     }
     if ui.get_created_for() {
         return created_for::resume(ui, browser);
@@ -4605,6 +4691,16 @@ fn song_track(song: &Child) -> Track {
     }
 }
 
+/// Draws the songs of the playlist on screen, `songs` of the browser, as its
+/// table's rows anew, in the order and columns picked. Each row keeps its
+/// song's place in the playlist, which removing a song and its download go
+/// by.
+pub(crate) fn show_playlist_rows(ui: &AppWindow, browser: &Shared) {
+    clear_lines(ui, &mut browser.borrow_mut());
+    show_columns(ui, browser);
+    arrange_tracks(ui, browser);
+}
+
 /// Puts a playlist on its page, in place of the tracks it showed.
 fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) {
     let songs = playlist.entry;
@@ -4621,20 +4717,12 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     header_image(ui, browser, playlist.cover_art);
     playlist_moves(ui, &browser.borrow());
 
-    // As an album: the movements of a whole work are the work's row and its
-    // movements; every other song is a row of its own. A row is still one
-    // song, so a row's number is its song's in what plays, loves and removes.
-    let tracks: Vec<Track> = whole_works(&songs)
-        .into_iter()
-        .flat_map(|run| match run {
-            [song] => vec![song_track(song)],
-            _ => work_rows(run),
-        })
-        .collect();
-    let mut b = browser.borrow_mut();
-    show_songs(&mut b, songs, tracks);
-    b.playlist = Some(playlist_shown);
-    drop(b);
+    {
+        let mut b = browser.borrow_mut();
+        b.songs = songs;
+        b.playlist = Some(playlist_shown);
+    }
+    show_playlist_rows(ui, browser);
     show_downloads(ui, browser);
     #[cfg(not(target_family = "wasm"))]
     crate::downloads::follow_shown(ui, browser);
@@ -4987,22 +5075,22 @@ fn delete_playlist(ui: &AppWindow, browser: &Shared) {
     );
 }
 
-/// Takes the `row`th track off the playlist on screen, at once on its page.
-/// The server takes it off by its place, and the page may show the playlist
-/// as it was kept up to an hour ago: when the server's has another song
-/// there, changed elsewhere since, nothing is taken off and the page shows
-/// the server's.
-fn remove_from_playlist(ui: &AppWindow, browser: &Shared, row: usize) {
+/// Takes the song at `place` in the playlist on screen off it, at once on its
+/// page. The place is the song's in the playlist, whatever order the table
+/// shows it in. The server takes it off by its place, and the page may show
+/// the playlist as it was kept up to an hour ago: when the server's has
+/// another song there, changed elsewhere since, nothing is taken off and the
+/// page shows the server's.
+fn remove_from_playlist(ui: &AppWindow, browser: &Shared, place: usize) {
     let Some(id) = playlist_on_screen(&browser.borrow()) else {
         return;
     };
     let picked = {
         let mut b = browser.borrow_mut();
-        if row >= b.songs.len() || row >= b.tracks.row_count() {
+        if place >= b.songs.len() {
             return;
         }
-        let picked = b.songs.remove(row);
-        b.tracks.remove(row);
+        let picked = b.songs.remove(place);
         let removed = song_link(&picked);
         // The same song may be on the playlist twice.
         if !b.songs.iter().any(|song| song_link(song) == removed) {
@@ -5011,6 +5099,7 @@ fn remove_from_playlist(ui: &AppWindow, browser: &Shared, row: usize) {
         show_selected(ui, &b);
         picked.id
     };
+    show_playlist_rows(ui, browser);
     let changed_elsewhere = Rc::new(std::cell::Cell::new(false));
     let (at, changed) = (id.clone(), changed_elsewhere.clone());
     change_playlist(
@@ -5019,12 +5108,12 @@ fn remove_from_playlist(ui: &AppWindow, browser: &Shared, row: usize) {
         Some(id),
         |client| async move {
             let now = client.asking_the_server().get_playlist(&at).await?;
-            if now.entry.get(row).is_none_or(|song| song.id != picked) {
+            if now.entry.get(place).is_none_or(|song| song.id != picked) {
                 changed.set(true);
                 return Ok(());
             }
             let update = PlaylistUpdate {
-                song_indexes_to_remove: &[row as u32],
+                song_indexes_to_remove: &[place as u32],
                 ..PlaylistUpdate::default()
             };
             client.update_playlist(&at, &update).await
@@ -7966,7 +8055,12 @@ fn add_tiles(ui: &AppWindow, browser: &Shared, tiles: Vec<(AlbumTile, Option<Str
 fn fetch_covers(ui: &AppWindow, browser: &Shared) {
     let size = if matches!(
         ui.get_page(),
-        Page::Tracks | Page::Compositions | Page::Composition | Page::Folders | Page::Tag
+        Page::Tracks
+            | Page::Compositions
+            | Page::Composition
+            | Page::Folders
+            | Page::Tag
+            | Page::Playlist
     ) {
         pixels(ui, LINE_COVER_SIZE)
     } else {
@@ -8387,16 +8481,16 @@ fn mark_piece_loved(b: &mut Browser, page: Page, id: &str, loved: bool) {
     }
 }
 
-/// Keeps whether a song or folder is loved with the tracks page's songs and
-/// the folder's entries, wherever it was loved, and on its row when `page`,
-/// the one on screen, is the tracks or folders table.
+/// Keeps whether a song or folder is loved with the tracks page's songs, the
+/// folder's entries and the page's songs, wherever it was loved, and on its
+/// row when `page`, the one on screen, is a table of songs.
 fn mark_loved(b: &mut Browser, page: Page, id: &str, loved: bool) {
-    for song in b.song_list.iter_mut().chain(&mut b.entries) {
+    for song in (b.song_list.iter_mut().chain(&mut b.entries)).chain(&mut b.songs) {
         if song.id == id {
             song.starred = loved.then(String::new);
         }
     }
-    if !matches!(page, Page::Tracks | Page::Folders | Page::Tag) {
+    if !is_song_table(page) {
         return;
     }
     let (songs, order) = listed(b, page);
@@ -9366,6 +9460,90 @@ mod tests {
         assert_eq!(sorted(&pieces, all, PIECE_COLUMNS, &table), [2, 0, 3, 1]);
         assert_eq!(language("lat"), "Latin");
         assert_eq!(language("xyz"), "xyz");
+    }
+
+    /// Songs of a playlist titled as given, one of them twice, as the
+    /// server lists them.
+    fn playlist_songs(titles: &[&str]) -> Vec<Child> {
+        titles
+            .iter()
+            .enumerate()
+            .map(|(at, title)| {
+                serde_json::from_str(&format!(
+                    r#"{{"id":"s{at}","isDir":false,"title":"{title}"}}"#
+                ))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn by_title(descending: bool) -> Table {
+        let title = COLUMNS.iter().position(|c| c.title == TITLE);
+        Table {
+            sort: title,
+            descending,
+            ..Table::default()
+        }
+    }
+
+    #[test]
+    fn a_playlist_table_not_sorted_lists_the_songs_in_the_playlists_order() {
+        let songs = playlist_songs(&["Coda", "Aria", "Coda", "Bolero"]);
+        let all: Vec<usize> = (0..songs.len()).collect();
+        let unsorted = Table::default();
+        assert_eq!(sorted(&songs, all.clone(), COLUMNS, &unsorted), all);
+    }
+
+    #[test]
+    fn a_sorted_playlist_table_keeps_each_rows_place_on_the_playlist() {
+        let songs = playlist_songs(&["Coda", "Aria", "Coda", "Bolero"]);
+        let all: Vec<usize> = (0..songs.len()).collect();
+        // Each index is a song's place on the playlist; the song twice keeps
+        // its two places, in the playlist's order.
+        let view = sorted(&songs, all.clone(), COLUMNS, &by_title(false));
+        assert_eq!(view, [1, 3, 0, 2]);
+        assert_eq!(sorted(&songs, all, COLUMNS, &by_title(true)), [0, 2, 3, 1]);
+        let places: Vec<&str> = view.iter().map(|&at| songs[at].id.as_str()).collect();
+        assert_eq!(places, ["s1", "s3", "s0", "s2"]);
+    }
+
+    #[test]
+    fn a_sorted_playlist_plays_in_the_order_shown_from_the_row_clicked() {
+        let browser = Shared::default();
+        {
+            let mut b = browser.borrow_mut();
+            b.songs = playlist_songs(&["Coda", "Aria", "Coda", "Bolero"]);
+            b.view = sorted(&b.songs, vec![0, 1, 2, 3], COLUMNS, &by_title(false));
+        }
+        let (songs, start) = songs(&browser, Page::Playlist, 2);
+        let ids: Vec<String> = songs.into_iter().map(|song| song.id).collect();
+        assert_eq!(
+            (ids, start),
+            (["s1", "s3", "s0", "s2"].map(String::from).to_vec(), 2)
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_heading_sorts_then_turns_around_then_a_playlist_goes_back_to_its_order() {
+        let mut table = Table::default();
+        table.click(2, false, true);
+        assert_eq!((table.sort, table.descending), (Some(2), false));
+        table.click(2, false, true);
+        assert_eq!((table.sort, table.descending), (Some(2), true));
+        table.click(2, false, true);
+        assert_eq!((table.sort, table.descending), (None, false));
+        // Most first for a count, and back from there.
+        table.click(3, true, true);
+        assert_eq!((table.sort, table.descending), (Some(3), true));
+        table.click(3, true, true);
+        assert_eq!((table.sort, table.descending), (Some(3), false));
+        table.click(3, true, true);
+        assert_eq!(table.sort, None);
+        // Any other table has no order of its own to go back to.
+        table.click(2, false, false);
+        table.click(2, false, false);
+        table.click(2, false, false);
+        assert_eq!((table.sort, table.descending), (Some(2), false));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Preferences kept on this device: how the albums, artists, composers,
-//! tracks, compositions and folders are sorted, which columns the tables
-//! show, the radio page's languages, the sound device, volume leveling and
-//! sound processing; and the pictures of saved stations the app found in the
+//! tracks, compositions, folders and playlists are sorted, which columns the
+//! tables show, the radio page's languages, the sound device, volume leveling
+//! and sound processing; and the pictures of saved stations the app found in the
 //! radio directory. They aren't secrets, so plain files in the system's
 //! settings folder keep them, and the browser preview its localStorage.
 //! Where neither works they last until the app closes.
@@ -36,6 +36,11 @@ pub struct Prefs {
     pub folder_columns: Option<Vec<String>>,
     pub folder_sort: Option<String>,
     pub folder_descending: bool,
+    /// The same for the table of a playlist's songs, one for all playlists;
+    /// no sort is the playlist's own order.
+    pub playlist_columns: Option<Vec<String>>,
+    pub playlist_sort: Option<String>,
+    pub playlist_descending: bool,
     /// The languages whose stations the radio page's genres show first, as
     /// the radio directory names them, in the order picked.
     pub radio_languages: Vec<String>,

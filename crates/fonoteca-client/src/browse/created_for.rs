@@ -177,6 +177,8 @@ pub(super) fn missing_song(track: &lb::PlaylistTrack) -> Child {
     Child {
         title: track.title.clone(),
         artist: Some(track.artist.clone()),
+        album: track.album.clone(),
+        duration: track.duration_ms.map(|ms| (ms / 1000) as i64),
         ..Child::default()
     }
 }
@@ -708,10 +710,10 @@ fn show(ui: &AppWindow, browser: &Shared, opened: Opened) {
     ui.set_created_for(true);
     ui.set_created_for_matching(!is_matched);
     let songs = songs.unwrap_or_else(|| vec![None; total]);
-    let (songs, rows) = songs_and_rows(&playlist.tracks, songs);
+    browser.borrow_mut().songs = songs_of(&playlist.tracks, songs);
+    show_playlist_rows(ui, browser);
     {
         let mut b = browser.borrow_mut();
-        show_songs(&mut b, songs, rows);
         let facts = match is_matched {
             true => facts(&b, total),
             false => count(total, "track", "tracks"),
@@ -723,21 +725,12 @@ fn show(ui: &AppWindow, browser: &Shared, opened: Opened) {
     show_downloads(ui, browser);
 }
 
-/// The page's songs and rows of `tracks` with `songs`, the library's of
-/// each: a missing song and a greyed row for a track it lacks.
-fn songs_and_rows(
-    tracks: &[lb::PlaylistTrack],
-    songs: Vec<Option<Child>>,
-) -> (Vec<Child>, Vec<Track>) {
+/// The page's songs of `tracks` with `songs`, the library's of each: a
+/// missing song, which the table greys, for a track it lacks.
+fn songs_of(tracks: &[lb::PlaylistTrack], songs: Vec<Option<Child>>) -> Vec<Child> {
     (tracks.iter().zip(songs))
-        .map(|(track, song)| match song {
-            Some(song) => {
-                let row = song_track(&song);
-                (song, row)
-            }
-            None => (missing_song(track), missing_row(track)),
-        })
-        .unzip()
+        .map(|(track, song)| song.unwrap_or_else(|| missing_song(track)))
+        .collect()
 }
 
 /// Looks up the library's songs of the playlist on screen anew, each track
@@ -805,17 +798,13 @@ fn show_found(
     tracks: &[lb::PlaylistTrack],
     songs: Vec<Option<Child>>,
 ) {
-    let (songs, rows) = songs_and_rows(tracks, songs);
-    {
-        let mut b = browser.borrow_mut();
-        for (row, (song, track_row)) in songs.into_iter().zip(rows).enumerate() {
-            if b.songs[row] != song {
-                b.tracks.set_row_data(row, track_row);
-                b.songs[row] = song;
-            }
-        }
-        ui.set_header_facts(facts(&b, tracks.len()).into());
+    let songs = songs_of(tracks, songs);
+    let changed = browser.borrow().songs != songs;
+    browser.borrow_mut().songs = songs;
+    if changed {
+        show_playlist_rows(ui, browser);
     }
+    ui.set_header_facts(facts(&browser.borrow(), tracks.len()).into());
     ui.set_created_for_matching(false);
     show_downloads(ui, browser);
 }
@@ -1164,13 +1153,13 @@ mod tests {
     }
 
     #[test]
-    fn a_track_has_the_row_of_its_song_and_else_a_greyed_one() {
+    fn a_track_has_its_song_and_else_a_missing_one() {
         let tracks = [wanted("Halo", "Ann", None), wanted("Gone", "Bo", None)];
         let found = vec![Some(song("s1", "Halo", "Ann", None)), None];
-        let (songs, rows) = songs_and_rows(&tracks, found);
+        let songs = songs_of(&tracks, found);
         assert_eq!(songs[0].id, "s1");
         assert!(is_missing(&songs[1]));
-        assert_eq!((rows[0].unavailable, rows[1].unavailable), (false, true));
+        assert_eq!(songs[1].title, "Gone");
     }
 
     #[test]
@@ -1422,12 +1411,16 @@ mod tests {
     fn playing_from_a_row_leaves_out_the_tracks_the_library_lacks() {
         let browser = Shared::default();
         let missing = missing_song(&wanted("Gone", "Nobody", None));
-        browser.borrow_mut().songs = vec![
-            missing.clone(),
-            song("a", "A", "X", None),
-            missing,
-            song("b", "B", "X", None),
-        ];
+        {
+            let mut b = browser.borrow_mut();
+            b.songs = vec![
+                missing.clone(),
+                song("a", "A", "X", None),
+                missing,
+                song("b", "B", "X", None),
+            ];
+            b.view = (0..b.songs.len()).collect();
+        }
         let ids = |songs: Vec<Child>| -> Vec<String> { songs.into_iter().map(|s| s.id).collect() };
         let (songs, start) = super::songs(&browser, Page::Playlist, 3);
         assert_eq!(

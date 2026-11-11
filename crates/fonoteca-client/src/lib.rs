@@ -4152,22 +4152,26 @@ mod tests {
             assert_eq!((found.title.as_str(), found.link.as_str()), ("Road Trip", "playlist:p1"));
             ui.invoke_back();
             ui.invoke_show_section(11);
-            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist", || ui.get_track_lines().row_count() == 2).await;
             assert_eq!(ui.get_page(), Page::Playlist);
             assert_eq!(ui.get_section(), 11);
             assert_eq!(ui.get_header_title(), "Road Trip");
             assert_eq!(ui.get_header_facts(), "For the car · 2 tracks, 8 minutes");
-            // Each track with its artists, then its album.
-            let tracks: Vec<Track> = ui.get_tracks().iter().collect();
-            let links = |track: &Track| -> Vec<String> {
-                track.names.iter().map(|name| name.link.into()).collect()
+            // A row of the table for each song, with its artists and album
+            // linked where the server gives their ids, and its place on the
+            // playlist.
+            let lines: Vec<TrackLine> = ui.get_track_lines().iter().collect();
+            let artists = |line: &TrackLine| -> Vec<String> {
+                line.artists.iter().map(|name| name.link.into()).collect()
             };
-            assert_eq!(tracks[0].title, "Harbour Lights");
-            assert_eq!(links(&tracks[0]), ["artist:r1", "album:a1"]);
-            assert_eq!(tracks[0].split, 1);
-            assert!(tracks[0].loved);
-            assert_eq!(links(&tracks[1]), [""]);
-            assert!(!tracks[1].loved);
+            assert_eq!(lines[0].title, "Harbour Lights");
+            assert_eq!(artists(&lines[0]), ["artist:r1"]);
+            assert_eq!(lines[0].album.link, "album:a1");
+            assert!(lines[0].loved);
+            assert!(artists(&lines[1]).is_empty());
+            assert_eq!(lines[1].album.link, "");
+            assert!(!lines[1].loved);
+            assert_eq!((lines[0].position, lines[1].position), (0, 1));
             // Songs go in the playlists the server doesn't call read-only.
             let targets: Vec<(String, String)> = ui
                 .get_playlist_targets()
@@ -4180,21 +4184,21 @@ mod tests {
             // asked for again.
             let writes = || PLAYLIST_WRITES.lock().unwrap().clone();
             PLAYLIST_WRITES.lock().unwrap().clear();
-            ui.invoke_select_track(0, false);
-            ui.invoke_select_track(1, false);
+            ui.invoke_select_line(0, false);
+            ui.invoke_select_line(1, false);
             assert_eq!(ui.get_selected_tiles(), 2);
             let playlists_asked = times_asked("getPlaylist");
             ui.invoke_remove_from_playlist(0);
             assert_eq!(ui.get_selected_tiles(), 1, "the song taken off is no longer picked");
-            assert_eq!(ui.get_tracks().row_count(), 1);
-            assert_eq!(ui.get_tracks().row_data(0).unwrap().title, "Fugue");
-            assert!(ui.get_tracks().row_data(0).unwrap().selected);
+            assert_eq!(ui.get_track_lines().row_count(), 1);
+            assert_eq!(ui.get_track_lines().row_data(0).unwrap().title, "Fugue");
+            assert!(ui.get_track_lines().row_data(0).unwrap().selected);
             ui.invoke_clear_selection();
             wait_for("the track taken off", || {
                 writes() == ["updatePlaylist playlistId=p1&songIndexToRemove=0"]
             })
             .await;
-            wait_for("the playlist again", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist again", || ui.get_track_lines().row_count() == 2).await;
             assert!(times_asked("getPlaylist") > playlists_asked, "not the one kept from before");
             // Changed elsewhere within the hour, the playlist shows as kept,
             // and a track taken off there by its place is looked for in the
@@ -4203,14 +4207,14 @@ mod tests {
             ROAD_TRIP_EDITED.store(true, Relaxed);
             let playlists_asked = times_asked("getPlaylist");
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist kept", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist kept", || ui.get_track_lines().row_count() == 2).await;
             assert_eq!(times_asked("getPlaylist"), playlists_asked, "kept within the hour");
-            assert_eq!(ui.get_tracks().row_data(1).unwrap().title, "Fugue");
+            assert_eq!(ui.get_track_lines().row_data(1).unwrap().title, "Fugue");
             PLAYLIST_WRITES.lock().unwrap().clear();
             ui.invoke_remove_from_playlist(1);
-            assert_eq!(ui.get_tracks().row_count(), 1);
+            assert_eq!(ui.get_track_lines().row_count(), 1);
             wait_for("the playlist as the server has it", || {
-                (ui.get_tracks().row_data(1)).is_some_and(|track| track.title == "Rope and Anchor")
+                (ui.get_track_lines().row_data(1)).is_some_and(|line| line.title == "Rope and Anchor")
             })
             .await;
             assert!(writes().is_empty(), "nothing taken off");
@@ -4235,7 +4239,7 @@ mod tests {
             play_selection(&ui, || ui.invoke_select_tile(0, false), &["s1", "s9"]).await;
             ui.invoke_open("playlist:p1".into());
             wait_for("Road Trip as the server has it", || {
-                (ui.get_tracks().row_data(1)).is_some_and(|track| track.title == "Fugue")
+                (ui.get_track_lines().row_data(1)).is_some_and(|line| line.title == "Fugue")
             })
             .await;
             // A new name shows at once; one the server refuses goes back.
@@ -4268,7 +4272,7 @@ mod tests {
             MOVED.store(false, Relaxed);
             ui.invoke_open("playlist:p1".into());
             wait_for("Road Trip again", || {
-                ui.get_tracks().row_count() == 2
+                ui.get_track_lines().row_count() == 2
                     && ui
                         .get_playlist_targets()
                         .iter()
@@ -4276,7 +4280,7 @@ mod tests {
             })
             .await;
             // A song of the playlist on screen added to it.
-            ui.invoke_add_track_to_playlist(1, "p1".into());
+            ui.invoke_add_line_to_playlist(1, "p1".into());
             wait_for("the song added", || {
                 writes().last().map(String::as_str)
                     == Some("updatePlaylist playlistId=p1&songIdToAdd=s9")
@@ -4285,35 +4289,64 @@ mod tests {
             wait_for("the notice", || ui.get_notice() != "").await;
             assert_eq!(ui.get_notice(), "Added 1 track to Road Trip.");
             ui.set_notice("".into());
-            // Movements of a whole work are its row and their rows; the
-            // second and third of four, and the overture, stay songs.
+            // Every song is a row of its own, in the playlist's order until a
+            // heading is clicked. A sorted table keeps each row's place on
+            // the playlist, which taking a song off goes by, and a click on
+            // the sorted heading twice more goes back to the playlist's order.
             ui.invoke_open("playlist:p5".into());
-            wait_for("the playlist of works", || ui.get_tracks().row_count() == 7).await;
-            let rows: Vec<(String, i32, bool)> = ui
-                .get_tracks()
-                .iter()
-                .map(|track| (track.work.to_string(), track.work_tracks, track.part))
+            wait_for("the playlist of works", || ui.get_track_lines().row_count() == 7).await;
+            let shown = || -> Vec<(String, i32)> {
+                (ui.get_track_lines().iter())
+                    .map(|line| (line.title.to_string(), line.position))
+                    .collect()
+            };
+            let in_order = shown();
+            assert_eq!(in_order.iter().map(|(_, at)| *at).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6]);
+            let title = (ui.get_track_columns().iter())
+                .position(|column| column.title == "Title")
+                .unwrap();
+            ui.invoke_sort_tracks(title as i32);
+            let sorted = shown();
+            let mut by_title: Vec<String> = in_order.iter().map(|(name, _)| name.to_lowercase()).collect();
+            by_title.sort();
+            let sorted_titles = |rows: &[(String, i32)]| -> Vec<String> {
+                rows.iter().map(|(name, _)| name.to_lowercase()).collect()
+            };
+            assert_eq!(sorted_titles(&sorted), by_title);
+            for (name, at) in &sorted {
+                assert_eq!(*name, in_order[*at as usize].0, "a row keeps its song's place");
+            }
+            assert_eq!(crate::prefs::load().playlist_sort.as_deref(), Some("Title"));
+            assert_ne!(sorted, in_order);
+            // The songs play in the order shown.
+            let to_play = play::testing::page_song_ids(&ui);
+            assert_eq!(to_play.len(), 7);
+            assert_eq!(to_play, ["c3", "c1", "c2", "c2", "c7", "c7", "c5"]);
+            // The same song twice stays two rows, told apart by place.
+            let twice: Vec<i32> = (sorted.iter())
+                .filter(|(name, _)| name.contains("II. Andante"))
+                .map(|(_, at)| *at)
                 .collect();
-            let row = |work: &str, tracks: i32, part: bool| (work.to_owned(), tracks, part);
-            assert_eq!(
-                rows,
-                [
-                    row("Symphony No. 5", 4, true),
-                    row("", 0, true),
-                    row("", 0, true),
-                    row("", 0, true),
-                    row("", 0, false),
-                    row("", 0, false),
-                    row("", 0, false)
-                ]
-            );
-            // A song inside the work leaves the playlist by its own place.
+            assert_eq!(twice, [1, 5]);
+            ui.invoke_sort_tracks(title as i32);
+            assert_eq!(shown()[0].0, "Symphony No. 5: IV. Allegro", "turned around");
+            ui.invoke_sort_tracks(title as i32);
+            assert_eq!(shown(), in_order, "back to the playlist's order");
+            assert_eq!(crate::prefs::load().playlist_sort, None);
+            // A song leaves the playlist by its own place, whatever row it
+            // is on.
+            ui.invoke_sort_tracks(title as i32);
+            let (_, first_at) = shown()[0].clone();
+            assert_eq!(first_at, 4, "the overture");
             PLAYLIST_WRITES.lock().unwrap().clear();
-            ui.invoke_remove_from_playlist(2);
-            wait_for("the movement removed", || {
-                writes() == ["updatePlaylist playlistId=p5&songIndexToRemove=2"]
+            ui.invoke_remove_from_playlist(first_at);
+            wait_for("the song removed", || {
+                writes() == [format!("updatePlaylist playlistId=p5&songIndexToRemove={first_at}")]
             })
             .await;
+            ui.invoke_sort_tracks(title as i32);
+            ui.invoke_sort_tracks(title as i32);
+            assert_eq!(crate::prefs::load().playlist_sort, None);
             // A selected album goes in a playlist song by song, and the
             // selection is let go.
             ui.invoke_open("albums".into());
@@ -4373,7 +4406,7 @@ mod tests {
             ui.invoke_create_playlist("  ".into());
             ui.invoke_create_playlist("Mix".into());
             wait_for("the new playlist", || {
-                ui.get_page() == Page::Playlist && ui.get_tracks().row_count() == 2
+                ui.get_page() == Page::Playlist && ui.get_track_lines().row_count() == 2
             })
             .await;
             assert_eq!(writes()[sent..], ["createPlaylist name=Mix"]);
@@ -4385,7 +4418,7 @@ mod tests {
                 Some("deletePlaylist id=p3")
             );
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist", || ui.get_track_lines().row_count() == 2).await;
             click(&ui, "Account");
             assert_eq!(ui.get_section(), -1);
             // Shown again at once, while they are asked for again.
@@ -5948,7 +5981,7 @@ mod tests {
             assert!(loved(&ui, 0));
             assert!(!loved(&ui, 1));
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist", || ui.get_track_lines().row_count() == 2).await;
             click_heart(&ui, false);
             wait_for("the star", || {
                 STARRED.lock().unwrap().contains(&"s9".to_owned())
@@ -6137,15 +6170,15 @@ mod tests {
             assert!(loved(&ui, 0) && loved(&ui, 1));
             // ...nor a playlist song's on the unloved symphony.
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist", || ui.get_track_lines().row_count() == 2).await;
             let fugue = ui
-                .get_tracks()
+                .get_track_lines()
                 .iter()
                 .position(|song| song.title == "Fugue")
                 .unwrap() as i32;
             let refused = REFUSED.load(Relaxed);
-            ui.invoke_toggle_love(fugue);
-            ui.invoke_toggle_love(fugue);
+            ui.invoke_toggle_line_love(fugue);
+            ui.invoke_toggle_line_love(fugue);
             click(&ui, "Compositions");
             wait_for("the song's refused unstar", || {
                 REFUSED.load(Relaxed) > refused
@@ -7439,7 +7472,7 @@ mod tests {
             // banner its tile has, while the last playlist's tracks are still
             // being fetched.
             ui.invoke_open("createdfor:trip".into());
-            wait_for("the playlist's tracks", || ui.get_tracks().row_count() == 1).await;
+            wait_for("the playlist's tracks", || ui.get_track_lines().row_count() == 1).await;
             assert_eq!(ui.get_created_for_kind(), "");
             assert!(mix_banner(&ui).is_none());
             wait_for("its kind", || ui.get_created_for_kind() == "Weekly Jams").await;
@@ -7544,7 +7577,7 @@ mod tests {
             SEARCHES.store(0, Relaxed);
             let asked = LISTENBRAINZ_ASKED.lock().unwrap().len();
             ui.invoke_open("createdfor:daily".into());
-            wait_for("the playlist", || ui.get_tracks().row_count() == 4).await;
+            wait_for("the playlist", || ui.get_track_lines().row_count() == 4).await;
             assert_eq!(ui.get_header_title(), "Daily Jams for joe, 2026-11-04 Wed");
             assert!(!ui.get_created_for_matching());
             // The page names its kind and tints as its tile does; the tile
@@ -7555,8 +7588,8 @@ mod tests {
             let banner = mix_banner(&ui).expect("the banner");
             assert_eq!(banner.accessible_label().as_deref(), Some("Daily Jams"));
             assert_eq!(lit(&ui), "Home", "a playlist made for you belongs to Home");
-            let rows: Vec<(String, bool)> = (ui.get_tracks().iter())
-                .map(|track| (track.title.to_string(), track.unavailable))
+            let rows: Vec<(String, bool)> = (ui.get_track_lines().iter())
+                .map(|line| (line.title.to_string(), line.unavailable))
                 .collect();
             assert_eq!(
                 rows,
@@ -7578,15 +7611,13 @@ mod tests {
             assert_eq!(ui.get_header_facts(), "2 of 4 tracks in your library");
 
             // A greyed row can't be selected, by a click or in a range.
-            assert_eq!(button(&ui, "Not Here").accessible_enabled(), Some(false));
-            assert_eq!(button(&ui, "Café del Mar").accessible_enabled(), Some(true));
-            ui.invoke_select_track(0, false);
-            click(&ui, "Not Here");
+            ui.invoke_select_line(0, false);
+            ui.invoke_select_line(2, false);
             assert_eq!(ui.get_selected_tiles(), 1);
-            click(&ui, "Café del Mar");
+            ui.invoke_select_line(1, false);
             assert_eq!(ui.get_selected_tiles(), 2);
-            ui.invoke_select_track(3, true);
-            let picked: Vec<bool> = ui.get_tracks().iter().map(|track| track.selected).collect();
+            ui.invoke_select_line(3, true);
+            let picked: Vec<bool> = ui.get_track_lines().iter().map(|line| line.selected).collect();
             assert_eq!(picked, [true, true, false, false]);
             ui.invoke_clear_selection();
 
@@ -7614,8 +7645,8 @@ mod tests {
             let searched = SEARCHES.load(Relaxed);
             ui.invoke_open("home".into());
             ui.invoke_open("createdfor:daily".into());
-            wait_for("the songs found before", || ui.get_tracks().row_count() == 4).await;
-            let is_not_here_greyed = || ui.get_tracks().row_data(2).unwrap().unavailable;
+            wait_for("the songs found before", || ui.get_track_lines().row_count() == 4).await;
+            let is_not_here_greyed = || ui.get_track_lines().row_data(2).unwrap().unavailable;
             assert!(is_not_here_greyed());
             wait_for("the last track asked for", || SEARCHES.load(Relaxed) == searched + 4).await;
             assert!(is_not_here_greyed(), "not track by track");
@@ -7629,7 +7660,7 @@ mod tests {
             SEARCH_DOWN.store(true, Relaxed);
             ui.invoke_open("home".into());
             ui.invoke_open("createdfor:daily".into());
-            wait_for("the songs found last", || ui.get_tracks().row_count() == 4).await;
+            wait_for("the songs found last", || ui.get_track_lines().row_count() == 4).await;
             assert!(!is_not_here_greyed());
             idle(Duration::from_millis(300)).await;
             assert!(!is_not_here_greyed());
@@ -7639,7 +7670,7 @@ mod tests {
             // A name the server already has is left alone.
             ui.invoke_open("createdfor:trip".into());
             wait_for("the second playlist found", || {
-                ui.get_tracks().row_count() == 1 && !ui.get_created_for_matching()
+                ui.get_track_lines().row_count() == 1 && !ui.get_created_for_matching()
             })
             .await;
             // The page has the banner its tile has, under the same tint.
@@ -7660,7 +7691,7 @@ mod tests {
 
             ui.invoke_open("createdfor:later".into());
             wait_for("the third playlist", || {
-                ui.get_header_title() == "Later Jams for joe" && ui.get_tracks().row_count() == 1
+                ui.get_header_title() == "Later Jams for joe" && ui.get_track_lines().row_count() == 1
             })
             .await;
             assert_eq!(button(&ui, "Save to library").accessible_enabled(), Some(true));
@@ -7718,7 +7749,7 @@ mod tests {
             click(&ui, "Try again");
             wait_for("the looking up resumed", || !ui.get_created_for_matching()).await;
             assert_eq!(ui.get_page_problem(), "");
-            assert!(ui.get_tracks().row_data(0).unwrap().unavailable);
+            assert!(ui.get_track_lines().row_data(0).unwrap().unavailable);
             // None of its tracks are the library's, so it saves nothing.
             click(&ui, "Save to library");
             wait_for("the nothing to save said", || ui.get_notice() != "").await;
@@ -7865,8 +7896,7 @@ mod tests {
             })
             .await;
             assert!(!restarted.get_created_for_matching());
-            assert!(!restarted.get_tracks().row_data(0).unwrap().unavailable);
-            assert_eq!(button(&restarted, "Salt").accessible_enabled(), Some(true));
+            assert!(!restarted.get_track_lines().row_data(0).unwrap().unavailable);
             idle(Duration::from_millis(200)).await;
             assert_eq!(restarted.get_page_problem(), "", "the songs kept stay");
             SEARCH_DOWN.store(false, Relaxed);
@@ -7879,18 +7909,18 @@ mod tests {
             let searched = SEARCHES.load(Relaxed);
             ui.invoke_open("createdfor:daily".into());
             wait_for("the playlist to heart", || {
-                ui.get_tracks().row_count() == 4 && SEARCHES.load(Relaxed) == searched + 6
+                ui.get_track_lines().row_count() == 4 && SEARCHES.load(Relaxed) == searched + 6
             })
             .await;
             idle(Duration::from_millis(300)).await;
-            assert!(!ui.get_tracks().row_data(0).unwrap().loved);
-            ui.invoke_toggle_love(1);
+            assert!(!ui.get_track_lines().row_data(0).unwrap().loved);
+            ui.invoke_toggle_line_love(1);
             wait_for("the loved song starred", || {
                 STARRED.lock().unwrap().iter().any(|id| id == "lb1")
             })
             .await;
-            wait_for("its heart shown", || ui.get_tracks().row_data(0).unwrap().loved).await;
-            assert_eq!(ui.get_tracks().row_count(), 4);
+            wait_for("its heart shown", || ui.get_track_lines().row_data(0).unwrap().loved).await;
+            assert_eq!(ui.get_track_lines().row_count(), 4);
             assert!(
                 LISTENBRAINZ_ASKED
                     .lock()
@@ -9933,6 +9963,9 @@ mod tests {
             assert!(ui.get_can_download());
             assert_eq!(ui.get_download_state(), 0);
             let marked = |ui: &AppWindow| -> Vec<bool> {
+                if ui.get_page() == Page::Playlist {
+                    return ui.get_track_lines().iter().map(|line| line.downloaded).collect();
+                }
                 ui.get_tracks().iter().map(|track| track.downloaded).collect()
             };
             assert_eq!(marked(&ui), [false, false]);
@@ -10077,7 +10110,7 @@ mod tests {
             // and an album from its tile's; a song several want stays until
             // the last of them is let go.
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist", || ui.get_track_lines().row_count() == 2).await;
             download_page(&ui);
             wait_for("the playlist's songs", || ui.get_download_state() == 2).await;
             assert_eq!(marked(&ui), [true, true]);
@@ -10109,7 +10142,7 @@ mod tests {
             assert!(tile_marked("album:a1"));
             assert!(!tile_marked("album:b2"));
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist again", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist again", || ui.get_track_lines().row_count() == 2).await;
             click(&ui, "Downloaded, remove download");
             click(&ui, "Remove");
             assert_eq!(ui.get_download_state(), 0);
@@ -10191,14 +10224,14 @@ mod tests {
             let an_hour_on = || answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
             ui.invoke_remove_all_downloads();
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist", || ui.get_tracks().row_count() == 2).await;
+            wait_for("the playlist", || ui.get_track_lines().row_count() == 2).await;
             download_page(&ui);
             wait_for("the playlist kept", || ui.get_download_state() == 2).await;
             ROAD_TRIP_EDITED.store(true, Relaxed);
             an_hour_on();
             ui.invoke_open("albums".into());
             ui.invoke_open("playlist:p1".into());
-            wait_for("the edited playlist", || ui.get_tracks().row_count() == 2 && ui.get_tracks().row_data(1).is_some_and(|t| t.title == "Rope and Anchor")).await;
+            wait_for("the edited playlist", || ui.get_track_lines().row_count() == 2 && ui.get_track_lines().row_data(1).is_some_and(|t| t.title == "Rope and Anchor")).await;
             wait_for("its new song", || marked(&ui) == [true, true]).await;
             assert_eq!(files(&kept.join("songs")), 2, "Fugue was deleted");
             ui.invoke_remove_all_downloads();
@@ -10206,7 +10239,7 @@ mod tests {
             an_hour_on();
             ui.invoke_open("albums".into());
             ui.invoke_open("playlist:p1".into());
-            wait_for("the playlist as it was", || ui.get_tracks().row_count() == 2 && ui.get_tracks().row_data(1).is_some_and(|t| t.title == "Fugue")).await;
+            wait_for("the playlist as it was", || ui.get_track_lines().row_count() == 2 && ui.get_track_lines().row_data(1).is_some_and(|t| t.title == "Fugue")).await;
             download_page(&ui);
             wait_for("kept as it was", || ui.get_download_state() == 2).await;
             ROAD_TRIP_EDITED.store(true, Relaxed);

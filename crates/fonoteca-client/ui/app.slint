@@ -142,6 +142,50 @@ export struct Track {
     unavailable: bool,
 }
 
+// The menu that shows or hides the columns of a table. It is no size itself;
+// the menu opens with its top left corner at its place.
+component ColumnPicker inherits Rectangle {
+    in property <[ColumnChoice]> choices;
+    in property <length> window-height;
+    out property <length> panel-width: 260px;
+    out property <bool> is-open: popup.is-open;
+    callback toggled(index: int);
+    public function show() { popup.show(); }
+
+    width: 0px;
+    height: 0px;
+    popup := PopupWindow {
+        x: 0px;
+        y: 0px;
+        width: root.panel-width;
+        height: min(420px, root.window-height - 120px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            background: Palette.background;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.hover;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #0000004d;
+            list := ScrollView {
+                content-width: self.visible-width;
+                content-height: picks.preferred-height;
+                picks := VerticalLayout {
+                    width: list.visible-width;
+                    padding: 12px;
+                    spacing: 4px;
+                    for choice[i] in root.choices: CheckBox {
+                        text: choice.title;
+                        checked: choice.shown;
+                        toggled => { root.toggled(i); }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // A page's own title: on a phone Material's Headline Medium, the title of
 // its large top app bar.
 component Heading inherits Text {
@@ -1913,6 +1957,12 @@ export component AppWindow inherits Window {
     // A page that is a table: the tracks, the compositions, a folder or a
     // tag.
     property <bool> table: root.page == Page.tracks || root.page == Page.compositions || root.page == Page.folders || root.page == Page.tag;
+    // A table of rows under the page's own header: a playlist's songs. Its
+    // headings and Columns button scroll with the rows instead of staying put.
+    property <bool> table-rows: root.table || root.page == Page.playlist;
+    // How wide a table's rows need: at their widths on a phone, else at their
+    // narrowest.
+    property <length> table-need: (Screen.phone ? root.track-table-width + 12px : root.track-table-least) + 48px;
 
     // One physical pixel, which changes with the scale.
     property <length> physical-pixel: 1phx;
@@ -2154,35 +2204,12 @@ export component AppWindow inherits Window {
                             root.sort-tracks(index);
                         }
                     }
-                }
-                columns := PopupWindow {
-                    x: parent.width - self.width - 24px;
-                    y: 52px;
-                    width: 260px;
-                    height: min(420px, root.height - 120px);
-                    close-policy: PopupClosePolicy.close-on-click-outside;
-                    Rectangle {
-                        background: Palette.background;
-                        border-radius: Theme.radius;
-                        border-width: 1px;
-                        border-color: Theme.hover;
-                        drop-shadow-blur: 16px;
-                        drop-shadow-offset-y: 4px;
-                        drop-shadow-color: #0000004d;
-                        choices := ScrollView {
-                            content-width: self.visible-width;
-                            content-height: picks.preferred-height;
-                            picks := VerticalLayout {
-                                width: choices.visible-width;
-                                padding: 12px;
-                                spacing: 4px;
-                                for choice[i] in root.track-choices: CheckBox {
-                                    text: choice.title;
-                                    checked: choice.shown;
-                                    toggled => { root.toggle-track-column(i); }
-                                }
-                            }
-                        }
+                    columns := ColumnPicker {
+                        x: parent.width - self.panel-width - 24px;
+                        y: 0px;
+                        choices: root.track-choices;
+                        window-height: root.height;
+                        toggled(index) => { root.toggle-track-column(index); }
                     }
                 }
             }
@@ -2205,13 +2232,13 @@ export component AppWindow inherits Window {
                         root.back-or-home();
                     }
                 }
-                open-ended: (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.stations || root.table) && root.more-tiles && root.page-problem == "";
+                open-ended: (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.stations || root.table-rows) && root.more-tiles && root.page-problem == "";
                 near-end => {
                     if self.open-ended && !root.loading {
                         root.show-more();
                     }
                 }
-                content-width: max(scroll.visible-width, stage.width);
+                content-width: max(scroll.visible-width, stage.width, root.page == Page.playlist ? root.table-need : 0px);
                 // As far as the page's elements are drawn. Its preferred
                 // height falls short on a phone: Slint 1.18 measures some
                 // sections there with their text on fewer lines than it
@@ -2228,7 +2255,7 @@ export component AppWindow inherits Window {
                     x: max(0px, (scroll.visible-width - self.width) / 2);
                     // A phone's menu buttons are wider than browse.rs counts,
                     // and its columns don't narrow.
-                    width: root.table ? max(scroll.visible-width, (Screen.phone ? root.track-table-width + 12px : root.track-table-least) + 48px) : min(scroll.visible-width, 1600px);
+                    width: root.table ? max(scroll.visible-width, root.table-need) : min(scroll.visible-width, 1600px);
                     padding: 24px;
                     padding-top: 8px;
                     // Room to scroll the last tiles out from under the bar.
@@ -2474,7 +2501,7 @@ export component AppWindow inherits Window {
                         names: root.header-names;
                         facts: root.header-facts;
                         open(link) => { root.open(link); }
-                        if root.can-play && (((root.page == Page.album || root.page == Page.playlist) && root.tracks.length > 0) || (root.page == Page.artist && root.tiles.length > 0)): PlayButton {
+                        if root.can-play && ((root.page == Page.album && root.tracks.length > 0) || (root.page == Page.playlist && root.track-lines.length > 0) || (root.page == Page.artist && root.tiles.length > 0)): PlayButton {
                             enabled: !Input.modal;
                             // An artist's songs on their page are their top ones; Play is all their own albums.
                             play => {
@@ -2486,7 +2513,7 @@ export component AppWindow inherits Window {
                             }
                             queue(how) => { root.queue-page(how); }
                         }
-                        if root.can-download && root.may-download && (root.page == Page.album || (root.page == Page.playlist && !root.created-for)) && root.tracks.length > 0: DownloadButton {
+                        if root.can-download && root.may-download && (root.page == Page.album || (root.page == Page.playlist && !root.created-for)) && (root.tracks.length > 0 || root.track-lines.length > 0): DownloadButton {
                             state: root.download-state;
                             progress: root.download-progress;
                             clicked => {
@@ -2663,7 +2690,7 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.history: Heading { text: "History"; }
                     if root.page == Page.history && root.header-facts != "": Note { text: root.header-facts; }
-                    if root.page == Page.album || root.page == Page.playlist || root.page == Page.artist || root.page == Page.history || (root.page == Page.search && root.tracks.length > 0): VerticalLayout {
+                    if root.page == Page.album || root.page == Page.artist || root.page == Page.history || (root.page == Page.search && root.tracks.length > 0): VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
                             if track.work != "": TrackRow {
                                 title: track.work;
@@ -2701,7 +2728,6 @@ export component AppWindow inherits Window {
                                 joined-below: track.joined-below;
                                 selecting: root.selected-tiles > 0;
                                 playlists: root.playlist-targets;
-                                removable: root.page == Page.playlist && root.playlist-editable;
                                 taggable: root.tags-offered;
                                 playable: root.can-play;
                                 downloadable: root.can-download && root.may-download;
@@ -2926,7 +2952,10 @@ export component AppWindow inherits Window {
                         activated(index) => { root.save-station(-1, index); }
                         in-view(first, last) => { root.tiles-in-view(first, last); }
                     }
-                    if root.table: VerticalLayout {
+                    if root.table-rows: VerticalLayout {
+                        // A playlist's table is wider than its page where the window is narrow;
+                        // the page's header stays as wide as the window.
+                        min-width: root.page == Page.playlist ? root.table-need - 48px : 0px;
                         // The rows on screen and a screen below, by
                         // TrackLineRow's height, whose covers to fetch.
                         property <length> view-top: -scroll.content-y - self.y;
@@ -2941,6 +2970,28 @@ export component AppWindow inherits Window {
                         changed last-in-view => {
                             root.tiles-in-view(self.first-in-view, self.last-in-view);
                         }
+                        if root.page == Page.playlist: Rectangle {
+                            height: columns-button.preferred-height;
+                            columns-button := Button {
+                                x: min(parent.width, scroll.visible-width - 48px) - self.width - 8px;
+                                text: "Columns";
+                                enabled: !Input.modal;
+                                accessible-expandable: true;
+                                accessible-expanded: playlist-columns.is-open;
+                                clicked => { playlist-columns.show(); }
+                            }
+                            playlist-columns := ColumnPicker {
+                                x: min(parent.width, scroll.visible-width - 48px) - self.panel-width - 8px;
+                                y: parent.height;
+                                choices: root.track-choices;
+                                window-height: root.height;
+                                toggled(index) => { root.toggle-track-column(index); }
+                            }
+                        }
+                        if root.page == Page.playlist: TrackHeader {
+                            columns: root.track-columns;
+                            sort(index) => { root.sort-tracks(index); }
+                        }
                         for line[row] in root.track-lines: TrackLineRow {
                             columns: root.track-columns;
                             line: line;
@@ -2953,6 +3004,8 @@ export component AppWindow inherits Window {
                             taggable: root.tags-offered && root.page != Page.compositions;
                             playable: root.can-play && root.page != Page.compositions;
                             downloadable: root.can-download && root.may-download;
+                            downloadable-songs: root.page == Page.playlist && root.can-download && root.may-download;
+                            removable: root.page == Page.playlist && root.playlist-editable;
                             open(link) => { root.open(link); }
                             // A folder plays and queues as an album does.
                             play => {
@@ -2969,8 +3022,22 @@ export component AppWindow inherits Window {
                                     root.queue-tracks(row, 1, next);
                                 }
                             }
-                            download => { root.download-link(line.link); }
-                            remove-download => { root.remove-link-download(line.link); }
+                            // A playlist's song goes by its place on it, as it may be on it twice.
+                            download => {
+                                if root.page == Page.playlist {
+                                    root.download-track(line.position);
+                                } else {
+                                    root.download-link(line.link);
+                                }
+                            }
+                            remove-download => {
+                                if root.page == Page.playlist {
+                                    root.remove-track-download(line.position);
+                                } else {
+                                    root.remove-link-download(line.link);
+                                }
+                            }
+                            remove => { root.remove-from-playlist(line.position); }
                             toggle-love => { root.toggle-line-love(row); }
                             select(range) => { root.select-line(row, range); }
                             add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
