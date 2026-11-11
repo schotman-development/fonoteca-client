@@ -16,7 +16,8 @@ use rust_cast::ChannelMessage;
 use rust_cast::channels::connection::ConnectionResponse;
 use rust_cast::channels::heartbeat::HeartbeatResponse;
 use rust_cast::channels::media::{
-    IdleReason, LoadOptions, Media as CastMedia, PlayerState, StatusEntry, StreamType,
+    IdleReason, LoadOptions, Media as CastMedia, MediaResponse, PlayerState, StatusEntry,
+    StreamType,
 };
 use rust_cast::channels::receiver::CastDeviceApp;
 use rust_cast::errors::Error;
@@ -42,6 +43,9 @@ enum Command {
     Leave,
 }
 
+/// What the device says of the player: its state, and the position in seconds.
+type Reading = (OutputState, f64);
+
 /// What the thread last heard, for [`CastSession::status`].
 struct Heard {
     started: Instant,
@@ -51,14 +55,9 @@ struct Heard {
 }
 
 impl Heard {
-    fn record(&mut self, entry: Option<&StatusEntry>, loaded: bool) {
+    fn record(&mut self, reading: Option<Reading>, loaded: bool) {
         self.loads += u64::from(loaded);
-        let (state, position) = entry.map_or((OutputState::Loading, 0.0), |entry| {
-            (
-                state_of(entry),
-                f64::from(entry.current_time.unwrap_or_default()),
-            )
-        });
+        let (state, position) = reading.unwrap_or((OutputState::Loading, 0.0));
         self.latest = Some((Instant::now(), state, position));
     }
 }
@@ -170,6 +169,15 @@ struct Link {
     transport_id: String,
     session_id: String,
     media_session: Option<i32>,
+    phase: Phase,
+}
+
+/// How far the loaded song has got, as far as the device has said.
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Loading,
+    Started,
+    Ended,
 }
 
 impl Link {
@@ -188,6 +196,7 @@ impl Link {
             transport_id: app.transport_id,
             session_id: app.session_id,
             media_session: None,
+            phase: Phase::Loading,
         })
     }
 
@@ -197,7 +206,7 @@ impl Link {
         heard: &Mutex<Heard>,
     ) -> Result<(), Error> {
         loop {
-            let (entry, loaded) = match commands.recv_timeout(POLL) {
+            let (reading, loaded) = match commands.recv_timeout(POLL) {
                 Ok(Command::Leave) | Err(RecvTimeoutError::Disconnected) => return self.pause(),
                 Ok(Command::Load(media)) => (self.load(&media)?, true),
                 Ok(Command::Pause(true)) => {
@@ -213,11 +222,11 @@ impl Link {
                 Ok(Command::Stop) => (self.control(|d, to, id| d.media.stop(to, id))?, false),
                 Err(RecvTimeoutError::Timeout) => (self.ask()?, false),
             };
-            heard.lock().unwrap().record(entry.as_ref(), loaded);
+            heard.lock().unwrap().record(reading, loaded);
         }
     }
 
-    fn load(&mut self, media: &Media) -> Result<Option<StatusEntry>, Error> {
+    fn load(&mut self, media: &Media) -> Result<Option<Reading>, Error> {
         let status = self.device.media.load_with_opts(
             self.transport_id.clone(),
             self.session_id.clone(),
@@ -229,43 +238,94 @@ impl Link {
         )?;
         let entry = status.entries.into_iter().next();
         self.media_session = entry.as_ref().map(|entry| entry.media_session_id);
-        Ok(entry)
+        self.phase = Phase::Loading;
+        Ok(entry.map(|entry| self.note(&entry)))
+    }
+
+    /// Takes what the device says of the player as the state of the song.
+    fn note(&mut self, entry: &StatusEntry) -> Reading {
+        let (state, position) = (
+            state_of(entry),
+            f64::from(entry.current_time.unwrap_or_default()),
+        );
+        // Only a song heard playing can end by its session being dropped; one
+        // paused, stopped or taken over would otherwise count as finished.
+        self.phase = match state {
+            OutputState::Playing => Phase::Started,
+            OutputState::Finished => Phase::Ended,
+            _ => Phase::Loading,
+        };
+        (state, position)
     }
 
     /// Has the device change what it plays; nothing when nothing is loaded.
     fn control(
-        &self,
+        &mut self,
         change: impl FnOnce(&CastDevice<'static>, String, i32) -> Result<StatusEntry, Error>,
-    ) -> Result<Option<StatusEntry>, Error> {
+    ) -> Result<Option<Reading>, Error> {
         let Some(session) = self.media_session else {
             return Ok(None);
         };
-        change(&self.device, self.transport_id.clone(), session).map(Some)
+        let entry = change(&self.device, self.transport_id.clone(), session)?;
+        Ok(Some(self.note(&entry)))
     }
 
-    /// Answers the device's pings, and asks how the player is.
-    fn ask(&mut self) -> Result<Option<StatusEntry>, Error> {
-        self.exchange_pings()?;
+    /// Answers the device's pings, and asks how the player is, unless the
+    /// device has just said so itself.
+    fn ask(&mut self) -> Result<Option<Reading>, Error> {
+        let broadcast = self.exchange_pings()?;
         let Some(session) = self.media_session else {
             return Ok(None);
         };
-        let status = self
+        if self.phase == Phase::Ended {
+            return Ok(Some((OutputState::Finished, 0.0)));
+        }
+        if let Some(entry) = broadcast.filter(|entry| entry.media_session_id == session) {
+            return Ok(Some(self.note(&entry)));
+        }
+        let polled = self
             .device
             .media
-            .get_status(self.transport_id.clone(), Some(session))?;
-        Ok(status.entries.into_iter().next())
+            .get_status(self.transport_id.clone(), Some(session));
+        match polled {
+            Ok(status) => match status.entries.into_iter().next() {
+                Some(entry) => Ok(Some(self.note(&entry))),
+                None => Ok(self.session_gone()),
+            },
+            // rust_cast has no variant for the device not knowing the session.
+            Err(Error::Internal(why)) if why.starts_with("Invalid request") => {
+                Ok(self.session_gone())
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// A Default Media Receiver may drop the media session once the song has
+    /// ended, so a session that was playing and is no more has ended.
+    fn session_gone(&mut self) -> Option<Reading> {
+        if self.phase != Phase::Started {
+            return None;
+        }
+        self.phase = Phase::Ended;
+        Some((OutputState::Finished, 0.0))
     }
 
     /// Sends a ping and reads until its pong, answering the device's own
-    /// pings on the way: the device hangs up on a sender that doesn't.
-    fn exchange_pings(&self) -> Result<(), Error> {
+    /// pings on the way: the device hangs up on a sender that doesn't. The
+    /// device announces the end of a song once, unasked, so the last status
+    /// that comes in on the way is handed back.
+    fn exchange_pings(&self) -> Result<Option<StatusEntry>, Error> {
         self.device.heartbeat.ping()?;
+        let mut broadcast = None;
         loop {
             match self.device.receive()? {
                 ChannelMessage::Heartbeat(HeartbeatResponse::Ping) => {
                     self.device.heartbeat.pong()?
                 }
-                ChannelMessage::Heartbeat(HeartbeatResponse::Pong) => return Ok(()),
+                ChannelMessage::Heartbeat(HeartbeatResponse::Pong) => return Ok(broadcast),
+                ChannelMessage::Media(MediaResponse::Status(status)) => {
+                    broadcast = status.entries.into_iter().last().or(broadcast);
+                }
                 ChannelMessage::Connection(ConnectionResponse::Close) => {
                     return Err(Error::Internal("The device closed the connection.".into()));
                 }

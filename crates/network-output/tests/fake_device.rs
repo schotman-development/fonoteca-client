@@ -21,6 +21,18 @@ struct Player {
     state: &'static str,
     position: f64,
     idle_reason: Option<&'static str>,
+    /// Set by a test: the next ping is followed by the end-of-song broadcast,
+    /// and from then on the media session is gone.
+    ends_with: Option<WhenGone>,
+    /// Has the broadcast gone out and the media session been dropped.
+    gone: Option<WhenGone>,
+}
+
+/// What a real receiver may answer about a media session it has dropped.
+#[derive(Clone, Copy)]
+enum WhenGone {
+    EmptyStatus,
+    InvalidRequest,
 }
 
 struct FakeDevice {
@@ -52,6 +64,8 @@ impl FakeDevice {
                 state: "IDLE",
                 position: 0.0,
                 idle_reason: None,
+                ends_with: None,
+                gone: None,
             })),
         };
         let (received, hang_up, player) = (
@@ -73,7 +87,7 @@ impl FakeDevice {
                 };
                 let kind = field(payload, "type").unwrap_or_default();
                 received.lock().unwrap().push(kind.clone());
-                if let Some(reply) = answer(
+                for reply in answer(
                     &message.namespace,
                     &kind,
                     payload,
@@ -128,8 +142,41 @@ fn answer(
     kind: &str,
     payload: &str,
     player: &mut Player,
-) -> Option<(String, String)> {
+) -> Vec<(String, String)> {
     let request_id = field(payload, "requestId").unwrap_or_default();
+    if let (HEARTBEAT, "PING", Some(when)) = (namespace, kind, player.ends_with.take()) {
+        player.state = "IDLE";
+        player.idle_reason = Some("FINISHED");
+        let broadcast = media_status("0", player);
+        player.gone = Some(when);
+        return vec![broadcast, (HEARTBEAT.into(), r#"{"type":"PONG"}"#.into())];
+    }
+    if let (MEDIA, "GET_STATUS", Some(when)) = (namespace, kind, player.gone) {
+        return vec![match when {
+            WhenGone::EmptyStatus => (
+                MEDIA.into(),
+                format!(r#"{{"type":"MEDIA_STATUS","requestId":{request_id},"status":[]}}"#),
+            ),
+            WhenGone::InvalidRequest => (
+                MEDIA.into(),
+                format!(
+                    r#"{{"type":"INVALID_REQUEST","requestId":{request_id},"reason":"INVALID_MEDIA_SESSION_ID"}}"#
+                ),
+            ),
+        }];
+    }
+    answer_one(namespace, kind, payload, player, &request_id)
+        .into_iter()
+        .collect()
+}
+
+fn answer_one(
+    namespace: &str,
+    kind: &str,
+    payload: &str,
+    player: &mut Player,
+    request_id: &str,
+) -> Option<(String, String)> {
     match (namespace, kind) {
         (HEARTBEAT, "PING") => Some((HEARTBEAT.into(), r#"{"type":"PONG"}"#.into())),
         (RECEIVER, "LAUNCH") => Some((
@@ -148,28 +195,29 @@ fn answer(
                 .and_then(|t| t.parse().ok())
                 .unwrap_or(0.0);
             player.idle_reason = None;
-            Some(media_status(&request_id, player))
+            player.gone = None;
+            Some(media_status(request_id, player))
         }
         (MEDIA, "PAUSE") => {
             player.state = "PAUSED";
-            Some(media_status(&request_id, player))
+            Some(media_status(request_id, player))
         }
         (MEDIA, "PLAY") => {
             player.state = "PLAYING";
-            Some(media_status(&request_id, player))
+            Some(media_status(request_id, player))
         }
         (MEDIA, "SEEK") => {
             player.position = field(payload, "currentTime")
                 .and_then(|t| t.parse().ok())
                 .unwrap_or(0.0);
-            Some(media_status(&request_id, player))
+            Some(media_status(request_id, player))
         }
         (MEDIA, "STOP") => {
             player.state = "IDLE";
             player.idle_reason = Some("CANCELLED");
-            Some(media_status(&request_id, player))
+            Some(media_status(request_id, player))
         }
-        (MEDIA, "GET_STATUS") => Some(media_status(&request_id, player)),
+        (MEDIA, "GET_STATUS") => Some(media_status(request_id, player)),
         _ => None,
     }
 }
@@ -314,5 +362,78 @@ fn a_device_that_is_not_there_is_unavailable() {
             "the session never said the device was not there"
         );
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A real receiver announces the end of a song once, unasked, and may then
+/// drop the media session; the queue must still go on to the next song.
+fn a_finished_song_is_seen_once_and_the_next_one_loads(when_gone: WhenGone) {
+    let fake = FakeDevice::start();
+    let mut session = fake.device().connect(no_pcm());
+    session.load(song(0.0, false));
+    wait_for(session.as_ref(), |s| {
+        s.loads == 1 && s.state == OutputState::Playing
+    });
+
+    fake.player.lock().unwrap().ends_with = Some(when_gone);
+    wait_for(session.as_ref(), |s| {
+        s.loads == 1 && s.state == OutputState::Finished
+    });
+    // Nothing the player asks for after this may undo or repeat the end.
+    std::thread::sleep(Duration::from_millis(2500));
+    let status = session.status().unwrap();
+    assert_eq!((status.loads, status.state), (1, OutputState::Finished));
+
+    session.load(song(0.0, false));
+    let status = wait_for(session.as_ref(), |s| s.loads == 2);
+    assert_ne!(status.state, OutputState::Finished, "{status:?}");
+    wait_for(session.as_ref(), |s| s.state == OutputState::Playing);
+}
+
+#[test]
+fn the_end_of_a_song_broadcast_before_the_session_is_dropped_is_not_lost() {
+    a_finished_song_is_seen_once_and_the_next_one_loads(WhenGone::EmptyStatus);
+}
+
+#[test]
+fn a_dropped_session_that_answers_invalid_request_does_not_end_the_session() {
+    a_finished_song_is_seen_once_and_the_next_one_loads(WhenGone::InvalidRequest);
+}
+
+#[test]
+fn a_session_dropped_without_a_broadcast_after_playing_counts_as_the_end() {
+    for when_gone in [WhenGone::EmptyStatus, WhenGone::InvalidRequest] {
+        let fake = FakeDevice::start();
+        let mut session = fake.device().connect(no_pcm());
+        session.load(song(0.0, false));
+        wait_for(session.as_ref(), |s| s.state == OutputState::Playing);
+        fake.player.lock().unwrap().gone = Some(when_gone);
+        wait_for(session.as_ref(), |s| s.state == OutputState::Finished);
+    }
+}
+
+#[test]
+fn a_song_stopped_by_someone_else_or_paused_is_not_finished_when_its_session_goes() {
+    for (state, idle_reason, wanted) in [
+        (
+            "IDLE",
+            Some("CANCELLED"),
+            OutputState::Failed("Something else took over the device.".into()),
+        ),
+        ("PAUSED", None, OutputState::Paused),
+    ] {
+        let fake = FakeDevice::start();
+        let mut session = fake.device().connect(no_pcm());
+        session.load(song(0.0, false));
+        wait_for(session.as_ref(), |s| s.state == OutputState::Playing);
+        {
+            let mut player = fake.player.lock().unwrap();
+            player.state = state;
+            player.idle_reason = idle_reason;
+        }
+        wait_for(session.as_ref(), |s| s.state == wanted);
+        fake.player.lock().unwrap().gone = Some(WhenGone::EmptyStatus);
+        std::thread::sleep(Duration::from_millis(2500));
+        assert_ne!(session.status().unwrap().state, OutputState::Finished);
     }
 }
