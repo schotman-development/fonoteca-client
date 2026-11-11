@@ -13,6 +13,8 @@ mod browser_clock;
 mod catalogue;
 #[cfg(target_os = "macos")]
 mod desktop_media;
+#[cfg(target_os = "macos")]
+mod macos_colors;
 #[cfg(not(target_family = "wasm"))]
 mod download_job;
 #[cfg(not(target_family = "wasm"))]
@@ -547,6 +549,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // needs the window system, so only once the window exists.
     #[cfg(target_os = "linux")]
     slint::set_xdg_app_id("io.github.schotman_development.fonoteca")?;
+    // The window has to exist to be tagged, and run() would not return before it closes.
+    #[cfg(target_os = "macos")]
+    {
+        ui.show()?;
+        macos_colors::tag_windows_srgb();
+    }
     ui.run()?;
     #[cfg(not(target_family = "wasm"))]
     ui.invoke_event_loop_ended();
