@@ -2992,58 +2992,83 @@ export component AppWindow inherits Window {
                             columns: root.track-columns;
                             sort(index) => { root.sort-tracks(index); }
                         }
-                        for line[row] in root.track-lines: TrackLineRow {
-                            columns: root.track-columns;
-                            line: line;
-                            striped: mod(row, 2) == 1;
-                            selecting: root.selected-tiles > 0;
-                            joined-above: row > 0 && root.track-lines[row - 1].selected;
-                            joined-below: row + 1 < root.track-lines.length && root.track-lines[row + 1].selected;
-                            // A composition is no song to add or tag.
-                            playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
-                            taggable: root.tags-offered && root.page != Page.compositions;
-                            playable: root.can-play && root.page != Page.compositions;
-                            downloadable: root.can-download && root.may-download;
-                            downloadable-songs: root.page == Page.playlist && root.can-download && root.may-download;
-                            removable: root.page == Page.playlist && root.playlist-editable;
-                            open(link) => { root.open(link); }
-                            // A folder plays and queues as an album does.
-                            play => {
-                                if line.folder {
-                                    root.queue-link(line.link, "play");
-                                } else {
-                                    root.play-tracks(row);
-                                }
+                        for line[row] in root.track-lines: VerticalLayout {
+                            // A playlist in its own order shows each whole work as an album
+                            // does, `tracks` holding a row to each song for it.
+                            property <Track> group: root.page == Page.playlist ? root.tracks[row] : { };
+                            property <bool> grouped: root.page == Page.playlist && root.tracks.length > 0;
+                            if group.work != "": TrackRow {
+                                title: group.work;
+                                names: group.work-names;
+                                split: group.work-split;
+                                duration: group.work-duration;
+                                years: group.work-years;
+                                performed: group.work-performed;
+                                lovable: false;
+                                strong: true;
+                                selected: group.work-selected;
+                                joined-above: group.work-joined-above;
+                                joined-below: true;
+                                selecting: root.selected-tiles > 0;
+                                playable: root.can-play;
+                                open(link) => { root.open(link); }
+                                select(range) => { root.select-work(row, range); }
+                                play => { root.play-tracks(row); }
+                                queue(next) => { root.queue-tracks(row, group.work-tracks, next); }
                             }
-                            queue(next) => {
-                                if line.folder {
-                                    root.queue-link(line.link, next ? "next" : "queue");
-                                } else {
-                                    root.queue-tracks(row, 1, next);
+                            TrackLineRow {
+                                columns: root.track-columns;
+                                line: line;
+                                striped: mod(row, 2) == 1;
+                                selecting: root.selected-tiles > 0;
+                                joined-above: grouped ? group.joined-above : row > 0 && root.track-lines[row - 1].selected;
+                                joined-below: grouped ? group.joined-below : row + 1 < root.track-lines.length && root.track-lines[row + 1].selected;
+                                // A composition is no song to add or tag.
+                                playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
+                                taggable: root.tags-offered && root.page != Page.compositions;
+                                playable: root.can-play && root.page != Page.compositions;
+                                downloadable: root.can-download && root.may-download;
+                                downloadable-songs: root.page == Page.playlist && root.can-download && root.may-download;
+                                removable: root.page == Page.playlist && root.playlist-editable;
+                                open(link) => { root.open(link); }
+                                // A folder plays and queues as an album does.
+                                play => {
+                                    if line.folder {
+                                        root.queue-link(line.link, "play");
+                                    } else {
+                                        root.play-tracks(row);
+                                    }
                                 }
-                            }
-                            // A playlist's song goes by its place on it, as it may be on it twice.
-                            download => {
-                                if root.page == Page.playlist {
-                                    root.download-track(line.position);
-                                } else {
-                                    root.download-link(line.link);
+                                queue(next) => {
+                                    if line.folder {
+                                        root.queue-link(line.link, next ? "next" : "queue");
+                                    } else {
+                                        root.queue-tracks(row, 1, next);
+                                    }
                                 }
-                            }
-                            remove-download => {
-                                if root.page == Page.playlist {
-                                    root.remove-track-download(line.position);
-                                } else {
-                                    root.remove-link-download(line.link);
+                                // A playlist's song goes by its place on it, as it may be on it twice.
+                                download => {
+                                    if root.page == Page.playlist {
+                                        root.download-track(line.position);
+                                    } else {
+                                        root.download-link(line.link);
+                                    }
                                 }
-                            }
-                            remove => { root.remove-from-playlist(line.position); }
-                            toggle-love => { root.toggle-line-love(row); }
-                            select(range) => { root.select-line(row, range); }
-                            add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
-                            tag => {
-                                root.tag-line(row);
-                                root.ask(Asking.tag-songs);
+                                remove-download => {
+                                    if root.page == Page.playlist {
+                                        root.remove-track-download(line.position);
+                                    } else {
+                                        root.remove-link-download(line.link);
+                                    }
+                                }
+                                remove => { root.remove-from-playlist(line.position); }
+                                toggle-love => { root.toggle-line-love(row); }
+                                select(range) => { root.select-line(row, range); }
+                                add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
+                                tag => {
+                                    root.tag-line(row);
+                                    root.ask(Asking.tag-songs);
+                                }
                             }
                         }
                     }

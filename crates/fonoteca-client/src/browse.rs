@@ -1302,6 +1302,7 @@ fn select_line(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
             lines.set_row_data(row, line);
         }
     }
+    show_track_selection(&b);
     show_selected(ui, &b);
 }
 
@@ -1369,7 +1370,24 @@ fn select_work(ui: &AppWindow, browser: &Shared, row: usize, range: bool) {
         None => pick_all(&mut b, &links[work]),
     }
     show_track_selection(&b);
+    show_line_selection(&b);
     show_selected(ui, &b);
+}
+
+/// Shows on every row of the table whether its song is selected, for what
+/// was picked from a work's row.
+fn show_line_selection(b: &Browser) {
+    for row in 0..b.lines.row_count() {
+        let Some(mut line) = b.lines.row_data(row) else {
+            continue;
+        };
+        let selected =
+            b.selected.iter().any(|link| *link == line.link.as_str()) && !line.unavailable;
+        if line.selected != selected {
+            line.selected = selected;
+            b.lines.set_row_data(row, line);
+        }
+    }
 }
 
 /// Shows on every track row whether its song is selected, and on a work's
@@ -3362,9 +3380,18 @@ fn track_line(
     columns: &[usize],
     size: u32,
 ) -> TrackLine {
+    // A movement shows its own title, under its work's row.
+    let movement = b.tracks.row_data(position).filter(|track| track.part);
     let cells: Vec<ModelRc<Name>> = columns
         .iter()
-        .map(|&c| names((COLUMNS[c].cell)(song)))
+        .map(|&c| {
+            let mut cell = (COLUMNS[c].cell)(song);
+            if let (Some(movement), TITLE) = (&movement, COLUMNS[c].title) {
+                cell.iter_mut()
+                    .for_each(|name| name.label = movement.title.clone());
+            }
+            names(cell)
+        })
         .collect();
     let cover = song
         .cover_art
@@ -3379,6 +3406,7 @@ fn track_line(
         .collect();
     TrackLine {
         title: song.title.as_str().into(),
+        part: movement.is_some(),
         cells: ModelRc::new(VecModel::from(cells)),
         loved: song.starred.is_some(),
         cover: cover.unwrap_or_default(),
@@ -3718,9 +3746,38 @@ fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
         } else {
             b.view = view;
         }
+        if page == Page::Playlist {
+            show_playlist_works(&mut b);
+        }
         shown
     };
     show_lines(ui, browser, shown.max(TILES_AT_ONCE));
+}
+
+/// Groups the playlist's whole works as an album does, while its table is in
+/// the playlist's own order: `tracks` gets a row to each song, so a row's
+/// number is its song's place. Once the table is sorted a work's movements
+/// would be taken apart, so it is flat and `tracks` is empty.
+fn show_playlist_works(b: &mut Browser) {
+    let rows = if b.playlist_table.sort.is_none() {
+        playlist_works(&b.songs)
+    } else {
+        Vec::new()
+    };
+    b.tracks.set_vec(rows);
+    show_track_selection(b);
+}
+
+/// A row to each of `songs`: a movement of a whole work, the first of them
+/// with the work's row above it, or else a plain one.
+fn playlist_works(songs: &[Child]) -> Vec<Track> {
+    whole_works(songs)
+        .into_iter()
+        .flat_map(|run| match run {
+            [_] => vec![Track::default()],
+            _ => work_rows(run),
+        })
+        .collect()
 }
 
 /// Shows the tracks or folders page's rows up to the `upto`th.
@@ -8993,6 +9050,80 @@ mod tests {
                 .unwrap()
             })
             .collect()
+    }
+
+    /// A playlist of a song, a whole symphony of three movements, a song,
+    /// and then the first and the last movement of another work.
+    fn playlist_with_works() -> Browser {
+        let mut songs = work_songs(&[
+            ("Alone", r#""name":"Alone""#),
+            ("W: I", r#""name":"I","number":1,"count":3"#),
+            ("W: II", r#""name":"II","number":2,"count":3"#),
+            ("W: III", r#""name":"III","number":3,"count":3"#),
+            ("Other", r#""name":"Other""#),
+            ("V: I", r#""name":"I","number":1,"count":3"#),
+            ("V: III", r#""name":"III","number":3,"count":3"#),
+        ]);
+        songs[0].works.clear();
+        songs[4].works.clear();
+        Browser {
+            songs,
+            ..Browser::default()
+        }
+    }
+
+    #[test]
+    fn a_playlist_in_its_own_order_groups_whole_works_and_leaves_partial_ones_single() {
+        let mut b = playlist_with_works();
+        show_playlist_works(&mut b);
+        let rows: Vec<Track> = b.tracks.iter().collect();
+        assert_eq!(rows.len(), b.songs.len());
+        let works: Vec<i32> = rows.iter().map(|row| row.work_tracks).collect();
+        assert_eq!(works, [0, 3, 0, 0, 0, 0, 0]);
+        let parts: Vec<bool> = rows.iter().map(|row| row.part).collect();
+        assert_eq!(parts, [false, true, true, true, false, false, false]);
+        assert_eq!(rows[1].work.as_str(), "Symphony no. 8");
+        assert_eq!(rows[2].title.as_str(), "II");
+    }
+
+    #[test]
+    fn a_sorted_playlist_is_flat() {
+        let mut b = playlist_with_works();
+        show_playlist_works(&mut b);
+        b.playlist_table.sort = Some(0);
+        show_playlist_works(&mut b);
+        assert_eq!(b.tracks.row_count(), 0);
+        b.playlist_table.sort = None;
+        show_playlist_works(&mut b);
+        assert_eq!(b.tracks.row_count(), b.songs.len());
+    }
+
+    #[test]
+    fn a_movement_row_keeps_its_place_on_the_playlist_and_shows_its_own_title() {
+        let mut b = playlist_with_works();
+        show_playlist_works(&mut b);
+        let columns: Vec<usize> = (0..COLUMNS.len())
+            .filter(|&c| COLUMNS[c].title == TITLE)
+            .collect();
+        let movement = track_line(&b, &b.songs[2], 2, &columns, 0);
+        assert_eq!(movement.position, 2);
+        assert!(movement.part);
+        assert_eq!(
+            movement
+                .cells
+                .row_data(0)
+                .unwrap()
+                .row_data(0)
+                .unwrap()
+                .label,
+            "II"
+        );
+        let single = track_line(&b, &b.songs[4], 4, &columns, 0);
+        assert!(!single.part);
+        assert_eq!(
+            single.cells.row_data(0).unwrap().row_data(0).unwrap().label,
+            "Other"
+        );
     }
 
     #[test]

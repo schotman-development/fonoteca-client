@@ -1564,6 +1564,8 @@ export struct TrackLine {
     unavailable: bool,
     // The song's place among the songs the table lists, before sorting.
     position: int,
+    // A movement of a work on a playlist, indented under the work's row.
+    part: bool,
 }
 
 // One item of a list, such as a user: its name, a link to its page when it
@@ -2003,7 +2005,8 @@ export component TrackLineRow inherits Rectangle {
                     folder: root.line.folder;
                 }
                 if !column.heart && !column.cover && slot.plain: Text {
-                    width: parent.width;
+                    x: root.line.part && column.stretch ? 20px : 0px;
+                    width: parent.width - self.x;
                     height: parent.height;
                     text: slot.names[0].label;
                     font-size: Theme.body;
@@ -2012,8 +2015,9 @@ export component TrackLineRow inherits Rectangle {
                     vertical-alignment: center;
                 }
                 if !column.heart && !column.cover && !slot.plain: LinksLine {
+                    x: root.line.part && column.stretch ? 20px : 0px;
                     y: (parent.height - self.height) / 2;
-                    width: parent.width;
+                    width: parent.width - self.x;
                     alignment: start;
                     names: slot.names;
                     // Two names, such as a piece's composers, fit the row.
