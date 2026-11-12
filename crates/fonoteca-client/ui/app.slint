@@ -1,6 +1,6 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
 export { AccentChoice, AlbumTile, Drag, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, TrackColumn, TrackLine, Waveform }
 
@@ -1324,6 +1324,8 @@ export component AppWindow inherits Window {
     // The format and bitrate downloads are fetched in, by the picker's entries.
     in-out property <int> download-format;
     in-out property <int> download-bitrate;
+    // The same for a server that decides what to convert: the level's entry.
+    in-out property <int> download-level;
     // Whether downloads may use mobile data; wifi only without.
     in-out property <bool> download-mobile;
     in property <[StationRow]> station-rows;
@@ -1484,6 +1486,12 @@ export component AppWindow inherits Window {
     in-out property <int> wifi-bitrate;
     in-out property <int> mobile-format;
     in-out property <int> mobile-bitrate;
+    // For a server that decides what to convert: its entry in the quality
+    // levels for wifi and for mobile data, which stand in for the format and
+    // bitrate entries above.
+    in property <bool> transcoding-offered;
+    in-out property <int> wifi-level;
+    in-out property <int> mobile-level;
     // The sound processing: its presets after a first "No preset" entry, the
     // one it was last set from or saved as, and whether it changed since;
     // the headroom's, crossfeed's and upsampling's entries; whether the EQ
@@ -1662,6 +1670,7 @@ export component AppWindow inherits Window {
     callback remove-link-download(link: string);
     callback choose-download-limit(index: int);
     callback choose-download-quality(format: int, bitrate: int);
+    callback choose-download-level(level: int);
     callback choose-download-mobile(allowed: bool);
     // The answer yes to the question what a download takes, asked with
     // `ask-download`.
@@ -1751,6 +1760,7 @@ export component AppWindow inherits Window {
     callback choose-accent(index: int);
     callback choose-simple-seek-bar(simple: bool);
     callback choose-stream-quality(mobile: bool, format: int, bitrate: int);
+    callback choose-stream-level(mobile: bool, level: int);
     callback add-selection-to-playlist(id: string);
     // Playlist folders: a new one with this name in the folder on screen;
     // the one on screen renamed, moved into the folder with this id, or to
@@ -3279,7 +3289,13 @@ export component AppWindow inherits Window {
                             color: Theme.muted;
                             wrap: word-wrap;
                         }
-                        QualityPicker {
+                        if root.transcoding-offered: LevelPicker {
+                            name: "Download quality";
+                            level <=> root.download-level;
+                            enabled: !Input.modal;
+                            chosen(level) => { root.choose-download-level(level); }
+                        }
+                        if !root.transcoding-offered: QualityPicker {
                             name: "Download format";
                             format <=> root.download-format;
                             bitrate <=> root.download-bitrate;
@@ -3399,14 +3415,26 @@ export component AppWindow inherits Window {
                             enabled: !Input.modal;
                             selected => { root.choose-leveling(self.current-index); }
                         }
-                        if root.can-play: QualityPicker {
+                        if root.can-play && root.transcoding-offered: LevelPicker {
+                            name: root.has-mobile-data ? "Streaming on wifi" : "Streaming";
+                            level <=> root.wifi-level;
+                            enabled: !Input.modal;
+                            chosen(level) => { root.choose-stream-level(false, level); }
+                        }
+                        if root.can-play && root.transcoding-offered && root.has-mobile-data: LevelPicker {
+                            name: "Streaming on mobile data";
+                            level <=> root.mobile-level;
+                            enabled: !Input.modal;
+                            chosen(level) => { root.choose-stream-level(true, level); }
+                        }
+                        if root.can-play && !root.transcoding-offered: QualityPicker {
                             name: root.has-mobile-data ? "Streaming on wifi" : "Streaming";
                             format <=> root.wifi-format;
                             bitrate <=> root.wifi-bitrate;
                             enabled: !Input.modal;
                             chosen(format, bitrate) => { root.choose-stream-quality(false, format, bitrate); }
                         }
-                        if root.can-play && root.has-mobile-data: QualityPicker {
+                        if root.can-play && !root.transcoding-offered && root.has-mobile-data: QualityPicker {
                             name: "Streaming on mobile data";
                             format <=> root.mobile-format;
                             bitrate <=> root.mobile-bitrate;

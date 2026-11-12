@@ -1,0 +1,58 @@
+{
+  "name": "Play:1",
+  "platform": "Sonos",
+  "maxAudioBitrate": 512000,
+  "maxTranscodingAudioBitrate": 256000,
+  "directPlayProfiles": [
+    {
+      "containers": [ "mp3" ],
+      "audioCodecs": [ "mp3" ],
+      "protocols": [ "http" ],
+      "maxAudioChannels": 2
+    },
+    {
+      "containers": [ "flac" ],
+      "audioCodecs": [ "flac" ],
+      "protocols": [],
+      "maxAudioChannels": 2
+    }
+    ,
+    {
+      "containers": [ "mp4" ],
+      "audioCodecs": [ "flac", "aac", "alac" ],
+      "protocols": [],
+      "maxAudioChannels": 2
+    }
+    ],
+    "transcodingProfiles": [
+    {
+      "container": "mp3",
+      "audioCodec": "mp3",
+      "protocol": "http",
+      "maxAudioChannels": 2
+    },
+    {
+      "container": "flac",
+      "audioCodec": "flac",
+      "protocol": "hls",
+      "maxAudioChannels": 2
+    }
+  ],
+  "codecProfiles": [
+    {
+      "type": "AudioCodec",
+      "name": "mp3",
+      "limitations": [
+        { "name": "audioBitrate", "comparison": "LessThanEqual", "values": [ "320000" ], "required": true }
+      ]
+    },
+    {
+      "type": "AudioCodec",
+      "name": "flac",
+      "limitations": [
+        { "name": "audioSamplerate", "comparison": "LessThanEqual", "values":  [ "192000" ], "required": false },
+        { "name": "audioChannels",  "comparison": "Equals", "values": ["1", "2" ],      "required": false }
+      ]
+    }
+  ]
+}

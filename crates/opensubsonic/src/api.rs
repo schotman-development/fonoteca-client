@@ -740,6 +740,44 @@ impl Client {
         self.data("stream", params).await.map(Stream)
     }
 
+    /// The server's decision on whether `song_id` plays as it is, or is
+    /// converted, for a client that plays what `client` says. Where the
+    /// client [`supports`](Client::supports) `transcoding`. Posted as JSON
+    /// with the login in the URL.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/gettranscodedecision/>
+    pub async fn get_transcode_decision(
+        &self,
+        song_id: &str,
+        client: &ClientInfo,
+    ) -> Result<TranscodeDecision> {
+        let params = Params::new()
+            .req("mediaId", song_id)
+            .req("mediaType", "song");
+        self.post_json("getTranscodeDecision", params, client, "transcodeDecision")
+            .await
+    }
+
+    /// The conversion a [`TranscodeDecision`] offered for `song_id`, from
+    /// `offset` seconds in when given. `transcode_params` are the decision's,
+    /// as they came.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/gettranscodestream/>
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn get_transcode_stream(
+        &self,
+        song_id: &str,
+        transcode_params: &str,
+        offset: Option<f64>,
+    ) -> Result<Stream> {
+        let params = Params::new()
+            .req("mediaId", song_id)
+            .req("mediaType", "song")
+            .escaped("transcodeParams", transcode_params)
+            .opt("offset", offset);
+        self.data("getTranscodeStream", params).await.map(Stream)
+    }
+
     /// A song's original file, never transcoded, to read as it arrives.
     /// Servers refuse it to users without the download role. Not in the
     /// browser build, for the reason `stream` isn't.

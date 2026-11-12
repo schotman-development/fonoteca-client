@@ -274,7 +274,12 @@ impl Client {
         }
     }
 
-    fn request(&self, endpoint: &str, params: &Params) -> Result<(reqwest::RequestBuilder, u8)> {
+    fn request(
+        &self,
+        endpoint: &str,
+        params: &Params,
+        payload: Option<&Value>,
+    ) -> Result<(reqwest::RequestBuilder, u8)> {
         let method = self.password_method.load(Relaxed);
         let mut query = vec![
             ("v", PROTOCOL_VERSION.to_owned()),
@@ -305,11 +310,25 @@ impl Client {
             }
         }
         query.extend(params.0.iter().cloned());
-        let url = self
+        let mut url = self
             .rest
             .join(endpoint)
             .map_err(|e| Error::InvalidUrl(e.to_string()))?;
-        let request = if self.form_post.load(Relaxed) {
+        if !params.1.is_empty() {
+            let escaped: Vec<String> = (params.1.iter())
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect();
+            url.set_query(Some(&escaped.join("&")));
+        }
+        // A JSON body leaves the form no room, so the credentials stay in the
+        // URL's query whatever form POST says.
+        let request = if let Some(payload) = payload {
+            self.http
+                .post(url)
+                .query(&query)
+                .header(CONTENT_TYPE, "application/json")
+                .body(serde_json::to_vec(payload)?)
+        } else if self.form_post.load(Relaxed) {
             self.http.post(url).form(&query)
         } else {
             self.http.get(url).query(&query)
@@ -351,12 +370,22 @@ impl Client {
     }
 
     async fn send(&self, endpoint: &str, params: &Params) -> Result<Body> {
+        self.send_with(endpoint, params, None).await
+    }
+
+    /// `send`, with `payload` as a JSON body when there is one.
+    async fn send_with(
+        &self,
+        endpoint: &str,
+        params: &Params,
+        payload: Option<&Value>,
+    ) -> Result<Body> {
         if let Some(sign_in) = &self.signing_in {
             let signed_in = sign_in.over().await.ok_or(Error::NotSignedIn)?;
-            return Box::pin(signed_in.send(endpoint, params)).await;
+            return Box::pin(signed_in.send_with(endpoint, params, payload)).await;
         }
         loop {
-            let (request, method) = self.request(endpoint, params)?;
+            let (request, method) = self.request(endpoint, params, payload)?;
             let response = exchange(request).await?;
             let status = response.status();
             let content_type = response
@@ -445,6 +474,24 @@ impl Client {
         key: &str,
     ) -> Result<T> {
         take(self.json(endpoint, &params).await?, endpoint, key)
+    }
+
+    /// Posts `payload` as JSON to `endpoint` and returns the element `key` of
+    /// its response. Never kept for later, as the answers to GETs are.
+    async fn post_json<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        params: Params,
+        payload: &impl Serialize,
+        key: &str,
+    ) -> Result<T> {
+        let payload = serde_json::to_value(payload)?;
+        match self.send_with(endpoint, &params, Some(&payload)).await? {
+            Body::Json(response) => take(response, endpoint, key),
+            Body::Binary(_) => Err(Error::Unexpected(format!(
+                "{endpoint} answered with data instead of JSON"
+            ))),
+        }
     }
 
     /// Calls an endpoint whose response carries nothing but its status.
@@ -640,9 +687,11 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Query parameters of one call, in order. Repeated names are allowed.
+/// Query parameters of one call, in order. Repeated names are allowed. The
+/// second list holds values already escaped for a URL, which go in as they
+/// are.
 #[derive(Default)]
-struct Params(Vec<(&'static str, String)>);
+struct Params(Vec<(&'static str, String)>, Vec<(&'static str, String)>);
 
 impl Params {
     fn new() -> Self {
@@ -659,6 +708,14 @@ impl Params {
             Some(value) => self.req(name, value),
             None => self,
         }
+    }
+
+    /// A value the server escaped for a URL itself, which must not be
+    /// escaped again.
+    #[cfg(not(target_family = "wasm"))]
+    fn escaped(mut self, name: &'static str, value: &str) -> Self {
+        self.1.push((name, value.to_owned()));
+        self
     }
 
     fn list(mut self, name: &'static str, values: &[impl ToString]) -> Self {
@@ -759,7 +816,7 @@ mod tests {
 
     fn query(client: &Client) -> Vec<(String, String)> {
         let (request, _) = client
-            .request("getAlbum", &Params::new().req("id", "7"))
+            .request("getAlbum", &Params::new().req("id", "7"), None)
             .unwrap();
         request
             .build()
@@ -840,7 +897,7 @@ mod tests {
         let client = Client::new("https://h", password()).unwrap();
         client.form_post.store(true, Relaxed);
         let (request, _) = client
-            .request("star", &Params::new().list("id", &["1", "2"]))
+            .request("star", &Params::new().list("id", &["1", "2"]), None)
             .unwrap();
         let request = request.build().unwrap();
         assert_eq!(request.method(), "POST");
@@ -902,7 +959,7 @@ mod tests {
         for auth in [password(), Auth::ApiKey("k".into())] {
             let client = Client::new("https://h", auth).unwrap();
             let (request, _) = client
-                .request("getOpenSubsonicExtensions", &Params::new())
+                .request("getOpenSubsonicExtensions", &Params::new(), None)
                 .unwrap();
             let pairs: Vec<_> = request
                 .build()
@@ -1370,6 +1427,44 @@ mod tests {
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 1);
         assert!(!log[0].contains("sesame"), "{}", log[0]);
+    }
+
+    #[tokio::test]
+    async fn a_transcode_decision_posts_json_with_the_login_in_the_url() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("getOpenSubsonicExtensions") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[{"name":"formPost","versions":[1]}]}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","transcodeDecision":{"canDirectPlay":false,"canTranscode":true,"transcodeReason":["AudioCodecNotSupported"],"errorReason":"","transcodeParams":"0001-0005-004","transcodeStream":{"protocol":"http","container":"ogg","codec":"opus","audioBitrate":160000}}}}"#
+            })
+        });
+        let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
+        client.get_open_subsonic_extensions().await.unwrap();
+        let info = ClientInfo {
+            name: "Fonoteca".into(),
+            platform: "Linux".into(),
+            max_audio_bitrate: 0,
+            max_transcoding_audio_bitrate: 160_000,
+            direct_play_profiles: vec![],
+            transcoding_profiles: vec![],
+            codec_profiles: vec![],
+        };
+        let decision = client.get_transcode_decision("tr-1", &info).await.unwrap();
+        assert!(!decision.can_direct_play && decision.can_transcode);
+        assert_eq!(decision.transcode_params.as_deref(), Some("0001-0005-004"));
+        let log = log.lock().unwrap();
+        let (head, body) = log[1].split_once("\r\n\r\n").unwrap();
+        assert!(
+            head.starts_with("POST /rest/getTranscodeDecision?"),
+            "{head}"
+        );
+        assert!(head.contains("apiKey=SECRET") && head.contains("mediaId=tr-1"));
+        assert!(head.contains("mediaType=song"), "{head}");
+        assert!(head.to_ascii_lowercase().contains("application/json"));
+        assert!(
+            body.contains(r#""maxTranscodingAudioBitrate":160000"#),
+            "{body}"
+        );
     }
 
     #[tokio::test]

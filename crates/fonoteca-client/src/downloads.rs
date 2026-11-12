@@ -10,11 +10,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
 
-use opensubsonic::Client;
+use opensubsonic::{Child, Client};
 use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::offline::{Fetch, Item, Work};
-use crate::{AppWindow, browse, download_job, offline, prefs, quality};
+use crate::{AppWindow, browse, download_job, offline, prefs, quality, transcode};
 
 /// How long to wait before the first, second and third new try of a song
 /// the server or the network failed on.
@@ -57,16 +57,24 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     let chosen = quality::within_lists(saved.download_quality);
     ui.set_download_format(chosen.format);
     ui.set_download_bitrate(chosen.bitrate);
-    let (format, bit_rate) = quality::download_request(&saved);
-    browse::downloads(browser).set_quality(format, bit_rate);
+    ui.set_download_level(quality::Level::at(saved.download_level).index());
+    show_quality(browser);
     ui.on_choose_download_quality({
         let browser = browser.clone();
         move |format, bitrate| {
             let mut saved = prefs::load();
             saved.download_quality = prefs::StreamQuality { format, bitrate };
             prefs::save(&saved);
-            let (format, bit_rate) = quality::download_request(&saved);
-            browse::downloads(&browser).set_quality(format, bit_rate);
+            show_quality(&browser);
+        }
+    });
+    ui.on_choose_download_level({
+        let browser = browser.clone();
+        move |level| {
+            let mut saved = prefs::load();
+            saved.download_level = level;
+            prefs::save(&saved);
+            show_quality(&browser);
         }
     });
     let pending: Rc<RefCell<Option<Item>>> = Rc::default();
@@ -121,7 +129,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         let (weak, browser, pending) = (ui.as_weak(), browser.clone(), pending.clone());
         move || {
             if let Some(item) = browse::shown_item(&browser) {
-                ask(&weak.unwrap(), &pending, item);
+                ask(&weak.unwrap(), &browser, &pending, item);
             }
         }
     });
@@ -129,7 +137,12 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
         let (weak, browser, pending) = (ui.as_weak(), browser.clone(), pending.clone());
         move |row| {
             if let Some(song) = browse::song_at(&browser, row as usize) {
-                ask(&weak.unwrap(), &pending, Item::Song(Box::new(song)));
+                ask(
+                    &weak.unwrap(),
+                    &browser,
+                    &pending,
+                    Item::Song(Box::new(song)),
+                );
             }
         }
     });
@@ -153,7 +166,7 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
                 let item = item_at(&client, &link).await;
                 let Some(ui) = weak.upgrade() else { return };
                 match item {
-                    Ok(item) => ask(&ui, &pending, item),
+                    Ok(item) => ask(&ui, &browser, &pending, item),
                     Err(e) => {
                         browse::notify(&ui, &browser, format!("Not downloaded: {e}"));
                     }
@@ -176,11 +189,21 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) {
     });
 }
 
+/// Has songs fetched in the format and bitrate, or the level, the settings
+/// pick, for the server in use.
+fn show_quality(browser: &browse::Shared) {
+    let decides =
+        browse::client(browser).is_some_and(|client| client.supports(quality::TRANSCODING));
+    let (format, bit_rate) = quality::download_request(&prefs::load(), decides);
+    browse::downloads(browser).set_quality(format, bit_rate);
+}
+
 /// Asks whether to keep `item`, telling what that takes, and keeps it in
 /// `pending` for the answer.
-fn ask(ui: &AppWindow, pending: &RefCell<Option<Item>>, item: Item) {
-    let (format, bit_rate) = quality::download_request(&prefs::load());
-    let note = offline::estimate_note(item.songs(), format, bit_rate);
+fn ask(ui: &AppWindow, browser: &browse::Shared, pending: &RefCell<Option<Item>>, item: Item) {
+    show_quality(browser);
+    let (format, bit_rate) = browse::downloads(browser).asked();
+    let note = offline::estimate_note(item.songs(), &format, bit_rate);
     ui.invoke_ask_download(item.title().into(), note.into());
     *pending.borrow_mut() = Some(item);
 }
@@ -503,19 +526,7 @@ async fn receive(
         }
         Work::Song(song) => song,
     };
-    let (format, bit_rate) = (next.asked.0.as_str(), next.asked.1);
-    let mut stream = if format == offline::RAW {
-        client.download(&song.id).await
-    } else {
-        client.stream(&song.id, format, bit_rate, None).await
-    }
-    .map_err(Failure::Server)?;
-    let converted = offline::sent_as_asked(format, stream.content_type().as_deref());
-    let tag = if converted {
-        offline::tag_of(format, bit_rate)
-    } else {
-        offline::ORIGINAL.to_owned()
-    };
+    let (mut stream, tag, converted) = open_song(client, song, &next.asked).await?;
     let path = offline::song_file(&next.folder, song, &tag);
     let mut file = create(partial.insert(offline::partial_of(&path)), &next.cancel)?;
     let mut written = 0;
@@ -540,6 +551,43 @@ async fn receive(
         tag,
         originals_only: !converted,
     })
+}
+
+/// Opens `song` as `asked`, a format and kbit/s, says how the file is
+/// tagged and whether a conversion that was asked for came. The original is
+/// the file as the server keeps it. A server that decides what to convert is
+/// asked as `quality::CONVERTED_FORMAT`, and a song it sends as it is, being
+/// within the level already, is no refusal to convert.
+async fn open_song(
+    client: &Client,
+    song: &Child,
+    asked: &(String, u32),
+) -> Result<(opensubsonic::Stream, String, bool), Failure> {
+    let (format, bit_rate) = (asked.0.as_str(), asked.1);
+    if format == quality::CONVERTED_FORMAT && client.supports(quality::TRANSCODING) {
+        let level = quality::Level::of_kbit_per_second(bit_rate);
+        let kept = transcode::open_to_keep(client, &song.id, level).await;
+        let (stream, converted) =
+            kept.map_err(|e| Failure::Server(opensubsonic::Error::Unexpected(e)))?;
+        let tag = match converted {
+            Some(converted) => offline::tag_of(&converted.format, converted.kbit_per_second),
+            None => offline::ORIGINAL.to_owned(),
+        };
+        return Ok((stream, tag, true));
+    }
+    let stream = if format == offline::RAW {
+        client.download(&song.id).await
+    } else {
+        client.stream(&song.id, format, bit_rate, None).await
+    }
+    .map_err(Failure::Server)?;
+    let converted = offline::sent_as_asked(format, stream.content_type().as_deref());
+    let tag = if converted {
+        offline::tag_of(format, bit_rate)
+    } else {
+        offline::ORIGINAL.to_owned()
+    };
+    Ok((stream, tag, converted))
 }
 
 /// A song or cover whole in its partial file, and where it goes.

@@ -1,7 +1,7 @@
 //! Parses every JSON example on the spec pages of the calls and types this
 //! crate covers. `spec-examples/` holds them, copied from
 //! <https://github.com/opensubsonic/open-subsonic-api> at be131fb44a48 (the
-//! play queue's and scrobble's at c1fd43f) under its Apache-2.0 license. Eleven examples had JSON typos (trailing or missing
+//! play queue's and scrobble's at c1fd43f, the transcoding ones at e0b79897f40f) under its Apache-2.0 license. Eleven examples had JSON typos (trailing or missing
 //! commas, an extra brace); their copies fix only those.
 //!
 //! Left out: the getIndexes and indexes examples, which give numbers and
@@ -91,6 +91,7 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
         "getPlayQueueByIndex" => {
             check::<Option<PlayQueueByIndex>>(response, name, "playQueueByIndex")
         }
+        "getTranscodeDecision" => check::<TranscodeDecision>(response, name, "transcodeDecision"),
         "getInternetRadioStations" => {
             check::<InternetRadioStations>(response, name, "internetRadioStations")
         }
@@ -139,9 +140,12 @@ fn response(name: &str, json: &[u8]) -> Result<()> {
         "ArtistsID3" => parse::<ArtistsID3>(json),
         "Child" => parse::<Child>(json),
         "Contributor" => parse::<Contributor>(json),
+        "ClientInfo" => parse::<ClientInfo>(json),
+        "CodecProfile" => parse::<CodecProfile>(json),
         "Cue" => parse::<Cue>(json),
         "CueLine" => parse::<CueLine>(json),
         "Directory" => parse::<Directory>(json),
+        "DirectPlayProfile" => parse::<DirectPlayProfile>(json),
         "DiscTitle" => parse::<DiscTitle>(json),
         "Genre" => parse::<Genre>(json),
         "Genres" => parse::<Genres>(json),
@@ -153,6 +157,7 @@ fn response(name: &str, json: &[u8]) -> Result<()> {
         "ItemDate" => parse::<ItemDate>(json),
         "ItemGenre" => parse::<ItemGenre>(json),
         "License" => parse::<License>(json),
+        "Limitation" => parse::<Limitation>(json),
         "Line" => parse::<Line>(json),
         "Lyrics" => parse::<Lyrics>(json),
         "LyricsList" => parse::<LyricsList>(json),
@@ -178,9 +183,12 @@ fn response(name: &str, json: &[u8]) -> Result<()> {
         "SonicMatch" => parse::<SonicMatch>(json),
         "Starred" => parse::<Starred>(json),
         "Starred2" => parse::<Starred2>(json),
+        "StreamDetails" => parse::<StreamDetails>(json),
         "StructuredLyrics" => parse::<StructuredLyrics>(json),
         "TokenInfo" => parse::<TokenInfo>(json),
         "TopSongs" => parse::<TopSongs>(json),
+        "TranscodeDecision" => parse::<TranscodeDecision>(json),
+        "TranscodingProfile" => parse::<TranscodingProfile>(json),
         "Work" => parse::<Work>(json),
         _ => panic!("no check for type {name}"),
     }

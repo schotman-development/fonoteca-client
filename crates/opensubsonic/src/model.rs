@@ -1451,3 +1451,118 @@ pub struct ApiError {
     /// [OS] A URL that explains the error, e.g. where to get an API key.
     pub help_url: Option<String>,
 }
+
+/// What a client can play, sent to `getTranscodeDecision`. Bitrates are in
+/// bits per second.
+///
+/// <https://opensubsonic.netlify.app/docs/payloads/clientinfo/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientInfo {
+    /// The name of the client device.
+    pub name: String,
+    /// The platform of the client (e.g., Android, iOS).
+    pub platform: String,
+    /// The most the client can handle; zero for no limit.
+    pub max_audio_bitrate: i64,
+    /// The most for transcoded content; zero for no limit.
+    pub max_transcoding_audio_bitrate: i64,
+    pub direct_play_profiles: Vec<DirectPlayProfile>,
+    /// In priority order.
+    pub transcoding_profiles: Vec<TranscodingProfile>,
+    pub codec_profiles: Vec<CodecProfile>,
+}
+
+/// A container and codecs the client plays as the server keeps them.
+///
+/// <https://opensubsonic.netlify.app/docs/payloads/directplayprofile/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectPlayProfile {
+    /// Empty for any container.
+    pub containers: Vec<String>,
+    /// Empty for any codec.
+    pub audio_codecs: Vec<String>,
+    /// `http` or `hls`.
+    pub protocols: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_audio_channels: Option<i64>,
+}
+
+/// A container and codec the client takes a conversion in.
+///
+/// <https://opensubsonic.netlify.app/docs/payloads/transcodingprofile/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscodingProfile {
+    pub container: String,
+    pub audio_codec: String,
+    /// `http` or `hls`.
+    pub protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_audio_channels: Option<i64>,
+}
+
+/// Limits on one codec.
+///
+/// <https://opensubsonic.netlify.app/docs/payloads/codecprofile/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodecProfile {
+    /// Only `AudioCodec`.
+    pub r#type: String,
+    pub name: String,
+    pub limitations: Vec<Limitation>,
+}
+
+/// One limit of a codec profile.
+///
+/// <https://opensubsonic.netlify.app/docs/payloads/limitation/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Limitation {
+    /// `audioChannels`, `audioBitrate`, `audioProfile`, `audioSamplerate` or
+    /// `audioBitdepth`.
+    pub name: String,
+    /// `Equals`, `NotEquals`, `LessThanEqual` or `GreaterThanEqual`.
+    pub comparison: String,
+    pub values: Vec<String>,
+    pub required: bool,
+}
+
+/// How a stream is encoded.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/streamdetails/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamDetails {
+    pub protocol: Option<String>,
+    pub container: Option<String>,
+    pub codec: Option<String>,
+    pub audio_channels: Option<i64>,
+    /// Bits per second.
+    pub audio_bitrate: Option<i64>,
+    pub audio_profile: Option<String>,
+    pub audio_samplerate: Option<i64>,
+    pub audio_bitdepth: Option<i64>,
+}
+
+/// The server's answer to `getTranscodeDecision`.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/transcodedecision/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscodeDecision {
+    /// Whether the client can play the original as it is.
+    pub can_direct_play: bool,
+    /// Whether the server can convert it to what the client plays.
+    pub can_transcode: bool,
+    #[serde(default)]
+    pub transcode_reason: Vec<String>,
+    /// What went wrong, when neither is possible.
+    pub error_reason: Option<String>,
+    /// Opaque, to hand to `getTranscodeStream` as it is.
+    pub transcode_params: Option<String>,
+    pub source_stream: Option<StreamDetails>,
+    pub transcode_stream: Option<StreamDetails>,
+}

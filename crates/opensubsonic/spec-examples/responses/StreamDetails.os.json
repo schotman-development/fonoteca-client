@@ -1,0 +1,10 @@
+{
+  "protocol": "http",
+  "container": "flac",
+  "codec": "flac",
+  "audioChannels": 6,
+  "audioBitrate": 3000000,
+  "audioProfile": "",
+  "audioSamplerate": 96000,
+  "audioBitdepth": 24
+}

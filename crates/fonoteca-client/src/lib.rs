@@ -56,6 +56,8 @@ mod sound;
 #[cfg(not(target_family = "wasm"))]
 mod sound_presets;
 mod store;
+#[cfg(not(target_family = "wasm"))]
+mod transcode;
 mod waveform;
 mod zone;
 

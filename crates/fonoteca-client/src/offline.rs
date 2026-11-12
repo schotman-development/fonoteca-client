@@ -30,6 +30,8 @@ const CACHEDIR_TAG_CONTENT: &str = "Signature: 8a477f597d28d172789f06886806bc55\
 pub const ORIGINAL: &str = "original";
 /// The `format` that asks for the original.
 pub const RAW: &str = "raw";
+/// The `format` that asks for whatever a server that decides converts to.
+pub const CONVERTED: &str = "converted";
 /// What a song's file is called while it arrives.
 const PARTIAL: &str = "partial";
 /// For a song whose file name gives no extension.
@@ -305,6 +307,7 @@ pub fn estimate_note(songs: &[Child], format: &str, bit_rate: u32) -> String {
     };
     let form = match format {
         RAW => "as the original files".to_owned(),
+        CONVERTED => format!("converted by the server to at most {bit_rate} kbit/s"),
         "opus" => format!("as Opus at {bit_rate} kbit/s"),
         other => format!("as {} at {bit_rate} kbit/s", other.to_uppercase()),
     };
@@ -483,6 +486,11 @@ impl Downloads {
     /// Says whether the pages show what is kept instead of the server's.
     pub fn set_offline(&self, offline: bool) {
         self.state().offline = offline;
+    }
+
+    /// The format and kbit/s songs are fetched in.
+    pub fn asked(&self) -> (String, u32) {
+        self.state().asked.clone().unwrap_or_else(original_request)
     }
 
     /// Sets the format and kbit/s songs are fetched in from now on.

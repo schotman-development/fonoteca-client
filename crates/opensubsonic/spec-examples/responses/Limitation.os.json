@@ -1,0 +1,6 @@
+{
+  "name": "audioSamplerate",
+  "comparison": "Equals",
+  "values": [ "44100", "48000" ],
+  "required": true
+}

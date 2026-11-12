@@ -31,7 +31,7 @@ use crate::{
     waveform,
 };
 #[cfg(not(target_family = "wasm"))]
-use crate::{Icons, MenuEntry, network_outputs, quality, scrobble, sound};
+use crate::{Icons, MenuEntry, network_outputs, quality, scrobble, sound, transcode};
 
 /// The settings' volume leveling entries, in their order.
 const LEVELING: [Leveling; 3] = [Leveling::Off, Leveling::Track, Leveling::Album];
@@ -378,6 +378,15 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
         }
         prefs::save(&saved);
     });
+    ui.on_choose_stream_level(|mobile, level| {
+        let mut saved = prefs::load();
+        if mobile {
+            saved.mobile_level = Some(level);
+        } else {
+            saved.wifi_level = Some(level);
+        }
+        prefs::save(&saved);
+    });
     #[cfg(not(target_family = "wasm"))]
     sound::wire(ui, {
         let playing = playing.clone();
@@ -399,6 +408,10 @@ fn show_stream_quality(ui: &AppWindow, saved: &prefs::Prefs) {
     let mobile = quality::within_lists(saved.mobile_quality);
     ui.set_mobile_format(mobile.format);
     ui.set_mobile_bitrate(mobile.bitrate);
+    let connections = [quality::Connection::Wifi, quality::Connection::MobileData];
+    let [wifi, mobile] = connections.map(|connection| quality::level(saved, connection).index());
+    ui.set_wifi_level(wifi);
+    ui.set_mobile_level(mobile);
 }
 
 /// Puts songs in the queue from the pages' menus, and has the now playing
@@ -2205,21 +2218,35 @@ const TRANSCODE_OFFSET: &str = "transcodeOffset";
 fn fetch(client: Arc<Client>, downloads: offline::Downloads) -> playback::Fetch {
     let runtime = tokio::runtime::Handle::current();
     let folder = cache();
+    let decisions = transcode::Decisions::default();
     Box::new(move |track: &Track, seconds: f64| {
-        let (format, max_bit_rate) = quality::request(&prefs::load(), quality::connection());
+        let wanted = transcode::wanted(
+            &prefs::load(),
+            quality::connection(),
+            client.supports(quality::TRANSCODING),
+        );
         // A file that went missing since is streamed instead.
-        if let Some(path) = downloads.playable(&track.id, (format, max_bit_rate))
+        if let Some(path) = downloads.playable(&track.id, wanted.as_request())
             && let Ok(download) = playback::open_file(&path)
         {
             return Ok(download);
         }
-        let start = quality::stream_start(format, client.supports(TRANSCODE_OFFSET), seconds);
-        // A song played from its start is asked for as before, so its
-        // conversion keeps what makes it gapless.
-        let time_offset = start.filter(|&start| start > 0.0);
-        let mut stream = runtime
-            .block_on(client.stream(&track.id, format, max_bit_rate, time_offset))
-            .map_err(|e| format!("The track couldn't be fetched: {e}"))?;
+        let (mut stream, start) = match wanted {
+            transcode::Wanted::Asked(format, max_bit_rate) => {
+                let start =
+                    quality::stream_start(format, client.supports(TRANSCODE_OFFSET), seconds);
+                // A song played from its start is asked for as before, so its
+                // conversion keeps what makes it gapless.
+                let time_offset = start.filter(|&start| start > 0.0);
+                let stream = runtime
+                    .block_on(client.stream(&track.id, format, max_bit_rate, time_offset))
+                    .map_err(|e| format!("The track couldn't be fetched: {e}"))?;
+                (stream, start)
+            }
+            transcode::Wanted::Decided(level) => runtime.block_on(transcode::open(
+                &client, &decisions, &track.id, level, seconds,
+            ))?,
+        };
         let (download, mut fill) = playback::download(&folder, stream.size())
             .map_err(|e| format!("The track couldn't be saved to disk: {e}"))?;
         runtime.spawn(async move {

@@ -1,0 +1,6 @@
+{
+  "containers": [ "mp4" ],
+  "audioCodecs": [ "aac", "alac" ],
+  "protocols": [ "http" ],
+  "maxAudioChannels": 2
+}

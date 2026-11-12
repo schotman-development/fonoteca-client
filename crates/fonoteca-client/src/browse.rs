@@ -2241,6 +2241,14 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     show_selected(ui, &b);
     ui.set_folders_offered(offers(&b, FOLDERS));
     ui.set_tags_offered(offers(&b, TAGS));
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let decides = offers(&b, crate::quality::TRANSCODING);
+        ui.set_transcoding_offered(decides);
+        // What downloads ask for depends on whether the server decides.
+        let (format, bit_rate) = crate::quality::download_request(&prefs::load(), decides);
+        b.downloads.set_quality(format, bit_rate);
+    }
     ui.set_composer_plays_counted(counts_composition_plays(&b));
     let targets: Vec<Name> = b
         .playlists

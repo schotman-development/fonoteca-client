@@ -4177,6 +4177,30 @@ export component QualityPicker inherits VerticalLayout {
     }
 }
 
+// How much quality to stream at from a server that decides what to convert,
+// for the settings: the original, or a level that sets the most kbit/s. The
+// entries are quality.rs's `Level`s, by their order.
+export component LevelPicker inherits VerticalLayout {
+    in property <string> name;
+    in-out property <int> level;
+    in property <bool> enabled: true;
+    callback chosen(level: int);
+    spacing: 8px;
+
+    Text {
+        text: root.name;
+        font-size: Theme.body;
+        color: Theme.muted;
+    }
+    Choice {
+        accessible-label: root.name + " quality";
+        model: ["Original", "High (256 kbit/s)", "Medium (160 kbit/s)", "Low (96 kbit/s)"];
+        current-index <=> root.level;
+        enabled: root.enabled;
+        selected => { root.chosen(root.level); }
+    }
+}
+
 // The `number`th band of the EQ in the settings: its filter on one line, the
 // numbers under it, so it fits a phone. A pass has no gain.
 export component EqBandRow inherits VerticalLayout {

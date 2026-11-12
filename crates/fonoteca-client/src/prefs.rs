@@ -52,8 +52,16 @@ pub struct Prefs {
     /// The format and bitrate to stream in, on wifi and on mobile data.
     pub wifi_quality: StreamQuality,
     pub mobile_quality: StreamQuality,
+    /// The quality level, as `quality::Level` numbers them, to stream at on
+    /// wifi and on mobile data from a server that decides what to convert;
+    /// none for each connection's default.
+    pub wifi_level: Option<i32>,
+    pub mobile_level: Option<i32>,
     /// The format and bitrate to download in.
     pub download_quality: StreamQuality,
+    /// The quality level to download at from a server that decides what to
+    /// convert, as `quality::Level` numbers them; the original without.
+    pub download_level: i32,
     /// Whether songs may be downloaded over mobile data; wifi only without.
     pub download_on_mobile_data: bool,
     /// The sound processing as it is now; the preset it was last set from

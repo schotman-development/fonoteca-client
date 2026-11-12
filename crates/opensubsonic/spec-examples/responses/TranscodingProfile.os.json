@@ -1,0 +1,6 @@
+{
+  "container": "mp3",
+  "audioCodec": "mp3",
+  "protocol": "http",
+  "maxAudioChannels": 2
+}
