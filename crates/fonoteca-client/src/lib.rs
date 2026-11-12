@@ -1078,6 +1078,7 @@ mod tests {
     /// of the classical album a minute into the work's second movement, and
     /// no motion covers; and how many it was asked for.
     static QUEUED: AtomicBool = AtomicBool::new(false);
+    static INDEXED: AtomicBool = AtomicBool::new(false);
     /// The play queues the server was asked to save, as `PLAYLIST_WRITES`
     /// has them; while set, it answers the next save as one restarting does,
     /// and every save as one that doesn't let the user.
@@ -1754,13 +1755,18 @@ mod tests {
                 r#"{"name":"fonotecaArtistBanner","versions":[1]},"#
             };
             let genre_versions = if OLD_GENRES.load(Relaxed) { "1" } else { "1,2" };
+            let indexed = if INDEXED.load(Relaxed) {
+                r#",{"name":"indexBasedQueue","versions":[1]}"#
+            } else {
+                ""
+            };
             let offset = if TRANSCODE_OFFSET.load(Relaxed) {
                 r#",{"name":"transcodeOffset","versions":[1]}"#
             } else {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}{indexed}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -2194,6 +2200,15 @@ mod tests {
                 false => SCROBBLES.lock().unwrap().push(told),
             }
             json(OK)
+        } else if request.contains("/rest/getPlayQueueByIndex") {
+            // The same song twice: the id alone can't say which is playing.
+            let song = |id: &str| {
+                format!(r#"{{"id":"{id}","isDir":false,"title":"Song {id}","duration":200}}"#)
+            };
+            let entries = [song("d1"), song("d2"), song("d1")].join(",");
+            ok(&format!(
+                r#""playQueueByIndex":{{"currentIndex":2,"position":7000,"username":"joe","changed":"2024-01-01T00:00:00Z","changedBy":"test","entry":[{entries}]}}"#
+            ))
         } else if request.contains("/rest/savePlayQueue") {
             SAVES.lock().unwrap().push(write_of(request));
             if SAVE_DOWN.swap(false, Relaxed) {
@@ -9547,6 +9562,25 @@ mod tests {
             // the process stays, lets the player go.
             ui.invoke_event_loop_ended();
             assert!(play::testing::player_status().is_none());
+            play::testing::clear(&ui);
+
+            // A server with indexBasedQueue gives back the song playing by
+            // its place in the queue, so the second of a song queued twice
+            // is the one resumed, and saves it by that place.
+            INDEXED.store(true, Relaxed);
+            play::testing::ask_extensions().await;
+            play::testing::restore(&ui);
+            wait_for("the queue by index", || ui.get_playing()).await;
+            assert_eq!(play::testing::resume_point(), Some((2, 7.0)));
+            SAVES.lock().unwrap().clear();
+            play::testing::save(2, 9.0);
+            wait_for("the save by index", || !SAVES.lock().unwrap().is_empty()).await;
+            assert_eq!(
+                SAVES.lock().unwrap().clone(),
+                ["savePlayQueueByIndex id=d1&id=d2&id=d1&currentIndex=2&position=9000"]
+            );
+            INDEXED.store(false, Relaxed);
+            play::testing::ask_extensions().await;
             play::testing::clear(&ui);
 
             // A song with a waveform shows it as the seek bar, and one without

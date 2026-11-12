@@ -88,6 +88,9 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
         }
         "getScanStatus" | "startScan" => check::<ScanStatus>(response, name, "scanStatus"),
         "getPlayQueue" => check::<Option<PlayQueue>>(response, name, "playQueue"),
+        "getPlayQueueByIndex" => {
+            check::<Option<PlayQueueByIndex>>(response, name, "playQueueByIndex")
+        }
         "getInternetRadioStations" => {
             check::<InternetRadioStations>(response, name, "internetRadioStations")
         }
@@ -104,7 +107,8 @@ fn endpoint(name: &str, body: &[u8]) -> Result<()> {
         | "updateUser"
         | "deleteUser"
         | "changePassword"
-        | "savePlayQueue" => Ok(()),
+        | "savePlayQueue"
+        | "savePlayQueueByIndex" => Ok(()),
         _ => panic!("no check for endpoint {name}"),
     }
 }
@@ -160,6 +164,7 @@ fn response(name: &str, json: &[u8]) -> Result<()> {
         "OpenSubsonicExtension" => parse::<OpenSubsonicExtension>(json),
         "Playlist" => parse::<Playlist>(json),
         "PlayQueue" => parse::<PlayQueue>(json),
+        "PlayQueueByIndex" => parse::<PlayQueueByIndex>(json),
         "PlaylistWithSongs" => parse::<PlaylistWithSongs>(json),
         "Playlists" => parse::<Playlists>(json),
         "RecordLabel" => parse::<RecordLabel>(json),

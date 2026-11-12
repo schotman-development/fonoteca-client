@@ -50,6 +50,8 @@ const LINE_COVER_SIZE: f32 = 40.0;
 /// playing on.
 // ponytail: a fixed window; page through it once queues that long need reordering.
 const QUEUE_SHOWN: usize = 100;
+/// The extension that names the song playing in a saved queue by its index.
+const INDEX_BASED_QUEUE: &str = "indexBasedQueue";
 /// What the line under a station's name says.
 const LIVE_RADIO: &str = "Live radio";
 /// The width of the cover Control Center is given, in pixels.
@@ -1920,7 +1922,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     };
     let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
     slint::spawn_local(async move {
-        let saved = client.get_play_queue().await;
+        let saved = load_saved_queue(&client).await;
         let Some(ui) = weak.upgrade() else { return };
         let mut p = playing.borrow_mut();
         // Something played meanwhile, or another account signed in.
@@ -1936,10 +1938,7 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             }
             _ => return,
         };
-        let index = queue
-            .current
-            .and_then(|id| queue.entry.iter().position(|song| song.id == id))
-            .unwrap_or(0);
+        let index = queue.current.unwrap_or(0).min(queue.entry.len() - 1);
         let seconds = queue.position.unwrap_or(0) as f64 / 1000.0;
         p.queue = Queue::new(queue.entry);
         p.queue.expand_works(&prefs::load().expanded_works);
@@ -1959,6 +1958,40 @@ fn restore(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     .expect("the event loop is running");
 }
 
+/// A queue saved on the server, whichever way it names the song playing.
+struct SavedQueue {
+    entry: Vec<opensubsonic::Child>,
+    /// Where in `entry` the song playing is, if the server says.
+    current: Option<usize>,
+    /// Milliseconds into that song.
+    position: Option<i64>,
+}
+
+/// The queue saved on the server, by index where the server can, so a song
+/// queued twice resumes at the right one.
+async fn load_saved_queue(
+    client: &opensubsonic::Client,
+) -> opensubsonic::Result<Option<SavedQueue>> {
+    if client.supports(INDEX_BASED_QUEUE) {
+        let queue = client.get_play_queue_by_index().await?;
+        return Ok(queue.map(|queue| SavedQueue {
+            entry: queue.entry,
+            current: queue
+                .current_index
+                .and_then(|index| usize::try_from(index).ok()),
+            position: queue.position,
+        }));
+    }
+    let queue = client.get_play_queue().await?;
+    Ok(queue.map(|queue| SavedQueue {
+        current: queue
+            .current
+            .and_then(|id| queue.entry.iter().position(|song| song.id == id)),
+        entry: queue.entry,
+        position: queue.position,
+    }))
+}
+
 /// Saves the queue and where it is on the server, for any app to carry on
 /// with, or clears the one saved there when the queue is empty; a server
 /// that turned it down isn't asked again. Which of its works are open is
@@ -1976,7 +2009,7 @@ fn save(
         return;
     };
     let current = match index.and_then(|index| p.queue.get(index)) {
-        Some(song) => Some(song.id.clone()),
+        Some(song) => Some((index.expect("a song is at it"), song.id.clone())),
         None if p.queue.is_empty() => None,
         // Nothing playing, as without a device, would lose where it was.
         None => return,
@@ -1993,9 +2026,13 @@ fn save(
     let playing = playing.clone();
     slint::spawn_local(async move {
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let saved = client
-            .save_play_queue(&ids, current.as_deref(), position)
-            .await;
+        let saved = if client.supports(INDEX_BASED_QUEUE) {
+            let index = current.map(|(index, _)| index);
+            client.save_play_queue_by_index(&ids, index, position).await
+        } else {
+            let id = current.as_ref().map(|(_, id)| id.as_str());
+            client.save_play_queue(&ids, id, position).await
+        };
         // One lost on the way is made again with the next change. Only
         // OpenSubsonic's servers clear a queue, so turning that down says
         // nothing of saving one.
@@ -2347,6 +2384,19 @@ pub(crate) mod testing {
     pub(crate) fn save(index: usize, seconds: f64) {
         let (browser, playing) = handles();
         super::save(&browser, &playing.borrow(), &playing, Some(index), seconds);
+    }
+
+    /// Asks the server for its extensions again, as a sign in does.
+    pub(crate) async fn ask_extensions() {
+        let (browser, _) = handles();
+        let client = browse::client(&browser).expect("signed in");
+        client.get_open_subsonic_extensions().await.expect("listed");
+    }
+
+    /// The song and second a restored queue waits to play from.
+    pub(crate) fn resume_point() -> Option<(usize, f64)> {
+        let (_, playing) = handles();
+        playing.borrow().resume
     }
 
     /// What the player says, while there is one.

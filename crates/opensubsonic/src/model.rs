@@ -1345,6 +1345,29 @@ pub struct PlayQueue {
     pub entry: Vec<Child>,
 }
 
+/// A [`PlayQueue`] that names the song playing by its place in the queue, so
+/// a song queued twice is told apart. From the `indexBasedQueue` extension.
+///
+/// <https://opensubsonic.netlify.app/docs/responses/playqueuebyindex/>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayQueueByIndex {
+    /// 0-based index of the currently playing track; given whenever `entry`
+    /// is not empty
+    pub current_index: Option<i64>,
+    /// Position in milliseconds of currently playing track
+    pub position: Option<i64>,
+    /// The user this queue belongs to
+    pub username: String,
+    /// Date modified [ISO 8601]
+    pub changed: String,
+    /// Name of client app
+    pub changed_by: String,
+    /// The list of songs in the queue
+    #[serde(default)]
+    pub entry: Vec<Child>,
+}
+
 /// Internet radio stations.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/internetradiostations/>

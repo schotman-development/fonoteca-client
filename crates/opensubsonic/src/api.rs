@@ -999,6 +999,34 @@ impl Client {
         self.call_unit("savePlayQueue", params).await
     }
 
+    /// The play queue saved for this user, if any, with the playing song
+    /// given by its index. Needs the `indexBasedQueue` extension.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/getplayqueuebyindex/>
+    pub async fn get_play_queue_by_index(&self) -> Result<Option<PlayQueueByIndex>> {
+        self.call("getPlayQueueByIndex", Params::new(), "playQueueByIndex")
+            .await
+    }
+
+    /// Saves this user's play queue as [`Client::save_play_queue`] does, with
+    /// the playing song's index in `ids`, which the server answers with error
+    /// 10 when it is out of them. With no songs, clears it. Needs the
+    /// `indexBasedQueue` extension.
+    ///
+    /// <https://opensubsonic.netlify.app/docs/endpoints/saveplayqueuebyindex/>
+    pub async fn save_play_queue_by_index(
+        &self,
+        ids: &[&str],
+        current_index: Option<usize>,
+        position: Option<i64>,
+    ) -> Result<()> {
+        let params = Params::new()
+            .list("id", ids)
+            .opt("currentIndex", current_index)
+            .opt("position", position);
+        self.call_unit("savePlayQueueByIndex", params).await
+    }
+
     // Media library scanning
 
     /// Whether the server is scanning its libraries, and how many items it
