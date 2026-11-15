@@ -9438,6 +9438,42 @@ mod tests {
             click(&ui, "Queue");
             idle(Duration::from_millis(100)).await;
             assert!(ui.get_queue_open() && !ui.get_now_playing_open());
+            // From 1200px wide the panel narrows the page by its width, which
+            // the top bar's right-hand button shows; below that it lies over it.
+            let page_end = || {
+                let account = button(&ui, "Account");
+                account.absolute_position().x + account.size().width
+            };
+            // The player's bar is as wide as the window either way.
+            let bar_span = || {
+                let bar = ui
+                    .root_element()
+                    .query_descendants()
+                    .match_inherits("PlayerBar")
+                    .find_first()
+                    .expect("the player's bar");
+                (bar.absolute_position().x, bar.size().width)
+            };
+            let page_end_with_queue_toggled = async || {
+                let open = page_end();
+                let bar_open = bar_span();
+                click(&ui, "Queue");
+                idle(Duration::from_millis(100)).await;
+                let closed = page_end();
+                assert_eq!(bar_span(), bar_open, "the bar keeps its place as the panel opens");
+                click(&ui, "Queue");
+                idle(Duration::from_millis(100)).await;
+                assert!(ui.get_queue_open(), "the bar's button works beside the page too");
+                closed - open
+            };
+            assert_eq!(page_end_with_queue_toggled().await, 0.0, "over the page below 1200px");
+            ui.window().set_size(slint::LogicalSize::new(1400.0, 760.0));
+            idle(Duration::from_millis(400)).await;
+            assert_eq!(page_end_with_queue_toggled().await, 420.0, "beside the page from 1200px");
+            let (bar_x, bar_width) = bar_span();
+            assert_eq!(bar_x + bar_width, 1400.0, "the bar runs to the window's edge under the panel");
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(400)).await;
             click(&ui, "Now playing");
             idle(Duration::from_millis(400)).await;
             assert!(ui.get_queue_open() && ui.get_now_playing_open(), "the page opens beside it");

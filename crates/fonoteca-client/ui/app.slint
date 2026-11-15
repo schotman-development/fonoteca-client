@@ -969,6 +969,83 @@ component QueueList inherits Rectangle {
     }
 }
 
+// The queue as a column of its own, for a desktop: beside the pages or over
+// them.
+component QueuePanel inherits Rectangle {
+    in property <[QueueLine]> queue-lines;
+    in property <int> playing-rows;
+    in property <[QueueLine]> previous-lines;
+    in property <int> queue-earlier;
+    in property <int> queue-more;
+    in property <bool> paused;
+    in property <int> playing-shown;
+    in property <int> asked;
+    callback jump(row: int);
+    callback play-next(row: int);
+    callback remove(row: int);
+    callback open(link: string);
+    callback move(from: int, slot: int);
+    callback toggle-work(row: int);
+    pure callback drop-slot(lines: [QueueLine], from: int, at: float) -> int;
+    pure callback step-slot(lines: [QueueLine], from: int, down: bool) -> int;
+    callback clear();
+    callback close();
+
+    background: Palette.background;
+    // Nothing under it takes a click or the wheel.
+    TouchArea { }
+    VerticalLayout {
+        HorizontalLayout {
+            spacing: 8px;
+            padding: 8px;
+            padding-left: 24px;
+            padding-right: 16px;
+            SectionHeading {
+                horizontal-stretch: 1;
+                text: "Queue";
+            }
+            if root.queue-lines.length > 0: Button {
+                text: "Clear";
+                enabled: !Input.modal;
+                clicked => { root.clear(); }
+            }
+            IconButton {
+                cross-axis-self-alignment: center;
+                icon: Icons.close;
+                label: "Close queue";
+                clicked => { root.close(); }
+            }
+        }
+        QueueList {
+            vertical-stretch: 1;
+            active: false;
+            leave => { root.close(); }
+            lines: root.queue-lines;
+            playing-rows: root.playing-rows;
+            previous: root.previous-lines;
+            earlier: root.queue-earlier;
+            more: root.queue-more;
+            paused: root.paused;
+            playing-shown: root.playing-shown;
+            asked: root.asked;
+            jump(row) => { root.jump(row); }
+            play-next(row) => { root.play-next(row); }
+            remove(row) => { root.remove(row); }
+            open(link) => { root.open(link); }
+            move(from, slot) => { root.move(from, slot); }
+            toggle-work(row) => { root.toggle-work(row); }
+            drop-slot(lines, from, at) => { root.drop-slot(lines, from, at) }
+            step-slot(lines, from, down) => { root.step-slot(lines, from, down) }
+        }
+    }
+    // What sets it apart from the page, now that it has no shadow.
+    Rectangle {
+        x: 0;
+        width: 1px;
+        background: Theme.hover;
+    }
+}
+
 // The filter of a page, named for what it filters, such as "Filter albums".
 // Android's back in it hands the keys back to the page, whose next back
 // goes back a page; a filter over a table isn't in the page to pass it on.
@@ -3929,7 +4006,8 @@ export component AppWindow inherits Window {
                     reject
                 }
                 PlayerBar {
-                    width: parent.width;
+                    x: 0;
+                    width: parent.width + root.queue-beside-width;
                     height: parent.height;
                     full: root.docked;
                     has-sound: root.has-sound;
@@ -3989,10 +4067,38 @@ export component AppWindow inherits Window {
                 selected(index) => { root.open(root.bar-entries[index].link); }
             }
         }
+        // Beside the pages the panel runs to the top of the window, and down
+        // to the player's bar, which stays as wide as the window.
+        if root.queue-beside: VerticalLayout {
+            width: root.queue-beside-width;
+            alignment: start;
+            QueuePanel {
+                height: root.height - root.safe-area-insets.top - root.bottom-inset - root.player-bar-height;
+                visible: root.queue-open;
+                queue-lines: root.queue-lines;
+                playing-rows: root.queue-playing-rows;
+                previous-lines: root.previous-lines;
+                queue-earlier: root.queue-earlier;
+                queue-more: root.queue-more;
+                paused: root.playing-paused;
+                playing-shown: root.playing-shown;
+                asked: root.queue-asked;
+                jump(row) => { root.jump-to(row); }
+                play-next(row) => { root.play-queued-next(row); }
+                remove(row) => { root.remove-queued(row); }
+                open(link) => { root.open-from-now-playing(link); }
+                move(from, slot) => { root.move-queued(from, slot); }
+                toggle-work(row) => { root.toggle-queued-work(row); }
+                drop-slot(lines, from, at) => { root.drop-slot(lines, from, at) }
+                step-slot(lines, from, down) => { root.step-slot(lines, from, down) }
+                clear => { root.clear-queue(); }
+                close => { root.close-queue(); }
+            }
+        }
     }
 
     if root.step == Step.done && root.selected-tiles > 0: SelectionBar {
-        x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
+        x: root.sidebar-width + (root.width - root.sidebar-width - root.queue-beside-width - self.width) / 2;
         // Over the player's bar, when it is up.
         y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0) - root.bottom-bar-height;
         width: self.preferred-width;
@@ -4058,8 +4164,13 @@ export component AppWindow inherits Window {
     }
     // Counts the times the queue was opened, which brings it to what plays.
     property <int> queue-asked;
-    // A desktop's queue panel, beside the pages and under the top bar.
+    // A desktop's queue panel. From this width on it sits beside the pages
+    // and narrows them, and the sheet; below it, it lies over them.
+    property <length> queue-beside-min-width: 1200px;
+    property <bool> queue-beside: root.width >= root.queue-beside-min-width;
     property <length> queue-panel-width: min(420px, (root.width - root.sidebar-width) / 2);
+    property <length> queue-beside-width: root.queue-beside && root.queue-open ? root.queue-panel-width : 0px;
+    // Over the pages it starts under the top bar, whose buttons stay in reach.
     property <length> queue-panel-top: root.safe-area-insets.top + Theme.bar-height;
 
     // Tab skips what is hidden, so once the sheet has slid over the top bar
@@ -4162,7 +4273,7 @@ export component AppWindow inherits Window {
     Rectangle {
         x: root.sidebar-width;
         y: 0;
-        width: root.width - root.sidebar-width;
+        width: root.width - root.sidebar-width - root.queue-beside-width;
         height: root.sheet-height;
         clip: true;
         visible: root.now-playing-open || sheet.y < self.height;
@@ -4425,70 +4536,40 @@ export component AppWindow inherits Window {
         }
     }
 
-    // On a desktop the queue is a panel beside the pages, over the sheet too,
-    // which the bar's Queue button opens and closes.
-    if root.docked: Rectangle {
+    // Below the width that has room for it beside the pages, the queue panel
+    // lies over them and the sheet, under the top bar, which the bar's Queue
+    // button opens and closes.
+    if root.docked && !root.queue-beside: QueuePanel {
         x: root.width - root.queue-panel-width;
         y: root.queue-panel-top;
         width: root.queue-panel-width;
         height: root.height - root.queue-panel-top - root.bottom-inset - root.player-bar-height;
         visible: root.queue-open;
-        background: Palette.background;
-        drop-shadow-blur: 16px;
-        drop-shadow-color: #0000004d;
-        // Nothing under it takes a click or the wheel.
-        TouchArea { }
-        VerticalLayout {
-            HorizontalLayout {
-                spacing: 8px;
-                padding: 8px;
-                padding-left: 24px;
-                padding-right: 16px;
-                SectionHeading {
-                    horizontal-stretch: 1;
-                    text: "Queue";
-                }
-                if root.queue-lines.length > 0: Button {
-                    text: "Clear";
-                    enabled: !Input.modal;
-                    clicked => { root.clear-queue(); }
-                }
-                IconButton {
-                    cross-axis-self-alignment: center;
-                    icon: Icons.close;
-                    label: "Close queue";
-                    clicked => { root.close-queue(); }
-                }
-            }
-            QueueList {
-                vertical-stretch: 1;
-                active: false;
-                leave => { root.close-queue(); }
-                lines: root.queue-lines;
-                playing-rows: root.queue-playing-rows;
-                previous: root.previous-lines;
-                earlier: root.queue-earlier;
-                more: root.queue-more;
-                paused: root.playing-paused;
-                playing-shown: root.playing-shown;
-                asked: root.queue-asked;
-                jump(row) => { root.jump-to(row); }
-                play-next(row) => { root.play-queued-next(row); }
-                remove(row) => { root.remove-queued(row); }
-                open(link) => { root.open-from-now-playing(link); }
-                move(from, slot) => { root.move-queued(from, slot); }
-                toggle-work(row) => { root.toggle-queued-work(row); }
-                drop-slot(lines, from, at) => { root.drop-slot(lines, from, at) }
-                step-slot(lines, from, down) => { root.step-slot(lines, from, down) }
-            }
-        }
+        queue-lines: root.queue-lines;
+        playing-rows: root.queue-playing-rows;
+        previous-lines: root.previous-lines;
+        queue-earlier: root.queue-earlier;
+        queue-more: root.queue-more;
+        paused: root.playing-paused;
+        playing-shown: root.playing-shown;
+        asked: root.queue-asked;
+        jump(row) => { root.jump-to(row); }
+        play-next(row) => { root.play-queued-next(row); }
+        remove(row) => { root.remove-queued(row); }
+        open(link) => { root.open-from-now-playing(link); }
+        move(from, slot) => { root.move-queued(from, slot); }
+        toggle-work(row) => { root.toggle-queued-work(row); }
+        drop-slot(lines, from, at) => { root.drop-slot(lines, from, at) }
+        step-slot(lines, from, down) => { root.step-slot(lines, from, down) }
+        clear => { root.clear-queue(); }
+        close => { root.close-queue(); }
     }
 
     // Over the player's bar, when it is up, as the selection bar.
     if root.step == Step.done && root.notice != "" && root.selected-tiles == 0: Rectangle {
-        x: root.sidebar-width + (root.width - root.sidebar-width - self.width) / 2;
+        x: root.sidebar-width + (root.width - root.sidebar-width - root.queue-beside-width - self.width) / 2;
         y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0) - root.bottom-bar-height;
-        width: min(notice.preferred-width, root.width - root.sidebar-width - 32px);
+        width: min(notice.preferred-width, root.width - root.sidebar-width - root.queue-beside-width - 32px);
         height: notice.preferred-height;
         border-radius: 12px;
         background: Theme.text;
