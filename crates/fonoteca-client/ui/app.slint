@@ -4284,6 +4284,23 @@ export component AppWindow inherits Window {
             background: Palette.background;
             // Nothing under it takes a click or the wheel.
             TouchArea { }
+            // The desktop page's background: the banner of the artist that
+            // plays, or the album's cover while there is none, under a scrim
+            // that keeps the lyrics readable. It takes no click or wheel.
+            if root.docked && (root.playing-banner.width > 0 || root.playing-art.width > 0): Rectangle {
+                width: parent.width;
+                height: parent.height;
+                clip: true;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.playing-banner.width > 0 ? root.playing-banner : root.playing-art;
+                    image-fit: cover;
+                }
+                Rectangle {
+                    background: Palette.background.with-alpha(0.8);
+                }
+            }
             // Escape closes it from wherever in the sheet the keys are.
             FocusScope {
                 width: parent.width;
@@ -4359,25 +4376,6 @@ export component AppWindow inherits Window {
                                 padding-top: 8px;
                                 spacing: 24px;
                                 alignment: start;
-                                // The banner of the artist that plays, or the
-                                // album's cover while there is none.
-                                if root.docked: Rectangle {
-                                    height: min((sheet-stage.width - 48px) * 9 / 16, sheet-scroll.visible-height * 0.6);
-                                    border-radius: Theme.radius;
-                                    clip: true;
-                                    background: Theme.surface;
-                                    if root.playing-banner.width > 0: Image {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        source: root.playing-banner;
-                                        image-fit: cover;
-                                    }
-                                    if root.playing-banner.width == 0: Artwork {
-                                        x: (parent.width - self.width) / 2;
-                                        size: parent.height;
-                                        source: root.playing-art;
-                                    }
-                                }
                                 if root.docked || root.lyrics-on-sheet: HorizontalLayout {
                                     alignment: root.docked ? LayoutAlignment.center : LayoutAlignment.start;
                                     LyricsView {
