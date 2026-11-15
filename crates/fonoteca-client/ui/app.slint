@@ -2253,11 +2253,28 @@ export component AppWindow inherits Window {
                 // height falls short on a phone: Slint 1.18 measures some
                 // sections there with their text on fewer lines than it
                 // draws them, and lays them out overflowing it.
-                content-height: end.y - stage.spacing + stage.padding-bottom;
-                stage := VerticalLayout {
-                    // Set, so the content height doesn't depend on itself;
-                    // and at the top, where a set height would centre it.
+                content-height: stage.y + end.y - stage.spacing + stage.padding-bottom;
+                // A genre's, or a playlist made for the user, over the page's
+                // whole width and above its column, which it isn't in.
+                if stage.banner-height > 0: GenreBanner {
+                    x: 0;
                     y: 0;
+                    width: scroll.visible-width;
+                    height: stage.banner-height;
+                    radius: 0;
+                    accessible-role: image;
+                    accessible-label: root.page == Page.genre ? root.header-title : root.created-for-kind;
+                    picture: root.page == Page.genre ? root.genre-banner : root.created-for-banner;
+                    name: root.page == Page.genre ? root.header-title : root.created-for-kind;
+                    name-size: Screen.phone ? 28px * Theme.zoom : 40px * Theme.zoom;
+                    backdrop: root.page == Page.genre ? #1c1c2c : KindTints.backdrop(root.created-for-tint);
+                    wash: root.page == Page.genre ? transparent : KindTints.wash(root.created-for-tint);
+                }
+                stage := VerticalLayout {
+                    property <length> banner-height: root.page == Page.genre ? (Screen.phone ? 200px : 320px * Theme.zoom) : root.page == Page.playlist && root.created-for && root.created-for-kind != "" ? (Screen.phone ? 140px : 200px * Theme.zoom) : 0px;
+                    // Set, so the content height doesn't depend on itself;
+                    // below the banner, where a set height would centre it.
+                    y: self.banner-height;
                     height: self.preferred-height;
                     // At most 1600px wide and centred, but for a table,
                     // which is wider than the page when its columns don't
@@ -2267,7 +2284,7 @@ export component AppWindow inherits Window {
                     // and its columns don't narrow.
                     width: root.table ? max(scroll.visible-width, root.table-need) : min(scroll.visible-width, 1600px);
                     padding: 24px;
-                    padding-top: 8px;
+                    padding-top: self.banner-height > 0 ? 24px : 8px;
                     // Room to scroll the last tiles out from under the bar.
                     padding-bottom: root.selected-tiles > 0 ? 96px : 24px;
                     spacing: 24px;
@@ -2492,16 +2509,6 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.page == Page.playlist && root.created-for && root.created-for-kind != "": GenreBanner {
-                        height: Screen.phone ? 140px : 200px * Theme.zoom;
-                        accessible-role: image;
-                        accessible-label: root.created-for-kind;
-                        picture: root.created-for-banner;
-                        name: root.created-for-kind;
-                        name-size: Screen.phone ? 28px * Theme.zoom : 40px * Theme.zoom;
-                        backdrop: KindTints.backdrop(root.created-for-tint);
-                        wash: KindTints.wash(root.created-for-tint);
-                    }
                     if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;
                         show-artwork: !root.created-for;
@@ -2568,12 +2575,6 @@ export component AppWindow inherits Window {
                     // sits under and how much the library has of it.
                     if root.page == Page.genre: VerticalLayout {
                         spacing: 8px;
-                        GenreBanner {
-                            height: Screen.phone ? 200px : 320px * Theme.zoom;
-                            picture: root.genre-banner;
-                            name: root.header-title;
-                            name-size: Screen.phone ? 28px * Theme.zoom : 40px * Theme.zoom;
-                        }
                         if root.header-names.length > 0: Links {
                             names: root.header-names;
                             font-size: Theme.body;

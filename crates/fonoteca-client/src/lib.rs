@@ -7604,6 +7604,16 @@ mod tests {
             assert_eq!(ui.get_created_for_banner().size().width, 0);
             let banner = mix_banner(&ui).expect("the banner");
             assert_eq!(banner.accessible_label().as_deref(), Some("Daily Jams"));
+            // It runs to the page's right edge, past the column's padding,
+            // with the header a gap under it.
+            assert_eq!(banner.absolute_position().x + banner.size().width, 1100.0);
+            let header = (ui.root_element().query_descendants())
+                .match_inherits("PageHeader")
+                .find_first()
+                .expect("the page header");
+            assert!(
+                header.absolute_position().y >= banner.absolute_position().y + banner.size().height + 16.0
+            );
             assert_eq!(lit(&ui), "Home", "a playlist made for you belongs to Home");
             let rows: Vec<(String, bool)> = (ui.get_track_lines().iter())
                 .map(|line| (line.title.to_string(), line.unavailable))

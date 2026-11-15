@@ -2104,8 +2104,10 @@ export component GenreBanner inherits Rectangle {
     in property <brush> backdrop: #1c1c2c;
     // Over the picture, fading in with it.
     in property <brush> wash: transparent;
+    // Not rounded on a page's banner, which runs the page's whole width.
+    in property <length> radius: Theme.radius;
 
-    border-radius: Theme.radius;
+    border-radius: root.radius;
     clip: true;
     background: root.backdrop;
     art := Image {
