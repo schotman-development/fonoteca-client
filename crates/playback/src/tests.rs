@@ -1069,6 +1069,70 @@ fn decode_until(decoder: &mut Decoder, shared: &Shared, count: usize) -> Vec<Str
 }
 
 #[test]
+fn a_rate_the_device_refused_plays_resampled_and_says_the_device_would_not_take_it() {
+    let (mut decoder, shared, _) = decoder_of(&["a"]);
+    {
+        let mut ring = shared.ring.lock().unwrap();
+        ring.device.as_mut().unwrap().supported = device(&[44_100, 48_000], &[I16]);
+        assert!(ring.refuse(Format {
+            rate: 44_100,
+            channels: 2,
+            sample: I16,
+        }));
+    }
+    decoder.start(0, 0.0);
+    let ring = shared.ring.lock().unwrap();
+    let segment = &ring.segments[0];
+    assert_eq!(segment.format.rate, 48_000);
+    let said: Vec<_> = segment.path.iter().map(|step| step.text.as_str()).collect();
+    assert!(said.contains(&"Resampled 44.1 kHz to 48 kHz"), "{said:?}");
+    assert!(
+        said.contains(&"The sound device would not take 44.1 kHz"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_refusal_after_the_last_track_was_decoded_plays_it_again_in_another_rate() {
+    let (mut decoder, shared, _) = decoder_of(&["a"]);
+    shared
+        .ring
+        .lock()
+        .unwrap()
+        .device
+        .as_mut()
+        .unwrap()
+        .supported = device(&[44_100, 48_000], &[I16]);
+    decoder.open(0, 0.0, None);
+    decode_until(&mut decoder, &shared, 2);
+    assert!(decoder.current.is_none(), "nothing left to decode");
+    {
+        let mut ring = shared.ring.lock().unwrap();
+        assert!(ring.refuse(Format {
+            rate: 44_100,
+            channels: 2,
+            sample: I16,
+        }));
+    }
+    decoder.handle(Command::Retry);
+    let ring = shared.ring.lock().unwrap();
+    assert_eq!(ring.segments[0].format.rate, 48_000);
+    assert_eq!(ring.retry, None);
+}
+
+#[test]
+fn a_retry_left_over_does_not_take_over_a_later_play() {
+    let (mut decoder, shared, _) = decoder_of(&["a", "b"]);
+    shared.ring.lock().unwrap().retry = Some((0, 0.0));
+    let queue = decoder.queue.clone();
+    decoder.handle(Command::Play(queue, 1, 0.0));
+    decoder.handle(Command::Retry);
+    let ring = shared.ring.lock().unwrap();
+    assert_eq!(ring.segments.len(), 1);
+    assert_eq!(ring.segments[0].track, 1);
+}
+
+#[test]
 fn a_changed_queue_plays_on_and_follows_its_new_order() {
     let (mut decoder, shared, _) = decoder_of(&["a", "b", "c", "d"]);
     decoder.open(0, 0.0, None);

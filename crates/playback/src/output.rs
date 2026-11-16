@@ -63,7 +63,10 @@ pub(crate) struct Device {
     pub name: String,
     /// It is the hardware itself, so nothing else mixes in or converts.
     pub exclusive: bool,
+    /// What it takes, less what it wouldn't open (`refused`), until it is
+    /// found again.
     pub supported: Vec<SupportedStreamConfigRange>,
+    pub refused: Vec<Format>,
 }
 
 #[derive(Default)]
@@ -92,6 +95,9 @@ pub(crate) struct Ring {
     pub idle: bool,
     /// The device couldn't play what came, so the decoder stops.
     pub halt: bool,
+    /// The track and time to begin again, as the device wouldn't open the
+    /// format it was decoded to, and the decoder is to choose another.
+    pub retry: Option<(usize, f64)>,
     /// Where the queue stopped short of its end: the track it couldn't go on
     /// with, and how far into it.
     pub stopped: Option<(usize, f64)>,
@@ -198,6 +204,30 @@ impl Ring {
         }
     }
 
+    /// The device wouldn't open `format`. Leaves it out of what the device
+    /// is taken to list, so that the audio is decoded to the nearest other,
+    /// and has the track begin again from where it was heard. False, and
+    /// nothing changed, when that leaves nothing to try or the device didn't
+    /// list the format.
+    pub fn refuse(&mut self, format: Format) -> bool {
+        let Some(device) = self.device.as_mut() else {
+            return false;
+        };
+        let remaining = without(&device.supported, format);
+        // A format the device doesn't list, as the system's bit-perfect
+        // output offers, can't be left out, and choosing again would pick it
+        // again.
+        if remaining.is_empty() || remaining == device.supported {
+            return false;
+        }
+        device.supported = remaining;
+        device.refused.push(format);
+        self.retry = self.heard();
+        self.open = None;
+        self.segments.clear();
+        true
+    }
+
     /// What an error of the open stream does to what plays.
     pub fn stream_failed(&mut self, error: &cpal::Error) {
         match error.kind() {
@@ -230,6 +260,9 @@ pub(crate) struct Shared {
 const START: f64 = 0.5;
 /// How long past the device's own estimate it is kept open before closing.
 const SETTLE: Duration = Duration::from_millis(200);
+/// How long opening a stream waits for a device to switch to another rate.
+/// A USB DAC can take several seconds, and the wait ends as soon as it has.
+const RATE_SWITCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a stream goes without asking for sound before its output is
 /// taken as gone, where a device asks every tenth of a second or so.
 const QUIET: Duration = Duration::from_secs(2);
@@ -287,7 +320,11 @@ fn fill(shared: &Shared, format: Format, out: &mut [u8], latency: Duration) {
 /// Runs the device until `quit`: finds the device wanted, opens it in the
 /// format of the audio in front and reopens it when that changes, and lets
 /// it go for other apps once everything has played.
-pub(crate) fn run(shared: Arc<Shared>, system: Option<Arc<dyn SystemMixer>>) {
+pub(crate) fn run(
+    shared: Arc<Shared>,
+    system: Option<Arc<dyn SystemMixer>>,
+    wake_decoder: impl Fn(),
+) {
     let system = system.as_deref();
     let mut generation = None;
     let mut device = None;
@@ -377,6 +414,14 @@ pub(crate) fn run(shared: Arc<Shared>, system: Option<Arc<dyn SystemMixer>>) {
                 stream = opened;
             }
             Err(problem) => {
+                eprintln!("{problem}");
+                if wanted.is_some_and(|format| ring.refuse(format)) {
+                    // The decoder may be waiting for a command, with nothing
+                    // left to decode.
+                    wake_decoder();
+                    shared.changed.notify_all();
+                    continue;
+                }
                 ring.problem = Some(problem);
                 ring.open = None;
                 ring.stopped = ring.heard().or(ring.stopped);
@@ -502,6 +547,7 @@ fn describe(device: &cpal::Device) -> Device {
             .supported_output_configs()
             .map(Iterator::collect)
             .unwrap_or_default(),
+        refused: Vec::new(),
     }
 }
 
@@ -598,13 +644,55 @@ fn open_stream(
                 problem.ring.lock().unwrap().stream_said(let_go, &e);
                 problem.changed.notify_all();
             },
-            None,
+            Some(RATE_SWITCH_TIMEOUT),
         )
-        .map_err(|e| format!("The sound device couldn't play {format}: {e}"))?;
+        .map_err(|e| format!("The sound device couldn't play {format}: {}", told(&e)))?;
     stream
         .play()
-        .map_err(|e| format!("The sound device couldn't start: {e}"))?;
+        .map_err(|e| format!("The sound device couldn't start: {}", told(&e)))?;
     Ok(stream)
+}
+
+/// cpal's error in full: its message, which may be all it says of why, and
+/// its kind.
+fn told(error: &cpal::Error) -> String {
+    format!("{error} ({:?})", error.kind())
+}
+
+/// `supported` without `format`: the range that holds it is split around it.
+fn without(
+    supported: &[SupportedStreamConfigRange],
+    format: Format,
+) -> Vec<SupportedStreamConfigRange> {
+    supported
+        .iter()
+        .flat_map(|range| {
+            let holds = range.channels() == format.channels
+                && range.sample_format() == format.sample
+                && range.contains_rate(format.rate);
+            if !holds {
+                return vec![*range];
+            }
+            let part = |min: u32, max: u32| {
+                (min <= max).then(|| {
+                    SupportedStreamConfigRange::new(
+                        range.channels(),
+                        min,
+                        max,
+                        *range.buffer_size(),
+                        range.sample_format(),
+                    )
+                })
+            };
+            [
+                part(range.min_sample_rate(), format.rate - 1),
+                part(format.rate + 1, range.max_sample_rate()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
+        })
+        .collect()
 }
 
 /// The format to open the device in for audio of `rate` and `channels` in
@@ -977,5 +1065,96 @@ mod tests {
         assert_eq!(bit_perfect(48_000, 2, Kind::Int(16), false, &offered), None);
         assert_eq!(bit_perfect(44_100, 1, Kind::Int(16), false, &offered), None);
         assert_eq!(bit_perfect(44_100, 2, Kind::Int(16), false, &[]), None);
+    }
+
+    fn dac_format(rate: u32) -> Format {
+        Format {
+            rate,
+            channels: 2,
+            sample: SampleFormat::F32,
+        }
+    }
+
+    fn ring_on(rates: &[u32]) -> Ring {
+        let supported = rates
+            .iter()
+            .map(|&rate| range(2, rate, rate, SampleFormat::F32))
+            .collect();
+        Ring {
+            device: Some(Device {
+                supported,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_format_refused_is_left_out_and_the_next_nearest_rate_chosen() {
+        let mut ring = ring_on(&[44_100, 48_000, 96_000, 192_000]);
+        ring.loading = Some((3, 12.0));
+        ring.open = Some(dac_format(96_000));
+        assert!(ring.refuse(dac_format(96_000)));
+        assert_eq!(ring.retry, Some((3, 12.0)));
+        assert_eq!(ring.open, None);
+        let device = ring.device.as_ref().unwrap();
+        assert_eq!(device.refused, [dac_format(96_000)]);
+        assert_eq!(
+            choose(96_000, 2, Kind::Int(24), &device.supported),
+            Some(dac_format(192_000))
+        );
+        // Refused too, the rate below is the nearest left.
+        assert!(ring.refuse(dac_format(192_000)));
+        let device = ring.device.as_ref().unwrap();
+        assert_eq!(
+            choose(96_000, 2, Kind::Int(24), &device.supported),
+            Some(dac_format(48_000))
+        );
+    }
+
+    #[test]
+    fn a_range_is_split_around_the_rate_refused() {
+        let split = without(
+            &[range(2, 44_100, 192_000, SampleFormat::F32)],
+            dac_format(96_000),
+        );
+        let bounds: Vec<_> = split
+            .iter()
+            .map(|range| (range.min_sample_rate(), range.max_sample_rate()))
+            .collect();
+        assert_eq!(bounds, [(44_100, 95_999), (96_001, 192_000)]);
+        // Another sample format or channel count keeps what it had.
+        let other = [range(2, 96_000, 96_000, SampleFormat::I32)];
+        assert_eq!(without(&other, dac_format(96_000)), other);
+    }
+
+    #[test]
+    fn nothing_changes_when_the_only_format_is_refused() {
+        let mut ring = ring_on(&[96_000]);
+        assert!(!ring.refuse(dac_format(96_000)));
+        let device = ring.device.as_ref().unwrap();
+        assert_eq!(device.supported.len(), 1);
+        assert!(device.refused.is_empty() && ring.retry.is_none());
+        assert!(!Ring::default().refuse(dac_format(96_000)), "no device");
+    }
+
+    #[test]
+    fn a_format_the_device_does_not_list_is_not_refused_again_and_again() {
+        let mut ring = ring_on(&[48_000]);
+        assert!(!ring.refuse(dac_format(44_100)));
+        let device = ring.device.as_ref().unwrap();
+        assert!(device.refused.is_empty() && ring.retry.is_none());
+    }
+
+    #[test]
+    fn the_problem_gives_cpals_error_in_full() {
+        let timed_out = cpal::Error::with_message(
+            ErrorKind::DeviceNotAvailable,
+            "Sample rate update timed out",
+        );
+        assert_eq!(
+            told(&timed_out),
+            "Sample rate update timed out (DeviceNotAvailable)"
+        );
     }
 }

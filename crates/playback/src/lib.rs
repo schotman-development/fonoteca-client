@@ -233,6 +233,9 @@ enum Command {
     Dsp(Dsp),
     /// Opens what plays again where it is, for another device.
     Reopen,
+    /// The device wouldn't open the format of what plays: begins it again in
+    /// another, unless a command since took over.
+    Retry,
     Stop,
     Quit,
 }
@@ -282,7 +285,14 @@ impl Player {
             .spawn({
                 let shared = shared.clone();
                 let system = system.clone();
-                move || output::run(shared, system)
+                let wake = commands.clone();
+                let pending = pending.clone();
+                move || {
+                    output::run(shared, system, move || {
+                        pending.fetch_add(1, Relaxed);
+                        let _ = wake.send(Command::Retry);
+                    })
+                }
             })
             .expect("a thread for the sound device");
         let decoder = Decoder {
@@ -586,6 +596,12 @@ impl Decoder {
                     self.start(index, position);
                 }
             }
+            Command::Retry => {
+                let retry = self.shared.ring.lock().unwrap().retry;
+                if let Some((index, seconds)) = retry {
+                    self.start(index, seconds);
+                }
+            }
             Command::Stop => self.stop(),
         }
         true
@@ -704,6 +720,7 @@ impl Decoder {
         self.next = None;
         let mut ring = self.shared.ring.lock().unwrap();
         ring.segments.clear();
+        ring.retry = None;
         ring.loading = None;
         ring.idle = true;
         self.shared.changed.notify_all();
@@ -720,6 +737,7 @@ impl Decoder {
         {
             let mut ring = self.shared.ring.lock().unwrap();
             ring.segments.clear();
+            ring.retry = None;
             ring.problem = None;
             ring.skipped = None;
             ring.stopped = None;
@@ -798,6 +816,7 @@ impl Decoder {
                 &bit_perfect_formats,
                 move || pending.load(Relaxed) > 0,
             )?;
+            decoding.note_refused(&self.refused());
             if into_download > 0.0 {
                 decoding.seek(into_download)?;
             }
@@ -860,6 +879,15 @@ impl Decoder {
                 .unwrap()
                 .0;
         }
+    }
+
+    /// The formats the device wouldn't open.
+    fn refused(&self) -> Vec<Format> {
+        let ring = self.shared.ring.lock().unwrap();
+        ring.device
+            .as_ref()
+            .map(|device| device.refused.clone())
+            .unwrap_or_default()
     }
 
     fn push(&self, segment: Segment) {

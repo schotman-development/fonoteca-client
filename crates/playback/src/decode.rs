@@ -19,6 +19,8 @@ pub(crate) struct Decoding {
     decoder: decoder::Audio,
     graph: filter::Graph,
     pub format: Format,
+    /// The file's own rate.
+    rate: u32,
     pub path: Vec<Step>,
     /// A live stream, which has no place to seek to.
     pub live: bool,
@@ -242,6 +244,7 @@ impl Decoding {
             decoder,
             graph,
             format: out,
+            rate,
             path,
             live,
             failure,
@@ -251,6 +254,17 @@ impl Decoding {
             frame: Frame::empty(),
             filtered: Frame::empty(),
         })
+    }
+
+    /// Says in the path that the device wouldn't take the file's own rate,
+    /// where that is why it plays at another.
+    pub fn note_refused(&mut self, refused: &[Format]) {
+        if self.format.rate != self.rate && refused.iter().any(|format| format.rate == self.rate) {
+            self.path.push(Step {
+                text: format!("The sound device would not take {}", khz(self.rate)),
+                quality: Quality::High,
+            });
+        }
     }
 
     /// Moves to `seconds` into the track. What it decodes next starts there.
