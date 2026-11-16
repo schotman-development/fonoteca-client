@@ -9409,6 +9409,15 @@ mod tests {
             // Not above the song playing, and not by its own grip.
             drag(&ui, grip_of("q1"), &[(0, 0.0, -6.0), (20, 0.0, -400.0)], 20).await;
             assert_eq!(titles(), ["q0", "q1", "q4", "q2", "q3"], "the top slot is below the one playing");
+            // At the bottom the row lands last, not second last, though its
+            // copy stays inside the list.
+            let to_the_bottom = async |title: &str, last: &str, delay: u64| {
+                let grip = grip_of(title);
+                let end = grip_of(last).y + row_height;
+                drag(&ui, grip, &[(0, 0.0, 4.0), (delay, 0.0, 14.0), (16, 0.0, end - grip.y)], delay).await;
+            };
+            to_the_bottom("q1", "q3", 20).await;
+            assert_eq!(titles(), ["q0", "q4", "q2", "q3", "q1"], "dragged to the very end");
 
             // A work moves as one unit, collapsed.
             play::testing::play_page(&ui, pieces(), 0);
@@ -9438,6 +9447,9 @@ mod tests {
             drag(&ui, slint::LogicalPosition::new(title_x, title_y), &[(0, 0.0, 6.0), (16, 0.0, 30.0), (16, 0.0, 60.0)], 100).await;
             assert_eq!(titles(), ["q0", "q1", "q3", "q2", "q4"], "a swipe on a row moves nothing");
             assert!(queue_row("q0").absolute_position().y > page_at + 30.0, "it scrolls the page");
+            to_the_end(180.0).await;
+            to_the_bottom("q1", "q4", 120).await;
+            assert_eq!(titles(), ["q0", "q3", "q2", "q4", "q1"], "a finger drags it to the very end");
             input.set_touch(false);
             input.set_finger(false);
             ui.window().set_size(slint::LogicalSize::new(800.0, 760.0));
@@ -9499,7 +9511,7 @@ mod tests {
             modifier(slint::platform::Key::Control, false);
             assert_eq!(queue_selection.get_count(), 2, "Ctrl and a click selects");
             drag(&ui, grip_of("q1, selected"), &[(0, 0.0, 6.0), (20, 0.0, 40.0), (20, 0.0, 4.0 * row_height + 20.0)], 20).await;
-            assert_eq!(titles(), ["q0", "q2", "q1", "q3", "q4"], "the selected rows drag as one block, gathered above the row at the slot");
+            assert_eq!(titles(), ["q0", "q2", "q4", "q1", "q3"], "the selected rows drag as one block, gathered at the slot, here the last");
             assert_eq!(queue_selection.get_count(), 0);
             to_the_end(550.0).await;
             hold(&ui, cover_of("q2"), 0.0, 0).await;
@@ -9510,7 +9522,7 @@ mod tests {
             modifier(slint::platform::Key::Shift, true);
             hold(&ui, cover_of("q3"), 0.0, 0).await;
             modifier(slint::platform::Key::Shift, false);
-            assert_eq!(picked(ui.get_queue_lines()), ["q2", "q1", "q3"], "Shift picks a range from the row picked last");
+            assert_eq!(picked(ui.get_queue_lines()), ["q2", "q4", "q1", "q3"], "Shift picks a range from the row picked last");
 
             // A finger holding a row selects it, and taps then select the
             // others, at a phone's width; Escape lets them go.

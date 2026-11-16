@@ -3386,9 +3386,12 @@ export component QueueReorder {
     // hold.
     property <length> pointer-y;
     property <length> grab;
-    property <length> ghost-y: clamp(root.pointer-y - root.absolute-position.y - root.grab, 0, max(0px, root.height - root.row-height));
+    property <length> row-top: root.pointer-y - root.absolute-position.y - root.grab;
+    // The copy stays inside the list; the slot follows the pointer past its
+    // ends, as the copy's clamped middle would tie the last two slots.
+    property <length> ghost-y: clamp(root.row-top, 0, max(0px, root.height - root.row-height));
     // The slot the row would land in, or -1 where that moves nothing.
-    property <int> slot: root.dragged < 0 ? -1 : root.slot-at(root.lines, root.dragged, root.rows-at(root.ghost-y + root.row-height / 2));
+    property <int> slot: root.dragged < 0 ? -1 : root.slot-at(root.lines, root.dragged, root.rows-at(root.row-top + root.row-height / 2));
 
     pure function row-y(row: int) -> length {
         row * root.row-height + (row >= root.split ? root.gap : 0)

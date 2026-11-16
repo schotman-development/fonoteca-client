@@ -5,10 +5,12 @@
 
 /// The slot nearest to `at`, in rows from the list's top, that the `from`th
 /// row can move to: not inside a work that is open, where `parts` says a row
-/// is one of its movements, and not where it already is. None when that
-/// would move nothing.
+/// is one of its movements, and not where it already is. A tie goes to the gap
+/// further down, so a row held at the very end lands last. None when that would
+/// move nothing.
 pub fn drop_slot(parts: &[bool], from: usize, at: f32) -> Option<usize> {
     let nearest = (1..=parts.len())
+        .rev()
         .filter(|&slot| !is_part(parts, slot))
         .min_by(|&one, &other| distance(one, at).total_cmp(&distance(other, at)))?;
     (nearest != from && nearest != from + 1).then_some(nearest)
@@ -76,6 +78,13 @@ mod tests {
             "nothing goes above the one playing"
         );
         assert_eq!(drop_slot(&LIST, 1, 40.0), Some(7), "or below the last");
+    }
+
+    #[test]
+    fn a_row_dragged_to_the_bottom_lands_last() {
+        // The middle of a row held at the list's end, in rows: n - 0.5.
+        assert_eq!(drop_slot(&LIST, 1, LIST.len() as f32 - 0.5), Some(7));
+        assert_eq!(drop_slot(&[false; 3], 1, 2.5), Some(3));
     }
 
     #[test]
