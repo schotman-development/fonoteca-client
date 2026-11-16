@@ -3187,6 +3187,7 @@ const COLUMNS: &[Column<Child>] = &[
     column("MusicBrainz ID", 290.0, |song| text_of(&song.music_brainz_id)),
     numeric("Track gain", 88.0, |song| gain(song.replay_gain.as_ref().and_then(|g| g.track_gain)), |song| song.replay_gain.as_ref().and_then(|g| g.track_gain)),
     numeric("Track peak", 80.0, |song| peak(song.replay_gain.as_ref().and_then(|g| g.track_peak)), |song| song.replay_gain.as_ref().and_then(|g| g.track_peak)),
+    numeric("Dynamic range", 96.0, |song| text(&song.dynamic_range.map(|dr| format!("DR {dr}")).unwrap_or_default()), |song| float(song.dynamic_range)),
     numeric("Album gain", 88.0, |song| gain(song.replay_gain.as_ref().and_then(|g| g.album_gain)), |song| song.replay_gain.as_ref().and_then(|g| g.album_gain)),
     numeric("Album peak", 80.0, |song| peak(song.replay_gain.as_ref().and_then(|g| g.album_peak)), |song| song.replay_gain.as_ref().and_then(|g| g.album_peak)),
     numeric("Base gain", 88.0, |song| gain(song.replay_gain.as_ref().and_then(|g| g.base_gain)), |song| song.replay_gain.as_ref().and_then(|g| g.base_gain)),
@@ -9623,6 +9624,29 @@ mod tests {
             descending,
             ..Table::default()
         }
+    }
+
+    #[test]
+    fn the_dynamic_range_column_shows_dr_and_sorts_songs_without_one_last() {
+        let songs: Vec<Child> = [Some(13), None, Some(8)]
+            .iter()
+            .enumerate()
+            .map(|(at, dr)| {
+                let range = dr.map(|dr| format!(r#","dynamicRange":{dr}"#)).unwrap_or_default();
+                serde_json::from_str(&format!(r#"{{"id":"s{at}","isDir":false,"title":"T"{range}}}"#)).unwrap()
+            })
+            .collect();
+        let at = COLUMNS.iter().position(|c| c.title == "Dynamic range").unwrap();
+        let cells: Vec<String> = songs
+            .iter()
+            .map(|song| (COLUMNS[at].cell)(song).iter().map(|name| name.label.to_string()).collect())
+            .collect();
+        assert_eq!(cells, ["DR 13", "", "DR 8"]);
+        assert!(!COLUMNS[at].shown);
+        let by = |descending| Table { sort: Some(at), descending, ..Table::default() };
+        let all = vec![0, 1, 2];
+        assert_eq!(sorted(&songs, all.clone(), COLUMNS, &by(false)), [2, 0, 1]);
+        assert_eq!(sorted(&songs, all, COLUMNS, &by(true)), [0, 2, 1]);
     }
 
     #[test]

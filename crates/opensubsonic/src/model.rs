@@ -354,6 +354,9 @@ pub struct Child {
     pub moods: Vec<String>,
     /// The replay gain data of the song.
     pub replay_gain: Option<ReplayGain>,
+    /// The dynamic range (DR value) in dB, from Fonoteca's `fonotecaAnalysis`
+    /// extension. Absent when the song was not measured.
+    pub dynamic_range: Option<i64>,
     pub explicit_status: Option<ExplicitStatus>,
     /// The list of works associated with the song.
     #[serde(default)]
