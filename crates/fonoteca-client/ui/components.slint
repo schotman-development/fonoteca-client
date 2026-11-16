@@ -396,9 +396,11 @@ export component Pressable {
     out property <bool> hovered: root.enabled && touch.has-hover;
     out property <bool> focused: focus.has-focus;
     out property <bool> pressed: touch.pressed;
-    // Whether Shift was held on the press or key that clicked it, and
-    // whether a finger made the last press.
+    // Whether Shift was held on the press or key that clicked it, whether
+    // Ctrl (Cmd on a Mac) was held on the press, and whether a finger made
+    // the last press.
     out property <bool> shift;
+    out property <bool> command;
     out property <bool> finger;
     callback clicked();
     callback context-clicked();
@@ -451,6 +453,7 @@ export component Pressable {
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
                 root.shift = event.modifiers.shift;
+                root.command = event.modifiers.control;
                 root.finger = Input.touch || event.touch-finger-id != 0;
                 Input.finger = root.finger;
             }
@@ -1590,17 +1593,69 @@ export component ListRow inherits Rectangle {
     in-out property <[MenuEntry]> entries;
     // Room kept free at the right, for what is laid over the row.
     in property <length> reserve;
+    // A row that can be selected, whether it is, and whether the list is
+    // selecting, when a click selects rather than opens: as a track row's.
+    in property <bool> selectable;
+    in property <bool> selected;
+    in property <bool> selecting;
+    in property <bool> joined-above;
+    in property <bool> joined-below;
     callback open(link: string);
     callback toggled();
     callback opening();
     callback activated(id: string, choice: string);
+    // With Shift held, everything from the row last picked to this one.
+    callback select(range: bool);
+    // A press on the row, which the list may give the keys for.
+    callback pressed();
     accessible-role: list-item;
     accessible-expandable: root.expandable;
     accessible-expanded: root.expanded;
-    accessible-label: self.title;
+    accessible-item-selectable: root.selectable;
+    accessible-item-selected: root.selected;
+    accessible-label: root.selected ? self.title + ", selected" : self.title;
+    accessible-action-default => {
+        if root.selectable {
+            root.select(false);
+        }
+    }
     accessible-description: root.current ? (root.paused ? "Paused. " : "Playing. ") + self.details : self.details;
     border-radius: Theme.radius;
     background: root.current ? Theme.accent.transparentize(88%) : transparent;
+
+    property <bool> shift;
+    property <bool> command;
+
+    if root.selected: SelectedRowOutline {
+        joined-above: root.joined-above;
+        joined-below: root.joined-below;
+    }
+    // Under the row's content, so what is in it takes its own clicks. Ctrl
+    // or Cmd, a right-click and a long press select, and so does a click
+    // while the list is selecting.
+    if root.selectable: touch := TouchArea {
+        mouse-cursor: root.selecting ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if (root.selecting || root.command) && !hold.done {
+                root.select(root.shift);
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.shift = event.modifiers.shift;
+                root.command = event.modifiers.control;
+                root.pressed();
+            }
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.select(root.shift);
+            }
+            hold.pointer(event);
+        }
+        moved => { hold.moved(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y); }
+    }
+    hold := Hold {
+        held => { root.select(false); }
+    }
 
     // The row playing: a bar at its edge, and on its cover the state.
     if root.current: Rectangle {
@@ -1616,6 +1671,27 @@ export component ListRow inherits Rectangle {
         padding-left: 8px + root.depth * 20px;
         padding-right: 8px + root.reserve;
         spacing: 12px;
+        // The check circle a finger taps, once something is selected.
+        if root.selecting && root.selectable: Rectangle {
+            cross-axis-self-alignment: center;
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            border-width: 2px;
+            border-color: root.selected ? Theme.accent : Theme.muted;
+            background: root.selected ? Theme.accent : transparent;
+            if root.selected: Path {
+                x: (parent.width - self.width) / 2 - 2px;
+                y: (parent.height - self.height) / 2 - 2px;
+                width: 14px;
+                height: 14px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Icons.check;
+                stroke: Theme.on-accent;
+                stroke-width: 3px;
+            }
+        }
         if root.covered: Artwork {
             cross-axis-self-alignment: center;
             size: 40px;
@@ -1652,7 +1728,18 @@ export component ListRow inherits Rectangle {
                 text: root.title;
                 font-weight: 600;
                 color: root.current ? Theme.accent : Theme.text;
-                clicked => { root.open(root.link); }
+                clicked => {
+                    if root.selectable && (root.selecting || self.command) {
+                        root.select(self.shift);
+                    } else {
+                        root.open(root.link);
+                    }
+                }
+                context-clicked => {
+                    if root.selectable {
+                        root.select(self.shift);
+                    }
+                }
             }
             if root.details != "": Text {
                 text: root.details;
@@ -3227,6 +3314,28 @@ export struct QueueLine {
     work: bool,
     expanded: bool,
     part: bool,
+    // Whether its songs are selected, and whether the rows above and below
+    // are too.
+    selected: bool,
+    joined-above: bool,
+    joined-below: bool,
+}
+
+// What the queue's rows and the bar over them say of the songs selected in
+// it, which the app keeps (src/play.rs). `count` is how many songs; `select`
+// picks the row, or with `range` every row from the one picked last.
+// `move` drops them all, as one block, in a slot of the list.
+export global QueueSelection {
+    in-out property <int> count;
+    callback select(row: int, range: bool);
+    callback select-all();
+    callback clear();
+    callback remove();
+    callback play-next();
+    callback move-to-end();
+    callback move(slot: int);
+    callback add-to-playlist(id: string);
+    callback tag();
 }
 
 // A TouchArea with a drag of its own, as a seek bar has: a finger that
@@ -3260,6 +3369,9 @@ export component QueueReorder {
     in property <length> gap;
     in property <length> view-top;
     in property <length> view-bottom;
+    // How many songs the row dragged carries, when it takes the selected
+    // along with it.
+    in property <int> block;
     // The row being dragged, or -1.
     out property <int> dragged: -1;
     pure callback slot-at(lines: [QueueLine], from: int, at: float) -> int;
@@ -3355,7 +3467,7 @@ export component QueueReorder {
             height: parent.height;
             reserve: Screen.phone ? Theme.phone-target : 32px;
             title: root.lines[root.dragged].title;
-            details: root.lines[root.dragged].details;
+            details: root.block > 1 ? root.block + " songs" : root.lines[root.dragged].details;
             cover: root.lines[root.dragged].cover;
             covered: true;
             current: root.lines[root.dragged].current;

@@ -9140,6 +9140,98 @@ mod tests {
             assert_eq!(titles(ui.get_previous_lines())[4], "Track 4");
             assert_eq!(titles(ui.get_queue_lines())[0], "Track 7", "what plays plays on");
 
+            // Rows of the queue are selected with a Ctrl or Cmd click, and
+            // from the one picked last with Shift; what plays is left out.
+            // The bar says how many songs, and the selection follows its
+            // songs when others are taken out.
+            let queue_selection = ui.global::<QueueSelection>();
+            let picked = |lines: slint::ModelRc<QueueLine>| -> Vec<String> {
+                lines
+                    .iter()
+                    .filter(|line| line.selected)
+                    .map(|line| line.title.to_string())
+                    .collect()
+            };
+            let bar_says = |count: usize| -> bool {
+                let wanted = format!("{count} selected");
+                ui.root_element()
+                    .query_descendants()
+                    .match_accessible_role(AccessibleRole::Text)
+                    .match_predicate(move |text| text.accessible_label().is_some_and(|l| l == wanted))
+                    .find_first()
+                    .is_some()
+            };
+            queue_selection.invoke_select(0, false);
+            assert_eq!(queue_selection.get_count(), 0, "what plays is left out");
+            queue_selection.invoke_select(2, false);
+            queue_selection.invoke_select(-1, false);
+            assert_eq!(queue_selection.get_count(), 2);
+            assert_eq!(picked(ui.get_queue_lines()), ["Track 8"]);
+            assert_eq!(picked(ui.get_previous_lines()), ["Track 4"]);
+            idle(Duration::from_millis(100)).await;
+            assert!(bar_says(2), "the bar counts the songs");
+            // Shift picks from the row picked last, Track 4, to the row,
+            // past what plays, which stays out.
+            queue_selection.invoke_select(4, true);
+            assert_eq!(queue_selection.get_count(), 5);
+            assert_eq!(
+                picked(ui.get_queue_lines()),
+                ["Track 5", "Track 8", "Track 9", "Track 10"]
+            );
+            let lines = ui.get_queue_lines();
+            assert!(!lines.row_data(0).unwrap().selected);
+            assert!(lines.row_data(1).unwrap().joined_below && !lines.row_data(1).unwrap().joined_above);
+            assert!(lines.row_data(3).unwrap().joined_above && lines.row_data(3).unwrap().joined_below);
+            // A click on a row picked lets it go.
+            queue_selection.invoke_select(3, false);
+            assert_eq!(picked(ui.get_queue_lines()), ["Track 5", "Track 8", "Track 10"]);
+            // A song taken out by its row leaves the others as they were.
+            ui.invoke_remove_queued(3);
+            assert_eq!(queue_selection.get_count(), 4);
+            assert_eq!(picked(ui.get_queue_lines()), ["Track 5", "Track 8", "Track 10"]);
+            assert_eq!(picked(ui.get_previous_lines()), ["Track 4"]);
+            // Escape lets the selection go before it leaves the queue.
+            press(&ui, slint::platform::Key::Escape);
+            assert_eq!(queue_selection.get_count(), 0);
+            assert!(ui.get_queue_open(), "the first Escape only clears the selection");
+            // Ctrl+A takes every row that can be, Delete takes them out, as
+            // one change.
+            let held = |held: bool| {
+                let text = slint::platform::Key::Control.into();
+                let event = if held {
+                    WindowEvent::KeyPressed { text }
+                } else {
+                    WindowEvent::KeyReleased { text }
+                };
+                ui.window().dispatch_event(event);
+            };
+            held(true);
+            press(&ui, "a");
+            held(false);
+            assert_eq!(queue_selection.get_count(), 13, "all but what plays");
+            press(&ui, slint::platform::Key::Delete);
+            assert_eq!(queue_selection.get_count(), 0);
+            assert_eq!(titles(ui.get_queue_lines()), ["Track 7"]);
+            assert_eq!(ui.get_previous_lines().row_count(), 0);
+            // The same on the songs after it: play next keeps their order,
+            // and move to the end puts them last.
+            play::testing::show_queue(&ui, tracks.clone(), 7);
+            idle(Duration::from_millis(100)).await;
+            queue_selection.invoke_select(4, false);
+            queue_selection.invoke_select(2, false);
+            queue_selection.invoke_play_next();
+            assert_eq!(titles(ui.get_queue_lines())[..4], ["Track 7", "Track 9", "Track 11", "Track 8"]);
+            assert_eq!(queue_selection.get_count(), 0, "the action ends the selection");
+            queue_selection.invoke_select(1, false);
+            queue_selection.invoke_move_to_end();
+            assert_eq!(titles(ui.get_queue_lines()).last().unwrap(), "Track 9");
+            // A selected row's grip drags all of them: they land together at
+            // the slot, in their order.
+            queue_selection.invoke_select(1, false);
+            queue_selection.invoke_select(3, false);
+            queue_selection.invoke_move(6);
+            assert_eq!(titles(ui.get_queue_lines())[..7], ["Track 7", "Track 8", "Track 12", "Track 13", "Track 11", "Track 10", "Track 14"]);
+
             // A work played whole is one row of the queue that opens to its
             // movements; played from the middle, its movements are songs.
             let movement = |id: &str, work: &str| -> opensubsonic::Child {
@@ -9379,6 +9471,71 @@ mod tests {
                 with_alt(slint::platform::Key::UpArrow);
             }
             assert_eq!(titles(), ["q0", "q2", "q1", "q3", "q4"], "up, and not above the song playing");
+
+            // Pointer: Ctrl and a click on a row's cover selects it, Shift a
+            // range, and the grip of a selected row drags all of them.
+            let modifier = |key: slint::platform::Key, down: bool| {
+                let text = key.into();
+                let event = if down {
+                    WindowEvent::KeyPressed { text }
+                } else {
+                    WindowEvent::KeyReleased { text }
+                };
+                ui.window().dispatch_event(event);
+            };
+            let cover_of = |label: &str| {
+                let row = queue_row(label);
+                let (at, size) = (row.absolute_position(), row.size());
+                slint::LogicalPosition::new(at.x + 28.0, at.y + size.height / 2.0)
+            };
+            let queue_selection = ui.global::<QueueSelection>();
+            play::testing::play_page(&ui, singles(), 0);
+            to_the_end(550.0).await;
+            hold(&ui, cover_of("q1"), 0.0, 0).await;
+            assert_eq!(queue_selection.get_count(), 0, "a plain click selects nothing");
+            modifier(slint::platform::Key::Control, true);
+            hold(&ui, cover_of("q1"), 0.0, 0).await;
+            hold(&ui, cover_of("q3"), 0.0, 0).await;
+            modifier(slint::platform::Key::Control, false);
+            assert_eq!(queue_selection.get_count(), 2, "Ctrl and a click selects");
+            drag(&ui, grip_of("q1, selected"), &[(0, 0.0, 6.0), (20, 0.0, 40.0), (20, 0.0, 4.0 * row_height + 20.0)], 20).await;
+            assert_eq!(titles(), ["q0", "q2", "q1", "q3", "q4"], "the selected rows drag as one block, gathered above the row at the slot");
+            assert_eq!(queue_selection.get_count(), 0);
+            to_the_end(550.0).await;
+            hold(&ui, cover_of("q2"), 0.0, 0).await;
+            assert_eq!(queue_selection.get_count(), 0);
+            modifier(slint::platform::Key::Control, true);
+            hold(&ui, cover_of("q2"), 0.0, 0).await;
+            modifier(slint::platform::Key::Control, false);
+            modifier(slint::platform::Key::Shift, true);
+            hold(&ui, cover_of("q3"), 0.0, 0).await;
+            modifier(slint::platform::Key::Shift, false);
+            assert_eq!(picked(ui.get_queue_lines()), ["q2", "q1", "q3"], "Shift picks a range from the row picked last");
+
+            // A finger holding a row selects it, and taps then select the
+            // others, at a phone's width; Escape lets them go.
+            queue_selection.invoke_clear();
+            ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+            idle(Duration::from_millis(400)).await;
+            let input = ui.global::<Input>();
+            input.set_touch(true);
+            input.set_finger(true);
+            play::testing::play_page(&ui, singles(), 0);
+            to_the_end(180.0).await;
+            hold(&ui, cover_of("q2"), 0.0, 700).await;
+            assert_eq!(picked(ui.get_queue_lines()), ["q2"], "a long press selects");
+            idle(Duration::from_millis(100)).await;
+            assert!(bar_says(1), "the bar is up on the phone's sheet");
+            hold(&ui, cover_of("q3"), 0.0, 0).await;
+            assert_eq!(picked(ui.get_queue_lines()), ["q2", "q3"], "a tap selects while selecting");
+            hold(&ui, cover_of("q2, selected"), 0.0, 0).await;
+            assert_eq!(picked(ui.get_queue_lines()), ["q3"], "and lets go");
+            press(&ui, slint::platform::Key::Escape);
+            assert_eq!(queue_selection.get_count(), 0);
+            input.set_touch(false);
+            input.set_finger(false);
+            ui.window().set_size(slint::LogicalSize::new(800.0, 760.0));
+            idle(Duration::from_millis(400)).await;
 
             // The pointer near the bottom of the sheet scrolls it on, so a row
             // reaches rows that were far below the view.

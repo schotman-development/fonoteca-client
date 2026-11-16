@@ -27,8 +27,8 @@ use crate::active::Active;
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::radio;
 use crate::{
-    AppWindow, Name, Page, PathStep, QueueLine, browse, lyrics, offline, prefs, queue_drag,
-    waveform,
+    AppWindow, Name, Page, PathStep, QueueLine, QueueSelection, browse, lyrics, offline, prefs,
+    queue_drag, waveform,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::{Icons, MenuEntry, network_outputs, quality, scrobble, sound, transcode};
@@ -561,6 +561,200 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             requeued(&weak.unwrap(), &browser, &playing, moved);
         }
     });
+    wire_queue_selection(ui, browser, playing);
+}
+
+/// The songs selected in the queue's list, which the bar over it acts on.
+/// What plays is left out of them.
+fn wire_queue_selection(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
+    let selection = ui.global::<QueueSelection>();
+    selection.on_select({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |row, range| {
+            let ui = weak.unwrap();
+            let mut p = playing.borrow_mut();
+            let Some(songs) = listed_songs(&p, row) else {
+                return;
+            };
+            let current = playing_at(&p);
+            if range {
+                p.queue.select_through(songs, current);
+            } else {
+                p.queue.toggle_selected(songs, current);
+            }
+            show_selection(&ui, &p);
+            drop(p);
+            // The pages' bar and this one are not up together.
+            if ui.get_selected_tiles() > 0 && ui.global::<QueueSelection>().get_count() > 0 {
+                browse::clear_selection(&ui, &browser);
+            }
+        }
+    });
+    selection.on_select_all({
+        let (weak, playing) = (ui.as_weak(), playing.clone());
+        move || {
+            let mut p = playing.borrow_mut();
+            let current = playing_at(&p);
+            p.queue.select_all(current);
+            show_selection(&weak.unwrap(), &p);
+        }
+    });
+    selection.on_clear({
+        let (weak, playing) = (ui.as_weak(), playing.clone());
+        move || {
+            let mut p = playing.borrow_mut();
+            p.queue.clear_selection();
+            show_selection(&weak.unwrap(), &p);
+        }
+    });
+    selection.on_remove({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let ui = weak.unwrap();
+            change_selected(&ui, &browser, &playing, |p, ranges| {
+                Some(p.queue.remove_many(ranges))
+            });
+        }
+    });
+    selection.on_play_next({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let ui = weak.unwrap();
+            change_selected(&ui, &browser, &playing, |p, ranges| {
+                let current = p.shown?;
+                Some(p.queue.move_many_after(ranges, current))
+            });
+        }
+    });
+    selection.on_move_to_end({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let ui = weak.unwrap();
+            change_selected(&ui, &browser, &playing, |p, ranges| {
+                Some(p.queue.move_many_to_end(ranges))
+            });
+        }
+    });
+    selection.on_move({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |slot| {
+            let ui = weak.unwrap();
+            change_selected(&ui, &browser, &playing, |p, ranges| {
+                let to = slot_position(&p.listed, usize::try_from(slot).ok()?)?;
+                Some(p.queue.move_many_to(ranges, to))
+            });
+        }
+    });
+    selection.on_add_to_playlist({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |id| {
+            let ui = weak.unwrap();
+            let links = take_selected_links(&ui, &mut playing.borrow_mut());
+            browse::add_to_playlist(&ui, &browser, id.into(), links);
+        }
+    });
+    selection.on_tag({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move || {
+            let ui = weak.unwrap();
+            let links = take_selected_links(&ui, &mut playing.borrow_mut());
+            browse::start_tagging(&ui, &browser, links);
+        }
+    });
+}
+
+/// Where what plays is in the queue, which is the first song when none is
+/// shown: the list starts there too.
+fn playing_at(p: &Playing) -> usize {
+    p.shown.unwrap_or(0)
+}
+
+/// Makes `change` to the queue with the runs of songs selected, as one
+/// change, and ends the selection. Nothing happens when nothing is selected
+/// or `change` says nothing.
+fn change_selected(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    change: impl FnOnce(&mut Playing, &[Range<usize>]) -> Option<Moved>,
+) {
+    let mut p = playing.borrow_mut();
+    let ranges = p.queue.selected_ranges(playing_at(&p));
+    if ranges.is_empty() {
+        return;
+    }
+    let Some(moved) = change(&mut p, &ranges) else {
+        return;
+    };
+    p.queue.clear_selection();
+    let emptied = p.queue.is_empty();
+    drop(p);
+    if emptied {
+        clear(ui, browser, playing);
+    } else {
+        requeued(ui, browser, playing, moved);
+    }
+}
+
+/// The queue position of a slot of the sheet's list, the gap above the row
+/// of that number.
+fn slot_position(listed: &[Row], slot: usize) -> Option<usize> {
+    match listed.get(slot) {
+        Some(row) => Some(row.songs.start),
+        None => listed.last().map(|row| row.songs.end),
+    }
+}
+
+/// The links of the songs selected, which then stop being selected.
+fn take_selected_links(ui: &AppWindow, p: &mut Playing) -> Vec<String> {
+    let links = p
+        .queue
+        .selected(playing_at(p))
+        .into_iter()
+        .filter_map(|at| p.queue.get(at))
+        .map(|song| format!("song:{}", song.id))
+        .collect();
+    p.queue.clear_selection();
+    show_selection(ui, p);
+    links
+}
+
+/// Marks which of the `lines` are `selected`, and which of those join the
+/// ones above and below them.
+fn mark_selected(lines: &mut [QueueLine], selected: &[bool]) {
+    for (at, line) in lines.iter_mut().enumerate() {
+        line.selected = selected[at];
+        line.joined_above = selected[at] && at > 0 && selected[at - 1];
+        line.joined_below = selected[at] && selected.get(at + 1) == Some(&true);
+    }
+}
+
+/// Which of the `rows` have all their songs selected.
+fn selected_rows(p: &Playing, rows: &[Row]) -> Vec<bool> {
+    let current = playing_at(p);
+    rows.iter()
+        .map(|row| p.queue.row_selected(row.songs.clone(), current))
+        .collect()
+}
+
+/// Shows the selection on the lists' rows as they are, so that a row keeps
+/// the keys it has, and how many songs it holds.
+fn show_selection(ui: &AppWindow, p: &Playing) {
+    let count = p.queue.selected(playing_at(p)).len();
+    ui.global::<QueueSelection>().set_count(count as i32);
+    for (model, rows) in [
+        (ui.get_queue_lines(), &p.listed),
+        (ui.get_previous_lines(), &p.previous),
+    ] {
+        let before: Vec<QueueLine> = model.iter().collect();
+        let mut marked = before.clone();
+        mark_selected(&mut marked, &selected_rows(p, rows));
+        for (at, line) in marked.into_iter().enumerate() {
+            if line != before[at] {
+                model.set_row_data(at, line);
+            }
+        }
+    }
 }
 
 /// Android follows its own routes, and pauses when one goes as it says it
@@ -1611,8 +1805,12 @@ fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing
     p.listed = p.queue.rows(p.shown, QUEUE_SHOWN);
     let (previous, earlier) = p.queue.previous_rows(p.shown, PREVIOUS_SHOWN);
     p.previous = previous;
-    let lines: Vec<QueueLine> = p.listed.iter().map(|row| queue_line(p, row)).collect();
-    let before: Vec<QueueLine> = p.previous.iter().map(|row| queue_line(p, row)).collect();
+    let mut lines: Vec<QueueLine> = p.listed.iter().map(|row| queue_line(p, row)).collect();
+    let mut before: Vec<QueueLine> = p.previous.iter().map(|row| queue_line(p, row)).collect();
+    mark_selected(&mut lines, &selected_rows(p, &p.listed));
+    mark_selected(&mut before, &selected_rows(p, &p.previous));
+    ui.global::<QueueSelection>()
+        .set_count(p.queue.selected(playing_at(p)).len() as i32);
     let listed_to = p.listed.last().map_or(0, |row| row.songs.end);
     ui.set_queue_more((p.queue.len() - listed_to) as i32);
     ui.set_queue_earlier(earlier as i32);
@@ -1711,6 +1909,7 @@ fn queue_line(p: &Playing, row: &Row) -> QueueLine {
         work: matches!(row.shape, Shape::Work { .. }),
         expanded: matches!(row.shape, Shape::Work { expanded: true, .. }),
         part: row.shape == Shape::Movement,
+        ..QueueLine::default()
     }
 }
 

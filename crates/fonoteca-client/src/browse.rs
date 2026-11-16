@@ -1530,7 +1530,7 @@ fn song_link(song: &Child) -> String {
     }
 }
 
-fn clear_selection(ui: &AppWindow, browser: &Shared) {
+pub(crate) fn clear_selection(ui: &AppWindow, browser: &Shared) {
     let (tiles, lines) = {
         let mut b = browser.borrow_mut();
         b.selected.clear();

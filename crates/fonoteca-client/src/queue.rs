@@ -25,6 +25,11 @@ pub struct Queue {
     /// The works whose rows the sheet lists open.
     expanded: HashSet<u64>,
     next_key: u64,
+    /// The entries selected in the sheet's list, by key so that they stay
+    /// selected wherever a change moves them, and the first and last entry
+    /// of the row picked last, where a range picked with Shift starts.
+    selected: HashSet<u64>,
+    anchor: Option<(u64, u64)>,
 }
 
 /// A song in the queue; the same song queued twice is two entries.
@@ -277,9 +282,14 @@ impl Queue {
 
     /// Takes out the songs in `songs`.
     pub fn remove(&mut self, songs: Range<usize>) -> Moved {
+        self.remove_many(&[songs])
+    }
+
+    /// Takes out the songs in all of `ranges`, as one change.
+    pub fn remove_many(&mut self, ranges: &[Range<usize>]) -> Moved {
         self.change(|queue| {
             let removed: HashSet<u64> = queue
-                .take_entries(songs)
+                .take_ranges(ranges)
                 .into_iter()
                 .map(|entry| entry.key)
                 .collect();
@@ -293,10 +303,39 @@ impl Queue {
     /// the work that place falls in.
     pub fn move_to(&mut self, from: Range<usize>, to: usize) -> Moved {
         self.change(|queue| {
-            let moved = queue.take_entries(from);
+            let moved = queue.take_ranges(&[from]);
             let at = queue.outside_works(to.min(queue.len()));
             queue.entries.splice(at..at, moved);
         })
+    }
+
+    /// Moves the songs in all of `ranges` together, in the order they have,
+    /// to where the `to`th place of the queue as it is now will be, or the
+    /// end of the work that place falls in.
+    pub fn move_many_to(&mut self, ranges: &[Range<usize>], to: usize) -> Moved {
+        self.change(|queue| {
+            let to = to.min(queue.len());
+            // Songs taken from before `to` leave a gap behind them.
+            let gap: usize = ranges
+                .iter()
+                .map(|range| range.end.min(to).saturating_sub(range.start.min(to)))
+                .sum();
+            let moved = queue.take_ranges(ranges);
+            let at = queue.outside_works(to - gap);
+            queue.entries.splice(at..at, moved);
+        })
+    }
+
+    /// Moves the songs in all of `ranges`, played before the `current`th or
+    /// queued after it, to play right after it, or after the work it is in,
+    /// in the order they have.
+    pub fn move_many_after(&mut self, ranges: &[Range<usize>], current: usize) -> Moved {
+        self.move_many_to(ranges, current + 1)
+    }
+
+    /// Moves the songs in all of `ranges` to the end of the queue.
+    pub fn move_many_to_end(&mut self, ranges: &[Range<usize>]) -> Moved {
+        self.move_many_to(ranges, self.len())
     }
 
     /// Moves the songs in `songs`, played before the `current`th or queued
@@ -322,10 +361,109 @@ impl Queue {
         self.move_to(from, to)
     }
 
-    fn take_entries(&mut self, songs: Range<usize>) -> Vec<Entry> {
-        let end = songs.end.min(self.len());
-        let start = songs.start.min(end);
-        self.entries.drain(start..end).collect()
+    /// Takes the songs in `ranges` out of the queue, in their order. Those
+    /// left of a work that was only partly taken are songs of their own.
+    fn take_ranges(&mut self, ranges: &[Range<usize>]) -> Vec<Entry> {
+        let (mut taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .enumerate()
+            .partition(|(at, _)| ranges.iter().any(|range| range.contains(at)));
+        let works_left: HashSet<u64> = kept.iter().filter_map(|(_, entry)| entry.work).collect();
+        for (_, entry) in &mut taken {
+            entry.work = entry.work.filter(|work| !works_left.contains(work));
+        }
+        self.entries = kept.into_iter().map(|(_, entry)| entry).collect();
+        taken.into_iter().map(|(_, entry)| entry).collect()
+    }
+
+    /// The positions in `songs` that can be selected: not those of the unit
+    /// holding the `playing`th song, which the queue is built around.
+    fn selectable(&self, songs: Range<usize>, playing: usize) -> Vec<usize> {
+        let playing = self.unit_at(playing).songs;
+        songs
+            .filter(|at| *at < self.len() && !playing.contains(at))
+            .collect()
+    }
+
+    /// Selects the songs of a row, or lets them go if all are selected, and
+    /// makes the row where a range starts.
+    pub fn toggle_selected(&mut self, row: Range<usize>, playing: usize) {
+        let at = self.selectable(row, playing);
+        let (Some(&first), Some(&last)) = (at.first(), at.last()) else {
+            return;
+        };
+        self.anchor = Some((self.entries[first].key, self.entries[last].key));
+        let keys: Vec<u64> = at.iter().map(|&at| self.entries[at].key).collect();
+        if keys.iter().all(|key| self.selected.contains(key)) {
+            keys.iter().for_each(|key| {
+                self.selected.remove(key);
+            });
+        } else {
+            self.selected.extend(keys);
+        }
+    }
+
+    /// Selects every song from the row last picked to `row`, or toggles
+    /// `row` where none was picked.
+    pub fn select_through(&mut self, row: Range<usize>, playing: usize) {
+        let place = |key: u64| self.entries.iter().position(|entry| entry.key == key);
+        let Some((first, last)) = self
+            .anchor
+            .and_then(|(first, last)| Some((place(first)?, place(last)?)))
+        else {
+            return self.toggle_selected(row, playing);
+        };
+        let span = first.min(row.start)..(last + 1).max(row.end);
+        let keys: Vec<u64> = self
+            .selectable(span, playing)
+            .into_iter()
+            .map(|at| self.entries[at].key)
+            .collect();
+        self.selected.extend(keys);
+    }
+
+    pub fn select_all(&mut self, playing: usize) {
+        let keys: Vec<u64> = self
+            .selectable(0..self.len(), playing)
+            .into_iter()
+            .map(|at| self.entries[at].key)
+            .collect();
+        self.selected.extend(keys);
+        self.anchor = None;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.anchor = None;
+    }
+
+    /// The positions selected, in the queue's order.
+    pub fn selected(&self, playing: usize) -> Vec<usize> {
+        self.selectable(0..self.len(), playing)
+            .into_iter()
+            .filter(|&at| self.selected.contains(&self.entries[at].key))
+            .collect()
+    }
+
+    /// The selected positions as runs of neighbours.
+    pub fn selected_ranges(&self, playing: usize) -> Vec<Range<usize>> {
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        for at in self.selected(playing) {
+            match ranges.last_mut() {
+                Some(last) if last.end == at => last.end += 1,
+                _ => ranges.push(at..at + 1),
+            }
+        }
+        ranges
+    }
+
+    /// Whether all the songs of a row that can be selected are, and some can.
+    pub fn row_selected(&self, row: Range<usize>, playing: usize) -> bool {
+        let at = self.selectable(row, playing);
+        !at.is_empty()
+            && at
+                .iter()
+                .all(|&at| self.selected.contains(&self.entries[at].key))
     }
 
     /// `at`, or the end of the work it falls inside of.
@@ -391,6 +529,7 @@ impl Queue {
             .enumerate()
             .map(|(at, entry)| (entry.key, at))
             .collect();
+        self.selected.retain(|key| after.contains_key(key));
         before.iter().map(|key| after.get(key).copied()).collect()
     }
 }
@@ -479,6 +618,8 @@ impl Random {
 }
 
 #[cfg(test)]
+// The bulk changes take a list of ranges, which is often just one.
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 
@@ -866,6 +1007,137 @@ mod tests {
         assert_eq!(ids(&q), ["s1", "s2", "s3", "a", "b", "p1", "p2"]);
         q.move_onto(0..1, 3..4);
         assert_eq!(ids(&q), ["s2", "s3", "a", "s1", "b", "p1", "p2"]);
+    }
+
+    #[test]
+    fn taking_out_many_ranges_is_one_change_that_says_where_each_song_went() {
+        let mut q = Queue::from_page(page(), 0);
+        // The whole work P, the song b and the movement s2.
+        let moved = q.remove_many(&[1..3, 3..4, 5..6]);
+        assert_eq!(moved, [Some(0), None, None, None, Some(1), None, Some(2)],);
+        assert_eq!(ids(&q), ["a", "s1", "s3"]);
+        assert_eq!(units(&q), [0..1, 1..3], "the movements left stay a work");
+    }
+
+    #[test]
+    fn the_song_playing_is_found_again_after_taking_out_many_before_it_inside_a_range_and_after_it()
+    {
+        let playing_after = |ranges: &[Range<usize>], playing: usize| {
+            let mut q = Queue::from_page(page(), 0);
+            q.remove_many(ranges).get(playing).copied().flatten()
+        };
+        assert_eq!(playing_after(&[0..1, 1..3], 4), Some(1), "before it");
+        assert_eq!(playing_after(&[3..4, 5..7], 4), Some(3), "around it");
+        assert_eq!(playing_after(&[0..1, 4..7], 5), None, "taken out with it");
+        assert_eq!(playing_after(&[5..7], 4), Some(4), "after it");
+    }
+
+    #[test]
+    fn songs_moved_to_the_end_keep_their_order_and_a_work_whole() {
+        let mut q = Queue::from_page(page(), 0);
+        let moved = q.move_many_to_end(&[0..1, 1..3]);
+        assert_eq!(ids(&q), ["b", "s1", "s2", "s3", "a", "p1", "p2"]);
+        assert_eq!(
+            moved,
+            [
+                Some(4),
+                Some(5),
+                Some(6),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3)
+            ]
+        );
+        assert_eq!(units(&q), [0..1, 1..4, 4..5, 5..7]);
+    }
+
+    #[test]
+    fn songs_played_next_come_right_after_the_one_playing_in_the_order_they_have() {
+        let mut q = Queue::from_page(page(), 0);
+        // a and the work P from before it and s1 from after it, with b playing.
+        q.move_many_after(&[0..1, 1..3, 4..5], 3);
+        assert_eq!(ids(&q), ["b", "a", "p1", "p2", "s1", "s2", "s3"]);
+    }
+
+    #[test]
+    fn songs_played_next_go_after_the_work_playing_and_those_from_before_it_leave_a_gap() {
+        let mut q = Queue::from_page(page(), 0);
+        // p1 plays, which is inside the work P; s3 and a are played next.
+        let moved = q.move_many_after(&[0..1, 6..7], 1);
+        assert_eq!(ids(&q), ["p1", "p2", "a", "s3", "b", "s1", "s2"]);
+        assert_eq!(moved[1], Some(0), "what plays is where the player finds it");
+        assert_eq!(moved[2], Some(1));
+    }
+
+    #[test]
+    fn a_movement_moved_on_its_own_is_a_song_and_its_work_loses_nothing() {
+        let mut q = Queue::from_page(page(), 0);
+        q.move_many_to_end(&[5..6]);
+        assert_eq!(ids(&q), ["a", "p1", "p2", "b", "s1", "s3", "s2"]);
+        assert_eq!(units(&q), [0..1, 1..3, 3..4, 4..6, 6..7]);
+    }
+
+    #[test]
+    fn a_block_dropped_at_a_place_goes_in_there_in_its_order() {
+        let mut q = Queue::from_page(page(), 0);
+        // a and s1 dropped before b, which sits between them.
+        q.move_many_to(&[0..1, 4..5], 3);
+        assert_eq!(ids(&q), ["p1", "p2", "a", "s1", "b", "s2", "s3"]);
+        // Dropped inside a work, it goes in after it.
+        let mut q = Queue::from_page(page(), 0);
+        q.move_many_to(&[0..1], 5);
+        assert_eq!(ids(&q), ["p1", "p2", "b", "s1", "s2", "s3", "a"]);
+    }
+
+    #[test]
+    fn a_range_picked_with_shift_runs_from_the_row_picked_last() {
+        let mut q = Queue::from_page(page(), 0);
+        // Song a plays. Rows: a, P, b, S.
+        q.toggle_selected(3..4, 0);
+        q.select_through(4..7, 0);
+        assert_eq!(q.selected(0), [3, 4, 5, 6]);
+        q.select_through(1..3, 0);
+        assert_eq!(q.selected_ranges(0), [1..7], "backwards, whole works");
+    }
+
+    #[test]
+    fn the_unit_playing_cannot_be_selected() {
+        let mut q = Queue::from_page(page(), 0);
+        q.toggle_selected(1..3, 2);
+        assert!(q.selected(2).is_empty());
+        q.select_all(2);
+        assert_eq!(q.selected_ranges(2), [0..1, 3..7]);
+        assert!(!q.row_selected(1..3, 2));
+        assert!(q.row_selected(3..4, 2));
+    }
+
+    #[test]
+    fn a_selected_song_is_picked_again_to_let_go_and_a_row_goes_whole() {
+        let mut q = Queue::from_page(page(), 0);
+        q.toggle_selected(4..7, 0);
+        q.toggle_selected(5..6, 0);
+        assert_eq!(q.selected(0), [4, 6]);
+        assert!(!q.row_selected(4..7, 0));
+        q.toggle_selected(4..7, 0);
+        assert_eq!(q.selected(0), [4, 5, 6]);
+        q.toggle_selected(4..7, 0);
+        assert!(q.selected(0).is_empty());
+    }
+
+    #[test]
+    fn the_selection_follows_its_songs_through_changes_and_goes_with_those_taken_out() {
+        let mut q = Queue::from_page(page(), 0);
+        q.toggle_selected(3..4, 0);
+        q.toggle_selected(4..7, 0);
+        q.remove(1..3);
+        assert_eq!(q.selected(0), [1, 2, 3, 4]);
+        q.move_many_to_end(&[0..1]);
+        assert_eq!(q.selected(4), [0, 1, 2, 3]);
+        q.remove_many(&[1..3]);
+        assert_eq!(q.selected(2), [0, 1]);
+        q.clear_selection();
+        assert!(q.selected(0).is_empty());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AccentChoice, AlbumTile, Drag, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, Drag, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -333,6 +333,8 @@ component PageScroll inherits FocusScope {
     callback back();
     callback forward();
     callback refresh();
+    // A key nothing here or below it took, which the page may take.
+    callback key(event: KeyEvent) -> bool;
     // Swiped up from the page's end, past it, on a page that asks for it and
     // doesn't scroll sideways.
     in property <bool> pushable;
@@ -497,6 +499,9 @@ component PageScroll inherits FocusScope {
         }
         if event.text == Key.Back && root.can-go-back {
             root.back();
+            return accept;
+        }
+        if root.key(event) {
             return accept;
         }
         reject
@@ -707,10 +712,12 @@ component PageScroll inherits FocusScope {
 
 // The queue: the songs played before the one playing, out of view above it
 // until scrolled up to, then the one playing and the songs after it, to jump
-// to, play next, take out, and move by their grips or with Alt and the
-// arrows. It opens on what plays, and comes back to it when a song begins
+// to, play next, take out, select (Ctrl or Cmd with a click, Shift for a
+// range, a long press, Space; Ctrl or Cmd with A takes all of them, Delete
+// the selected out) and move by their grips, the selected ones together, or
+// with Alt and the arrows. It opens on what plays, and comes back to it when a song begins
 // unless a finger holds the list or a row is being dragged. Escape and
-// Android's back `leave` it.
+// Android's back let the selection go first, then `leave` it.
 component QueueList inherits Rectangle {
     in property <[QueueLine]> lines;
     in property <[QueueLine]> previous;
@@ -752,6 +759,13 @@ component QueueList inherits Rectangle {
     pure function row-y(row: int) -> length {
         row * root.row-height + (row >= root.playing-rows ? root.up-next-gap : 0)
     }
+    function leave-or-unselect() {
+        if QueueSelection.count > 0 {
+            QueueSelection.clear();
+        } else {
+            root.leave();
+        }
+    }
     // Scrolls to what plays, which has the songs played before it above,
     // out of view, to be scrolled up to.
     function snap-to-current() {
@@ -776,8 +790,19 @@ component QueueList inherits Rectangle {
         active: root.active;
         can-go-back: true;
         accessible-label: "Queue";
-        back => { root.leave(); }
-        escape => { root.leave(); }
+        back => { root.leave-or-unselect(); }
+        escape => { root.leave-or-unselect(); }
+        key(event) => {
+            if (event.modifiers.control && (event.text == "a" || event.text == "\u{1}")) {
+                QueueSelection.select-all();
+                return true;
+            }
+            if QueueSelection.count > 0 && (event.text == Key.Delete || event.text == Key.Backspace) {
+                QueueSelection.remove();
+                return true;
+            }
+            false
+        }
         halts: true;
         halt-at: root.playing-at;
         content-width: queue-scroll.visible-width;
@@ -826,8 +851,14 @@ component QueueList inherits Rectangle {
                                     details: line.details;
                                     cover: line.cover;
                                     covered: true;
+                                    selectable: true;
+                                    selected: line.selected;
+                                    selecting: QueueSelection.count > 0;
+                                    joined-above: line.joined-above;
+                                    joined-below: line.joined-below;
                                     entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
                                     open => { root.jump(self.at); }
+                                    select(range) => { QueueSelection.select(self.at, range); }
                                     opening => {
                                         self.entries = [];
                                         self.entries.push({ id: "play", label: "Play now", icon: Icons.play });
@@ -881,6 +912,10 @@ component QueueList inherits Rectangle {
                                 }
                             }
                             key-pressed(event) => {
+                                if event.text == Key.Space && row >= root.playing-rows {
+                                    QueueSelection.select(row, event.modifiers.shift);
+                                    return accept;
+                                }
                                 if !event.modifiers.alt || !reorder.draggable(row) {
                                     return reject;
                                 }
@@ -910,9 +945,17 @@ component QueueList inherits Rectangle {
                                 paused: root.paused;
                                 expandable: line.work;
                                 expanded: line.expanded;
+                                // What plays is left out of the selection.
+                                selectable: row >= root.playing-rows;
+                                selected: line.selected;
+                                selecting: QueueSelection.count > 0;
+                                joined-above: line.joined-above;
+                                joined-below: line.joined-below;
                                 // All of them when opened; one so it shows.
                                 entries: [{ id: "remove", label: "Remove from queue", icon: Icons.trash, danger: true }];
                                 open => { root.jump(row); }
+                                select(range) => { QueueSelection.select(row, range); }
+                                pressed => { reordered.focus(); }
                                 toggled => { root.toggle-work(row); }
                                 opening => {
                                     self.entries = [];
@@ -947,10 +990,17 @@ component QueueList inherits Rectangle {
                             row-height: root.row-height;
                             split: root.playing-rows;
                             gap: root.up-next-gap;
+                            block: QueueSelection.count;
                             view-top: queue-scroll.absolute-position.y;
                             view-bottom: queue-scroll.absolute-position.y + queue-scroll.visible-height;
                             slot-at(lines, from, at) => { root.drop-slot(lines, from, at) }
-                            moved(from, slot) => { root.move(from, slot); }
+                            moved(from, slot) => {
+                                if root.lines[from].selected {
+                                    QueueSelection.move(slot);
+                                } else {
+                                    root.move(from, slot);
+                                }
+                            }
                             scroll(by) => {
                                 queue-scroll.content-y = clamp(queue-scroll.content-y + by, min(0, queue-scroll.visible-height - queue-scroll.content-height), 0);
                             }
@@ -4179,6 +4229,17 @@ export component AppWindow inherits Window {
     property <bool> page-covered: root.now-playing-open && sheet.y <= 0;
 
     changed visit => { root.now-playing-open = false; }
+    // The queue's selection and the pages' are not shown together.
+    changed queue-open => {
+        if !root.queue-open {
+            QueueSelection.clear();
+        }
+    }
+    changed selected-tiles => {
+        if root.selected-tiles > 0 {
+            QueueSelection.clear();
+        }
+    }
     changed playing => {
         if !root.playing {
             root.close-now-playing();
@@ -4563,8 +4624,56 @@ export component AppWindow inherits Window {
         close => { root.close-queue(); }
     }
 
+    // The bar for the songs selected in the queue: over the queue panel, or
+    // the sheet's queue page, above the player's bar when it is up.
+    if root.step == Step.done && root.queue-open && QueueSelection.count > 0: SelectionBar {
+        x: root.docked ? root.width - root.queue-panel-width + (root.queue-panel-width - self.width) / 2 : (root.width - self.width) / 2;
+        y: root.height - self.height - 24px - root.bottom-inset - (root.docked ? root.player-bar-height : 0);
+        width: self.preferred-width;
+        height: self.preferred-height;
+        count: QueueSelection.count;
+        clear => { QueueSelection.clear(); }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.trash;
+            label: "Remove from queue";
+            color: Theme.on-accent;
+            ring-color: Theme.on-accent;
+            clicked => { QueueSelection.remove(); }
+        }
+        MoreMenu {
+            cross-axis-self-alignment: center;
+            label: "More for the selection";
+            color: Theme.on-accent;
+            ring-color: Theme.on-accent;
+            opening => {
+                self.entries = [];
+                self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
+                self.entries.push({ id: "end", label: "Move to the end", icon: Icons.queue });
+                if root.playlist-targets.length > 0 {
+                    self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlist-targets });
+                }
+                if root.tags-offered {
+                    self.entries.push({ id: "tags", label: "Tags", icon: Icons.tag });
+                }
+            }
+            activated(id, choice) => {
+                if id == "next" {
+                    QueueSelection.play-next();
+                } else if id == "end" {
+                    QueueSelection.move-to-end();
+                } else if id == "tags" {
+                    QueueSelection.tag();
+                    root.ask(Asking.tag-songs);
+                } else {
+                    QueueSelection.add-to-playlist(choice);
+                }
+            }
+        }
+    }
+
     // Over the player's bar, when it is up, as the selection bar.
-    if root.step == Step.done && root.notice != "" && root.selected-tiles == 0: Rectangle {
+    if root.step == Step.done && root.notice != "" && root.selected-tiles == 0 && QueueSelection.count == 0: Rectangle {
         x: root.sidebar-width + (root.width - root.sidebar-width - root.queue-beside-width - self.width) / 2;
         y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0) - root.bottom-bar-height;
         width: min(notice.preferred-width, root.width - root.sidebar-width - root.queue-beside-width - 32px);
