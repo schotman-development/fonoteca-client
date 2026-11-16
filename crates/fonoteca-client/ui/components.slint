@@ -4943,6 +4943,10 @@ export component PlayerBar inherits Rectangle {
     property <length> side: root.compact ? 36px : 40px;
     // A full bar names the sound device only where its window is this wide.
     property <bool> roomy: Screen.width >= 1400px;
+    // The controls' gaps shrink with the window, and the centre block's
+    // least width follows: its seven controls, play with room of its own.
+    property <length> control-gap: root.compact ? 4px : root.roomy ? 16px : 10px;
+    property <length> play-room: root.compact ? 0px : 8px;
     property <string> part: root.movement != "" && root.movement-place != "" ? root.movement + " · " + root.movement-place : root.movement + root.movement-place;
 
     height: Screen.phone ? 72px : 80px;
@@ -5055,7 +5059,7 @@ export component PlayerBar inherits Rectangle {
         spacing: 16px;
         HorizontalLayout {
             horizontal-stretch: 1;
-            min-width: 140px;
+            min-width: root.roomy ? 280px : 216px;
             preferred-width: 320px;
             spacing: 12px;
             Pressable {
@@ -5070,16 +5074,19 @@ export component PlayerBar inherits Rectangle {
                     source: root.cover;
                 }
             }
-            // Long titles are cut short and the artists scroll sideways, so
-            // they don't size it.
+            // Long titles and names are cut short, so they don't size it.
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
                 spacing: 2px;
                 HorizontalLayout {
                     spacing: 8px;
+                    // The title takes the stretch, so the menu keeps its width.
                     Text {
+                        horizontal-stretch: 1;
+                        min-width: root.roomy ? 160px : 96px;
                         text: root.title;
+                        vertical-alignment: center;
                         font-weight: 600;
                         color: Theme.text;
                         overflow: elide;
@@ -5090,6 +5097,22 @@ export component PlayerBar inherits Rectangle {
                         color: Theme.muted;
                         vertical-alignment: center;
                         overflow: elide;
+                    }
+                    if !root.live: TrackMenu {
+                        cross-axis-self-alignment: center;
+                        line: {
+                            title: root.title,
+                            loved: root.loved,
+                            album: root.album,
+                            artists: root.names,
+                        };
+                        playlists: root.playlists;
+                        taggable: root.taggable;
+                        selectable: false;
+                        open(link) => { root.open(link); }
+                        toggle-love => { root.toggle-love(); }
+                        add-to-playlist(id) => { root.add-to-playlist(id); }
+                        tag => { root.tag(); }
                     }
                 }
                 if root.album.link != "": HorizontalLayout {
@@ -5106,9 +5129,10 @@ export component PlayerBar inherits Rectangle {
                     color: Theme.danger;
                     overflow: elide;
                 }
-                if root.problem == "" && root.names.length > 0: NameChips {
+                if root.problem == "" && root.names.length > 0: LinksLine {
                     names: root.names;
-                    pill: 22px;
+                    alignment: LayoutAlignment.start;
+                    font-size: Theme.small;
                     open(link) => { root.open(link); }
                 }
             }
@@ -5116,12 +5140,19 @@ export component PlayerBar inherits Rectangle {
         // The controls over the position.
         VerticalLayout {
             horizontal-stretch: 1;
-            min-width: 200px;
+            min-width: 228px + root.play-room + 6 * root.control-gap;
             preferred-width: 420px;
             alignment: center;
             HorizontalLayout {
                 alignment: center;
-                spacing: 4px;
+                spacing: root.control-gap;
+                if root.quality != "": SignalPathLight {
+                    cross-axis-self-alignment: center;
+                    quality: root.quality;
+                    level: root.level;
+                    path: root.path;
+                    dot-only: true;
+                }
                 if !root.live: ShuffleButton {
                     cross-axis-self-alignment: center;
                     icon-size: 20px;
@@ -5136,12 +5167,17 @@ export component PlayerBar inherits Rectangle {
                     label: "Previous";
                     clicked => { root.previous(); }
                 }
-                PlayPauseButton {
+                // Room of its own: the biggest control reads as the centre.
+                HorizontalLayout {
                     cross-axis-self-alignment: center;
-                    width: 40px;
-                    icon-size: 28px;
-                    paused: root.paused;
-                    clicked => { root.toggle-pause(); }
+                    padding-left: root.play-room / 2;
+                    padding-right: root.play-room / 2;
+                    PlayPauseButton {
+                        width: 40px;
+                        icon-size: 28px;
+                        paused: root.paused;
+                        clicked => { root.toggle-pause(); }
+                    }
                 }
                 if !root.live: IconButton {
                     cross-axis-self-alignment: center;
@@ -5157,6 +5193,16 @@ export component PlayerBar inherits Rectangle {
                     repeat: root.repeat;
                     clicked => { root.cycle-repeat(); }
                 }
+                if !root.live: IconButton {
+                    cross-axis-self-alignment: center;
+                    icon: Icons.heart;
+                    filled: root.loved;
+                    color: root.loved ? Theme.accent : Theme.text;
+                    label: "Love " + root.title;
+                    accessible-checkable: true;
+                    accessible-checked: root.loved;
+                    clicked => { root.toggle-love(); }
+                }
             }
             if !root.live: SeekRow {
                 position: root.position;
@@ -5165,21 +5211,15 @@ export component PlayerBar inherits Rectangle {
                 seek(seconds) => { root.seek(seconds); }
             }
         }
-        // In two rows of four where the window is narrow, else in one.
+        // In two rows of three where the window is narrow, else in one.
         VerticalLayout {
             horizontal-stretch: 0;
             alignment: center;
             FlexboxLayout {
-                width: root.compact ? 4 * 32px + 3 * self.spacing : self.preferred-width;
+                width: root.compact ? 3 * 32px + 2 * self.spacing : self.preferred-width;
                 flex-wrap: root.compact ? FlexboxLayoutWrap.wrap : FlexboxLayoutWrap.no-wrap;
                 spacing: 4px;
                 cross-axis-alignment: center;
-                if root.quality != "": SignalPathLight {
-                    quality: root.quality;
-                    level: root.level;
-                    path: root.path;
-                    dot-only: !root.roomy;
-                }
                 if root.has-sound: OutputPicker {
                     named: root.roomy;
                     output-devices: root.output-devices;
@@ -5198,30 +5238,6 @@ export component PlayerBar inherits Rectangle {
                     icon: Icons.lyrics;
                     label: "Lyrics";
                     clicked => { root.lyrics(); }
-                }
-                if !root.live: IconButton {
-                    icon: Icons.heart;
-                    filled: root.loved;
-                    color: root.loved ? Theme.accent : Theme.text;
-                    label: "Love " + root.title;
-                    accessible-checkable: true;
-                    accessible-checked: root.loved;
-                    clicked => { root.toggle-love(); }
-                }
-                if !root.live: TrackMenu {
-                    line: {
-                        title: root.title,
-                        loved: root.loved,
-                        album: root.album,
-                        artists: root.names,
-                    };
-                    playlists: root.playlists;
-                    taggable: root.taggable;
-                    selectable: false;
-                    open(link) => { root.open(link); }
-                    toggle-love => { root.toggle-love(); }
-                    add-to-playlist(id) => { root.add-to-playlist(id); }
-                    tag => { root.tag(); }
                 }
                 if !root.live: IconButton {
                     icon: Icons.queue;
