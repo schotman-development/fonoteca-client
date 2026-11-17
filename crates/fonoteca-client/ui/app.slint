@@ -725,6 +725,10 @@ component QueueList inherits Rectangle {
     // there are after those of `lines`.
     in property <int> earlier;
     in property <int> more;
+    // How much music is left in the queue as written, and as a screen reader
+    // says it; empty while it is not known or not true.
+    in property <string> remaining;
+    in property <string> remaining-label;
     // How many of `lines` what plays takes, set apart from the rest.
     in property <int> playing-rows;
     // Whether what plays is paused, which its row says.
@@ -897,6 +901,18 @@ component QueueList inherits Rectangle {
                             visible: root.lines.length > root.playing-rows;
                             text: "Up next";
                         }
+                        // On the "Up next" heading, or on "Now playing" above
+                        // when a work plays whole and its movements are what
+                        // follows. Not a live region: it changes every second.
+                        if root.remaining != "": Text {
+                            x: parent.width - self.width - 16px;
+                            y: (up-next.visible ? up-next.y + up-next.height : 0px) - self.preferred-height - 2px;
+                            text: root.remaining;
+                            font-size: Theme.small;
+                            color: Theme.muted;
+                            accessible-role: text;
+                            accessible-label: root.remaining-label;
+                        }
                         for line[row] in root.lines: reordered := FocusScope {
                             y: root.row-y(row);
                             width: parent.width;
@@ -1027,6 +1043,8 @@ component QueuePanel inherits Rectangle {
     in property <[QueueLine]> previous-lines;
     in property <int> queue-earlier;
     in property <int> queue-more;
+    in property <string> remaining;
+    in property <string> remaining-label;
     in property <bool> paused;
     in property <int> playing-shown;
     in property <int> asked;
@@ -1075,6 +1093,8 @@ component QueuePanel inherits Rectangle {
             previous: root.previous-lines;
             earlier: root.queue-earlier;
             more: root.queue-more;
+            remaining: root.remaining;
+            remaining-label: root.remaining-label;
             paused: root.paused;
             playing-shown: root.playing-shown;
             asked: root.asked;
@@ -1565,6 +1585,16 @@ export component AppWindow inherits Window {
     // under it when it is a work that is open.
     in property <int> queue-playing-rows;
     in property <int> queue-more;
+    // The seconds of the songs after the one playing, over the whole queue,
+    // and whether some of them have no length, which makes the sum a least.
+    in property <int> queue-after-seconds;
+    in property <bool> queue-after-partial;
+    property <int> queue-left-seconds: Math.ceil(max(0, root.playing-duration - root.playing-position)) + root.queue-after-seconds;
+    // Repeat one has no end to count to, a station no end at all; with
+    // nothing after the song, the seek bar's own countdown says it all.
+    property <bool> queue-left-shown: !root.playing-live && root.repeat != 2 && (root.queue-after-seconds > 0 || root.queue-after-partial);
+    out property <string> queue-left: !root.queue-left-shown ? "" : root.clock(root.queue-left-seconds) + (root.queue-after-partial ? "+" : "") + " left";
+    property <string> queue-left-label: !root.queue-left-shown ? "" : root.spoken(root.queue-left-seconds, root.queue-after-partial);
     // The songs played before the one playing, as rows from the oldest, and
     // how many songs came before those. `playing-shown` counts the songs
     // the sheet has been given, for it to snap back to the one playing.
@@ -1845,6 +1875,9 @@ export component AppWindow inherits Window {
     callback move-queued(from: int, slot: int);
     pure callback drop-slot(lines: [QueueLine], from: int, at: float) -> int;
     pure callback step-slot(lines: [QueueLine], from: int, down: bool) -> int;
+    // Seconds as `h:mm:ss`, or `m:ss` below an hour, and as said aloud.
+    pure callback clock(seconds: int) -> string;
+    pure callback spoken(seconds: int, at-least: bool) -> string;
     callback clear-queue();
     // A sound device or volume leveling chosen in the settings, by its
     // index in the list.
@@ -4130,6 +4163,8 @@ export component AppWindow inherits Window {
                 previous-lines: root.previous-lines;
                 queue-earlier: root.queue-earlier;
                 queue-more: root.queue-more;
+                remaining: root.queue-left;
+                remaining-label: root.queue-left-label;
                 paused: root.playing-paused;
                 playing-shown: root.playing-shown;
                 asked: root.queue-asked;
@@ -4577,6 +4612,8 @@ export component AppWindow inherits Window {
                             previous: root.previous-lines;
                             earlier: root.queue-earlier;
                             more: root.queue-more;
+                            remaining: root.queue-left;
+                            remaining-label: root.queue-left-label;
                             paused: root.playing-paused;
                             playing-shown: root.playing-shown;
                             asked: root.queue-asked;
@@ -4609,6 +4646,8 @@ export component AppWindow inherits Window {
         previous-lines: root.previous-lines;
         queue-earlier: root.queue-earlier;
         queue-more: root.queue-more;
+        remaining: root.queue-left;
+        remaining-label: root.queue-left-label;
         paused: root.playing-paused;
         playing-shown: root.playing-shown;
         asked: root.queue-asked;

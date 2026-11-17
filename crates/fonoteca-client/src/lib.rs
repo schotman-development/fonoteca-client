@@ -9016,6 +9016,51 @@ mod tests {
             assert_eq!(ui.get_previous_lines().row_count(), 7);
             assert!(played("Track 7"), "back on what plays after the song changed");
             assert!(!played("Track 6"));
+            // The queue says how much music is left, the rest of the song
+            // and the songs after it, and counts down with the position.
+            let timed: Vec<_> = (0..4)
+                .map(|n| -> opensubsonic::Child {
+                    serde_json::from_str(&format!(
+                        r#"{{"id":"Timed {n}","isDir":false,"title":"Timed {n}","duration":2000}}"#
+                    ))
+                    .unwrap()
+                })
+                .collect();
+            play::testing::show_queue(&ui, timed, 0);
+            ui.set_playing_position(0.0);
+            idle(Duration::from_millis(100)).await;
+            assert_eq!(ui.get_queue_left(), "2:13:20 left");
+            assert!(played("Timed 1"), "the songs after it are listed");
+            ui.set_playing_position(10.0);
+            assert_eq!(ui.get_queue_left(), "2:13:10 left", "10 seconds on, 10 seconds less");
+            ui.set_repeat(2);
+            assert_eq!(ui.get_queue_left(), "", "repeat one has no end");
+            ui.set_repeat(0);
+            // The movements of a work playing whole are what follows its
+            // first, though the sheet draws no "Up next" for them.
+            let work: Vec<_> = (0..4)
+                .map(|n| -> opensubsonic::Child {
+                    serde_json::from_str(&format!(
+                        r#"{{"id":"Move {n}","isDir":false,"title":"Symphony: Move {n}","duration":600,"works":[{{"name":"Symphony"}}],"movements":[{{"name":"Move {n}","number":{},"count":4}}]}}"#,
+                        n + 1
+                    ))
+                    .unwrap()
+                })
+                .collect();
+            play::testing::show_queue(&ui, work, 0);
+            ui.set_playing_position(0.0);
+            assert_eq!(ui.get_queue_left(), "40:00 left");
+            play::testing::show_queue(&ui, vec![tracks[0].clone()], 0);
+            assert_eq!(ui.get_queue_left(), "", "nothing follows the only song");
+            let ten_minutes: opensubsonic::Child = serde_json::from_str(
+                r#"{"id":"Ten","isDir":false,"title":"Ten","duration":600}"#,
+            )
+            .unwrap();
+            play::testing::show_queue(&ui, vec![tracks[0].clone(), ten_minutes], 0);
+            ui.set_playing_position(0.0);
+            assert_eq!(ui.get_queue_left(), "10:00+ left", "the song playing has no length");
+            play::testing::show_queue(&ui, tracks.clone(), 7);
+            idle(Duration::from_millis(300)).await;
             // What plays has a heading of its own, and so do the songs after
             // it. Scrolled up from those, the queue stops at what plays, by
             // the wheel and by a finger's drag or fling; only a scroll after

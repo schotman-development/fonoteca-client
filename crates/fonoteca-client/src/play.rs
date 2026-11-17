@@ -509,6 +509,15 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
             requeued(&weak.unwrap(), &browser, &playing, moved);
         }
     });
+    ui.on_clock(|seconds| browse::duration(seconds.into()).into());
+    ui.on_spoken(|seconds, at_least| {
+        let said = browse::duration_spoken(seconds.into());
+        format!(
+            "{}{said} remaining",
+            if at_least { "at least " } else { "" }
+        )
+        .into()
+    });
     ui.on_drop_slot(|lines, from, at| {
         let from = usize::try_from(from).unwrap_or_default();
         queue_drag::drop_slot(&parts(&lines), from, at).map_or(-1, |slot| slot as i32)
@@ -1798,6 +1807,27 @@ fn listed_songs(p: &Playing, row: i32) -> Option<Range<usize>> {
     row.map(|row| row.songs.clone())
 }
 
+/// The seconds of the songs after the `playing`th over the whole queue, and
+/// whether the time left is a least: some of them have no length, or the
+/// one playing has none, so the rest of it is not known. With nothing after
+/// the song playing, the seek bar's countdown is all there is to say.
+fn seconds_after(queue: &Queue, playing: usize) -> (i32, bool) {
+    let durations: Vec<Option<i64>> = queue
+        .songs()
+        .skip(playing + 1)
+        .map(|song| song.duration)
+        .collect();
+    let seconds = durations.iter().flatten().sum::<i64>();
+    let playing_length_unknown = !durations.is_empty()
+        && queue
+            .get(playing)
+            .is_some_and(|song| song.duration.is_none());
+    (
+        seconds as i32,
+        playing_length_unknown || durations.contains(&None),
+    )
+}
+
 /// Lists the queue on the now playing sheet from the work or song playing
 /// on, and above it the songs played before, with the covers it has shown
 /// before and the others once they come.
@@ -1813,6 +1843,9 @@ fn list_queue(ui: &AppWindow, browser: &browse::Shared, p: &mut Playing, playing
         .set_count(p.queue.selected(playing_at(p)).len() as i32);
     let listed_to = p.listed.last().map_or(0, |row| row.songs.end);
     ui.set_queue_more((p.queue.len() - listed_to) as i32);
+    let (after_seconds, after_partial) = seconds_after(&p.queue, playing_at(p));
+    ui.set_queue_after_seconds(after_seconds);
+    ui.set_queue_after_partial(after_partial);
     ui.set_queue_earlier(earlier as i32);
     ui.set_shuffled(p.queue.shuffled());
     let model = Rc::new(VecModel::from(lines));
@@ -2692,5 +2725,66 @@ pub(crate) mod testing {
     /// The album whose motion cover is kept.
     pub(crate) fn motion_album() -> Option<String> {
         browse::playing_motion_album(&handles().0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song(id: &str, duration: Option<i64>) -> Child {
+        serde_json::from_value(
+            serde_json::json!({ "id": id, "isDir": false, "title": id, "duration": duration }),
+        )
+        .unwrap()
+    }
+
+    fn queue(durations: &[Option<i64>]) -> Queue {
+        let songs = durations.iter().enumerate();
+        Queue::new(songs.map(|(i, d)| song(&i.to_string(), *d)).collect())
+    }
+
+    #[test]
+    fn the_time_after_the_song_playing_sums_the_whole_queue() {
+        let mut q = queue(&[Some(10), Some(20), Some(30), Some(40)]);
+        assert_eq!(seconds_after(&q, 0), (90, false));
+        assert_eq!(seconds_after(&q, 3), (0, false), "nothing follows the last");
+        q.remove(2..3);
+        assert_eq!(seconds_after(&q, 0), (60, false), "a removal after it");
+        q.remove(0..1);
+        assert_eq!(seconds_after(&q, 0), (40, false), "a removal before it");
+        let mut q = queue(&[Some(10), Some(20), Some(30), Some(40)]);
+        q.move_to(3..4, 1);
+        assert_eq!(seconds_after(&q, 0), (90, false), "a move after it");
+        q.move_to(0..1, 4);
+        assert_eq!(
+            seconds_after(&q, 0),
+            (60, false),
+            "the one at the top moved last"
+        );
+        assert_eq!(seconds_after(&q, 2), (10, false), "a song change");
+    }
+
+    #[test]
+    fn a_song_without_a_length_makes_the_time_a_least() {
+        let q = queue(&[Some(10), None, Some(30)]);
+        assert_eq!(seconds_after(&q, 0), (30, true));
+        assert_eq!(seconds_after(&q, 2), (0, false), "past it, nothing follows");
+        assert_eq!(
+            seconds_after(&queue(&[Some(10), Some(20), Some(30)]), 1),
+            (30, false)
+        );
+    }
+
+    #[test]
+    fn the_song_playing_without_a_length_makes_the_time_a_least_when_songs_follow() {
+        let q = queue(&[Some(10), None, Some(600)]);
+        assert_eq!(
+            seconds_after(&q, 1),
+            (600, true),
+            "the rest of it is not known"
+        );
+        let last = queue(&[Some(10), None]);
+        assert_eq!(seconds_after(&last, 1), (0, false), "nothing follows it");
     }
 }

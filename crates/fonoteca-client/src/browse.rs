@@ -9015,6 +9015,27 @@ pub fn duration(seconds: i64) -> String {
     }
 }
 
+/// `seconds` as a screen reader says it: "1 hour 42 minutes", and the
+/// seconds only below an hour.
+pub fn duration_spoken(seconds: i64) -> String {
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    let seconds_below_an_hour = if h > 0 { 0 } else { s };
+    let parts: Vec<String> = [
+        (h, "hour"),
+        (m, "minute"),
+        (seconds_below_an_hour, "second"),
+    ]
+    .into_iter()
+    .filter(|&(count, _)| count > 0)
+    .map(|(count, unit)| format!("{count} {unit}{}", if count == 1 { "" } else { "s" }))
+    .collect();
+    if parts.is_empty() {
+        "0 seconds".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9313,6 +9334,10 @@ mod tests {
         assert_eq!(duration(0), "0:00");
         assert_eq!(duration(245), "4:05");
         assert_eq!(duration(3725), "1:02:05");
+        assert_eq!(duration_spoken(6130), "1 hour 42 minutes");
+        assert_eq!(duration_spoken(3600), "1 hour");
+        assert_eq!(duration_spoken(245), "4 minutes 5 seconds");
+        assert_eq!(duration_spoken(0), "0 seconds");
         assert_eq!(count(1, "track", "tracks"), "1 track");
         assert_eq!(count(9, "track", "tracks"), "9 tracks");
     }
