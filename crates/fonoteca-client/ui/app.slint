@@ -1,8 +1,8 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusColumn, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AccentChoice, AlbumTile, Drag, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, Drag, FocusColumn, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -2360,6 +2360,11 @@ export component AppWindow inherits Window {
                         edited => { root.filter-folders(); }
                     }
                 }
+                if root.page == Page.tracks || root.page == Page.compositions: HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    FocusSection { }
+                }
                 Rectangle {
                     height: header.height;
                     clip: true;
@@ -2547,6 +2552,7 @@ export component AppWindow inherits Window {
                             filter-edited => { root.filter-albums(); }
                             sort-selected => { root.sort-albums(); }
                         }
+                        FocusSection { }
                         if root.header-title != "": GenreFilter {
                             genre: root.header-title;
                             all: "albums";
@@ -2586,6 +2592,7 @@ export component AppWindow inherits Window {
                             filter-edited => { root.filter-artists(); }
                             sort-selected => { root.sort-artists(); }
                         }
+                        FocusSection { }
                         if root.header-title != "": GenreFilter {
                             genre: root.header-title;
                             all: "artists";
@@ -2628,6 +2635,7 @@ export component AppWindow inherits Window {
                             filter-edited => { root.filter-composers(); }
                             sort-selected => { root.sort-composers(); }
                         }
+                        FocusSection { }
                     }
                     // The playlists at the top level or in a folder, with a
                     // menu to make more there and, in a folder, to change it.
@@ -3263,13 +3271,22 @@ export component AppWindow inherits Window {
                             open(link) => { root.open(link); }
                         }
                     }
-                    if ((root.page == Page.albums && root.album-filter != "") || (root.page == Page.artists && root.artist-filter != "") || (root.page == Page.composers && root.composer-filter != "")) && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
+                    if ((root.page == Page.albums && (root.album-filter != "" || FocusState.narrowing)) || (root.page == Page.artists && (root.artist-filter != "" || FocusState.narrowing)) || (root.page == Page.composers && (root.composer-filter != "" || FocusState.narrowing))) && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note {
                         text: root.page == Page.artists ? "No artists match." : root.page == Page.composers ? "No composers match." : "No albums match.";
                     }
-                    if root.page == Page.compositions && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.composition-filter != "" ? "No compositions match." : "No compositions yet."; }
+                    if root.page == Page.compositions && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.composition-filter != "" || FocusState.narrowing ? "No compositions match." : "No compositions yet."; }
                     if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
                     if root.page == Page.genres && root.genre-tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No genres yet."; }
-                    if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" ? "No tracks match." : "No tracks yet."; }
+                    if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" || FocusState.narrowing ? "No tracks match." : "No tracks yet."; }
+                    // What the Focus narrowed to nothing is let go by Clear.
+                    if FocusState.narrowing && (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.compositions || root.page == Page.tracks) && root.tiles.length == 0 && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": HorizontalLayout {
+                        alignment: start;
+                        Button {
+                            text: "Clear";
+                            enabled: !Input.modal;
+                            clicked => { FocusState.cleared(); }
+                        }
+                    }
                     if root.page == Page.folders && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "Nothing here matches." : "This folder is empty."; }
                     if root.page == Page.tag && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.folder-filter != "" ? "No tracks match." : "No tracks have this tag yet."; }
                     if root.page-problem != "": Problem { text: root.page-problem; }
@@ -4963,6 +4980,9 @@ export component AppWindow inherits Window {
             }
         }
     }
+
+    // The overview pages' Focus where the window is too narrow for its panel.
+    if root.step == Step.done && FocusState.sheet && FocusState.narrow: FocusSheet { }
 
     // Asks for a playlist's name, or whether to delete it, over the page. A
     // tap beside it or Escape lets it go. One taller than the window

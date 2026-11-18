@@ -1,8 +1,8 @@
 //! Preferences kept on this device: how the albums, artists, composers,
 //! tracks, compositions, folders and playlists are sorted, which columns the
-//! tables show, the radio page's languages, the sound device, volume leveling
-//! and sound processing; and the pictures of saved stations the app found in the
-//! radio directory. They aren't secrets, so plain files in the system's
+//! tables show, what the overview pages' Focus panels show, the radio page's
+//! languages, the sound device, volume leveling and sound processing; and the
+//! pictures of saved stations the app found in the radio directory. They aren't secrets, so plain files in the system's
 //! settings folder keep them, and the browser preview its localStorage.
 //! Where neither works they last until the app closes.
 
@@ -41,6 +41,8 @@ pub struct Prefs {
     pub playlist_columns: Option<Vec<String>>,
     pub playlist_sort: Option<String>,
     pub playlist_descending: bool,
+    /// Each overview page's Focus, by the page's name.
+    pub focus: BTreeMap<String, FocusPage>,
     /// The languages whose stations the radio page's genres show first, as
     /// the radio directory names them, in the order picked.
     pub radio_languages: Vec<String>,
@@ -93,6 +95,15 @@ pub struct Prefs {
     /// Whether LRCLIB is asked for the lyrics the server hasn't got, which
     /// tells it the song's artist, title, album and length.
     pub look_up_lyrics: bool,
+}
+
+/// Whether an overview page's Focus panel is open, and the titles of the
+/// facets its columns show, none for the first choice.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FocusPage {
+    pub open: bool,
+    pub columns: Vec<String>,
 }
 
 /// A streaming format's entry in the settings, and its bitrate's; the first

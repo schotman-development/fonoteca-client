@@ -2,7 +2,7 @@
 // `link` names where it leads (such as "artist:<id>"), and the component hands
 // it to `open`.
 
-import { Palette, ScrollView } from "std-widgets.slint";
+import { ListView, Palette, ScrollView } from "std-widgets.slint";
 
 // An accent color the settings offer, in the shade for a light scheme and the
 // one for a dark one, with the color of what is drawn on each.
@@ -140,6 +140,7 @@ export struct AlbumTile {
 export global Icons {
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
+    out property <string> link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1";
     out property <string> chevron-down: "M6 9l6 6 6-6";
     out property <string> chevron-up: "M6 15l6-6 6 6";
     out property <string> forward: "M9 5l7 7-7 7";
@@ -5726,6 +5727,513 @@ export component ListeningStats inherits VerticalLayout {
             label: list.title;
             current: i == root.slide;
             clicked => { root.slide-to(i); }
+        }
+    }
+}
+
+// A value of a Focus panel's facet: its name, how many items have it under
+// the other picks, whether it is picked, and how a screen reader says it.
+export struct FocusValue {
+    label: string,
+    count: int,
+    picked: bool,
+    spoken: string,
+}
+
+// A facet of the Focus panel: its title and its place among the facets on
+// offer, its values (the most frequent and those picked, or all that match
+// the search in a list), how many more there are, whether it may be
+// switched to want all of the values picked, and whether it is.
+export struct FocusColumn {
+    title: string,
+    facet: int,
+    values: [FocusValue],
+    hidden: int,
+    link: bool,
+    all-of: bool,
+}
+
+// What the Focus of the overview page on screen holds, which the browser
+// fills in. `list` is the one facet whose values are listed whole, with the
+// search in `query`; on a narrow window the sheet always lists one.
+export global FocusState {
+    in property <bool> offered;
+    in-out property <bool> open;
+    in-out property <bool> sheet;
+    in property <bool> heart;
+    in property <bool> favourites;
+    in property <bool> narrowing;
+    // What the page lists, for the empty result: "albums".
+    in property <string> noun;
+    in property <[FocusColumn]> columns;
+    in property <[string]> facets;
+    in property <[string]> facet-matches;
+    in property <[string]> chips;
+    in property <FocusColumn> list;
+    in-out property <string> query;
+    // Six columns need more than a window under 900px has: it gets a sheet.
+    out property <bool> narrow: Screen.width < 900px;
+
+    // The panel or the sheet was opened or closed.
+    callback visibility-changed(open: bool, sheet: bool);
+    callback picked(facet: string, value: string);
+    callback link-toggled(facet: string);
+    callback facet-chosen(column: int, facet: string);
+    callback chip-dropped(index: int);
+    callback favourites-toggled();
+    callback cleared();
+    callback listed(facet: string);
+    in-out property <string> facet-query;
+    callback facets-searched();
+    callback list-searched();
+    callback list-closed();
+}
+
+// A value as a button that is checked while picked: its name and its count.
+// One no item has under the other picks can't be picked.
+component FocusValueRow inherits Pressable {
+    in property <FocusValue> value;
+    label: root.value.spoken;
+    enabled: root.value.count > 0 || root.value.picked;
+    accessible-checkable: true;
+    accessible-checked: root.value.picked;
+    height: Screen.phone ? Theme.phone-target : 28px;
+    opacity: root.enabled ? 1 : 0.45;
+
+    Rectangle {
+        border-radius: Theme.radius - 2px;
+        background: root.value.picked ? Theme.accent.transparentize(75%) : root.hovered ? Theme.hover : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        Text {
+            accessible-role: none;
+            text: root.value.label;
+            font-size: Theme.body;
+            font-weight: root.value.picked ? 600 : 400;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            accessible-role: none;
+            horizontal-stretch: 0;
+            horizontal-alignment: right;
+            text: root.value.count;
+            font-size: Theme.small;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The link that switches a facet between any of the values picked and all.
+component FocusLink inherits IconButton {
+    in property <string> facet;
+    in property <bool> all-of;
+    icon: Icons.link;
+    label: root.facet + ", " + (root.all-of ? "all of the picks" : "any of the picks");
+    accessible-checkable: true;
+    accessible-checked: root.all-of;
+    color: root.all-of ? Theme.accent : Theme.muted;
+    plate: root.all-of ? Theme.accent.transparentize(80%) : transparent;
+    clicked => { FocusState.link-toggled(root.facet); }
+}
+
+// What a column's facet is told apart from the others by: a button naming
+// it, which opens the facets to choose from with a search over them.
+component FocusFacetChoice inherits Pressable {
+    in property <string> title;
+    in property <int> index;
+    property <length> row-height: Screen.phone ? 48px : 32px;
+    label: "Facet of column " + (self.index + 1) + ", " + self.title;
+    accessible-role: combobox;
+    accessible-expandable: true;
+    accessible-expanded: popup.is-open;
+    min-height: Screen.phone ? 56px : 32px;
+    clicked => {
+        popup.show();
+    }
+
+    Rectangle {
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: popup.is-open ? Theme.accent : Theme.text.transparentize(75%);
+        background: root.hovered ? Theme.hover : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text {
+            accessible-role: none;
+            text: root.title;
+            font-size: Theme.body;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Path {
+            cross-axis-self-alignment: center;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M5 9 L12 16 L19 9";
+            stroke: Theme.muted;
+            stroke-width: 2.5px;
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 2px;
+        width: max(root.width, 200px);
+        height: min(2 * 4px + 44px + FocusState.facet-matches.length * root.row-height, 360px);
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            background: Palette.background;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.hover;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #0000004d;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 4px;
+                LineEdit {
+                    vertical-stretch: 0;
+                    placeholder-text: "Search facets";
+                    accessible-label: self.placeholder-text;
+                    text <=> FocusState.facet-query;
+                    edited => { FocusState.facets-searched(); }
+                }
+                Flickable {
+                    content-height: FocusState.facet-matches.length * root.row-height;
+                    VerticalLayout {
+                        alignment: start;
+                        for entry in FocusState.facet-matches: ChoiceRow {
+                            height: root.row-height;
+                            text: entry;
+                            chosen: entry == root.title;
+                            clicked => {
+                                popup.close();
+                                FocusState.facet-query = "";
+                                FocusState.facet-chosen(root.index, entry);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A column: its facet's name, which changes the facet the column shows, its
+// most frequent values, which scroll when more are picked, and View more.
+component FocusColumnView inherits VerticalLayout {
+    in property <FocusColumn> column;
+    in property <int> index;
+    property <length> row-height: Screen.phone ? Theme.phone-target : 28px;
+    spacing: 2px;
+
+    HorizontalLayout {
+        vertical-stretch: 0;
+        spacing: 4px;
+        FocusFacetChoice {
+            title: root.column.title;
+            index: root.index;
+        }
+        if root.column.link: FocusLink {
+            horizontal-stretch: 0;
+            cross-axis-self-alignment: center;
+            facet: root.column.title;
+            all-of: root.column.all-of;
+        }
+    }
+    Flickable {
+        content-height: root.column.values.length * root.row-height;
+        VerticalLayout {
+            alignment: start;
+            for value in root.column.values: FocusValueRow {
+                value: value;
+                clicked => { FocusState.picked(root.column.title, value.label); }
+            }
+        }
+    }
+    if root.column.hidden > 0: Link {
+        vertical-stretch: 0;
+        text: "View more";
+        label: "View more " + root.column.title.to-lowercase();
+        color: Theme.accent;
+        min-height: root.row-height;
+        clicked => { FocusState.listed(root.column.title); }
+    }
+}
+
+// The values of the facet in `FocusState.list`, which the search over them
+// narrows, without touching the page's results.
+component FocusList inherits VerticalLayout {
+    spacing: 8px;
+    LineEdit {
+        vertical-stretch: 0;
+        placeholder-text: "Search " + FocusState.list.title.to-lowercase();
+        accessible-label: self.placeholder-text;
+        text <=> FocusState.query;
+        edited => { FocusState.list-searched(); }
+    }
+    if FocusState.list.values.length == 0: Text {
+        vertical-stretch: 0;
+        text: "No match";
+        font-size: Theme.body;
+        color: Theme.muted;
+    }
+    ListView {
+        for value in FocusState.list.values: FocusValueRow {
+            value: value;
+            clicked => { FocusState.picked(FocusState.list.title, value.label); }
+        }
+    }
+}
+
+// The Focus panel of a wide window: a column for each facet chosen, which
+// slide sideways with arrows where they don't all fit, or the whole list of
+// one facet's values with a search.
+export component FocusPanel inherits Rectangle {
+    property <length> column-width: 200px;
+    property <length> gap: 16px;
+    property <length> columns-width: FocusState.columns.length * (root.column-width + root.gap);
+    property <bool> overflowing: root.columns-width > root.width - 2 * 12px;
+    height: 292px;
+    background: Theme.surface;
+    border-radius: Theme.radius;
+    accessible-role: groupbox;
+    accessible-label: "Focus";
+
+    if FocusState.list.title == "": HorizontalLayout {
+        padding: 12px;
+        spacing: 4px;
+        if root.overflowing: IconButton {
+            label: "Earlier facets";
+            icon: Icons.back;
+            enabled: scroll.content-x < 0;
+            clicked => { scroll.content-x = min(0px, scroll.content-x + root.column-width + root.gap); }
+        }
+        scroll := Flickable {
+            content-width: root.columns-width;
+            HorizontalLayout {
+                spacing: root.gap;
+                for column[i] in FocusState.columns: FocusColumnView {
+                    width: root.column-width;
+                    column: column;
+                    index: i;
+                }
+            }
+        }
+        if root.overflowing: IconButton {
+            label: "Later facets";
+            icon: Icons.forward;
+            enabled: scroll.content-x > scroll.width - scroll.content-width;
+            clicked => { scroll.content-x = max(scroll.width - scroll.content-width, scroll.content-x - root.column-width - root.gap); }
+        }
+    }
+    if FocusState.list.title != "": VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            IconButton {
+                label: "Back to the facets";
+                icon: Icons.back;
+                clicked => { FocusState.list-closed(); }
+            }
+            Text {
+                text: FocusState.list.title;
+                font-size: Theme.heading;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Rectangle { }
+            if FocusState.list.link: FocusLink {
+                facet: FocusState.list.title;
+                all-of: FocusState.list.all-of;
+            }
+        }
+        FocusList { }
+    }
+}
+
+// A pick shown while the panel is closed, which a press lets go.
+component FocusChip inherits Pressable {
+    in property <string> text;
+    label: "Remove " + self.text;
+    min-height: Screen.phone ? Theme.phone-target : 28px;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: Screen.phone ? 36px : 28px;
+        border-radius: self.height / 2;
+        background: root.hovered ? Theme.hover : Theme.accent.transparentize(80%);
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        Text {
+            accessible-role: none;
+            text: root.text;
+            font-size: Theme.small;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        Path {
+            cross-axis-self-alignment: center;
+            width: 12px;
+            height: 12px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Icons.close;
+            stroke: Theme.muted;
+            stroke-width: 2px;
+        }
+    }
+}
+
+// The row under an overview page's heading: Focus, which opens the panel
+// or, on a narrow window, the sheet; the heart that narrows to the
+// favourites; the picks as chips while the panel is closed; and Clear.
+component FocusBar inherits FlexboxLayout {
+    in property <bool> panel-open;
+    in property <[string]> chips;
+    spacing-horizontal: 8px;
+    spacing-vertical: 4px;
+    cross-axis-alignment: center;
+
+    GhostButton {
+        icon: root.panel-open ? Icons.chevron-down : Icons.forward;
+        text: "Focus";
+        enabled: !Input.modal;
+        accessible-expandable: true;
+        accessible-expanded: root.panel-open || FocusState.sheet;
+        clicked => {
+            if FocusState.narrow {
+                FocusState.sheet = true;
+                FocusState.visibility-changed(true, true);
+            } else {
+                FocusState.open = !FocusState.open;
+                FocusState.visibility-changed(FocusState.open, false);
+            }
+        }
+    }
+    if FocusState.heart: IconButton {
+        icon: Icons.heart;
+        label: "Favourites only";
+        filled: FocusState.favourites;
+        color: FocusState.favourites ? Theme.accent : Theme.muted;
+        accessible-checkable: true;
+        accessible-checked: FocusState.favourites;
+        enabled: !Input.modal;
+        clicked => { FocusState.favourites-toggled(); }
+    }
+    for chip[i] in root.chips: FocusChip {
+        text: chip;
+        enabled: !Input.modal;
+        clicked => { FocusState.chip-dropped(i); }
+    }
+    if FocusState.narrowing: Link {
+        text: "Clear";
+        label: "Clear the focus";
+        color: Theme.accent;
+        min-height: Screen.phone ? Theme.phone-target : 28px;
+        enabled: !Input.modal;
+        clicked => { FocusState.cleared(); }
+    }
+}
+
+// What goes under an overview page's heading: the Focus bar and, on a wide
+// window, its panel when open.
+export component FocusSection inherits VerticalLayout {
+    spacing: 12px;
+    if FocusState.offered: FocusBar {
+        panel-open: FocusState.open && !FocusState.narrow;
+        chips: self.panel-open ? [] : FocusState.chips;
+    }
+    if FocusState.offered && FocusState.open && !FocusState.narrow: FocusPanel { }
+}
+
+// The Focus on a narrow window, as a sheet from the bottom: the facets to
+// choose from in a row, then the values of the one chosen with its search.
+export component FocusSheet inherits Rectangle {
+    function close() {
+        FocusState.sheet = false;
+        FocusState.list-closed();
+        FocusState.visibility-changed(false, true);
+    }
+
+    background: #0000004d;
+    TouchArea {
+        clicked => { root.close(); }
+    }
+    Rectangle {
+        y: parent.height - self.height;
+        height: parent.height * 80%;
+        background: Palette.background;
+        border-top-left-radius: 12px;
+        border-top-right-radius: 12px;
+        // Keeps taps on the sheet from closing it.
+        TouchArea { }
+        accessible-role: groupbox;
+        accessible-label: "Focus";
+        VerticalLayout {
+            padding: 16px;
+            padding-bottom: 16px + Screen.bottom;
+            spacing: 12px;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Focus";
+                    font-size: Theme.heading;
+                    font-weight: 600;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                if FocusState.narrowing: Link {
+                    text: "Clear";
+                    label: "Clear the focus";
+                    color: Theme.accent;
+                    clicked => { FocusState.cleared(); }
+                }
+                Button {
+                    text: "Done";
+                    primary: true;
+                    clicked => { root.close(); }
+                }
+            }
+            Flickable {
+                height: facets.preferred-height;
+                content-width: facets.preferred-width;
+                facets := HorizontalLayout {
+                    spacing: 8px;
+                    for facet in FocusState.facets: PeriodChip {
+                        text: facet;
+                        current: facet == FocusState.list.title;
+                        clicked => { FocusState.listed(facet); }
+                    }
+                }
+            }
+            if FocusState.list.link: CheckBox {
+                text: "All of the picks, not any";
+                checked: FocusState.list.all-of;
+                toggled => { FocusState.link-toggled(FocusState.list.title); }
+            }
+            FocusList { }
         }
     }
 }

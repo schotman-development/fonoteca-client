@@ -38,12 +38,13 @@ use slint::{
 };
 
 use crate::{
-    AlbumTile, AppWindow, ColumnChoice, Detail, Drag, Icons, Name, NavEntry, Page, Stat,
-    StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, answers, catalogue,
-    logo_ink, offline, prefs, zone,
+    AlbumTile, AppWindow, ColumnChoice, Detail, Drag, FocusState, Icons, Name, NavEntry, Page,
+    Stat, StationRow, StationShelf, TagChoice, TagRow, Track, TrackColumn, TrackLine, answers,
+    catalogue, logo_ink, offline, prefs, zone,
 };
 
 pub(crate) mod created_for;
+mod focus;
 mod listens;
 mod played;
 mod search;
@@ -328,6 +329,8 @@ pub struct Browser {
     saved: Rc<VecModel<AlbumTile>>,
     /// The user's most played on ListenBrainz, for the home page.
     stats: stats::Stats,
+    /// What each overview page is narrowed by.
+    focus: focus::State,
     /// What the server lists as played last, for the home page.
     played: played::Played,
     /// The radio directory once asked, its countries' names by code, its
@@ -401,6 +404,7 @@ pub fn open_library(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_track_filter("".into());
     ui.set_folder_filter("".into());
     ui.set_search_query("".into());
+    ui.global::<FocusState>().set_sheet(false);
     ui.set_roles("".into());
     ui.set_may_administer(true);
     ui.set_may_download(true);
@@ -863,6 +867,7 @@ pub fn stop(browser: &Shared) {
 pub fn wire(ui: &AppWindow, browser: &Shared) {
     stats::wire(ui, browser);
     search::wire(ui, browser);
+    focus::wire(ui, browser);
     let mut carried = DataTransfer::default();
     carried.set_plain_text("playlist".into());
     ui.global::<Drag>().set_data(carried);
@@ -3743,6 +3748,7 @@ fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
         let mut b = browser.borrow_mut();
         let (songs, order) = listed(&b, page);
         let found = filtered(songs, &filter, song_text);
+        let found = focus::narrow(&b, page, found);
         let view = sorted(songs, found, COLUMNS, song_table(&b, page));
         let shown = b.lines.row_count();
         let kept = view.get(..shown) == order.get(..shown);
@@ -3760,6 +3766,7 @@ fn arrange_tracks(ui: &AppWindow, browser: &Shared) {
         }
         shown
     };
+    focus::show(ui, browser);
     show_lines(ui, browser, shown.max(TILES_AT_ONCE));
 }
 
@@ -3970,6 +3977,7 @@ fn load_prefs(ui: &AppWindow, browser: &Shared) {
     ui.set_artist_descending(prefs.artist_descending);
     ui.set_composer_sort(prefs.composer_sort.clamp(0, MOST_PLAYED_ARTISTS));
     ui.set_composer_descending(prefs.composer_descending);
+    focus::load_prefs(&mut b, &prefs);
 }
 
 /// A table as saved: the columns of `all` with the headings `shown`, or
@@ -4109,6 +4117,7 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
             view
         }
     };
+    let view = focus::narrow(&b, page, view);
     b.filter = filter;
     let shown = on_page(&b, page);
     if view.get(..shown) != b.view.get(..shown) {
@@ -4118,6 +4127,7 @@ fn arrange(ui: &AppWindow, browser: &Shared) {
     }
     b.view = view;
     drop(b);
+    focus::show(ui, browser);
     show_tiles(ui, browser, shown.max(TILES_AT_ONCE));
 }
 
@@ -4194,22 +4204,12 @@ fn more_tiles(ui: &AppWindow, browser: &Shared) {
         }
         return;
     }
-    let (have_artists, have_composers, have_compositions, genre) = {
+    let (have_artists, have_composers, have_compositions) = {
         let b = browser.borrow();
-        let genre = !shown_genre(&b).is_empty();
-        (
-            b.artists_loaded,
-            b.composers_loaded,
-            b.compositions_loaded,
-            genre,
-        )
+        (b.artists_loaded, b.composers_loaded, b.compositions_loaded)
     };
-    // A genre's artists are those of its albums.
-    let library = match page {
-        Page::Artists => genre,
-        Page::Composers | Page::Compositions => false,
-        _ => true,
-    };
+    // The artists are told apart by the genres and plays of their albums.
+    let library = !matches!(page, Page::Composers | Page::Compositions);
     if library {
         want_library(ui, browser);
     }

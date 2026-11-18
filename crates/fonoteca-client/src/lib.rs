@@ -21,6 +21,7 @@ mod download_job;
 mod downloads;
 #[cfg(not(target_family = "wasm"))]
 mod eq_graph;
+mod focus;
 #[cfg(target_family = "wasm")]
 mod fonts;
 #[cfg(not(target_family = "wasm"))]
