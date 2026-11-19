@@ -105,6 +105,13 @@ impl State {
         }
     }
 
+    /// The rules the page's picks are, when it has some and they can be said
+    /// in rules.
+    pub(super) fn rules(&self, page: Page) -> Option<(bool, Vec<crate::smart::Rule>)> {
+        let focus = self.of(page).filter(|focus| focus.is_narrowing())?;
+        crate::smart::from_focus::from_focus(focus)
+    }
+
     fn of_mut(&mut self, page: Page) -> Option<&mut Focus> {
         match page {
             Page::Albums => Some(&mut self.albums),
@@ -296,6 +303,16 @@ pub(super) fn wire(ui: &AppWindow, browser: &Shared) {
             repick(&weak.unwrap(), &browser);
         }
     });
+    state.on_smart_playlist_requested({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || {
+            let ui = weak.unwrap();
+            let rules = browser.borrow().focus.rules(ui.get_page());
+            if let Some((match_all, rules)) = rules {
+                super::smart::open_for_focus(&ui, &browser, match_all, &rules);
+            }
+        }
+    });
     state.on_cleared({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || {
@@ -417,6 +434,10 @@ pub(super) fn show(ui: &AppWindow, browser: &Shared) {
     state.set_open(saved.open);
     state.set_favourites(focus.favourites);
     state.set_narrowing(focus.is_narrowing());
+    let can_save_as_smart = page == Page::Tracks && super::smart::offered(&b);
+    let has_rules = b.focus.rules(page).is_some();
+    state.set_smart_offered(can_save_as_smart && has_rules);
+    state.set_smart_unavailable(can_save_as_smart && !has_rules);
     state.set_noun(plural.into());
     let chips = (focus.picked().into_iter())
         .map(|(_, value)| SharedString::from(value))

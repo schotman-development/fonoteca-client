@@ -135,9 +135,12 @@ export struct AlbumTile {
     saved: bool,
     // A playlist ListenBrainz made, wide: the colour its kind has.
     tint: KindTint,
+    // A playlist whose songs the server picks by rules.
+    smart: bool,
 }
 
 export global Icons {
+    out property <string> smart: "M13 3L5 14h6l-1 7 8-11h-6z";
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
     out property <string> link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1";
@@ -557,6 +560,8 @@ export component Artwork inherits Rectangle {
     in property <image> source;
     in property <bool> round;
     in property <bool> folder;
+    // A smart playlist: a bolt in its corner tells it from a plain one.
+    in property <bool> smart;
     in property <length> size: 160px;
     in property <bool> highlighted;
     // Shows all of the picture, as a logo needs, rather than filling the square.
@@ -596,6 +601,26 @@ export component Artwork inherits Rectangle {
     }
     Rectangle {
         background: root.highlighted ? #00000026 : transparent;
+    }
+    if root.smart: Rectangle {
+        x: 10px;
+        y: parent.height - self.height - 10px;
+        width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: Theme.accent;
+        Path {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Icons.smart;
+            stroke: Theme.on-accent;
+            stroke-width: 2px;
+            fill: Theme.on-accent;
+        }
     }
 }
 
@@ -1088,6 +1113,7 @@ export component CoverTile inherits Pressable {
     in property <length> size: 160px;
     in property <bool> round;
     in property <bool> folder;
+    in property <bool> smart;
     in property <bool> logo;
     in property <bool> dark-plate;
     // A catalogue station already saved: it shows a check and its menu is
@@ -1129,6 +1155,7 @@ export component CoverTile inherits Pressable {
             size: root.size;
             round: root.round;
             folder: root.folder;
+            smart: root.smart;
             logo: root.logo;
             dark-plate: root.dark-plate;
             source: root.cover;
@@ -2393,6 +2420,7 @@ export component CoverGrid {
             size: root.size;
             round: root.round;
             folder: tile.folder;
+            smart: tile.smart;
             logo: tile.logo;
             dark-plate: tile.dark-plate;
             cover: tile.cover;
@@ -3010,7 +3038,9 @@ component NavButton inherits Pressable {
 component NavHeading inherits Pressable {
     in property <string> text;
     in property <bool> current;
+    in property <bool> smart-offered;
     callback new-playlist();
+    callback new-smart-playlist();
     callback dropped();
     label: self.text;
     accessible-item-selectable: true;
@@ -3038,8 +3068,19 @@ component NavHeading inherits Pressable {
         MoreMenu {
             cross-axis-self-alignment: center;
             label: "More for " + root.text;
-            entries: [{ id: "new", label: "New playlist", icon: Icons.plus }];
-            activated => { root.new-playlist(); }
+            opening => {
+                self.entries = [{ id: "new", label: "New playlist", icon: Icons.plus }];
+                if root.smart-offered {
+                    self.entries.push({ id: "smart", label: "New smart playlist", icon: Icons.smart });
+                }
+            }
+            activated(id) => {
+                if id == "smart" {
+                    root.new-smart-playlist();
+                } else {
+                    root.new-playlist();
+                }
+            }
         }
     }
 }
@@ -3055,8 +3096,10 @@ export component Sidebar inherits Rectangle {
     in property <[string]> groups;
     in property <[string]> icons;
     in-out property <int> current;
+    in property <bool> smart-offered;
     callback selected(index: int);
     callback new-playlist();
+    callback new-smart-playlist();
     callback dropped(index: int);
 
     background: Theme.surface;
@@ -3119,7 +3162,9 @@ export component Sidebar inherits Rectangle {
                     NavHeading {
                         text: item;
                         current: i == root.current;
+                        smart-offered: root.smart-offered;
                         new-playlist => { root.new-playlist(); }
+                        new-smart-playlist => { root.new-smart-playlist(); }
                         dropped => { root.dropped(i); }
                         clicked => {
                             root.current = i;
@@ -4215,6 +4260,95 @@ export component LineEdit inherits Rectangle {
         accepted => { root.accepted(self.text); }
         edited => { root.edited(self.text); }
         key-pressed(event) => { root.key-pressed(event) }
+    }
+}
+
+// A rule of a smart playlist: its field, its operator and its value as
+// typed. The value's box is marked while it doesn't read, and is left out for
+// a rule that has none, as "never". On a phone the value goes on a line of
+// its own.
+export struct SmartRuleRow {
+    field: int,
+    operator: int,
+    operators: [string],
+    value: string,
+    hint: string,
+    takes-value: bool,
+    invalid: bool,
+}
+
+component SmartRuleValue inherits Rectangle {
+    in property <SmartRuleRow> rule;
+    callback edited(text: string);
+    min-height: Screen.phone ? 56px : 32px;
+
+    LineEdit {
+        accessible-label: "Value";
+        placeholder-text: root.rule.hint;
+        text: root.rule.value;
+        edited(text) => { root.edited(text); }
+    }
+    Rectangle {
+        border-radius: Theme.radius;
+        border-width: root.rule.invalid ? 2px : 0px;
+        border-color: Theme.danger;
+    }
+}
+
+export component SmartRuleLine inherits VerticalLayout {
+    in property <[string]> fields;
+    in property <SmartRuleRow> rule;
+    callback field-picked(index: int);
+    callback operator-picked(index: int);
+    callback value-edited(text: string);
+    callback removed();
+
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Choice {
+            horizontal-stretch: 1;
+            label: "Field";
+            model: root.fields;
+            current-index: root.rule.field;
+            selected => { root.field-picked(self.current-index); }
+        }
+        Choice {
+            horizontal-stretch: 1;
+            label: "Operator";
+            model: root.rule.operators;
+            current-index: root.rule.operator;
+            selected => { root.operator-picked(self.current-index); }
+        }
+        if !Screen.phone && root.rule.takes-value: SmartRuleValue {
+            horizontal-stretch: 2;
+            rule: root.rule;
+            edited(text) => { root.value-edited(text); }
+        }
+        if !Screen.phone: IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.trash;
+            label: "Remove rule";
+            clicked => { root.removed(); }
+        }
+    }
+    if Screen.phone: HorizontalLayout {
+        spacing: 8px;
+        if root.rule.takes-value: SmartRuleValue {
+            horizontal-stretch: 1;
+            rule: root.rule;
+            edited(text) => { root.value-edited(text); }
+        }
+        Rectangle {
+            horizontal-stretch: root.rule.takes-value ? 0 : 1;
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.trash;
+            label: "Remove rule";
+            clicked => { root.removed(); }
+        }
     }
 }
 
@@ -5763,6 +5897,10 @@ export global FocusState {
     in property <bool> heart;
     in property <bool> favourites;
     in property <bool> narrowing;
+    // Whether the picks can be saved as a smart playlist's rules.
+    in property <bool> smart-offered;
+    // Whether a smart playlist could be made here but not of these picks.
+    in property <bool> smart-unavailable;
     // What the page lists, for the empty result: "albums".
     in property <string> noun;
     in property <[FocusColumn]> columns;
@@ -5782,6 +5920,7 @@ export global FocusState {
     callback chip-dropped(index: int);
     callback favourites-toggled();
     callback cleared();
+    callback smart-playlist-requested();
     callback listed(facet: string);
     in-out property <string> facet-query;
     callback facets-searched();
@@ -6154,6 +6293,19 @@ component FocusBar inherits FlexboxLayout {
         enabled: !Input.modal;
         clicked => { FocusState.cleared(); }
     }
+    if FocusState.smart-offered: Link {
+        text: "Save as smart playlist";
+        color: Theme.accent;
+        min-height: Screen.phone ? Theme.phone-target : 28px;
+        enabled: !Input.modal;
+        clicked => { FocusState.smart-playlist-requested(); }
+    }
+    if FocusState.smart-unavailable && FocusState.narrowing: Text {
+        text: "These picks can't be saved as a smart playlist";
+        color: Theme.muted;
+        font-size: Theme.small;
+        vertical-alignment: center;
+    }
 }
 
 // What goes under an overview page's heading: the Focus bar and, on a wide
@@ -6204,6 +6356,14 @@ export component FocusSheet inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Rectangle { }
+                if FocusState.smart-offered: Link {
+                    text: "Save as smart playlist";
+                    color: Theme.accent;
+                    clicked => {
+                        root.close();
+                        FocusState.smart-playlist-requested();
+                    }
+                }
                 if FocusState.narrowing: Link {
                     text: "Clear";
                     label: "Clear the focus";

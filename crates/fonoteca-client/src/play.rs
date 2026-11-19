@@ -2652,6 +2652,14 @@ pub(crate) mod testing {
         client.get_open_subsonic_extensions().await.expect("listed");
     }
 
+    /// Asks the server for its extensions again and shows what they offer,
+    /// as a sign in does.
+    pub(crate) async fn offer_again(ui: &AppWindow) {
+        ask_extensions().await;
+        let (browser, _) = handles();
+        browse::signed_in(ui, &browser);
+    }
+
     /// The song and second a restored queue waits to play from.
     pub(crate) fn resume_point() -> Option<(usize, f64)> {
         let (_, playing) = handles();

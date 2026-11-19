@@ -1,12 +1,12 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusColumn, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusColumn, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AccentChoice, AlbumTile, Drag, FocusColumn, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, Drag, FocusColumn, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
-export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads, browse, library, search, history }
+export enum Page { home, albums, artists, tracks, playlists, album, artist, playlist, account, composers, compositions, composer, composition, track, folders, settings, setting, radio, stations, tags, tag, genres, genre, downloads, browse, library, search, history, smart }
 
 // What the dialog over the page asks: a new playlist's name, the playlist's
 // new name, or whether to delete it, and the same of a playlist folder; a
@@ -1703,6 +1703,39 @@ export component AppWindow inherits Window {
     // and whether the playlist on screen can be changed.
     in property <[Name]> playlist-targets;
     in property <bool> playlist-editable;
+    // Whether the server has smart playlists, and whether the playlist on
+    // screen is one, which has rules in place of songs put in it.
+    in property <bool> smart-offered;
+    in property <bool> smart-playlist;
+    // The smart playlist editor: whether it edits the playlist on screen,
+    // the name, whether a song must pass all the rules or one, the rules'
+    // rows, the orders to sort by and the one chosen, the limit as typed,
+    // and what the rules give now: its count and its first songs, why they
+    // can't be kept, and whether they can.
+    in property <bool> smart-editing;
+    in property <string> smart-name;
+    in property <bool> smart-match-all;
+    in property <[string]> smart-fields;
+    in property <[SmartRuleRow]> smart-rows;
+    in property <[string]> smart-sorts;
+    in property <int> smart-sort;
+    in property <string> smart-limit;
+    in property <string> smart-count;
+    in property <[string]> smart-preview;
+    in property <string> smart-problem;
+    in property <bool> smart-can-save;
+    callback smart-edit();
+    callback smart-name-edited(name: string);
+    callback smart-match-chosen(all: bool);
+    callback smart-field-picked(row: int, field: int);
+    callback smart-operator-picked(row: int, operator: int);
+    callback smart-value-edited(row: int, text: string);
+    callback smart-rule-removed(row: int);
+    callback smart-rule-added();
+    callback smart-sort-chosen(index: int);
+    callback smart-limit-edited(text: string);
+    callback smart-save();
+    callback smart-save-as-playlist();
     // Whether the playlist shown is one ListenBrainz made, and whether the
     // library is still being searched for its tracks, or the search was
     // stopped by a failure and "Try again" goes on with it.
@@ -2211,7 +2244,9 @@ export component AppWindow inherits Window {
                 root.close-now-playing();
                 root.show-section(index);
             }
+            smart-offered: root.smart-offered;
             new-playlist => { root.ask(Asking.new-playlist); }
+            new-smart-playlist => { root.open("smart:new"); }
             dropped(index) => { root.drop-on-section(index); }
         }
         VerticalLayout {
@@ -2651,6 +2686,9 @@ export component AppWindow inherits Window {
                             label: root.shown-id == "" ? "Playlists" : "Folder";
                             opening => {
                                 self.entries = [{ id: "new", label: "New playlist", icon: Icons.plus }];
+                                if root.smart-offered {
+                                    self.entries.push({ id: "smart", label: "New smart playlist", icon: Icons.smart });
+                                }
                                 if root.folders-offered {
                                     self.entries.push({ id: "folder", label: "New folder", icon: Icons.folder });
                                 }
@@ -2665,6 +2703,8 @@ export component AppWindow inherits Window {
                             activated(id, choice) => {
                                 if id == "new" {
                                     root.ask(Asking.new-playlist);
+                                } else if id == "smart" {
+                                    root.open("smart:new");
                                 } else if id == "folder" {
                                     root.ask(Asking.new-folder);
                                 } else if id == "rename" {
@@ -2715,18 +2755,25 @@ export component AppWindow inherits Window {
                             enabled: !root.created-for-matching && !Input.modal;
                             clicked => { root.save-created-for(); }
                         }
-                        // Any playlist can go in a folder, read-only too.
-                        if root.page == Page.playlist && (root.playlist-editable || root.move-targets.length > 0): MoreMenu {
+                        if root.page == Page.playlist && root.smart-playlist: Button {
+                            cross-axis-self-alignment: center;
+                            text: "Edit rules";
+                            enabled: !Input.modal;
+                            clicked => { root.smart-edit(); }
+                        }
+                        // Any playlist can go in a folder, read-only too; a smart
+                        // one is renamed and deleted, but has no songs to change.
+                        if root.page == Page.playlist && (root.playlist-editable || root.smart-playlist || root.move-targets.length > 0): MoreMenu {
                             label: "Playlist";
                             opening => {
                                 self.entries = [];
-                                if root.page == Page.playlist && root.playlist-editable {
+                                if root.page == Page.playlist && (root.playlist-editable || root.smart-playlist) {
                                     self.entries.push({ id: "rename", label: "Rename", icon: Icons.pencil });
                                 }
                                 if root.page == Page.playlist && root.move-targets.length > 0 {
                                     self.entries.push({ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.move-targets });
                                 }
-                                if root.page == Page.playlist && root.playlist-editable {
+                                if root.page == Page.playlist && (root.playlist-editable || root.smart-playlist) {
                                     self.entries.push({ id: "delete", label: "Delete", icon: Icons.trash, danger: true });
                                 }
                             }
@@ -3551,6 +3598,108 @@ export component AppWindow inherits Window {
                             selected => {
                                 root.simple-seek-bar = self.current-index == 1;
                                 root.choose-simple-seek-bar(root.simple-seek-bar);
+                            }
+                        }
+                    }
+                    // The rules of a smart playlist, with what they give as they
+                    // are typed, which no request is made for.
+                    if root.page == Page.smart: VerticalLayout {
+                        max-width: 720px;
+                        spacing: 12px;
+                        Heading { text: root.smart-editing ? "Edit rules" : "New smart playlist"; }
+                        LineEdit {
+                            accessible-label: "Name";
+                            placeholder-text: "Name";
+                            text: root.smart-name;
+                            edited(name) => { root.smart-name-edited(name); }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Songs that match";
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                            }
+                            Choice {
+                                preferred-width: 80px;
+                                label: "Match";
+                                model: ["all", "any"];
+                                current-index: root.smart-match-all ? 0 : 1;
+                                selected => { root.smart-match-chosen(self.current-index == 0); }
+                            }
+                            Text {
+                                text: "of these rules";
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        for row[i] in root.smart-rows: SmartRuleLine {
+                            fields: root.smart-fields;
+                            rule: row;
+                            field-picked(field) => { root.smart-field-picked(i, field); }
+                            operator-picked(operator) => { root.smart-operator-picked(i, operator); }
+                            value-edited(text) => { root.smart-value-edited(i, text); }
+                            removed => { root.smart-rule-removed(i); }
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            GhostButton {
+                                icon: Icons.plus;
+                                text: "Add rule";
+                                enabled: !Input.modal;
+                                clicked => { root.smart-rule-added(); }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Sorted by";
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                            }
+                            Choice {
+                                preferred-width: 200px;
+                                label: "Sort by";
+                                model: root.smart-sorts;
+                                current-index: root.smart-sort;
+                                selected => { root.smart-sort-chosen(self.current-index); }
+                            }
+                            Text {
+                                text: "Limit";
+                                font-size: Theme.body;
+                                vertical-alignment: center;
+                            }
+                            LineEdit {
+                                preferred-width: 90px;
+                                accessible-label: "Limit";
+                                placeholder-text: "500";
+                                text: root.smart-limit;
+                                edited(limit) => { root.smart-limit-edited(limit); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        SectionHeading { text: root.smart-count; }
+                        for line in root.smart-preview: Text {
+                            text: line;
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                            overflow: elide;
+                        }
+                        if root.smart-problem != "": Problem { text: root.smart-problem; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Button {
+                                text: "Save";
+                                primary: true;
+                                enabled: root.smart-can-save && !Input.modal;
+                                clicked => { root.smart-save(); }
+                            }
+                            Button {
+                                text: "Save as a normal playlist";
+                                enabled: root.smart-can-save && !Input.modal;
+                                clicked => { root.smart-save-as-playlist(); }
                             }
                         }
                     }
@@ -4784,9 +4933,14 @@ export component AppWindow inherits Window {
                     root.sidebar-open = false;
                     root.show-section(index);
                 }
+                smart-offered: root.smart-offered;
                 new-playlist => {
                     root.sidebar-open = false;
                     root.ask(Asking.new-playlist);
+                }
+                new-smart-playlist => {
+                    root.sidebar-open = false;
+                    root.open("smart:new");
                 }
                 dropped(index) => { root.drop-on-section(index); }
             }

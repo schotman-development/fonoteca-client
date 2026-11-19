@@ -54,7 +54,17 @@ fn shares_artist(song: &Child, track: &lb::PlaylistTrack) -> bool {
 /// Letters with their accents and their case taken off, and nothing else:
 /// "Beyoncé's Halo" and "beyonces halo" are the same. Spaces and
 /// punctuation go too, so a title differing only in them is the same.
-pub(super) fn fold(text: &str) -> String {
+pub(crate) fn fold(text: &str) -> String {
+    fold_with(text, false)
+}
+
+/// Case and accents taken off, spaces and punctuation kept: how a smart
+/// playlist's rules compare text.
+pub(crate) fn fold_words(text: &str) -> String {
+    fold_with(text, true)
+}
+
+fn fold_with(text: &str, keep_punctuation: bool) -> String {
     const ACCENTED: [(&str, &str); 19] = [
         ("àáâãäåāăą", "a"),
         ("çćĉċč", "c"),
@@ -87,7 +97,7 @@ pub(super) fn fold(text: &str) -> String {
                 .find(|(accented, _)| accented.contains(letter))
             {
                 Some((_, plain)) => folded.push_str(plain),
-                None if letter.is_alphanumeric() => folded.push(letter),
+                None if keep_punctuation || letter.is_alphanumeric() => folded.push(letter),
                 None => {}
             },
         }

@@ -52,6 +52,7 @@ mod queue_drag;
 mod radio;
 #[cfg(not(target_family = "wasm"))]
 mod scrobble;
+mod smart;
 #[cfg(not(target_family = "wasm"))]
 mod sound;
 #[cfg(not(target_family = "wasm"))]
@@ -1138,6 +1139,10 @@ mod tests {
     /// Whether Road Trip has been edited on the server since: changed later,
     /// and Rope and Anchor in place of Fugue.
     static ROAD_TRIP_EDITED: AtomicBool = AtomicBool::new(false);
+    /// Whether the server has the smart playlist "Fugues" the editor made.
+    static SMART_MADE: AtomicBool = AtomicBool::new(false);
+    /// Whether the server lists Fonoteca's smart playlists among its extensions.
+    static SMART_OFFERED: AtomicBool = AtomicBool::new(false);
     /// The albums deleted on the server since, by id.
     static GONE_ALBUMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// Whether a playlist named Later Jams for joe was made elsewhere.
@@ -1201,6 +1206,12 @@ mod tests {
         let last = |call: &str| asked.iter().rposition(|asked| asked.starts_with(call));
         last(&method) > last(&write)
     }
+
+    /// The smart playlist of the songs by Anna Bach, as the server keeps it,
+    /// and the one song it has.
+    const FUGUES: &str = r#""id":"p7","name":"Fugues","songCount":1,"duration":218,"created":"2024-03-01T00:00:00Z","changed":"2024-03-01T00:00:00Z","readonly":true,"smart":true,"smartRules":{"match":"all","rules":[{"field":"artist","operator":"is","value":"Anna Bach"}],"sort":{"by":"added","descending":true},"limit":500}"#;
+    const FUGUE: &str =
+        r#"{"id":"s9","isDir":false,"title":"Fugue","duration":218,"artist":"Anna Bach"}"#;
 
     /// A request's method and its arguments but the credentials.
     fn write_of(request: &str) -> String {
@@ -1732,6 +1743,11 @@ mod tests {
             } else {
                 ""
             };
+            let smart = if SMART_OFFERED.load(Relaxed) {
+                r#",{"name":"fonotecaSmartPlaylists","versions":[1]}"#
+            } else {
+                ""
+            };
             let motion = if NO_MOTION.load(Relaxed) {
                 ""
             } else {
@@ -1769,7 +1785,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}{indexed}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}{indexed}{smart}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -2055,8 +2071,12 @@ mod tests {
                 }
                 false => "",
             };
+            let smart = match SMART_MADE.load(Relaxed) {
+                true => format!(",{{{FUGUES}}}"),
+                false => String::new(),
+            };
             ok(&format!(
-                r#""playlists":{{"playlist":[{{{road_trip}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}}{later_jams}]}}"#
+                r#""playlists":{{"playlist":[{{{road_trip}}},{{"id":"p2","name":"Empty","songCount":0,"duration":0,"created":"2024-01-01T00:00:00Z","changed":"2024-01-01T00:00:00Z","readonly":true}}{later_jams}{smart}]}}"#
             ))
         } else if request.contains("/rest/getPlaylist") && id == Some("p2") {
             ok(
@@ -2105,6 +2125,12 @@ mod tests {
         } else if request.contains("/rest/changePassword") {
             USER_WRITES.lock().unwrap().push(write_of(request));
             json(OK)
+        } else if request.contains("/rest/createSmartPlaylist") {
+            PLAYLIST_WRITES.lock().unwrap().push(write_of(request));
+            SMART_MADE.store(true, Relaxed);
+            ok(&format!(r#""playlist":{{{FUGUES},"entry":[{FUGUE}]}}"#))
+        } else if request.contains("/rest/getPlaylist") && id == Some("p7") {
+            ok(&format!(r#""playlist":{{{FUGUES},"entry":[{FUGUE}]}}"#))
         } else if ["create", "update", "delete"]
             .iter()
             .any(|change| request.contains(&format!("/rest/{change}Playlist")))
@@ -4435,6 +4461,60 @@ mod tests {
                 writes().last().map(String::as_str),
                 Some("deletePlaylist id=p3")
             );
+            // A smart playlist is made in the editor from the rules typed, whose
+            // songs it shows as they are typed; it is a tile of its own kind
+            // and its page has no songs to change.
+            ui.invoke_open("playlists".into());
+            let buttons = |label: &str| -> Vec<ElementHandle> {
+                let label = label.to_owned();
+                (ui.root_element().query_descendants())
+                    .match_accessible_role(AccessibleRole::Button)
+                    .match_predicate(move |button| button.accessible_label().is_some_and(|l| l == label))
+                    .find_all()
+            };
+            let open_playlists_menus = || buttons("Playlists").iter().for_each(|menu| menu.invoke_accessible_default_action());
+            assert!(!ui.get_smart_offered(), "the server doesn't say it has them");
+            open_playlists_menus();
+            assert!(buttons("New smart playlist").is_empty());
+            press(&ui, slint::platform::Key::Escape);
+            SMART_OFFERED.store(true, Relaxed);
+            play::testing::offer_again(&ui).await;
+            assert!(ui.get_smart_offered());
+            ui.invoke_open("playlists".into());
+            open_playlists_menus();
+            buttons("New smart playlist").last().expect("the menu offers it").invoke_accessible_default_action();
+            wait_for("the editor", || ui.get_page() == Page::Smart).await;
+            SMART_OFFERED.store(false, Relaxed);
+            assert_eq!(ui.get_smart_count(), "Add a rule to see its songs.");
+            assert!(!ui.get_smart_can_save());
+            ui.invoke_smart_field_picked(0, 1);
+            ui.invoke_smart_value_edited(0, "Anna Bach".into());
+            ui.invoke_smart_name_edited("Fugues".into());
+            wait_for("the songs the rules pick", || ui.get_smart_count() == "1 song, 3 minutes 38 seconds").await;
+            assert_eq!(ui.get_smart_preview().row_data(0).unwrap(), "Fugue - Anna Bach");
+            assert!(ui.get_smart_can_save());
+            let sent = writes().len();
+            ui.invoke_smart_save();
+            wait_for("the smart playlist", || {
+                ui.get_page() == Page::Playlist && ui.get_smart_playlist()
+            })
+            .await;
+            let made = &writes()[sent..];
+            assert!(made[0].starts_with("createSmartPlaylist name=Fugues&rules="), "{made:?}");
+            assert_eq!(ui.get_header_title(), "Fugues");
+            assert!(ui.get_header_facts().contains("Artist is Anna Bach"));
+            assert!(!ui.get_playlist_editable());
+            wait_for("its song", || ui.get_track_lines().row_count() == 1).await;
+            ui.invoke_open("playlists".into());
+            wait_for("its tile", || ui.get_tiles().iter().any(|tile| tile.smart)).await;
+            ui.invoke_open("playlist:p7".into());
+            wait_for("the smart playlist again", || ui.get_smart_playlist()).await;
+            SMART_MADE.store(false, Relaxed);
+            ui.invoke_delete_playlist();
+            wait_for("the playlists", || ui.get_page() == Page::Playlists).await;
+            assert_eq!(writes().last().map(String::as_str), Some("deletePlaylist id=p7"));
+            play::testing::offer_again(&ui).await;
+            assert!(!ui.get_smart_offered());
             ui.invoke_open("playlist:p1".into());
             wait_for("the playlist", || ui.get_track_lines().row_count() == 2).await;
             click(&ui, "Account");

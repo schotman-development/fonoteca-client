@@ -48,6 +48,7 @@ mod focus;
 mod listens;
 mod played;
 mod search;
+mod smart;
 mod stats;
 #[cfg(test)]
 pub use stats::TEST_ROOTS as LISTENBRAINZ_ROOTS;
@@ -156,6 +157,8 @@ const COMPOSITION_PLAYS: i64 = 2;
 const TOP_SONGS_BY_ID: &str = "topSongsByArtistId";
 /// The proposed OpenSubsonic extension for folders of playlists.
 const FOLDERS: &str = "playlistFolders";
+/// Fonoteca's extension for playlists whose songs the server picks by rules.
+const SMART_PLAYLISTS: &str = "fonotecaSmartPlaylists";
 /// Fonoteca's extension for the user's own tags.
 const TAGS: &str = "fonotecaTags";
 /// Fonoteca's extension for the genres each genre sits under.
@@ -274,6 +277,8 @@ pub struct Browser {
     /// every visit to the tags page and after every change to them.
     tags: Vec<Tag>,
     tags_loaded: bool,
+    /// The smart playlist the editor is making or changing.
+    smart: smart::Editor,
     /// The songs the tags dialog is for, each with the tags on it, once
     /// known; how often it was opened, so songs looked up for an earlier
     /// one are dropped.
@@ -1015,6 +1020,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |name| rename_playlist(&weak.unwrap(), &browser, name.trim().to_owned())
     });
+    smart::wire(ui, browser);
     ui.on_start_scan({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || start_scan(&weak.unwrap(), &browser)
@@ -1727,6 +1733,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_facts("".into());
     ui.set_details(ModelRc::default());
     ui.set_playlist_editable(false);
+    ui.set_smart_playlist(false);
     ui.set_created_for(false);
     ui.set_created_for_matching(false);
     ui.set_download_state(NOT_DOWNLOADED);
@@ -1784,6 +1791,10 @@ fn show(ui: &AppWindow, browser: &Shared) {
         "playlist" => {
             ui.set_page(Page::Playlist);
             playlist(ui, browser, id);
+        }
+        "smart" => {
+            ui.set_page(Page::Smart);
+            smart::open_editor(ui, browser, &id);
         }
         "createdfor" => {
             ui.set_page(Page::Playlist);
@@ -2140,7 +2151,7 @@ fn section(b: &Browser) -> i32 {
         "composer" => "composers",
         "composition" => "compositions",
         "folder" => "folders",
-        "playlist" | "playlists" => "playlists",
+        "playlist" | "playlists" | "smart" => "playlists",
         "stations" => "radio",
         "createdfor" => "home",
         other => other,
@@ -2245,6 +2256,7 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     ui.set_library_links(nav_entries(&icons, &entries, false));
     show_selected(ui, &b);
     ui.set_folders_offered(offers(&b, FOLDERS));
+    ui.set_smart_offered(offers(&b, SMART_PLAYLISTS));
     ui.set_tags_offered(offers(&b, TAGS));
     #[cfg(not(target_family = "wasm"))]
     {
@@ -2258,7 +2270,7 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     let targets: Vec<Name> = b
         .playlists
         .iter()
-        .filter(|playlist| playlist.readonly != Some(true))
+        .filter(|playlist| playlist.readonly != Some(true) && playlist.smart != Some(true))
         .map(|playlist| Name {
             label: playlist.name.as_str().into(),
             link: playlist.id.as_str().into(),
@@ -3653,6 +3665,8 @@ fn load_songs(ui: &AppWindow, browser: &Shared) {
             };
             if shown {
                 arrange_tracks(&ui, &browser);
+            } else if ui.get_page() == Page::Smart {
+                smart::show_preview(&ui, &browser);
             }
             if done {
                 return;
@@ -4773,8 +4787,11 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     let playlist = playlist.playlist;
     let playlist_shown = playlist.clone();
     ui.set_header_title(playlist.name.as_str().into());
-    ui.set_playlist_editable(playlist.readonly != Some(true));
+    let smart = playlist.smart == Some(true);
+    ui.set_playlist_editable(playlist.readonly != Some(true) && !smart);
+    ui.set_smart_playlist(smart);
     let facts = [
+        smart::rules_summary(&playlist),
         playlist.comment.unwrap_or_default(),
         length(playlist.song_count, playlist.duration),
     ];
@@ -5082,6 +5099,7 @@ fn rename_playlist(ui: &AppWindow, browser: &Shared, name: String) {
         return;
     }
     ui.set_header_title(name.as_str().into());
+    let smart = smart::is_on_screen(&browser.borrow());
     let (at, old) = (id.clone(), id.clone());
     // A server that names a playlist by its file, as Fonoteca does, gives it
     // a new id with a new name: the page and the history move to that one.
@@ -5092,11 +5110,15 @@ fn rename_playlist(ui: &AppWindow, browser: &Shared, name: String) {
         browser,
         Some(id),
         |client| async move {
-            let update = PlaylistUpdate {
-                name: Some(&name),
-                ..PlaylistUpdate::default()
-            };
-            client.update_playlist(&at, &update).await?;
+            if smart {
+                client.update_smart_playlist(&at, Some(&name), None).await?;
+            } else {
+                let update = PlaylistUpdate {
+                    name: Some(&name),
+                    ..PlaylistUpdate::default()
+                };
+                client.update_playlist(&at, &update).await?;
+            }
             if let Ok(list) = client.get_playlists(None).await
                 && !list.playlist.iter().any(|playlist| playlist.id == at)
             {
@@ -7483,6 +7505,7 @@ fn playlist_tile(playlist: &Playlist) -> (AlbumTile, Option<String>) {
         title: playlist.name.as_str().into(),
         names: names(vec![unlinked(tracks)]),
         link: format!("playlist:{}", playlist.id).into(),
+        smart: playlist.smart == Some(true),
         ..AlbumTile::default()
     };
     (tile, playlist.cover_art.clone())
