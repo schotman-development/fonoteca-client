@@ -97,10 +97,27 @@ jobs:
             test -n "$identity" || { echo "no signing identity in the certificate"; exit 1; }
           fi
           echo "Signing with identity $identity"
+          # Inside out: any other Mach-O file in the bundle, then the
+          # libraries, then the app. No --deep at signing.
+          find "$app/Contents" -type f ! -name '*.dylib' ! -path "$app/Contents/MacOS/fonoteca-client" |
+            while IFS= read -r nested; do
+              if file "$nested" | grep -q Mach-O; then
+                echo "Signing nested code $nested"
+                codesign --force --sign "$identity" "$nested"
+              fi
+            done
           codesign --force --sign "$identity" "$app"/Contents/Frameworks/*.dylib
           codesign --force --sign "$identity" "$app"
-          codesign --verify --strict "$app"
-          codesign -d -r- "$app"
+          # The check Git Market runs when it installs the app; if it fails
+          # there, the app is re-signed ad hoc and the Keychain asks again.
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=4 "$app"
+          requirement=$(codesign -d -r- "$app" 2>&1)
+          echo "$requirement"
+          if [ -n "$SIGNING_P12" ] && echo "$requirement" | grep -q cdhash; then
+            echo "signed with the certificate, but the designated requirement is a cdhash (ad hoc)"
+            exit 1
+          fi
           ditto -c -k --keepParent "$app" "target/Fonoteca-$APP_VERSION-macos-arm64.zip"
 
       - name: Delete the signing keychain
