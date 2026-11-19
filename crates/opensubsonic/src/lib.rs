@@ -1604,6 +1604,67 @@ mod tests {
         );
     }
 
+    /// Against a stand-in for Fonoteca's server, which has not built the
+    /// extension yet: the shape is the one its issue gives.
+    #[tokio::test]
+    async fn smart_playlists_in_fonotecas_shape() {
+        let (server, log) = serve(|request| {
+            json(if request.contains("getOpenSubsonicExtensions") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[{"name":"formPost","versions":[1]},{"name":"fonotecaSmartPlaylists","versions":[1]}]}}"#
+            } else if request.contains("createSmartPlaylist") {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlist":{"id":"sp-1","name":"Blues","songCount":1,"duration":304,"created":"2026-01-01T00:00:00Z","changed":"2026-01-01T00:00:00Z","readonly":true,"smart":true,"smartRules":{"match":"all","rules":[{"field":"genre","operator":"is","value":"Blues"}],"limit":500},"entry":[{"id":"tr-1","isDir":false,"title":"Blue"}]}}}"#
+            } else if request.contains("updateSmartPlaylist") && request.contains("zzz") {
+                r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":10,"message":"Rule 1: unknown operator equals for field year."}}}"#
+            } else {
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#
+            })
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        client.get_open_subsonic_extensions().await.unwrap();
+        assert!(client.supports_version("fonotecaSmartPlaylists", 1));
+        let rules =
+            r#"{"match":"all","rules":[{"field":"genre","operator":"is","value":"Blues"}]}"#;
+        let made = client.create_smart_playlist("Blues", rules).await.unwrap();
+        assert_eq!(
+            (made.playlist.smart, made.playlist.readonly),
+            (Some(true), Some(true))
+        );
+        assert_eq!(made.playlist.smart_rules.unwrap()["limit"], 500);
+        assert_eq!(made.entry[0].id, "tr-1");
+        client
+            .update_smart_playlist("sp-1", Some("Blues now"), Some(rules))
+            .await
+            .unwrap();
+        client
+            .update_smart_playlist("sp-1", Some("Blues now"), None)
+            .await
+            .unwrap();
+        let refused = client
+            .update_smart_playlist("sp-1", None, Some("zzz"))
+            .await;
+        assert!(matches!(
+            refused,
+            Err(Error::Api(ApiError { code: 10, .. }))
+        ));
+        let log = log.lock().unwrap();
+        // The rules can be long, so they go in the form's body, not the URL.
+        let (head, body) = log[1].split_once("\r\n\r\n").unwrap();
+        assert!(
+            head.starts_with("POST ") && !head.contains("rules"),
+            "{head}"
+        );
+        assert!(
+            body.contains("name=Blues&rules=%7B%22match%22%3A%22all%22"),
+            "{body}"
+        );
+        assert!(
+            log[2].contains("playlistId=sp-1&name=Blues+now&rules="),
+            "{}",
+            log[2]
+        );
+        assert!(!log[3].contains("rules"), "{}", log[3]);
+    }
+
     #[tokio::test]
     async fn tags_in_fonotecas_shape() {
         let (server, log) = serve(|request| {

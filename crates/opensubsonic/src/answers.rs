@@ -467,6 +467,8 @@ impl Change {
             "star" | "unstar" | "setRating" => Some(Self::Naming),
             "createPlaylist"
             | "updatePlaylist"
+            | "createSmartPlaylist"
+            | "updateSmartPlaylist"
             | "deletePlaylist"
             | "movePlaylist"
             | "createPlaylistFolder"
@@ -730,6 +732,8 @@ mod tests {
         let changes = [
             "createPlaylist",
             "updatePlaylist",
+            "createSmartPlaylist",
+            "updateSmartPlaylist",
             "deletePlaylist",
             "movePlaylist",
             "createPlaylistFolder",

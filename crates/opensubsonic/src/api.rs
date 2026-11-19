@@ -638,6 +638,34 @@ impl Client {
         self.call_unit("updatePlaylist", params).await
     }
 
+    /// Makes a smart playlist: one whose songs the server picks by `rules`,
+    /// the JSON of the extension's version 1. Not in the spec: Fonoteca's
+    /// call, offered where the client [`supports`](Client::supports)
+    /// `fonotecaSmartPlaylists`, as is the call below.
+    pub async fn create_smart_playlist(
+        &self,
+        name: &str,
+        rules: &str,
+    ) -> Result<PlaylistWithSongs> {
+        let params = Params::new().req("name", name).req("rules", rules);
+        self.call("createSmartPlaylist", params, "playlist").await
+    }
+
+    /// Renames a smart playlist or gives it other `rules`, which replace all
+    /// its rules, its sort and its limit.
+    pub async fn update_smart_playlist(
+        &self,
+        playlist_id: &str,
+        name: Option<&str>,
+        rules: Option<&str>,
+    ) -> Result<()> {
+        let params = Params::new()
+            .req("playlistId", playlist_id)
+            .opt("name", name)
+            .opt("rules", rules);
+        self.call_unit("updateSmartPlaylist", params).await
+    }
+
     /// Deletes a playlist.
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/deleteplaylist/>

@@ -37,6 +37,12 @@ pub struct Playlist {
     pub playlist_folder_id: Option<String>,
     /// [OS] `playlistFolders`: Position among siblings in the selected user's playlist organization.
     pub playlist_folder_sort_order: Option<i64>,
+    /// Not in the spec: Fonoteca's `fonotecaSmartPlaylists`: whether the
+    /// playlist's songs come from rules, not from what was put in it.
+    pub smart: Option<bool>,
+    /// Not in the spec: the rules of a smart playlist, as `getPlaylist` has
+    /// them, in the shape of the extension's version 1.
+    pub smart_rules: Option<serde_json::Value>,
 }
 
 /// A folder of the user's playlists, from the proposed `playlistFolders`
