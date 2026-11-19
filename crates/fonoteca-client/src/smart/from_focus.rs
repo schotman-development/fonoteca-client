@@ -1,68 +1,162 @@
-//! A Focus pick of the tracks page as rules, so that "save this Focus as a
-//! smart playlist" can fill the editor.
+//! The Focus of the tracks page as rules, so that "save this filter as a
+//! smart playlist" fills the editor, and rules as a Focus, so that a smart
+//! playlist's rules open in the Focus. Both are one tree of conditions; only
+//! what the server's rules can't say, or the Focus can't show, is refused.
 
-use crate::focus::Focus;
+use crate::focus::{Condition, Focus};
+use crate::rules::iso_date;
+use crate::rules::words::operator_label;
 
 use super::*;
 
-/// The rules a Focus is, and whether a song must pass all of them; none
-/// when the Focus can't be said in rules: a facet the rules have no field
-/// for, or alternatives (any of several values) beside other picks, which
-/// one level of rules can't hold.
-pub fn from_focus(focus: &Focus) -> Option<(bool, Vec<Rule>)> {
-    let mut groups: Vec<(bool, Vec<Rule>)> = Vec::new();
-    let mut facets: Vec<&str> = focus.picked().into_iter().map(|(facet, _)| facet).collect();
-    facets.dedup();
-    for facet in facets {
-        let values: Vec<&str> = (focus.picked().into_iter())
-            .filter(|(picked, _)| *picked == facet)
-            .map(|(_, value)| value)
-            .collect();
-        let rules = values
-            .iter()
-            .map(|value| rule_of(facet, value))
-            .collect::<Option<Vec<_>>>()?;
-        let alternatives = rules.len() > 1 && !focus.is_all_of(facet);
-        groups.push((alternatives, rules));
-    }
-    if focus.favourites {
-        let favourite = Rule {
-            field: Field::Favourite,
-            operator: Operator::Is,
-            value: Some(Value::Flag(true)),
-        };
-        groups.push((false, vec![favourite]));
-    }
-    let any_of_one_facet = matches!(groups.as_slice(), [(true, _)]);
-    if !any_of_one_facet && groups.iter().any(|(alternatives, _)| *alternatives) {
-        return None;
-    }
-    let rules = groups.into_iter().flat_map(|(_, rules)| rules).collect();
-    Some((!any_of_one_facet, rules))
+/// The rules a Focus is: the filters that say something, in the groups they
+/// are in; those a group has none of are left out with it. Where a filter
+/// has no rule, why not, naming its field as `title_of` does.
+pub fn from_focus(focus: &Focus, title_of: &dyn Fn(&str) -> String) -> Result<Group<Rule>, String> {
+    rules_of(&focus.filters, title_of)
 }
 
-/// The rule that says a facet's picked value, by the facets of the tracks
-/// page.
-fn rule_of(facet: &str, value: &str) -> Option<Rule> {
-    let text = |field| Rule {
-        field,
-        operator: Operator::Is,
-        value: Some(Value::Text(value.to_owned())),
-    };
-    match facet {
-        "Genres" => Some(text(Field::Genre)),
-        "Performers" => Some(text(Field::Artist)),
-        "Composers" => Some(text(Field::Composer)),
-        "Moods" => Some(text(Field::Mood)),
-        "Format" => Some(text(Field::Format)),
-        "Release date" => {
-            let from: i64 = value.strip_suffix('s')?.parse().ok()?;
-            Some(Rule {
-                field: Field::Year,
-                operator: Operator::Between,
-                value: Some(Value::Range([from, from + 9])),
-            })
+fn rules_of(
+    group: &Group<Condition>,
+    title_of: &dyn Fn(&str) -> String,
+) -> Result<Group<Rule>, String> {
+    let mut rules = Vec::new();
+    for entry in &group.rules {
+        match entry {
+            Entry::Group(inner) => {
+                let inner = rules_of(inner, title_of)?;
+                if inner.rules.is_empty() && !inner.match_all {
+                    return Err("A group of any with no filters matches nothing.".into());
+                }
+                if !inner.rules.is_empty() {
+                    rules.push(Entry::Group(inner));
+                }
+            }
+            Entry::Leaf(condition) if condition.is_active() => {
+                rules.push(entry_of(condition, title_of)?)
+            }
+            Entry::Leaf(_) => {}
         }
-        _ => None,
+    }
+    Ok(Group {
+        match_all: group.match_all,
+        rules,
+    })
+}
+
+/// The rule a filter is, or the group of rules where it needs several.
+fn entry_of(
+    condition: &Condition,
+    title_of: &dyn Fn(&str) -> String,
+) -> Result<Entry<Rule>, String> {
+    let title = title_of(&condition.field);
+    if condition.field == DECADE {
+        return decades(condition, &title);
+    }
+    let field = Field::from_key(&condition.field)
+        .ok_or_else(|| format!("{title} has no smart playlist rule."))?;
+    let rule = |operator, value| Rule {
+        field,
+        operator,
+        value: Some(value),
+    };
+    let listed = |operator, all: bool| match &condition.value {
+        Some(Value::List(values)) if values.len() == 1 => {
+            Entry::Leaf(rule(operator, Value::Text(values[0].clone())))
+        }
+        Some(Value::List(values)) => Entry::Group(Group::of(
+            all,
+            (values.iter())
+                .map(|value| rule(operator, Value::Text(value.clone())))
+                .collect(),
+        )),
+        _ => Entry::Group(Group::new(all)),
+    };
+    let entry = match (condition.operator, &condition.value) {
+        (Operator::AnyOf, _) => listed(Operator::Is, false),
+        (Operator::AllOf, _) => listed(Operator::Is, true),
+        (Operator::NoneOf, _) => listed(Operator::IsNot, true),
+        (Operator::Between, Some(Value::Range([from, to]))) if field.kind() == Kind::Date => {
+            let after = Value::Text(iso_date(from - 1));
+            let before = Value::Text(iso_date(to + 1));
+            Entry::Group(Group::of(
+                true,
+                vec![rule(Operator::After, after), rule(Operator::Before, before)],
+            ))
+        }
+        (operator, value) if field.operators().contains(&operator) => Entry::Leaf(Rule {
+            field,
+            operator,
+            value: value.clone(),
+        }),
+        (operator, _) => {
+            return Err(format!(
+                "{title} \"{}\" has no smart playlist rule.",
+                operator_label(operator)
+            ));
+        }
+    };
+    check_entry(&entry, &title).map(|()| entry)
+}
+
+/// The key of the Focus filter on the decade of the release year.
+const DECADE: &str = "decade";
+
+/// A pick of decades, which the rules say as the years from a decade's first
+/// to its last.
+fn decades(condition: &Condition, title: &str) -> Result<Entry<Rule>, String> {
+    let (Operator::AnyOf, Some(Value::List(picked))) = (condition.operator, &condition.value)
+    else {
+        return Err(format!("{title} has no smart playlist rule."));
+    };
+    let years = |label: &String| {
+        let first: i64 = label.strip_suffix('s')?.parse().ok()?;
+        Some(Rule {
+            field: Field::Year,
+            operator: Operator::Between,
+            value: Some(Value::Range([first, first + 9])),
+        })
+    };
+    let rules: Option<Vec<Rule>> = picked.iter().map(years).collect();
+    let rules = rules.ok_or_else(|| format!("{title} has no smart playlist rule."))?;
+    Ok(match <[Rule; 1]>::try_from(rules) {
+        Ok([only]) => Entry::Leaf(only),
+        Err(rules) => Entry::Group(Group::of(false, rules)),
+    })
+}
+
+fn check_entry(entry: &Entry<Rule>, title: &str) -> Result<(), String> {
+    let rules = match entry {
+        Entry::Leaf(rule) => vec![rule],
+        Entry::Group(group) => group.leaves(),
+    };
+    (rules.into_iter())
+        .try_for_each(Rule::check)
+        .map_err(|why| format!("{title}: {why}"))
+}
+
+/// The Focus the rules are: each rule a filter on the field of the same
+/// name, in the same groups.
+pub fn into_focus(rules: &Group<Rule>) -> Focus {
+    Focus {
+        filters: condition_group(rules),
+    }
+}
+
+fn condition_group(group: &Group<Rule>) -> Group<Condition> {
+    Group {
+        match_all: group.match_all,
+        rules: (group.rules.iter())
+            .map(|entry| match entry {
+                Entry::Group(inner) => Entry::Group(condition_group(inner)),
+                Entry::Leaf(rule) => Entry::Leaf(Condition {
+                    field: rule.field.key(),
+                    operator: rule.operator,
+                    value: rule.value.clone(),
+                    enabled: true,
+                    typed: None,
+                }),
+            })
+            .collect(),
     }
 }

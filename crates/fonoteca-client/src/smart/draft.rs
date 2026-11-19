@@ -64,6 +64,9 @@ pub struct Draft {
     pub name: String,
     pub match_all: bool,
     pub rows: Vec<Row>,
+    /// The groups among the rules, which the rows can't show: they are kept
+    /// as they are and opened in the Focus to change.
+    pub groups: Vec<Group<Rule>>,
     /// Which of `SORTS`.
     pub sort: usize,
     /// As typed; empty for the server's own.
@@ -77,6 +80,7 @@ impl Default for Draft {
             name: String::new(),
             match_all: true,
             rows: vec![Row::new(Field::Genre)],
+            groups: Vec::new(),
             sort: sort_index(Sort {
                 by: SortKey::Added,
                 descending: true,
@@ -88,10 +92,19 @@ impl Default for Draft {
 
 impl Draft {
     /// A new playlist of these rules, the order and limit a new one has.
-    pub fn of_rules(match_all: bool, rules: &[Rule]) -> Draft {
+    pub fn of_rules(root: &Group<Rule>) -> Draft {
+        let mut rows = Vec::new();
+        let mut groups = Vec::new();
+        for entry in &root.rules {
+            match entry {
+                Entry::Leaf(rule) => rows.push(Row::of(rule)),
+                Entry::Group(group) => groups.push(group.clone()),
+            }
+        }
         Draft {
-            match_all,
-            rows: rules.iter().map(Row::of).collect(),
+            match_all: root.match_all,
+            rows,
+            groups,
             ..Draft::default()
         }
     }
@@ -106,7 +119,7 @@ impl Draft {
                 .limit
                 .map(|limit| limit.to_string())
                 .unwrap_or_default(),
-            ..Draft::of_rules(rules.match_all, &rules.rules)
+            ..Draft::of_rules(&rules.root)
         }
     }
 
@@ -174,6 +187,12 @@ impl Draft {
         rules.check().map(|()| rules)
     }
 
+    /// Whether the rules have groups, which the server takes only in the
+    /// second version of its smart playlists.
+    pub fn has_groups(&self) -> bool {
+        !self.groups.is_empty()
+    }
+
     /// What keeps the draft from being saved, said once the user has typed
     /// something wrong; none while rows are merely still empty.
     pub fn problem(&self) -> String {
@@ -195,13 +214,17 @@ impl Draft {
     pub fn readable_rules(&self) -> Option<SmartRules> {
         let rules: Vec<Rule> = self.rows.iter().filter_map(Row::rule).collect();
         let limit = self.limit().ok().flatten();
-        (!rules.is_empty()).then(|| self.rules_of(rules, limit))
+        (!rules.is_empty() || self.has_groups()).then(|| self.rules_of(rules, limit))
     }
 
     fn rules_of(&self, rules: Vec<Rule>, limit: Option<u32>) -> SmartRules {
+        let mut entries: Vec<Entry<Rule>> = rules.into_iter().map(Entry::Leaf).collect();
+        entries.extend(self.groups.iter().cloned().map(Entry::Group));
         SmartRules {
-            match_all: self.match_all,
-            rules,
+            root: Group {
+                match_all: self.match_all,
+                rules: entries,
+            },
             sort: self.sort_by(),
             limit,
         }

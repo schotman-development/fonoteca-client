@@ -2,6 +2,8 @@
 //! value is typed and shown, and the line that sums a playlist's rules up.
 
 use super::*;
+pub use crate::rules::words::operator_label;
+use crate::rules::words::{Measure, parse_flag, parse_range, parse_span, span_text};
 
 pub fn field_label(field: Field) -> &'static str {
     match field {
@@ -25,24 +27,6 @@ pub fn field_label(field: Field) -> &'static str {
         Field::Added => "Added",
         Field::LastPlayed => "Last played",
         Field::Favourite => "Favourite",
-    }
-}
-
-pub fn operator_label(operator: Operator) -> &'static str {
-    match operator {
-        Operator::Is => "is",
-        Operator::IsNot => "is not",
-        Operator::Contains => "contains",
-        Operator::NotContains => "does not contain",
-        Operator::StartsWith => "starts with",
-        Operator::GreaterThan => "more than",
-        Operator::LessThan => "less than",
-        Operator::Between => "between",
-        Operator::InTheLast => "in the last",
-        Operator::NotInTheLast => "not in the last",
-        Operator::Before => "before",
-        Operator::After => "after",
-        Operator::Never => "never",
     }
 }
 
@@ -96,25 +80,21 @@ pub fn value_text(rule: &Rule) -> String {
         Some(Value::Number(at)) => number(*at),
         Some(Value::Text(text)) => text.clone(),
         Some(Value::Range([from, to])) => format!("{} - {}", number(*from), number(*to)),
-        Some(Value::Within(span)) => {
-            let unit = match span.unit {
-                Unit::Days => "day",
-                Unit::Weeks => "week",
-                Unit::Months => "month",
-                Unit::Years => "year",
-            };
-            let plural = if span.amount == 1 { "" } else { "s" };
-            format!("{} {unit}{plural}", span.amount)
-        }
+        Some(Value::List(items)) => items.join(", "),
+        Some(Value::Within(span)) => span_text(*span),
     }
 }
 
-/// A duration as minutes and seconds, any other number as it is.
-fn number_text(field: Field, number: i64) -> String {
+/// What a field's numbers count: they are typed and shown as that.
+fn measure_of(field: Field) -> Measure {
     match field {
-        Field::Duration => format!("{}:{:02}", number / 60, number % 60),
-        _ => number.to_string(),
+        Field::Duration => Measure::Duration,
+        _ => Measure::Count,
     }
+}
+
+fn number_text(field: Field, number: i64) -> String {
+    measure_of(field).show(number)
 }
 
 /// What to type in the box for a value, for the box to say while empty.
@@ -142,9 +122,9 @@ pub fn parse_rule(field: Field, operator: Operator, text: &str) -> Option<Rule> 
     let value = match (operator, field.kind()) {
         (Operator::Never, _) => None,
         (_, Kind::Flag) => Some(Value::Flag(parse_flag(text)?)),
-        (Operator::Between, _) => Some(Value::Range(parse_range(field, text)?)),
+        (Operator::Between, _) => Some(Value::Range(parse_range(measure_of(field), text)?)),
         (Operator::InTheLast | Operator::NotInTheLast, _) => Some(Value::Within(parse_span(text)?)),
-        (_, Kind::Number) => Some(Value::Number(parse_number(field, text)?)),
+        (_, Kind::Number) => Some(Value::Number(measure_of(field).parse(text)?)),
         _ => Some(Value::Text(text.to_owned())),
     };
     let rule = Rule {
@@ -156,48 +136,21 @@ pub fn parse_rule(field: Field, operator: Operator, text: &str) -> Option<Rule> 
     Some(rule)
 }
 
-fn parse_flag(text: &str) -> Option<bool> {
-    match text.to_lowercase().as_str() {
-        "yes" | "true" => Some(true),
-        "no" | "false" => Some(false),
-        _ => None,
-    }
-}
-
-fn parse_number(field: Field, text: &str) -> Option<i64> {
-    let text = text.trim();
-    match (field, text.split_once(':')) {
-        (Field::Duration, Some((minutes, seconds))) => {
-            Some(minutes.trim().parse::<i64>().ok()? * 60 + seconds.trim().parse::<i64>().ok()?)
-        }
-        _ => text.parse().ok(),
-    }
-}
-
-fn parse_range(field: Field, text: &str) -> Option<[i64; 2]> {
-    let (from, to) = text.split_once(['-', '–'])?;
-    Some([parse_number(field, from)?, parse_number(field, to)?])
-}
-
-/// "90 days", "3 months"; a number alone is days.
-fn parse_span(text: &str) -> Option<Span> {
-    let mut words = text.split_whitespace();
-    let amount = words.next()?.parse().ok()?;
-    let unit = match words.next().map(|unit| unit.trim_end_matches('s')) {
-        None | Some("day") => Unit::Days,
-        Some("week") => Unit::Weeks,
-        Some("month") => Unit::Months,
-        Some("year") => Unit::Years,
-        Some(_) => return None,
-    };
-    words.next().is_none().then_some(Span { amount, unit })
-}
-
-/// The rules in a line: "Blues · added in the last 90 days · never played".
+/// The rules in a line: "Blues · added in the last 90 days · never played",
+/// a group inside them in brackets.
 pub fn summary(rules: &SmartRules) -> String {
-    let phrases: Vec<String> = rules.rules.iter().map(phrase).collect();
+    group_line(&rules.root)
+}
+
+fn group_line(group: &Group<Rule>) -> String {
+    let phrases: Vec<String> = (group.rules.iter())
+        .map(|entry| match entry {
+            Entry::Leaf(rule) => phrase(rule),
+            Entry::Group(inner) => format!("({})", group_line(inner)),
+        })
+        .collect();
     let line = phrases.join(" · ");
-    match rules.match_all || phrases.len() < 2 {
+    match group.match_all || phrases.len() < 2 {
         true => line,
         false => format!("Any of: {line}"),
     }

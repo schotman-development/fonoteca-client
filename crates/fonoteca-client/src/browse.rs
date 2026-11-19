@@ -44,6 +44,7 @@ use crate::{
 };
 
 pub(crate) mod created_for;
+mod fields;
 mod focus;
 mod listens;
 mod played;
@@ -2967,8 +2968,18 @@ fn show_playlists(ui: &AppWindow, browser: &Shared) {
             _ => Vec::new(),
         };
         ui.set_tile_moves(ModelRc::new(VecModel::from(moves)));
-        let tiles = placed(&b.playlists, folders, folder).into_iter();
+        let wanted = playlists_the_focus_wants(&b);
+        // Narrowed, the playlists are those the filters leave, in every
+        // folder, with no folders to go into.
+        let tiles = match &wanted {
+            Some(ids) => placed(&b.playlists, None, None)
+                .into_iter()
+                .filter(|item| matches!(item, Placed::Playlist(p) if ids.contains(&p.id)))
+                .collect(),
+            None => placed(&b.playlists, folders, folder),
+        };
         tiles
+            .into_iter()
             .map(|item| match item {
                 Placed::Folder(folder) => {
                     let inside = placed(&b.playlists, folders, Some(&folder.id)).len();
@@ -2979,7 +2990,16 @@ fn show_playlists(ui: &AppWindow, browser: &Shared) {
             .collect()
     };
     folder_heading(ui, &browser.borrow());
+    focus::show(ui, browser);
     add_tiles(ui, browser, tiles);
+}
+
+/// The ids of the playlists the Focus leaves in, none where it narrows nothing.
+fn playlists_the_focus_wants(b: &Browser) -> Option<HashSet<String>> {
+    let allowed = focus::allowed(b, Page::Playlists)?;
+    let playlists = b.playlists.iter().zip(allowed);
+    let wanted = playlists.filter(|(_, wanted)| *wanted);
+    Some(wanted.map(|(playlist, _)| playlist.id.clone()).collect())
 }
 
 /// The playlists page's heading: the folder's name in a folder, and where

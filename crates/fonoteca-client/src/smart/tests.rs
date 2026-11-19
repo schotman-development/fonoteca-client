@@ -1,8 +1,9 @@
 use super::draft::Draft;
-use super::from_focus::from_focus;
+use super::from_focus::{from_focus, into_focus};
 use super::words::{parse_rule, sort_index, summary};
 use super::*;
-use crate::focus::Focus;
+use crate::focus::{Condition, Focus};
+use crate::rules::{Span, Unit, civil_date};
 
 fn song(json: &str) -> Child {
     let json = format!(r#"{{"isDir":false,{json}}}"#);
@@ -33,13 +34,16 @@ fn within(field: Field, operator: Operator, amount: u32, unit: Unit) -> Rule {
     }
 }
 
-fn all_of(rules: Vec<Rule>) -> SmartRules {
+fn flat(match_all: bool, rules: Vec<Rule>, sort: Sort, limit: Option<u32>) -> SmartRules {
     SmartRules {
-        match_all: true,
-        rules,
-        sort: Sort::default(),
-        limit: None,
+        root: Group::of(match_all, rules),
+        sort,
+        limit,
     }
+}
+
+fn all_of(rules: Vec<Rule>) -> SmartRules {
+    flat(true, rules, Sort::default(), None)
 }
 
 const TODAY: &str = "2026-03-31";
@@ -346,14 +350,12 @@ fn a_tag_counts_for_the_tags_above_it() {
 #[test]
 fn match_all_wants_every_rule_and_any_wants_one() {
     let song = song(r#""id":"1","title":"T","genre":"Blues","year":1971"#);
-    let rules = |match_all| SmartRules {
-        match_all,
-        rules: vec![
+    let rules = |match_all| {
+        let rules = vec![
             text(Field::Genre, Operator::Is, "Blues"),
             number(Field::Year, Operator::GreaterThan, 1990),
-        ],
-        sort: Sort::default(),
-        limit: None,
+        ];
+        flat(match_all, rules, Sort::default(), None)
     };
     let tags = TagNames::new();
     let now = Now {
@@ -383,12 +385,8 @@ fn pick(songs: &[Child], rules: &SmartRules, seed: u64) -> Vec<String> {
 }
 
 fn everything(sort: Sort, limit: Option<u32>) -> SmartRules {
-    SmartRules {
-        match_all: true,
-        rules: vec![number(Field::PlayCount, Operator::GreaterThan, -1)],
-        sort,
-        limit,
-    }
+    let rules = vec![number(Field::PlayCount, Operator::GreaterThan, -1)];
+    flat(true, rules, sort, limit)
 }
 
 #[test]
@@ -495,8 +493,12 @@ const WIRE: &str = r#"{
 #[test]
 fn the_json_is_the_wire_shape_both_ways() {
     let rules = SmartRules::from_json(WIRE).unwrap();
-    assert!(rules.match_all && rules.rules.len() == 7);
-    assert_eq!(rules.rules[3].value, Some(Value::Range([1960, 1979])));
+    assert!(rules.root.match_all && rules.root.rules.len() == 7);
+    assert_eq!(rules.version(), 1);
+    assert_eq!(
+        rules.root.leaves()[3].value,
+        Some(Value::Range([1960, 1979]))
+    );
     assert_eq!(rules.limit, Some(500));
     let sent: serde_json::Value = serde_json::from_str(&rules.to_json()).unwrap();
     assert_eq!(
@@ -510,7 +512,7 @@ fn the_json_is_the_wire_shape_both_ways() {
 fn any_and_a_missing_limit_and_sort_round_trip() {
     let json = r#"{"match":"any","rules":[{"field":"mood","operator":"contains","value":"calm"}]}"#;
     let rules = SmartRules::from_json(json).unwrap();
-    assert!(!rules.match_all && rules.limit.is_none());
+    assert!(!rules.root.match_all && rules.limit.is_none());
     let sent: serde_json::Value = serde_json::from_str(&rules.to_json()).unwrap();
     assert_eq!(sent["match"], "any");
     assert!(sent.get("limit").is_none() && sent["sort"]["descending"] == false);
@@ -581,11 +583,13 @@ fn the_rules_in_a_line() {
         "Blues · added in the last 90 days · never played · Year between 1960 - 1979 · favourite · never played · Added before 2026-01-31"
     );
     let any = SmartRules {
-        match_all: false,
-        rules: vec![
-            text(Field::Genre, Operator::Is, "Blues"),
-            number(Field::Duration, Operator::LessThan, 150),
-        ],
+        root: Group::of(
+            false,
+            vec![
+                text(Field::Genre, Operator::Is, "Blues"),
+                number(Field::Duration, Operator::LessThan, 150),
+            ],
+        ),
         ..rules
     };
     assert_eq!(summary(&any), "Any of: Blues · Duration less than 2:30");
@@ -681,7 +685,7 @@ fn a_draft_is_read_when_every_row_is() {
         Field::ALL.iter().position(|&f| f == Field::Year).unwrap(),
     );
     assert!(draft.rules().is_err(), "the new row has no value yet");
-    assert_eq!(draft.readable_rules().unwrap().rules.len(), 1);
+    assert_eq!(draft.readable_rules().unwrap().root.rules.len(), 1);
     draft.set_operator(1, 4);
     draft.set_text(1, "1960 - 1979");
     draft.limit = String::new();
@@ -723,39 +727,226 @@ fn editing_gives_back_what_the_rules_say() {
     assert_eq!(draft.sort, sort_index(rules.sort));
 }
 
+fn title_of(field: &str) -> String {
+    field.to_owned()
+}
+
+fn condition(field: &str, operator: Operator, value: Value) -> Condition {
+    Condition {
+        field: field.to_owned(),
+        operator,
+        value: Some(value),
+        enabled: true,
+        typed: None,
+    }
+}
+
+fn focus_of(match_all: bool, conditions: Vec<Condition>) -> Focus {
+    Focus {
+        filters: Group::of(match_all, conditions),
+    }
+}
+
+fn listed(values: &[&str]) -> Value {
+    Value::List(values.iter().map(|value| value.to_string()).collect())
+}
+
 #[test]
-fn a_focus_is_rules_where_one_level_can_hold_it() {
-    let mut focus = Focus::default();
-    assert_eq!(from_focus(&focus), Some((true, vec![])));
-    focus.toggle("Genres", "Blues");
-    focus.toggle("Release date", "1970s");
-    focus.favourites = true;
-    let (all, rules) = from_focus(&focus).unwrap();
-    assert!(all);
-    assert_eq!(rules.len(), 3);
-    assert!(rules.contains(&text(Field::Genre, Operator::Is, "Blues")));
-    assert!(
-        rules
-            .iter()
-            .any(|rule| rule.value == Some(Value::Range([1970, 1979])))
+fn an_empty_group_of_any_cannot_become_a_smart_playlist() {
+    let mut focus = focus_of(
+        true,
+        vec![condition("genre", Operator::AnyOf, listed(&["Blues"]))],
     );
-    // Alternatives alone are "any"; beside another pick, or in a facet the
-    // rules have no field for, they can't be said.
-    let mut alternatives = Focus::default();
-    alternatives.toggle("Genres", "Blues");
-    alternatives.toggle("Genres", "Soul");
+    focus.add_group(&[], false);
+    assert!(from_focus(&focus, &title_of).is_err());
+}
+
+#[test]
+fn a_flat_focus_is_flat_rules_the_first_version_takes() {
+    let focus = focus_of(
+        true,
+        vec![
+            condition("genre", Operator::AnyOf, listed(&["Blues"])),
+            condition("year", Operator::Between, Value::Range([1970, 1979])),
+            condition("favourite", Operator::Is, Value::Flag(true)),
+        ],
+    );
+    let rules = from_focus(&focus, &title_of).unwrap();
+    assert!(rules.is_flat() && rules.match_all);
     assert_eq!(
-        from_focus(&alternatives).map(|(all, rules)| (all, rules.len())),
-        Some((false, 2))
+        rules.leaves()[0],
+        &text(Field::Genre, Operator::Is, "Blues")
     );
-    alternatives.toggle_all_of("Genres");
-    assert_eq!(from_focus(&alternatives).map(|(all, _)| all), Some(true));
-    alternatives.toggle_all_of("Genres");
-    alternatives.favourites = true;
-    assert_eq!(from_focus(&alternatives), None);
-    let mut production = Focus::default();
-    production.toggle("Production", "Pat");
-    assert_eq!(from_focus(&production), None);
+    assert_eq!(rules.leaves()[1].value, Some(Value::Range([1970, 1979])));
+    let version = SmartRules {
+        root: rules,
+        sort: Sort::default(),
+        limit: None,
+    };
+    assert_eq!(version.version(), 1);
+}
+
+#[test]
+fn alternatives_and_exclusions_become_groups_the_second_version_takes() {
+    let focus = focus_of(
+        true,
+        vec![
+            condition("genre", Operator::AnyOf, listed(&["Blues", "Soul"])),
+            condition("mood", Operator::NoneOf, listed(&["Sad", "Dark"])),
+        ],
+    );
+    let rules = from_focus(&focus, &title_of).unwrap();
+    assert!(!rules.is_flat());
+    let [Entry::Group(any), Entry::Group(none)] = &rules.rules[..] else {
+        panic!("two groups were expected");
+    };
+    assert!(!any.match_all && any.leaves().len() == 2);
+    assert!(none.match_all);
+    assert!(
+        none.leaves()
+            .iter()
+            .all(|rule| rule.operator == Operator::IsNot)
+    );
+    let sent = SmartRules {
+        root: rules,
+        sort: Sort::default(),
+        limit: None,
+    };
+    assert_eq!(sent.version(), 2);
+    assert!(sent.check().is_ok());
+}
+
+#[test]
+fn picked_decades_are_the_years_they_span() {
+    let one = focus_of(
+        true,
+        vec![condition("decade", Operator::AnyOf, listed(&["1970s"]))],
+    );
+    let rules = from_focus(&one, &title_of).unwrap();
+    assert_eq!(rules.leaves()[0], &number_between(Field::Year, 1970, 1979));
+    let two = focus_of(
+        true,
+        vec![condition(
+            "decade",
+            Operator::AnyOf,
+            listed(&["1970s", "1990s"]),
+        )],
+    );
+    let rules = from_focus(&two, &title_of).unwrap();
+    let [Entry::Group(any)] = &rules.rules[..] else {
+        panic!("a group of alternatives was expected");
+    };
+    assert!(!any.match_all && any.leaves().len() == 2);
+    let none = focus_of(
+        true,
+        vec![condition("decade", Operator::NoneOf, listed(&["1970s"]))],
+    );
+    assert!(from_focus(&none, &title_of).is_err());
+}
+
+fn number_between(field: Field, from: i64, to: i64) -> Rule {
+    Rule {
+        field,
+        operator: Operator::Between,
+        value: Some(Value::Range([from, to])),
+    }
+}
+
+#[test]
+fn a_dates_between_is_two_rules_around_its_ends() {
+    let from = day_number("2026-01-01").unwrap();
+    let to = day_number("2026-01-31").unwrap();
+    let focus = focus_of(
+        true,
+        vec![condition(
+            "added",
+            Operator::Between,
+            Value::Range([from, to]),
+        )],
+    );
+    let rules = from_focus(&focus, &title_of).unwrap();
+    let [Entry::Group(between)] = &rules.rules[..] else {
+        panic!("a group was expected");
+    };
+    let leaves: Vec<_> = between
+        .leaves()
+        .into_iter()
+        .map(|rule| (rule.operator, rule.value.clone()))
+        .collect();
+    assert_eq!(
+        leaves,
+        [
+            (Operator::After, Some(Value::Text("2025-12-31".into()))),
+            (Operator::Before, Some(Value::Text("2026-02-01".into()))),
+        ]
+    );
+    let song = song(r#""id":"1","title":"T","created":"2026-01-15T10:00:00Z""#);
+    let early = self::song(r#""id":"2","title":"T","created":"2025-12-31T10:00:00Z""#);
+    let wanted = SmartRules {
+        root: rules,
+        sort: Sort::default(),
+        limit: None,
+    };
+    let tags = TagNames::new();
+    let now = Now {
+        today: today(),
+        tags: &tags,
+    };
+    assert!(matches(&song, &wanted, &now));
+    assert!(!matches(&early, &wanted, &now));
+}
+
+#[test]
+fn what_the_rules_cannot_say_is_refused_by_name() {
+    let unknown = focus_of(
+        true,
+        vec![condition("production", Operator::AnyOf, listed(&["Pat"]))],
+    );
+    assert_eq!(
+        from_focus(&unknown, &title_of).unwrap_err(),
+        "production has no smart playlist rule."
+    );
+    let impossible = focus_of(
+        true,
+        vec![condition("genre", Operator::GreaterThan, Value::Number(3))],
+    );
+    assert!(from_focus(&impossible, &title_of).is_err());
+}
+
+#[test]
+fn filters_that_say_nothing_are_left_out() {
+    let mut off = condition("genre", Operator::AnyOf, listed(&["Blues"]));
+    off.enabled = false;
+    let empty = Condition {
+        value: None,
+        ..condition("mood", Operator::AnyOf, listed(&[]))
+    };
+    let focus = focus_of(true, vec![off, empty]);
+    assert!(from_focus(&focus, &title_of).unwrap().rules.is_empty());
+}
+
+#[test]
+fn rules_open_as_the_focus_they_are_and_back() {
+    let rules = Group {
+        match_all: false,
+        rules: vec![
+            Entry::Leaf(text(Field::Genre, Operator::Is, "Blues")),
+            Entry::Group(Group::of(
+                true,
+                vec![number(Field::Year, Operator::LessThan, 1980)],
+            )),
+        ],
+    };
+    let focus = into_focus(&rules);
+    assert!(!focus.filters.match_all);
+    let leaves = focus.filters.leaves();
+    assert_eq!(leaves.len(), 2);
+    assert_eq!(
+        (leaves[0].field.as_str(), leaves[0].operator),
+        ("genre", Operator::Is)
+    );
+    assert!(leaves.iter().all(|condition| condition.enabled));
+    assert_eq!(from_focus(&focus, &title_of).unwrap(), rules);
 }
 
 #[test]

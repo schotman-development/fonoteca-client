@@ -9,8 +9,9 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use super::{
     Browser, SMART_PLAYLISTS, Shared, aside, count, duration_spoken, load_playlists, load_songs,
-    notify, offers, open, playlist_on_screen,
+    notify, offers, offers_version, open, playlist_on_screen,
 };
+use crate::rules::{Group, today};
 use crate::smart::draft::{Draft, Row};
 use crate::smart::{Now, Operator, Rule, SmartRules, select, tag_names, words};
 use crate::{AppWindow, SmartRuleRow, prefs};
@@ -18,6 +19,9 @@ use crate::{AppWindow, SmartRuleRow, prefs};
 /// How many of the songs the rules pick the editor lists.
 const PREVIEW_LINES: usize = 6;
 const SECONDS_PER_HOUR: u64 = 3600;
+/// The version of the smart playlists extension that has groups of rules.
+const GROUPS_VERSION: i64 = 2;
+const NO_GROUPS_ON_SERVER: &str = "Your server keeps flat rules only, and these have groups. You can still keep the songs they pick as a normal playlist.";
 
 /// What the editor holds: the draft, and the rows it shows.
 #[derive(Default)]
@@ -157,8 +161,29 @@ fn render(ui: &AppWindow, browser: &Shared) {
     let b = browser.borrow();
     let draft = &b.smart.draft;
     let rules = draft.rules();
-    ui.set_smart_can_save(rules.is_ok() && !draft.name.trim().is_empty());
-    ui.set_smart_problem(draft.problem().into());
+    let named = !draft.name.trim().is_empty();
+    let can_keep = rules.is_ok() && named;
+    let needs_groups = rules.as_ref().is_ok_and(|rules| rules.version() > 1);
+    let blocked = needs_groups && !offers_version(&b, SMART_PLAYLISTS, GROUPS_VERSION);
+    ui.set_smart_can_keep(can_keep);
+    ui.set_smart_can_save(can_keep && !blocked);
+    ui.set_smart_groups(groups_line(draft).into());
+    let problem = match blocked {
+        true => NO_GROUPS_ON_SERVER.to_owned(),
+        false => draft.problem(),
+    };
+    ui.set_smart_problem(problem.into());
+}
+
+/// What the groups of the rules are, for the rows that can't show them.
+fn groups_line(draft: &Draft) -> String {
+    match draft.groups.len() {
+        0 => String::new(),
+        groups => format!(
+            "{} of rules kept as they are.",
+            count(groups, "group", "groups")
+        ),
+    }
 }
 
 /// Works out the songs the rules pick from the library's songs, as far as
@@ -205,7 +230,7 @@ fn picked(b: &Browser) -> Option<Vec<&Child>> {
     let rules = b.smart.draft.readable_rules()?;
     let tags = tag_names(&b.tags);
     let now = Now {
-        today: crate::focus::today(prefs::now()),
+        today: today(prefs::now()),
         tags: &tags,
     };
     let seed = prefs::now() / SECONDS_PER_HOUR;
@@ -304,6 +329,15 @@ pub(super) fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || save(&weak.unwrap(), &browser)
     });
+    ui.on_smart_open_in_focus({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move || {
+            let rules = browser.borrow().smart.draft.rules();
+            if let Ok(rules) = rules {
+                super::focus::show_rules(&weak.unwrap(), &browser, &rules.root);
+            }
+        }
+    });
     ui.on_smart_save_as_playlist({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move || save_as_playlist(&weak.unwrap(), &browser)
@@ -357,6 +391,9 @@ fn save(ui: &AppWindow, browser: &Shared) {
     let (Some(client), Ok(rules)) = (client, draft.rules()) else {
         return;
     };
+    if rules.version() > 1 && !offers_version(&browser.borrow(), SMART_PLAYLISTS, GROUPS_VERSION) {
+        return ui.set_smart_problem(NO_GROUPS_ON_SERVER.into());
+    }
     let (name, json) = (draft.name.trim().to_owned(), rules.to_json());
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
@@ -417,8 +454,8 @@ fn save_as_playlist(ui: &AppWindow, browser: &Shared) {
 }
 
 /// Opens the editor with the rules a Focus is.
-pub(super) fn open_for_focus(ui: &AppWindow, browser: &Shared, match_all: bool, rules: &[Rule]) {
-    browser.borrow_mut().smart.draft = Draft::of_rules(match_all, rules);
+pub(super) fn open_for_focus(ui: &AppWindow, browser: &Shared, rules: Group<Rule>) {
+    browser.borrow_mut().smart.draft = Draft::of_rules(&rules);
     open(ui, browser, "smart:focus".into());
 }
 

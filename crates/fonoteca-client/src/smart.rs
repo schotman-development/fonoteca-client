@@ -1,10 +1,10 @@
 //! Smart playlists' rules: which songs a playlist wants, by what they are
 //! (their genre, when they were added, whether they were played), how the
 //! songs found are ordered and how many are kept. The JSON is the shape of
-//! Fonoteca's `fonotecaSmartPlaylists` extension, version 1, which the
-//! server keeps and which the editor's preview is checked against; a song
-//! that has no value for a field fails every rule on it but the negative
-//! ones.
+//! Fonoteca's `fonotecaSmartPlaylists` extension, which the server keeps and
+//! which the editor's preview is checked against: version 1 where the rules
+//! are conditions only, version 2 where they are in groups. A song that has
+//! no value for a field fails every rule on it but the negative ones.
 
 pub mod draft;
 pub mod from_focus;
@@ -18,12 +18,15 @@ use opensubsonic::{Child, Tag};
 use serde::{Deserialize, Serialize};
 
 use crate::browse::matching::fold_words as fold;
-use crate::focus::day_number;
+pub use crate::rules::{Entry, Group, Now, Operator, TagNames, Value};
+use crate::rules::{FieldValue, MOST_DEPTH, day_number, passes};
 
 /// What the server keeps when no limit is sent.
 pub const DEFAULT_LIMIT: u32 = 500;
 /// The most songs a smart playlist may keep.
 pub const MOST_LIMIT: u32 = 5000;
+/// The most rules in all that the second version of the wire format takes.
+pub const MOST_RULES: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,52 +114,28 @@ impl Field {
             (Kind::Flag, _) => &[Is],
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Operator {
-    Is,
-    IsNot,
-    Contains,
-    NotContains,
-    StartsWith,
-    GreaterThan,
-    LessThan,
-    Between,
-    InTheLast,
-    NotInTheLast,
-    Before,
-    After,
-    Never,
-}
+    /// The name the wire gives the field, which the Focus names it by too.
+    pub fn key(self) -> String {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(key)) => key,
+            _ => unreachable!("a field is a plain name"),
+        }
+    }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Unit {
-    Days,
-    Weeks,
-    Months,
-    Years,
-}
+    pub fn from_key(key: &str) -> Option<Field> {
+        Field::ALL.into_iter().find(|field| field.key() == key)
+    }
 
-/// A stretch of time back from today.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Span {
-    pub amount: u32,
-    pub unit: Unit,
-}
-
-/// What a rule compares with; which shape it has depends on the operator.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Value {
-    Flag(bool),
-    Number(i64),
-    Text(String),
-    /// The two ends, both included.
-    Range([i64; 2]),
-    Within(Span),
+    /// What a song has in the field.
+    pub fn value_of(self, song: &Child, now: &Now) -> FieldValue {
+        match self.kind() {
+            Kind::Text => FieldValue::Texts(texts_of(song, self, now)),
+            Kind::Number => FieldValue::Number(number_of(song, self)),
+            Kind::Date => FieldValue::Day(date_of(song, self)),
+            Kind::Flag => FieldValue::Flag(song.starred.is_some()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -236,28 +215,10 @@ impl Default for Sort {
     }
 }
 
-/// The wire says "all" or "any" where the model has a yes or no.
-mod match_all {
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-
-    pub fn serialize<S: Serializer>(all: &bool, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(if *all { "all" } else { "any" })
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-        match String::deserialize(deserializer)?.as_str() {
-            "all" => Ok(true),
-            "any" => Ok(false),
-            other => Err(D::Error::custom(format!("unknown match \"{other}\""))),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SmartRules {
-    #[serde(rename = "match", with = "match_all")]
-    pub match_all: bool,
-    pub rules: Vec<Rule>,
+    #[serde(flatten)]
+    pub root: Group<Rule>,
     #[serde(default)]
     pub sort: Sort,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -281,8 +242,17 @@ impl SmartRules {
         serde_json::to_string(self).expect("rules are plain data")
     }
 
+    /// The version of the extension these rules need: the first says
+    /// conditions, the second groups of them too.
+    pub fn version(&self) -> i64 {
+        match self.root.is_flat() {
+            true => 1,
+            false => 2,
+        }
+    }
+
     pub fn check(&self) -> Result<(), String> {
-        if self.rules.is_empty() {
+        if self.root.rules.is_empty() {
             return Err("Add at least one rule.".to_owned());
         }
         if self
@@ -291,16 +261,33 @@ impl SmartRules {
         {
             return Err(format!("The limit is from 1 to {MOST_LIMIT} songs."));
         }
-        (self.rules.iter().enumerate()).try_for_each(|(at, rule)| {
-            rule.check()
-                .map_err(|why| format!("Rule {}: {why}", at + 1))
-        })
+        if self.root.depth() > MOST_DEPTH {
+            return Err(format!("Groups go {MOST_DEPTH} deep at most."));
+        }
+        if self.root.leaf_count() > MOST_RULES {
+            return Err(format!("There are {MOST_RULES} rules at most."));
+        }
+        check_group(&self.root, &mut 0)
     }
 }
 
-/// The tags of the user, as the names a song under each has: the tag's own
-/// and those of the tags above it, folded.
-pub type TagNames = HashMap<String, Vec<String>>;
+/// Checks the rules of a group and of the groups in it; `seen` counts the
+/// rules met, as the server numbers them in its messages.
+fn check_group(group: &Group<Rule>, seen: &mut usize) -> Result<(), String> {
+    if group.rules.is_empty() {
+        return Err("A group has no rules.".to_owned());
+    }
+    for entry in &group.rules {
+        match entry {
+            Entry::Group(inner) => check_group(inner, seen)?,
+            Entry::Leaf(rule) => {
+                *seen += 1;
+                rule.check().map_err(|why| format!("Rule {seen}: {why}"))?;
+            }
+        }
+    }
+    Ok(())
+}
 
 /// The names each tag counts as, so that a song with "Cool" under "Jazz" is
 /// a song tagged "Jazz" too.
@@ -324,20 +311,11 @@ pub fn tag_names(tags: &[Tag]) -> TagNames {
         .collect()
 }
 
-/// What the rules are judged against besides the song: the day it is, as
-/// `focus::today` counts, and the tags' names.
-pub struct Now<'a> {
-    pub today: i64,
-    pub tags: &'a TagNames,
-}
-
 /// Whether the song is one the rules want, not looking at the limit.
 pub fn matches(song: &Child, rules: &SmartRules, now: &Now) -> bool {
-    let passes = |rule: &Rule| rule_passes(song, rule, now);
-    match rules.match_all {
-        true => rules.rules.iter().all(passes),
-        false => rules.rules.iter().any(passes),
-    }
+    rules
+        .root
+        .passes(&|_, rule| Some(rule_passes(song, rule, now)))
 }
 
 /// The songs the rules give: those it matches, in its order, the first
@@ -353,16 +331,15 @@ pub fn select<'a>(songs: &'a [Child], rules: &SmartRules, now: &Now, seed: u64) 
 }
 
 fn rule_passes(song: &Child, rule: &Rule, now: &Now) -> bool {
-    match rule.field.kind() {
-        Kind::Text => text_passes(&texts_of(song, rule.field, now), rule),
-        Kind::Number => number_passes(number_of(song, rule.field), rule),
-        Kind::Date => date_passes(date_of(song, rule.field), rule, now.today),
-        Kind::Flag => flag_passes(song.starred.is_some(), rule),
-    }
+    passes(
+        &rule.field.value_of(song, now),
+        rule.operator,
+        &rule.value,
+        now.today,
+    )
 }
 
-/// The folded values a song has in a text field; none for a song that has
-/// none.
+/// The values a song has in a text field, none for a song that has none.
 fn texts_of(song: &Child, field: Field, now: &Now) -> Vec<String> {
     let names = |people: &[opensubsonic::ArtistID3], shown: Option<&String>| -> Vec<String> {
         match people.is_empty() {
@@ -370,7 +347,7 @@ fn texts_of(song: &Child, field: Field, now: &Now) -> Vec<String> {
             false => people.iter().map(|person| person.name.clone()).collect(),
         }
     };
-    let values: Vec<String> = match field {
+    let mut values: Vec<String> = match field {
         Field::Title => vec![song.title.clone()],
         Field::Artist => names(
             &song.artists,
@@ -400,25 +377,8 @@ fn texts_of(song: &Child, field: Field, now: &Now) -> Vec<String> {
             .collect(),
         _ => song.suffix.iter().cloned().collect(),
     };
-    let mut folded: Vec<String> = values.iter().map(|value| fold(value)).collect();
-    folded.retain(|value| !value.is_empty());
-    folded
-}
-
-fn text_passes(values: &[String], rule: &Rule) -> bool {
-    let Some(Value::Text(wanted)) = &rule.value else {
-        return false;
-    };
-    let wanted = fold(wanted);
-    let any = |test: &dyn Fn(&str) -> bool| values.iter().any(|value| test(value));
-    match rule.operator {
-        Operator::Is => any(&|value| value == wanted),
-        Operator::IsNot => !any(&|value| value == wanted),
-        Operator::Contains => any(&|value| value.contains(&wanted)),
-        Operator::NotContains => !any(&|value| value.contains(&wanted)),
-        Operator::StartsWith => any(&|value| value.starts_with(&wanted)),
-        _ => false,
-    }
+    values.retain(|value| !value.trim().is_empty());
+    values
 }
 
 /// A song's number in a field; none where it has none. A song that has not
@@ -438,24 +398,6 @@ fn number_of(song: &Child, field: Field) -> Option<i64> {
     }
 }
 
-fn number_passes(have: Option<i64>, rule: &Rule) -> bool {
-    match (rule.operator, &rule.value) {
-        (Operator::IsNot, Some(Value::Number(not))) => have != Some(*not),
-        (operator, value) => {
-            let Some(have) = have else { return false };
-            match (operator, value) {
-                (Operator::Is, Some(Value::Number(is))) => have == *is,
-                (Operator::GreaterThan, Some(Value::Number(over))) => have > *over,
-                (Operator::LessThan, Some(Value::Number(under))) => have < *under,
-                (Operator::Between, Some(Value::Range([from, to]))) => {
-                    (*from..=*to).contains(&have)
-                }
-                _ => false,
-            }
-        }
-    }
-}
-
 /// The day a song was added or last played, as `day_number` counts.
 fn date_of(song: &Child, field: Field) -> Option<i64> {
     let date = match field {
@@ -463,79 +405,6 @@ fn date_of(song: &Child, field: Field) -> Option<i64> {
         _ => &song.played,
     };
     date.as_deref().and_then(day_number)
-}
-
-fn date_passes(day: Option<i64>, rule: &Rule, today: i64) -> bool {
-    match (rule.operator, &rule.value) {
-        (Operator::Never, _) => day.is_none(),
-        (Operator::NotInTheLast, Some(Value::Within(span))) => {
-            day.is_none_or(|day| day < first_day_of(*span, today))
-        }
-        (Operator::InTheLast, Some(Value::Within(span))) => {
-            day.is_some_and(|day| day >= first_day_of(*span, today))
-        }
-        (Operator::Before, Some(Value::Text(date))) => day
-            .zip(day_number(date))
-            .is_some_and(|(day, limit)| day < limit),
-        (Operator::After, Some(Value::Text(date))) => day
-            .zip(day_number(date))
-            .is_some_and(|(day, limit)| day > limit),
-        _ => false,
-    }
-}
-
-/// The first day of the stretch that ends today, a month or a year back
-/// ending on the same day of the month, or the month's last where it has no
-/// such day.
-fn first_day_of(span: Span, today: i64) -> i64 {
-    let amount = i64::from(span.amount);
-    let months = match span.unit {
-        Unit::Days => return today - amount,
-        Unit::Weeks => return today - 7 * amount,
-        Unit::Months => amount,
-        Unit::Years => 12 * amount,
-    };
-    let (year, month, day) = civil_date(today);
-    let back = year * 12 + (month - 1) - months;
-    let (year, month) = (back.div_euclid(12), back.rem_euclid(12) + 1);
-    let day = day.min(days_in_month(year, month));
-    day_number(&format!("{year:04}-{month:02}-{day:02}")).unwrap_or(today)
-}
-
-/// The year, month and day of a day number, the days from 1970-01-01.
-fn civil_date(day_number: i64) -> (i64, i64, i64) {
-    let days = day_number + 719_468;
-    let era = days.div_euclid(146_097);
-    let day_of_era = days - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
-
-fn days_in_month(year: i64, month: i64) -> i64 {
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    match month {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-fn flag_passes(starred: bool, rule: &Rule) -> bool {
-    match (rule.operator, &rule.value) {
-        (Operator::Is, Some(Value::Flag(wanted))) => starred == *wanted,
-        _ => false,
-    }
 }
 
 /// What songs are sorted by: a number or the words folded, so a song

@@ -5865,8 +5865,8 @@ export component ListeningStats inherits VerticalLayout {
     }
 }
 
-// A value of a Focus panel's facet: its name, how many items have it under
-// the other picks, whether it is picked, and how a screen reader says it.
+// A value of a Focus filter: its name, how many items have it under the
+// other filters, whether it is picked, and how a screen reader says it.
 export struct FocusValue {
     label: string,
     count: int,
@@ -5874,22 +5874,59 @@ export struct FocusValue {
     spoken: string,
 }
 
-// A facet of the Focus panel: its title and its place among the facets on
-// offer, its values (the most frequent and those picked, or all that match
-// the search in a list), how many more there are, whether it may be
-// switched to want all of the values picked, and whether it is.
-export struct FocusColumn {
+// A group of the Focus or one of its filters, as a row of the panel. `index`
+// is its place among the rows, which says which one a press is on. `kind` is
+// 0 for a group, 1 for a filter of values to pick, 2 for words typed, 3 for a
+// number or a date in one or two boxes, and 4 for a yes or no.
+export struct FocusRow {
+    index: int,
+    kind: int,
+    depth: int,
     title: string,
-    facet: int,
+    spoken: string,
+    enabled: bool,
+    operators: [string],
+    operator: int,
+    takes-value: bool,
+    two-boxes: bool,
+    first: string,
+    second: string,
+    hint-first: string,
+    hint-second: string,
+    invalid: bool,
+    // 0 for either, 1 for yes and 2 for no.
+    flag: int,
     values: [FocusValue],
     hidden: int,
-    link: bool,
-    all-of: bool,
+    // "212 of 3,418" and the range the library has.
+    note: string,
+    // Steps that set the filter in one press, such as "Top 25".
+    presets: [string],
+    match-all: bool,
+    can-nest: bool,
+    removable: bool,
+}
+
+// Rows that sit together: the filters of values side by side as columns, or
+// one other entry.
+export struct FocusBand {
+    strip: bool,
+    depth: int,
+    // The most lines a column of the strip lists: its values and View more.
+    lines: int,
+    rows: [FocusRow],
+}
+
+// A heading or a field of the "Add filter" menu; `index` is the field's.
+export struct FocusMenuEntry {
+    title: string,
+    header: bool,
+    index: int,
 }
 
 // What the Focus of the overview page on screen holds, which the browser
-// fills in. `list` is the one facet whose values are listed whole, with the
-// search in `query`; on a narrow window the sheet always lists one.
+// fills in. `list` is the filter whose values are listed whole, with the
+// search in `query`; on a narrow window a filter of values is always listed.
 export global FocusState {
     in property <bool> offered;
     in-out property <bool> open;
@@ -5897,39 +5934,59 @@ export global FocusState {
     in property <bool> heart;
     in property <bool> favourites;
     in property <bool> narrowing;
-    // Whether the picks can be saved as a smart playlist's rules.
+    // True when the page has no filter at all, only the root group.
+    in property <bool> no-filters;
+    // Whether the filters can be saved as a smart playlist's rules, and why
+    // not where they could be but can't.
     in property <bool> smart-offered;
-    // Whether a smart playlist could be made here but not of these picks.
-    in property <bool> smart-unavailable;
+    in property <string> smart-reason;
     // What the page lists, for the empty result: "albums".
     in property <string> noun;
-    in property <[FocusColumn]> columns;
-    in property <[string]> facets;
-    in property <[string]> facet-matches;
+    in property <[FocusBand]> bands;
     in property <[string]> chips;
-    in property <FocusColumn> list;
+    in property <[FocusMenuEntry]> menu;
+    in-out property <string> menu-query;
+    in property <[string]> saved;
+    in property <string> list-title;
+    in property <[FocusValue]> list;
     in-out property <string> query;
+    // The filter a narrow window's sheet has open, in the second step.
+    in property <bool> editing-open;
+    in property <FocusRow> editing;
     // Six columns need more than a window under 900px has: it gets a sheet.
     out property <bool> narrow: Screen.width < 900px;
 
     // The panel or the sheet was opened or closed.
     callback visibility-changed(open: bool, sheet: bool);
-    callback picked(facet: string, value: string);
-    callback link-toggled(facet: string);
-    callback facet-chosen(column: int, facet: string);
+    callback operator-picked(item: int, at: int);
+    callback text-edited(item: int, second: bool, text: string);
+    callback text-committed();
+    callback flag-picked(item: int, choice: int);
+    callback value-picked(item: int, value: string);
+    callback preset-picked(item: int, label: string);
+    callback enabled-toggled(item: int);
+    callback removed(item: int);
+    callback group-toggled(item: int);
+    callback group-added(item: int);
+    callback filter-added(item: int, at: int);
+    callback menu-searched(query: string);
     callback chip-dropped(index: int);
     callback favourites-toggled();
     callback cleared();
     callback smart-playlist-requested();
-    callback listed(facet: string);
-    in-out property <string> facet-query;
-    callback facets-searched();
+    callback saved-applied(index: int);
+    callback saved-removed(index: int);
+    callback saved-saved(name: string);
+    callback defaults-restored();
+    callback listed(item: int);
     callback list-searched();
     callback list-closed();
+    callback step-opened(item: int);
+    callback step-closed();
 }
 
 // A value as a button that is checked while picked: its name and its count.
-// One no item has under the other picks can't be picked.
+// One no item has under the other filters can't be picked.
 component FocusValueRow inherits Pressable {
     in property <FocusValue> value;
     label: root.value.spoken;
@@ -5968,70 +6025,274 @@ component FocusValueRow inherits Pressable {
     }
 }
 
-// The link that switches a facet between any of the values picked and all.
-component FocusLink inherits IconButton {
-    in property <string> facet;
-    in property <bool> all-of;
-    icon: Icons.link;
-    label: root.facet + ", " + (root.all-of ? "all of the picks" : "any of the picks");
-    accessible-checkable: true;
-    accessible-checked: root.all-of;
-    color: root.all-of ? Theme.accent : Theme.muted;
-    plate: root.all-of ? Theme.accent.transparentize(80%) : transparent;
-    clicked => { FocusState.link-toggled(root.facet); }
-}
-
-// What a column's facet is told apart from the others by: a button naming
-// it, which opens the facets to choose from with a search over them.
-component FocusFacetChoice inherits Pressable {
-    in property <string> title;
-    in property <int> index;
-    property <length> row-height: Screen.phone ? 48px : 32px;
-    label: "Facet of column " + (self.index + 1) + ", " + self.title;
-    accessible-role: combobox;
-    accessible-expandable: true;
-    accessible-expanded: popup.is-open;
+// A box for a value as typed, marked while it doesn't read. What is typed
+// counts when Return is pressed or the box is left.
+component FocusBox inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <string> label;
+    in property <bool> invalid;
+    callback edited(text: string);
     min-height: Screen.phone ? 56px : 32px;
-    clicked => {
-        popup.show();
-    }
+    max-height: self.min-height;
 
+    LineEdit {
+        placeholder-text: root.hint;
+        accessible-label: root.label;
+        text: root.text;
+        edited(text) => { root.edited(text); }
+        accepted => { FocusState.text-committed(); }
+        changed has-focus => {
+            if !self.has-focus {
+                FocusState.text-committed();
+            }
+        }
+    }
     Rectangle {
         border-radius: Theme.radius;
-        border-width: 1px;
-        border-color: popup.is-open ? Theme.accent : Theme.text.transparentize(75%);
-        background: root.hovered ? Theme.hover : transparent;
+        border-width: root.invalid ? 2px : 0px;
+        border-color: Theme.danger;
     }
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
+}
+
+// How a filter of words, a number, a date or a yes or no is set: its boxes or
+// its choices, the steps that set it in one press, and what it leaves.
+component FocusValueEditor inherits VerticalLayout {
+    in property <FocusRow> item;
+    spacing: 4px;
+
+    if root.item.kind == 2 || root.item.kind == 3: HorizontalLayout {
         spacing: 8px;
+        if root.item.takes-value: FocusBox {
+            horizontal-stretch: 1;
+            label: root.item.title + (root.item.two-boxes ? ", from" : "");
+            text: root.item.first;
+            hint: root.item.hint-first;
+            invalid: root.item.invalid;
+            edited(text) => { FocusState.text-edited(root.item.index, false, text); }
+        }
+        if root.item.two-boxes: FocusBox {
+            horizontal-stretch: 1;
+            label: root.item.title + ", to";
+            text: root.item.second;
+            hint: root.item.hint-second;
+            invalid: root.item.invalid;
+            edited(text) => { FocusState.text-edited(root.item.index, true, text); }
+        }
+    }
+    if root.item.kind == 4: HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        for choice[i] in ["Either", "Yes", "No"]: PeriodChip {
+            text: choice;
+            current: i == root.item.flag;
+            clicked => { FocusState.flag-picked(root.item.index, i); }
+        }
+    }
+    if root.item.presets.length > 0: Flickable {
+        height: presets.preferred-height;
+        content-width: presets.preferred-width;
+        presets := HorizontalLayout {
+            spacing: 8px;
+            for preset in root.item.presets: PeriodChip {
+                text: preset;
+                clicked => { FocusState.preset-picked(root.item.index, preset); }
+            }
+        }
+    }
+    if root.item.note != "": Text {
+        text: root.item.note;
+        font-size: Theme.small;
+        color: Theme.muted;
+        wrap: word-wrap;
+    }
+}
+
+// The choice of how a filter compares, such as "any of" or "between".
+component FocusOperator inherits Choice {
+    in property <FocusRow> item;
+    label: root.item.title + ", how to compare";
+    model: root.item.operators;
+    current-index: root.item.operator;
+    selected => { FocusState.operator-picked(root.item.index, self.current-index); }
+}
+
+// The switch that has a filter count or not, and the button that takes it
+// away.
+component FocusRowSwitch inherits CheckBox {
+    in property <FocusRow> item;
+    label: (root.item.enabled ? "Turn off " : "Turn on ") + root.item.title;
+    checked: root.item.enabled;
+    toggled => { FocusState.enabled-toggled(root.item.index); }
+}
+
+component FocusRemove inherits IconButton {
+    in property <FocusRow> item;
+    icon: Icons.trash;
+    label: "Remove " + root.item.title;
+    clicked => { FocusState.removed(root.item.index); }
+}
+
+// A filter of a wide window's panel that is not a list of values: its
+// name, how it compares, its value, and the buttons to switch it off or
+// take it away.
+component FocusFilterRow inherits VerticalLayout {
+    in property <FocusRow> item;
+    spacing: 2px;
+    opacity: root.item.enabled ? 1 : 0.55;
+
+    HorizontalLayout {
+        spacing: 12px;
+        // The switch, title, operator and remove button stay level with the
+        // first line of the editor, which can be several lines tall.
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: start;
+            FocusRowSwitch {
+                min-height: 32px;
+                item: root.item;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 0;
+            width: 140px;
+            alignment: start;
+            Text {
+                min-height: 32px;
+                text: root.item.title;
+                font-size: Theme.body;
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 0;
+            width: 160px;
+            alignment: start;
+            FocusOperator {
+                min-height: 32px;
+                item: root.item;
+            }
+        }
+        FocusValueEditor {
+            horizontal-stretch: 1;
+            item: root.item;
+        }
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: start;
+            FocusRemove {
+                min-height: 32px;
+                item: root.item;
+            }
+        }
+    }
+}
+
+// A filter of values as a column: its name, how it compares, its most
+// frequent values and those picked, which scroll, and View more.
+component FocusColumnView inherits VerticalLayout {
+    in property <FocusRow> item;
+    property <length> row-height: Screen.phone ? Theme.phone-target : 28px;
+    spacing: 2px;
+    opacity: root.item.enabled ? 1 : 0.55;
+
+    HorizontalLayout {
+        vertical-stretch: 0;
+        spacing: 4px;
+        FocusRowSwitch {
+            horizontal-stretch: 0;
+            item: root.item;
+        }
         Text {
-            accessible-role: none;
-            text: root.title;
+            text: root.item.title;
             font-size: Theme.body;
             font-weight: 600;
             color: Theme.text;
             vertical-alignment: center;
             overflow: elide;
         }
-        Path {
+        FocusRemove {
+            horizontal-stretch: 0;
             cross-axis-self-alignment: center;
-            width: 14px;
-            height: 14px;
-            viewbox-width: 24;
-            viewbox-height: 24;
-            commands: "M5 9 L12 16 L19 9";
-            stroke: Theme.muted;
-            stroke-width: 2.5px;
+            item: root.item;
         }
     }
+    FocusOperator {
+        vertical-stretch: 0;
+        item: root.item;
+    }
+    Flickable {
+        content-height: root.item.values.length * root.row-height;
+        VerticalLayout {
+            alignment: start;
+            for value in root.item.values: FocusValueRow {
+                value: value;
+                clicked => { FocusState.value-picked(root.item.index, value.label); }
+            }
+        }
+    }
+    if root.item.hidden > 0: Link {
+        vertical-stretch: 0;
+        text: "View more";
+        label: "View more " + root.item.title.to-lowercase();
+        color: Theme.accent;
+        min-height: root.row-height;
+        clicked => { FocusState.listed(root.item.index); }
+    }
+}
 
+// The values of the filter in `FocusState.list`, which the search over them
+// narrows, without touching the page's results.
+component FocusList inherits VerticalLayout {
+    in property <int> filter;
+    spacing: 8px;
+    LineEdit {
+        vertical-stretch: 0;
+        placeholder-text: "Search " + FocusState.list-title.to-lowercase();
+        accessible-label: self.placeholder-text;
+        text <=> FocusState.query;
+        edited => { FocusState.list-searched(); }
+    }
+    if FocusState.list.length == 0: Text {
+        vertical-stretch: 0;
+        text: "No match";
+        font-size: Theme.body;
+        color: Theme.muted;
+    }
+    ListView {
+        for value in FocusState.list: FocusValueRow {
+            value: value;
+            clicked => { FocusState.value-picked(root.filter, value.label); }
+        }
+    }
+}
+
+// The "Add filter" button and the menu under it: the page's fields under
+// their headings, with a search over them. The filter goes into the group in
+// row `group`.
+component FocusAddMenu inherits Rectangle {
+    in property <int> group;
+    property <length> row-height: Screen.phone ? 48px : 32px;
+    height: Screen.phone ? Theme.phone-target : 32px;
+    min-width: 130px;
+
+    GhostButton {
+        icon: Icons.plus;
+        text: "Add filter";
+        label: root.group == 0 ? "Add filter" : "Add filter to this group";
+        accessible-expandable: true;
+        accessible-expanded: popup.is-open;
+        enabled: !Input.modal;
+        clicked => { popup.show(); }
+    }
     popup := PopupWindow {
         x: 0;
         y: root.height + 2px;
-        width: max(root.width, 200px);
-        height: min(2 * 4px + 44px + FocusState.facet-matches.length * root.row-height, 360px);
+        width: max(root.width, 260px);
+        height: min(2 * 4px + 44px + FocusState.menu.length * root.row-height, 400px);
         close-policy: close-on-click-outside;
 
         Rectangle {
@@ -6047,23 +6308,33 @@ component FocusFacetChoice inherits Pressable {
                 spacing: 4px;
                 LineEdit {
                     vertical-stretch: 0;
-                    placeholder-text: "Search facets";
+                    placeholder-text: "Search fields";
                     accessible-label: self.placeholder-text;
-                    text <=> FocusState.facet-query;
-                    edited => { FocusState.facets-searched(); }
+                    text <=> FocusState.menu-query;
+                    edited(text) => { FocusState.menu-searched(text); }
                 }
                 Flickable {
-                    content-height: FocusState.facet-matches.length * root.row-height;
+                    content-height: FocusState.menu.length * root.row-height;
                     VerticalLayout {
                         alignment: start;
-                        for entry in FocusState.facet-matches: ChoiceRow {
+                        for entry in FocusState.menu: Rectangle {
                             height: root.row-height;
-                            text: entry;
-                            chosen: entry == root.title;
-                            clicked => {
-                                popup.close();
-                                FocusState.facet-query = "";
-                                FocusState.facet-chosen(root.index, entry);
+                            if entry.header: Text {
+                                x: 10px;
+                                text: entry.title;
+                                font-size: Theme.small;
+                                font-weight: 600;
+                                color: Theme.muted;
+                                vertical-alignment: center;
+                            }
+                            if !entry.header: ChoiceRow {
+                                text: entry.title;
+                                // The field is read before the menu closes, which takes
+                                // its rows, and `entry` with them.
+                                clicked => {
+                                    FocusState.filter-added(root.group, entry.index);
+                                    popup.close();
+                                }
                             }
                         }
                     }
@@ -6073,142 +6344,253 @@ component FocusFacetChoice inherits Pressable {
     }
 }
 
-// A column: its facet's name, which changes the facet the column shows, its
-// most frequent values, which scroll when more are picked, and View more.
-component FocusColumnView inherits VerticalLayout {
-    in property <FocusColumn> column;
-    in property <int> index;
-    property <length> row-height: Screen.phone ? Theme.phone-target : 28px;
-    spacing: 2px;
+// The filters saved by name: a box to name the ones in place, the saved ones
+// to bring back or let go, and the page's own first choice.
+component FocusSavedMenu inherits Rectangle {
+    property <length> row-height: Screen.phone ? 48px : 32px;
+    property <length> list-height: min((FocusState.saved.length + 1) * root.row-height, 5.5 * root.row-height);
+    height: Screen.phone ? Theme.phone-target : 32px;
+    min-width: 160px;
 
-    HorizontalLayout {
-        vertical-stretch: 0;
-        spacing: 4px;
-        FocusFacetChoice {
-            title: root.column.title;
-            index: root.index;
-        }
-        if root.column.link: FocusLink {
-            horizontal-stretch: 0;
-            cross-axis-self-alignment: center;
-            facet: root.column.title;
-            all-of: root.column.all-of;
-        }
+    GhostButton {
+        icon: Icons.folder;
+        text: "Saved filters";
+        accessible-expandable: true;
+        accessible-expanded: popup.is-open;
+        enabled: !Input.modal;
+        clicked => { popup.show(); }
     }
-    Flickable {
-        content-height: root.column.values.length * root.row-height;
-        VerticalLayout {
-            alignment: start;
-            for value in root.column.values: FocusValueRow {
-                value: value;
-                clicked => { FocusState.picked(root.column.title, value.label); }
+    popup := PopupWindow {
+        x: 0;
+        // On a phone the button is at the sheet's foot, so the popup opens
+        // upwards, and a long list scrolls instead of running past the window.
+        y: Screen.phone ? -self.height - 2px : root.height + 2px;
+        width: max(root.width, 280px);
+        height: 2 * 4px + 44px + root.list-height + 4px;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            background: Palette.background;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.hover;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+            drop-shadow-color: #0000004d;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 4px;
+                HorizontalLayout {
+                    vertical-stretch: 0;
+                    spacing: 4px;
+                    naming := LineEdit {
+                        placeholder-text: "Name these filters";
+                        accessible-label: self.placeholder-text;
+                        accepted => {
+                            FocusState.saved-saved(self.text);
+                            popup.close();
+                        }
+                    }
+                    Button {
+                        horizontal-stretch: 0;
+                        text: "Save";
+                        enabled: naming.text != "";
+                        clicked => {
+                            FocusState.saved-saved(naming.text);
+                            popup.close();
+                        }
+                    }
+                }
+                Flickable {
+                    content-height: saved-list.preferred-height;
+                    saved-list := VerticalLayout {
+                        alignment: start;
+                        for name[i] in FocusState.saved: HorizontalLayout {
+                            vertical-stretch: 0;
+                            ChoiceRow {
+                                height: root.row-height;
+                                text: name;
+                                clicked => {
+                                    FocusState.saved-applied(i);
+                                    popup.close();
+                                }
+                            }
+                            IconButton {
+                                horizontal-stretch: 0;
+                                icon: Icons.trash;
+                                label: "Forget " + name;
+                                clicked => { FocusState.saved-removed(i); }
+                            }
+                        }
+                        ChoiceRow {
+                            vertical-stretch: 0;
+                            height: root.row-height;
+                            text: "Default filters";
+                            clicked => {
+                                popup.close();
+                                FocusState.defaults-restored();
+                            }
+                        }
+                    }
+                }
             }
         }
     }
-    if root.column.hidden > 0: Link {
-        vertical-stretch: 0;
-        text: "View more";
-        label: "View more " + root.column.title.to-lowercase();
-        color: Theme.accent;
-        min-height: root.row-height;
-        clicked => { FocusState.listed(root.column.title); }
-    }
 }
 
-// The values of the facet in `FocusState.list`, which the search over them
-// narrows, without touching the page's results.
-component FocusList inherits VerticalLayout {
+// A group: whether its filters all count or any one does, with the buttons
+// to add a filter or a group to it, and to take it away.
+component FocusGroupActions inherits HorizontalLayout {
+    in property <FocusRow> item;
     spacing: 8px;
-    LineEdit {
-        vertical-stretch: 0;
-        placeholder-text: "Search " + FocusState.list.title.to-lowercase();
-        accessible-label: self.placeholder-text;
-        text <=> FocusState.query;
-        edited => { FocusState.list-searched(); }
+
+    FocusAddMenu {
+        horizontal-stretch: 0;
+        group: root.item.index;
     }
-    if FocusState.list.values.length == 0: Text {
-        vertical-stretch: 0;
-        text: "No match";
-        font-size: Theme.body;
-        color: Theme.muted;
+    if root.item.can-nest: GhostButton {
+        horizontal-stretch: 0;
+        icon: Icons.plus;
+        text: "Add group";
+        enabled: !Input.modal;
+        clicked => { FocusState.group-added(root.item.index); }
     }
-    ListView {
-        for value in FocusState.list.values: FocusValueRow {
-            value: value;
-            clicked => { FocusState.picked(FocusState.list.title, value.label); }
-        }
+    if root.item.removable: IconButton {
+        horizontal-stretch: 0;
+        cross-axis-self-alignment: center;
+        icon: Icons.trash;
+        label: "Remove this group";
+        clicked => { FocusState.removed(root.item.index); }
     }
 }
 
-// The Focus panel of a wide window: a column for each facet chosen, which
-// slide sideways with arrows where they don't all fit, or the whole list of
-// one facet's values with a search.
+// A group: whether its filters all count or any one does, with the buttons
+// to add a filter or a group to it, and to take it away. On a phone the
+// buttons take a line of their own, which is the width they need. Whoever
+// places it indents it by its depth.
+component FocusGroupRow inherits VerticalLayout {
+    in property <FocusRow> item;
+    spacing: 4px;
+
+    HorizontalLayout {
+        spacing: 8px;
+
+        Text {
+            horizontal-stretch: 0;
+            text: "Match";
+            font-size: Theme.body;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+        PeriodChip {
+            horizontal-stretch: 0;
+            text: root.item.match-all ? "all" : "any";
+            label: root.item.spoken + ", press to change";
+            current: true;
+            clicked => { FocusState.group-toggled(root.item.index); }
+        }
+        Text {
+            horizontal-stretch: 0;
+            text: "of these";
+            font-size: Theme.body;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+        if root.item.invalid: Text {
+            horizontal-stretch: 0;
+            text: "Add a filter, or nothing matches";
+            font-size: Theme.body;
+            color: Theme.danger;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle { }
+        if !Screen.phone: FocusGroupActions { item: root.item; }
+    }
+    if Screen.phone: HorizontalLayout {
+        alignment: start;
+        FocusGroupActions { item: root.item; }
+    }
+}
+
+// The Focus panel of a wide window: its filters, the values of those that
+// list some side by side as columns, or the whole list of one filter's
+// values with a search.
 export component FocusPanel inherits Rectangle {
     property <length> column-width: 200px;
-    property <length> gap: 16px;
-    property <length> columns-width: FocusState.columns.length * (root.column-width + root.gap);
-    property <bool> overflowing: root.columns-width > root.width - 2 * 12px;
-    height: 292px;
+    property <length> column-height: 292px;
+    property <length> inset: 12px;
+    height: FocusState.list-title != "" ? root.column-height : body.preferred-height + 2 * root.inset;
     background: Theme.surface;
     border-radius: Theme.radius;
     accessible-role: groupbox;
     accessible-label: "Focus";
 
-    if FocusState.list.title == "": HorizontalLayout {
-        padding: 12px;
-        spacing: 4px;
-        if root.overflowing: IconButton {
-            label: "Earlier facets";
-            icon: Icons.back;
-            enabled: scroll.content-x < 0;
-            clicked => { scroll.content-x = min(0px, scroll.content-x + root.column-width + root.gap); }
-        }
-        scroll := Flickable {
-            content-width: root.columns-width;
-            HorizontalLayout {
-                spacing: root.gap;
-                for column[i] in FocusState.columns: FocusColumnView {
-                    width: root.column-width;
-                    column: column;
-                    index: i;
+    Flickable {
+        visible: FocusState.list-title == "";
+        x: root.inset;
+        y: root.inset;
+        width: parent.width - 2 * root.inset;
+        height: parent.height - 2 * root.inset;
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            spacing: 12px;
+            for band in FocusState.bands: VerticalLayout {
+                padding-left: band.depth * 20px;
+                if band.strip: Flickable {
+                    // A column is its name, how it compares and its lines, so a
+                    // strip of short lists does not leave a gap under them.
+                    height: min(root.column-height, 2 * 32px + 6px + band.lines * 28px);
+                    content-width: columns.preferred-width;
+                    columns := HorizontalLayout {
+                        spacing: 16px;
+                        for entry in band.rows: FocusColumnView {
+                            width: root.column-width;
+                            item: entry;
+                        }
+                    }
+                }
+                if !band.strip: VerticalLayout {
+                    spacing: 8px;
+                    for entry in band.rows: Rectangle {
+                        height: row-view.preferred-height;
+                        row-view := VerticalLayout {
+                            if entry.kind == 0: FocusGroupRow { item: entry; }
+                            if entry.kind != 0: FocusFilterRow { item: entry; }
+                        }
+                    }
                 }
             }
-        }
-        if root.overflowing: IconButton {
-            label: "Later facets";
-            icon: Icons.forward;
-            enabled: scroll.content-x > scroll.width - scroll.content-width;
-            clicked => { scroll.content-x = max(scroll.width - scroll.content-width, scroll.content-x - root.column-width - root.gap); }
+            if FocusState.no-filters: Text {
+                text: "No filters. Add one to narrow the " + FocusState.noun + ".";
+                font-size: Theme.body;
+                color: Theme.muted;
+            }
         }
     }
-    if FocusState.list.title != "": VerticalLayout {
-        padding: 12px;
+    if FocusState.list-title != "": VerticalLayout {
+        padding: root.inset;
         spacing: 8px;
         HorizontalLayout {
             spacing: 8px;
             IconButton {
-                label: "Back to the facets";
+                label: "Back to the filters";
                 icon: Icons.back;
                 clicked => { FocusState.list-closed(); }
             }
             Text {
-                text: FocusState.list.title;
+                text: FocusState.list-title;
                 font-size: Theme.heading;
                 font-weight: 600;
                 color: Theme.text;
                 vertical-alignment: center;
             }
-            Rectangle { }
-            if FocusState.list.link: FocusLink {
-                facet: FocusState.list.title;
-                all-of: FocusState.list.all-of;
-            }
         }
-        FocusList { }
+        FocusList { filter: FocusState.editing-open ? FocusState.editing.index : 0; }
     }
 }
 
-// A pick shown while the panel is closed, which a press lets go.
+// A filter on show while the panel is closed, which a press lets go.
 component FocusChip inherits Pressable {
     in property <string> text;
     label: "Remove " + self.text;
@@ -6246,7 +6628,8 @@ component FocusChip inherits Pressable {
 
 // The row under an overview page's heading: Focus, which opens the panel
 // or, on a narrow window, the sheet; the heart that narrows to the
-// favourites; the picks as chips while the panel is closed; and Clear.
+// favourites; the filters as chips while the panel is closed; and what to do
+// with them all.
 component FocusBar inherits FlexboxLayout {
     in property <bool> panel-open;
     in property <[string]> chips;
@@ -6286,13 +6669,14 @@ component FocusBar inherits FlexboxLayout {
         clicked => { FocusState.chip-dropped(i); }
     }
     if FocusState.narrowing: Link {
-        text: "Clear";
-        label: "Clear the focus";
+        text: "Clear all";
+        label: "Clear all filters";
         color: Theme.accent;
         min-height: Screen.phone ? Theme.phone-target : 28px;
         enabled: !Input.modal;
         clicked => { FocusState.cleared(); }
     }
+    if !FocusState.narrow: FocusSavedMenu { }
     if FocusState.smart-offered: Link {
         text: "Save as smart playlist";
         color: Theme.accent;
@@ -6300,8 +6684,8 @@ component FocusBar inherits FlexboxLayout {
         enabled: !Input.modal;
         clicked => { FocusState.smart-playlist-requested(); }
     }
-    if FocusState.smart-unavailable && FocusState.narrowing: Text {
-        text: "These picks can't be saved as a smart playlist";
+    if FocusState.smart-reason != "": Text {
+        text: FocusState.smart-reason;
         color: Theme.muted;
         font-size: Theme.small;
         vertical-alignment: center;
@@ -6319,12 +6703,111 @@ export component FocusSection inherits VerticalLayout {
     if FocusState.offered && FocusState.open && !FocusState.narrow: FocusPanel { }
 }
 
-// The Focus on a narrow window, as a sheet from the bottom: the facets to
-// choose from in a row, then the values of the one chosen with its search.
+// The first step of the sheet: a row for each filter, which says it in words
+// and opens the filter, then the buttons to add one.
+component FocusSheetFilters inherits VerticalLayout {
+    spacing: 8px;
+    for band in FocusState.bands: VerticalLayout {
+        spacing: 8px;
+        for entry in band.rows: VerticalLayout {
+            if entry.kind == 0: FocusGroupRow {
+                padding-left: entry.depth * 20px;
+                item: entry;
+            }
+            if entry.kind != 0: step := Pressable {
+                label: entry.spoken;
+                height: Theme.phone-target;
+                opacity: entry.enabled ? 1 : 0.55;
+                clicked => { FocusState.step-opened(entry.index); }
+                Rectangle {
+                    border-radius: Theme.radius;
+                    background: step.hovered ? Theme.hover : Theme.surface;
+                }
+                HorizontalLayout {
+                    padding-left: 12px + entry.depth * 20px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    Text {
+                        accessible-role: none;
+                        text: entry.spoken;
+                        font-size: Theme.body;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Path {
+                        horizontal-stretch: 0;
+                        cross-axis-self-alignment: center;
+                        width: 14px;
+                        height: 14px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: "M9 5 L16 12 L9 19";
+                        stroke: Theme.muted;
+                        stroke-width: 2.5px;
+                    }
+                }
+            }
+        }
+    }
+    if FocusState.no-filters: Text {
+        text: "No filters. Add one to narrow the " + FocusState.noun + ".";
+        font-size: Theme.body;
+        color: Theme.muted;
+    }
+    HorizontalLayout {
+        alignment: start;
+        FocusSavedMenu {
+            horizontal-stretch: 0;
+        }
+    }
+}
+
+// The second step of the sheet: one filter, with the way it compares and its
+// value, or for a filter of values the list of them with the search.
+component FocusSheetFilter inherits VerticalLayout {
+    spacing: 12px;
+    HorizontalLayout {
+        spacing: 8px;
+        IconButton {
+            label: "Back to the filters";
+            icon: Icons.back;
+            clicked => { FocusState.step-closed(); }
+        }
+        Text {
+            text: FocusState.editing.title;
+            font-size: Theme.heading;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        Rectangle { }
+        FocusRowSwitch {
+            horizontal-stretch: 0;
+            item: FocusState.editing;
+        }
+        FocusRemove {
+            horizontal-stretch: 0;
+            item: FocusState.editing;
+        }
+    }
+    FocusOperator {
+        vertical-stretch: 0;
+        item: FocusState.editing;
+    }
+    if FocusState.editing.kind == 1: FocusList { filter: FocusState.editing.index; }
+    if FocusState.editing.kind != 1: FocusValueEditor {
+        item: FocusState.editing;
+    }
+    if FocusState.editing.kind != 1: Rectangle { }
+}
+
+// The Focus on a narrow window, as a sheet from the bottom: the list of
+// filters, then one filter at a time.
 export component FocusSheet inherits Rectangle {
     function close() {
         FocusState.sheet = false;
-        FocusState.list-closed();
+        FocusState.step-closed();
         FocusState.visibility-changed(false, true);
     }
 
@@ -6356,17 +6839,9 @@ export component FocusSheet inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Rectangle { }
-                if FocusState.smart-offered: Link {
-                    text: "Save as smart playlist";
-                    color: Theme.accent;
-                    clicked => {
-                        root.close();
-                        FocusState.smart-playlist-requested();
-                    }
-                }
                 if FocusState.narrowing: Link {
-                    text: "Clear";
-                    label: "Clear the focus";
+                    text: "Clear all";
+                    label: "Clear all filters";
                     color: Theme.accent;
                     clicked => { FocusState.cleared(); }
                 }
@@ -6376,24 +6851,28 @@ export component FocusSheet inherits Rectangle {
                     clicked => { root.close(); }
                 }
             }
-            Flickable {
-                height: facets.preferred-height;
-                content-width: facets.preferred-width;
-                facets := HorizontalLayout {
-                    spacing: 8px;
-                    for facet in FocusState.facets: PeriodChip {
-                        text: facet;
-                        current: facet == FocusState.list.title;
-                        clicked => { FocusState.listed(facet); }
-                    }
+            if FocusState.smart-offered: Link {
+                vertical-stretch: 0;
+                text: "Save as smart playlist";
+                color: Theme.accent;
+                min-height: Theme.phone-target;
+                clicked => {
+                    root.close();
+                    FocusState.smart-playlist-requested();
                 }
             }
-            if FocusState.list.link: CheckBox {
-                text: "All of the picks, not any";
-                checked: FocusState.list.all-of;
-                toggled => { FocusState.link-toggled(FocusState.list.title); }
+            if FocusState.smart-reason != "": Text {
+                vertical-stretch: 0;
+                text: FocusState.smart-reason;
+                color: Theme.muted;
+                font-size: Theme.small;
+                wrap: word-wrap;
             }
-            FocusList { }
+            if !FocusState.editing-open: Flickable {
+                content-height: steps.preferred-height;
+                steps := FocusSheetFilters { }
+            }
+            if FocusState.editing-open: FocusSheetFilter { }
         }
     }
 }

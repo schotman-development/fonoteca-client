@@ -50,6 +50,7 @@ mod quality;
 mod queue;
 mod queue_drag;
 mod radio;
+mod rules;
 #[cfg(not(target_family = "wasm"))]
 mod scrobble;
 mod smart;
@@ -2953,6 +2954,75 @@ mod tests {
             wait_for("all albums", || ui.get_tiles().row_count() == 100).await;
             assert_eq!(links(&ui)[0], "album:a1");
             assert_eq!(LISTS.load(Relaxed), lists);
+
+            // The Add filter menu puts the field picked in the group it was
+            // opened in, at the root and inside a group of its own.
+            let focus = ui.global::<FocusState>();
+            // Only what is in the window can be pressed, and the panel is tall.
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 2400.0));
+            click(&ui, "Focus");
+            let rows = || -> Vec<(i32, i32, String)> {
+                let mut found = Vec::new();
+                for band in focus.get_bands().iter() {
+                    for row in band.rows.iter() {
+                        found.push((row.depth, row.kind, row.title.to_string()));
+                    }
+                }
+                found
+            };
+            let pick = |menu: &str, field: &'static str| {
+                click(&ui, menu);
+                ui.root_element()
+                    .query_descendants()
+                    .match_predicate(move |row| row.accessible_label().is_some_and(|l| l == field))
+                    .find_first()
+                    .unwrap_or_else(|| panic!("{field} is not in the menu"))
+                    .invoke_accessible_default_action();
+            };
+            let before = rows();
+            pick("Add filter", "Compilation");
+            let root_added = rows();
+            assert_eq!(root_added.len(), before.len() + 1);
+            assert_eq!(root_added[..before.len()], before);
+            let compilation = root_added.last().unwrap().clone();
+            assert_eq!((compilation.1, compilation.2.as_str()), (4, "Compilation"));
+            click(&ui, "Add group");
+            // The group's own button is drawn once the panel has been.
+            idle(Duration::from_millis(50)).await;
+            pick("Add filter to this group", "Version");
+            let nested = rows();
+            assert_eq!(nested.len(), root_added.len() + 2);
+            assert_eq!(nested[..root_added.len()], root_added);
+            let (group, version) = (&nested[nested.len() - 2], &nested[nested.len() - 1]);
+            assert_eq!(group.1, 0, "the group comes before what it holds");
+            assert_eq!((version.1, version.2.as_str()), (2, "Version"));
+            assert!(version.0 > compilation.0, "Version is in the group, not at the root");
+
+            // A saved set is the one picked in the Saved filters menu, not the
+            // first nor the last: the menu closes with its rows, and a pick
+            // read after that is the first one.
+            focus.invoke_saved_saved("First".into());
+            pick("Add filter", "Explicit");
+            focus.invoke_saved_saved("Second".into());
+            let second = rows();
+            pick("Add filter", "Title");
+            focus.invoke_saved_saved("Third".into());
+            let third = rows();
+            focus.invoke_defaults_restored();
+            assert_ne!(rows(), second);
+            pick("Saved filters", "Second");
+            assert_eq!(rows(), second);
+            assert_ne!(rows(), third);
+            focus.invoke_defaults_restored();
+
+            // The closed bar lists the saved sets too.
+            click(&ui, "Focus");
+            assert!(!focus.get_open());
+            focus.invoke_saved_saved("Closed".into());
+            assert!(focus.get_saved().iter().any(|name| name == "Closed"));
+            pick("Saved filters", "Closed");
+            focus.invoke_defaults_restored();
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
 
             // Once a tile is selected, a click selects another, or lets a
             // selected one go, instead of opening it.

@@ -11,6 +11,8 @@ use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
 
+use crate::focus::Focus;
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -43,6 +45,8 @@ pub struct Prefs {
     pub playlist_descending: bool,
     /// Each overview page's Focus, by the page's name.
     pub focus: BTreeMap<String, FocusPage>,
+    /// The filter sets saved by name, for each overview page by its name.
+    pub saved_filters: BTreeMap<String, Vec<SavedFilter>>,
     /// The languages whose stations the radio page's genres show first, as
     /// the radio directory names them, in the order picked.
     pub radio_languages: Vec<String>,
@@ -97,13 +101,20 @@ pub struct Prefs {
     pub look_up_lyrics: bool,
 }
 
-/// Whether an overview page's Focus panel is open, and the titles of the
-/// facets its columns show, none for the first choice.
+/// Whether an overview page's Focus panel is open, and the set of filters it
+/// has, none for the page's first choice. The filters' values aren't kept.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FocusPage {
     pub open: bool,
-    pub columns: Vec<String>,
+    pub filters: Option<Focus>,
+}
+
+/// A set of filters the user saved under a name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedFilter {
+    pub name: String,
+    pub filters: Focus,
 }
 
 /// A streaming format's entry in the settings, and its bitrate's; the first
@@ -517,5 +528,46 @@ mod tests {
             (chosen.color_scheme, chosen.accent, chosen.simple_seek_bar),
             (2, 3, true)
         );
+    }
+
+    #[test]
+    fn a_pages_filters_and_the_saved_sets_survive_a_round_trip() {
+        let genres = crate::focus::Condition {
+            field: "genre".into(),
+            operator: crate::rules::Operator::AnyOf,
+            value: Some(crate::rules::Value::List(vec!["Blues".into()])),
+            enabled: true,
+            typed: None,
+        };
+        let none_of = crate::focus::Condition {
+            operator: crate::rules::Operator::NoneOf,
+            ..genres.clone()
+        };
+        let all_of = crate::focus::Condition {
+            operator: crate::rules::Operator::AllOf,
+            ..genres.clone()
+        };
+        let mut filters = Focus {
+            filters: crate::rules::Group::of(true, vec![genres, all_of]),
+        };
+        filters.add_group(&[], false);
+        filters.add(&[2], none_of);
+        let page = FocusPage {
+            open: true,
+            filters: Some(filters.clone()),
+        };
+        let saved = Prefs {
+            focus: BTreeMap::from([("albums".to_owned(), page)]),
+            saved_filters: BTreeMap::from([(
+                "albums".to_owned(),
+                vec![SavedFilter {
+                    name: "Blues".into(),
+                    filters,
+                }],
+            )]),
+            ..Default::default()
+        };
+        let read: Prefs = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(read, saved);
     }
 }

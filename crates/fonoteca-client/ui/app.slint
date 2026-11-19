@@ -1,8 +1,8 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusColumn, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AccentChoice, AlbumTile, Drag, FocusColumn, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -1724,6 +1724,12 @@ export component AppWindow inherits Window {
     in property <[string]> smart-preview;
     in property <string> smart-problem;
     in property <bool> smart-can-save;
+    // Whether the songs the rules pick can be kept as a normal playlist.
+    in property <bool> smart-can-keep;
+    // What the rules hold that the rows can't show: their groups, which the
+    // Focus edits.
+    in property <string> smart-groups;
+    callback smart-open-in-focus();
     callback smart-edit();
     callback smart-name-edited(name: string);
     callback smart-match-chosen(all: bool);
@@ -2717,6 +2723,7 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.page == Page.playlists: FocusSection { }
                     if root.page == Page.album || root.page == Page.artist || root.page == Page.playlist || root.page == Page.composer || root.page == Page.composition || root.page == Page.track: PageHeader {
                         artwork: root.header-image;
                         show-artwork: !root.created-for;
@@ -3322,11 +3329,11 @@ export component AppWindow inherits Window {
                         text: root.page == Page.artists ? "No artists match." : root.page == Page.composers ? "No composers match." : "No albums match.";
                     }
                     if root.page == Page.compositions && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.composition-filter != "" || FocusState.narrowing ? "No compositions match." : "No compositions yet."; }
-                    if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No playlists yet."; }
+                    if root.page == Page.playlists && root.tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: FocusState.narrowing ? "No playlists match." : "No playlists yet."; }
                     if root.page == Page.genres && root.genre-tiles.length == 0 && !root.loading && root.page-problem == "": Note { text: "No genres yet."; }
                     if root.page == Page.tracks && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": Note { text: root.track-filter != "" || FocusState.narrowing ? "No tracks match." : "No tracks yet."; }
                     // What the Focus narrowed to nothing is let go by Clear.
-                    if FocusState.narrowing && (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.compositions || root.page == Page.tracks) && root.tiles.length == 0 && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": HorizontalLayout {
+                    if FocusState.narrowing && (root.page == Page.albums || root.page == Page.artists || root.page == Page.composers || root.page == Page.compositions || root.page == Page.tracks || root.page == Page.playlists) && root.tiles.length == 0 && root.track-lines.length == 0 && !root.more-tiles && !root.loading && root.page-problem == "": HorizontalLayout {
                         alignment: start;
                         Button {
                             text: "Clear";
@@ -3686,6 +3693,23 @@ export component AppWindow inherits Window {
                             color: Theme.muted;
                             overflow: elide;
                         }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.smart-groups;
+                                font-size: Theme.body;
+                                color: Theme.muted;
+                                vertical-alignment: center;
+                                wrap: word-wrap;
+                            }
+                            Link {
+                                horizontal-stretch: 0;
+                                text: "Open in the Focus";
+                                color: Theme.accent;
+                                clicked => { root.smart-open-in-focus(); }
+                            }
+                        }
                         if root.smart-problem != "": Problem { text: root.smart-problem; }
                         HorizontalLayout {
                             spacing: 8px;
@@ -3698,7 +3722,7 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 text: "Save as a normal playlist";
-                                enabled: root.smart-can-save && !Input.modal;
+                                enabled: root.smart-can-keep && !Input.modal;
                                 clicked => { root.smart-save-as-playlist(); }
                             }
                         }
