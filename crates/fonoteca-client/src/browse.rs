@@ -1748,6 +1748,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_details(ModelRc::default());
     ui.set_playlist_editable(false);
     ui.set_smart_playlist(false);
+    ui.set_smart_rules_editable(false);
     ui.set_created_for(false);
     ui.set_created_for_matching(false);
     ui.set_download_state(NOT_DOWNLOADED);
@@ -4832,6 +4833,7 @@ fn show_playlist(ui: &AppWindow, browser: &Shared, playlist: PlaylistWithSongs) 
     let smart = playlist.smart == Some(true);
     ui.set_playlist_editable(playlist.readonly != Some(true) && !smart);
     ui.set_smart_playlist(smart);
+    ui.set_smart_rules_editable(smart::rules_are_given(&playlist));
     let facts = [
         smart::rules_summary(&playlist),
         playlist.comment.unwrap_or_default(),

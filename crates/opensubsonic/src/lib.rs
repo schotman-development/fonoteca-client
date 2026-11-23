@@ -1686,6 +1686,8 @@ mod tests {
         let (server, log) = serve(|request| {
             json(if request.contains("getOpenSubsonicExtensions") {
                 r#"{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[{"name":"formPost","versions":[1]},{"name":"fonotecaSmartPlaylists","versions":[1]}]}}"#
+            } else if request.contains("createSmartPlaylist") && request.contains("mood") {
+                r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":10,"message":"Rule 1: this server holds no moods, so \"mood\" cannot be asked."}}}"#
             } else if request.contains("createSmartPlaylist") {
                 r#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlist":{"id":"sp-1","name":"Blues","songCount":1,"duration":304,"created":"2026-01-01T00:00:00Z","changed":"2026-01-01T00:00:00Z","readonly":true,"smart":true,"smartRules":{"match":"all","rules":[{"field":"genre","operator":"is","value":"Blues"}],"limit":500},"entry":[{"id":"tr-1","isDir":false,"title":"Blue"}]}}}"#
             } else if request.contains("updateSmartPlaylist") && request.contains("zzz") {
@@ -1714,6 +1716,16 @@ mod tests {
             .update_smart_playlist("sp-1", Some("Blues now"), None)
             .await
             .unwrap();
+        let no_moods =
+            r#"{"match":"all","rules":[{"field":"mood","operator":"is","value":"calm"}]}"#;
+        match client.create_smart_playlist("Calm", no_moods).await {
+            Err(Error::Api(ApiError {
+                code: 10, message, ..
+            })) => {
+                assert!(message.unwrap().contains("holds no moods"));
+            }
+            other => panic!("the server's refusal is its own error: {other:?}"),
+        }
         let refused = client
             .update_smart_playlist("sp-1", None, Some("zzz"))
             .await;

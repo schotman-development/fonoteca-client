@@ -21,6 +21,8 @@ const PREVIEW_LINES: usize = 6;
 const SECONDS_PER_HOUR: u64 = 3600;
 /// The version of the smart playlists extension that has groups of rules.
 const GROUPS_VERSION: i64 = 2;
+/// The error code for rules the server refuses.
+const REFUSED_RULES: i64 = 10;
 const NO_GROUPS_ON_SERVER: &str = "Your server keeps flat rules only, and these have groups. You can still keep the songs they pick as a normal playlist.";
 
 /// What the editor holds: the draft, and the rows it shows.
@@ -35,6 +37,12 @@ pub(super) fn is_on_screen(b: &Browser) -> bool {
     b.playlist
         .as_ref()
         .is_some_and(|playlist| playlist.smart == Some(true))
+}
+
+/// Whether the server sent the rules of a smart playlist, which one made
+/// in another app may not have in a form to edit.
+pub(super) fn rules_are_given(playlist: &Playlist) -> bool {
+    playlist.smart == Some(true) && playlist.smart_rules.is_some()
 }
 
 /// A smart playlist's rules in a line, for its page; empty for any other.
@@ -417,10 +425,34 @@ fn save(ui: &AppWindow, browser: &Shared) {
                 load_playlists(&ui, &browser);
                 open(&ui, &browser, format!("playlist:{id}"));
             }
-            Err(e) => ui.set_smart_problem(format!("Your server didn't take that: {e}").into()),
+            Err(e) => {
+                let making = draft.playlist_id.is_none();
+                ui.set_smart_problem(refusal_text(&e, making).into());
+                if making && !matches!(e, opensubsonic::Error::Api(_)) {
+                    load_playlists(&ui, &browser);
+                }
+            }
         }
     })
     .expect("the event loop is running");
+}
+
+/// What the editor says when the server did not take the rules. The draft
+/// stays as it was, so nothing typed is lost. Making a playlist is never
+/// tried again by the client: where no answer came, the server may have made
+/// it, and a second try would make it twice.
+fn refusal_text(error: &opensubsonic::Error, making: bool) -> String {
+    match error {
+        opensubsonic::Error::Api(refused) if refused.code == REFUSED_RULES => format!(
+            "Your server refused these rules: {} Nothing is lost: change them here and save again.",
+            refused.message.as_deref().unwrap_or("no reason given")
+        ),
+        opensubsonic::Error::Api(_) => format!("Your server didn't take that: {error}"),
+        _ if making => format!(
+            "No answer came ({error}), and the server may have made the playlist anyway. Look in the playlists before saving again, or it may be made twice."
+        ),
+        _ => format!("Your server didn't take that: {error}"),
+    }
 }
 
 /// Makes a plain playlist of the songs the rules pick now, which no longer
@@ -469,4 +501,63 @@ pub(super) fn open_for_focus(ui: &AppWindow, browser: &Shared, rules: Group<Rule
 /// Whether the server has smart playlists.
 pub(super) fn offered(b: &Browser) -> bool {
     offers(b, SMART_PLAYLISTS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opensubsonic::{ApiError, Error};
+
+    fn playlist(json: &str) -> Playlist {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn rules_can_be_edited_where_the_server_sent_them() {
+        let made_here = playlist(
+            r#"{"id":"p","name":"A","songCount":0,"duration":0,"created":"","changed":"","smart":true,"smartRules":{"match":"all","rules":[]}}"#,
+        );
+        let made_on_the_web = playlist(
+            r#"{"id":"p","name":"B","songCount":9,"duration":0,"created":"","changed":"","smart":true,"readonly":true}"#,
+        );
+        let plain = playlist(
+            r#"{"id":"p","name":"C","songCount":0,"duration":0,"created":"","changed":""}"#,
+        );
+        assert!(rules_are_given(&made_here));
+        assert!(!rules_are_given(&made_on_the_web));
+        assert!(!rules_are_given(&plain));
+        assert_eq!(rules_summary(&made_on_the_web), "");
+    }
+
+    #[test]
+    fn rules_the_server_refuses_are_shown_with_its_reason() {
+        let moods = Error::Api(ApiError {
+            code: 10,
+            help_url: None,
+            message: Some(
+                r#"Rule 1: this server holds no moods, so "mood" cannot be asked."#.into(),
+            ),
+        });
+        let said = refusal_text(&moods, true);
+        assert!(said.contains("this server holds no moods"), "{said}");
+        assert!(said.contains("Nothing is lost"), "{said}");
+        assert_eq!(said, refusal_text(&moods, false));
+    }
+
+    #[test]
+    fn a_making_with_no_answer_tells_to_look_before_trying_again() {
+        let said = refusal_text(&Error::Status(502), true);
+        assert!(
+            said.contains("Look in the playlists before saving again"),
+            "{said}"
+        );
+        let editing = refusal_text(&Error::Status(502), false);
+        assert!(!editing.contains("Look in the playlists"), "{editing}");
+        let other = Error::Api(ApiError {
+            code: 0,
+            help_url: None,
+            message: Some("That name is taken".into()),
+        });
+        assert!(refusal_text(&other, true).contains("That name is taken"));
+    }
 }

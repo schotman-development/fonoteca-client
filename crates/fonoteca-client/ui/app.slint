@@ -1714,6 +1714,8 @@ export component AppWindow inherits Window {
     // screen is one, which has rules in place of songs put in it.
     in property <bool> smart-offered;
     in property <bool> smart-playlist;
+    // Whether the rules of the smart playlist on the page came with it.
+    in property <bool> smart-rules-editable;
     // The smart playlist editor: whether it edits the playlist on screen,
     // the name, whether a song must pass all the rules or one, the rules'
     // rows, the orders to sort by and the one chosen, the limit as typed,
@@ -2805,7 +2807,7 @@ export component AppWindow inherits Window {
                             enabled: !root.created-for-matching && !Input.modal;
                             clicked => { root.save-created-for(); }
                         }
-                        if root.page == Page.playlist && root.smart-playlist: Button {
+                        if root.page == Page.playlist && root.smart-playlist && root.smart-rules-editable: Button {
                             cross-axis-self-alignment: center;
                             text: "Edit rules";
                             enabled: !Input.modal;
