@@ -4662,12 +4662,14 @@ mod tests {
             assert_eq!(ui.get_header_rating(), 3);
             wait_for("the album's rating sent", || RATED.lock().unwrap().len() == 3).await;
             assert_eq!(RATED.lock().unwrap()[2], "a1=3");
-            // On a phone all five stars fit beside the header's buttons.
+            // On a phone all five stars are in sight, each at the full
+            // touch size.
             ui.window().set_size(slint::LogicalSize::new(412.0, 915.0));
             idle(Duration::from_millis(400)).await;
-            for stars in ["1 star", "5 stars"] {
+            for stars in ["1 star", "2 stars", "3 stars", "4 stars", "5 stars"] {
                 let label = format!("Rate Night Harbour {stars}");
-                assert!(find(&ui, &label).is_some(), "{label} in sight");
+                let star = find(&ui, &label).unwrap_or_else(|| panic!("{label} in sight"));
+                assert!(star.size().height >= 48.0, "{label} is {:?}", star.size());
             }
             ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
             idle(Duration::from_millis(400)).await;

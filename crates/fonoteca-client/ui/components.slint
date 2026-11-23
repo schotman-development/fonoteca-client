@@ -681,7 +681,7 @@ export component StarRating inherits HorizontalLayout {
     callback rate(stars: int);
 
     for star in [1, 2, 3, 4, 5]: IconButton {
-        width: Screen.phone ? 34px : 26px;
+        width: Screen.phone ? Theme.phone-target : 26px;
         icon: Icons.star;
         filled: star <= root.rating;
         color: star <= root.rating ? Theme.accent : Theme.muted;

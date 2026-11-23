@@ -2782,7 +2782,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        if root.may-rate && (root.page == Page.album || root.page == Page.artist): StarRating {
+                        if !Screen.phone && root.may-rate && (root.page == Page.album || root.page == Page.artist): StarRating {
                             cross-axis-self-alignment: center;
                             rating: root.header-rating;
                             subject: root.header-title;
@@ -2824,6 +2824,14 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                    // On a phone the stars are all at their full touch size, which
+                    // the header's row has no room for beside its buttons.
+                    if Screen.phone && root.may-rate && (root.page == Page.album || root.page == Page.artist): StarRating {
+                        alignment: start;
+                        rating: root.header-rating;
+                        subject: root.header-title;
+                        rate(stars) => { root.rate-header(stars); }
                     }
                     // A genre's banner with its name over it, then the genres it
                     // sits under and how much the library has of it.
