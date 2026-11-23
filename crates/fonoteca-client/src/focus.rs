@@ -553,12 +553,7 @@ impl<T> Leaf<'_, T> {
     fn passed_by(&self, item: &T, now: &Now) -> bool {
         let Some(field) = self.field else { return true };
         let have = (field.get)(item, now);
-        passes(
-            &have,
-            self.condition.operator,
-            &self.condition.value,
-            now.today,
-        )
+        passes(&have, self.condition.operator, &self.condition.value, now)
     }
 }
 

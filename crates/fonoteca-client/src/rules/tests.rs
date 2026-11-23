@@ -24,8 +24,107 @@ fn within(amount: u32, unit: Unit) -> Option<Value> {
     Some(Value::Within(Span { amount, unit }))
 }
 
+fn passes_as(
+    matching: Matching,
+    have: &FieldValue,
+    operator: Operator,
+    value: Option<Value>,
+) -> bool {
+    let tags = TagNames::new();
+    let now = Now {
+        today: today(),
+        matching,
+        tags: &tags,
+    };
+    passes(have, operator, &value, &now)
+}
+
 fn passes_today(have: &FieldValue, operator: Operator, value: Option<Value>) -> bool {
-    passes(have, operator, &value, today())
+    passes_as(Matching::Device, have, operator, value)
+}
+
+fn on_server_at(time: &str) -> Matching {
+    Matching::Server {
+        seconds: moment_number(time).unwrap(),
+    }
+}
+
+#[test]
+fn a_server_matches_words_by_case_only_and_a_device_by_accents_too() {
+    let have = texts(&["Beyoncé"]);
+    let server = on_server_at("2026-03-31T12:00:00Z");
+    for (word, on_server) in [("beyonce", false), ("BEYONCÉ", true), ("beyoncé", true)] {
+        let wanted = || text(word);
+        assert!(passes_as(Matching::Device, &have, Operator::Is, wanted()));
+        assert_eq!(passes_as(server, &have, Operator::Is, wanted()), on_server);
+        assert_eq!(
+            passes_as(server, &have, Operator::StartsWith, wanted()),
+            on_server
+        );
+    }
+}
+
+#[test]
+fn a_server_counts_in_the_last_from_the_moment_and_a_device_by_days() {
+    let noon = on_server_at("2026-03-31T12:00:00Z");
+    let in_the_last_day = |matching, time| {
+        passes_as(
+            matching,
+            &FieldValue::Moment(moment_number(time)),
+            Operator::InTheLast,
+            within(1, Unit::Days),
+        )
+    };
+    assert!(in_the_last_day(noon, "2026-03-30T12:00:00Z"));
+    assert!(!in_the_last_day(noon, "2026-03-30T11:59:59Z"));
+    // A device's day starts at midnight, so the same song is still in.
+    assert!(in_the_last_day(Matching::Device, "2026-03-30T11:59:59Z"));
+    assert!(!in_the_last_day(Matching::Device, "2026-03-29T23:59:59Z"));
+}
+
+#[test]
+fn a_server_counts_months_back_to_the_same_time_of_day() {
+    let noon = on_server_at("2026-03-31T12:00:00Z");
+    let in_a_month = |time| {
+        passes_as(
+            noon,
+            &FieldValue::Moment(moment_number(time)),
+            Operator::InTheLast,
+            within(1, Unit::Months),
+        )
+    };
+    // A month before the 31st of March is the 28th of February.
+    assert!(in_a_month("2026-02-28T12:00:00Z"));
+    assert!(!in_a_month("2026-02-28T11:00:00Z"));
+}
+
+#[test]
+fn a_moment_that_is_missing_is_not_in_the_last_and_never() {
+    let missing = FieldValue::Moment(None);
+    let noon = on_server_at("2026-03-31T12:00:00Z");
+    let span = || within(30, Unit::Days);
+    assert!(!passes_as(noon, &missing, Operator::InTheLast, span()));
+    assert!(passes_as(noon, &missing, Operator::NotInTheLast, span()));
+    assert!(passes_as(noon, &missing, Operator::Never, None));
+}
+
+#[test]
+fn a_moment_is_judged_by_its_day_for_before_and_after() {
+    let noon = on_server_at("2026-03-31T12:00:00Z");
+    let have = FieldValue::Moment(moment_number("2026-03-30T23:59:59Z"));
+    assert!(passes_as(noon, &have, Operator::Before, text("2026-03-31")));
+    assert!(!passes_as(noon, &have, Operator::After, text("2026-03-30")));
+}
+
+#[test]
+fn moments_count_seconds_from_the_epoch() {
+    assert_eq!(moment_number("1970-01-01T00:00:00Z"), Some(0));
+    assert_eq!(
+        moment_number("1970-01-02T01:02:03.456Z"),
+        Some(86_400 + 3723)
+    );
+    assert_eq!(moment_number("1970-01-02"), Some(86_400));
+    assert_eq!(moment_number("nonsense"), None);
 }
 
 #[test]

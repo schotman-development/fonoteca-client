@@ -15,7 +15,7 @@ use crate::focus::{
     top_threshold,
 };
 use crate::rules::words::operator_label;
-use crate::rules::{Entry, FieldValue, Group, MOST_DEPTH, Now, Operator, Value, today};
+use crate::rules::{Entry, FieldValue, Group, MOST_DEPTH, Matching, Now, Operator, Value, today};
 use crate::{FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue};
 
 use super::fields::{
@@ -201,6 +201,7 @@ fn now_of<R>(b: &Browser, use_now: impl FnOnce(&Now) -> R) -> R {
     let tags = crate::smart::tag_names(&b.tags);
     use_now(&Now {
         today: today(prefs::now()),
+        matching: Matching::Device,
         tags: &tags,
     })
 }

@@ -1,6 +1,6 @@
 use super::words::{describe, hint, read, typed};
 use super::*;
-use crate::rules::{TagNames, day_number};
+use crate::rules::{Matching, TagNames, day_number};
 
 struct Item {
     genres: &'static [&'static str],
@@ -58,6 +58,7 @@ fn now() -> Now<'static> {
     static TAGS: std::sync::OnceLock<TagNames> = std::sync::OnceLock::new();
     Now {
         today: day_number("2026-03-31").unwrap(),
+        matching: Matching::Device,
         tags: TAGS.get_or_init(TagNames::new),
     }
 }

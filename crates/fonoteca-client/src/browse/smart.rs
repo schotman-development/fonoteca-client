@@ -11,7 +11,7 @@ use super::{
     Browser, SMART_PLAYLISTS, Shared, aside, count, duration_spoken, load_playlists, load_songs,
     notify, offers, offers_version, open, playlist_on_screen,
 };
-use crate::rules::{Group, today};
+use crate::rules::{Group, Matching, today};
 use crate::smart::draft::{Draft, Row};
 use crate::smart::{Now, Operator, Rule, SmartRules, select, tag_names, words};
 use crate::{AppWindow, SmartRuleRow, prefs};
@@ -229,8 +229,15 @@ fn song_line(song: &Child) -> SharedString {
 fn picked(b: &Browser) -> Option<Vec<&Child>> {
     let rules = b.smart.draft.readable_rules()?;
     let tags = tag_names(&b.tags);
+    let matching = match offered(b) {
+        true => Matching::Server {
+            seconds: prefs::now() as i64,
+        },
+        false => Matching::Device,
+    };
     let now = Now {
         today: today(prefs::now()),
+        matching,
         tags: &tags,
     };
     let seed = prefs::now() / SECONDS_PER_HOUR;

@@ -33,6 +33,20 @@ pub fn day_number(date: &str) -> Option<i64> {
     Some(era * 146_097 + day_of_era - 719_468)
 }
 
+/// The seconds from 1970-01-01T00:00:00Z to an ISO 8601 date and time; a
+/// date alone is its midnight.
+pub fn moment_number(date: &str) -> Option<i64> {
+    let day = day_number(date)?;
+    let clock = date.get(11..19).unwrap_or("00:00:00");
+    let mut parts = clock.split(':');
+    let mut next = || parts.next()?.parse::<i64>().ok();
+    let (hours, minutes, seconds) = match (next(), next(), next()) {
+        (Some(hours), Some(minutes), Some(seconds)) => (hours, minutes, seconds),
+        _ => (0, 0, 0),
+    };
+    Some(day * SECONDS_PER_DAY + hours * 3600 + minutes * 60 + seconds)
+}
+
 /// The day number of the day `seconds` after 1970-01-01 falls on.
 pub fn today(seconds: u64) -> i64 {
     seconds as i64 / SECONDS_PER_DAY
@@ -147,6 +161,22 @@ pub fn first_day_of(span: Span, today: i64) -> i64 {
     day_number(&format!("{year:04}-{month:02}-{day:02}")).unwrap_or(today)
 }
 
+/// The first moment of the stretch that ends at `now`, in seconds: whole
+/// days and weeks back from the moment itself, a month or a year back
+/// to the same time of day.
+pub fn first_moment_of(span: Span, now: i64) -> i64 {
+    let amount = i64::from(span.amount);
+    match span.unit {
+        Unit::Days => now - amount * SECONDS_PER_DAY,
+        Unit::Weeks => now - 7 * amount * SECONDS_PER_DAY,
+        Unit::Months | Unit::Years => {
+            let today = now.div_euclid(SECONDS_PER_DAY);
+            let time_of_day = now.rem_euclid(SECONDS_PER_DAY);
+            first_day_of(span, today) * SECONDS_PER_DAY + time_of_day
+        }
+    }
+}
+
 /// What an item has in a field, as a test needs it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
@@ -155,20 +185,29 @@ pub enum FieldValue {
     Number(Option<i64>),
     /// A date as `day_number` counts.
     Day(Option<i64>),
+    /// A date and time as `moment_number` counts, for a server that counts
+    /// "in the last" from the moment.
+    Moment(Option<i64>),
     Flag(bool),
 }
 
 /// Whether what an item has in a field passes a condition on it.
-pub fn passes(have: &FieldValue, operator: Operator, value: &Option<Value>, today: i64) -> bool {
+pub fn passes(have: &FieldValue, operator: Operator, value: &Option<Value>, now: &Now) -> bool {
     match have {
-        FieldValue::Texts(values) => text_passes(values, operator, value),
+        FieldValue::Texts(values) => text_passes(values, operator, value, now.matching),
         FieldValue::Number(have) => number_passes(*have, operator, value),
-        FieldValue::Day(day) => date_passes(*day, operator, value, today),
+        FieldValue::Day(day) => date_passes(*day, operator, value, now.today),
+        FieldValue::Moment(moment) => moment_passes(*moment, operator, value, now),
         FieldValue::Flag(have) => flag_passes(*have, operator, value),
     }
 }
 
-fn text_passes(values: &[String], operator: Operator, value: &Option<Value>) -> bool {
+fn text_passes(
+    values: &[String],
+    operator: Operator,
+    value: &Option<Value>,
+    matching: Matching,
+) -> bool {
     // A blank value is none, as the server counts it.
     let values: Vec<&String> = values
         .iter()
@@ -189,8 +228,10 @@ fn text_passes(values: &[String], operator: Operator, value: &Option<Value>) -> 
             let Some(Value::Text(wanted)) = value else {
                 return false;
             };
-            let wanted = fold(wanted);
-            let any = |test: &dyn Fn(&str) -> bool| values.iter().any(|value| test(&fold(value)));
+            let wanted = matching.normal(wanted);
+            let any = |test: &dyn Fn(&str) -> bool| {
+                values.iter().any(|value| test(&matching.normal(value)))
+            };
             match operator {
                 Operator::Is => any(&|value| value == wanted),
                 Operator::IsNot => !any(&|value| value == wanted),
@@ -240,6 +281,34 @@ fn date_passes(day: Option<i64>, operator: Operator, value: &Option<Value>, toda
             day.is_some_and(|day| (*from..=*to).contains(&day))
         }
         _ => false,
+    }
+}
+
+/// A date with its time: "in the last" counts from the moment the server
+/// does, and any other test looks at the day.
+fn moment_passes(
+    moment: Option<i64>,
+    operator: Operator,
+    value: &Option<Value>,
+    now: &Now,
+) -> bool {
+    let at = match now.matching {
+        Matching::Server { seconds } => seconds,
+        Matching::Device => now.today * SECONDS_PER_DAY,
+    };
+    match (operator, value) {
+        (Operator::InTheLast, Some(Value::Within(span))) => {
+            moment.is_some_and(|moment| moment >= first_moment_of(*span, at))
+        }
+        (Operator::NotInTheLast, Some(Value::Within(span))) => {
+            moment.is_none_or(|moment| moment < first_moment_of(*span, at))
+        }
+        _ => date_passes(
+            moment.map(|moment| moment.div_euclid(SECONDS_PER_DAY)),
+            operator,
+            value,
+            at.div_euclid(SECONDS_PER_DAY),
+        ),
     }
 }
 
@@ -409,10 +478,33 @@ impl<L> Entry<L> {
 /// and those of the tags above it, folded.
 pub type TagNames = HashMap<String, Vec<String>>;
 
+/// How conditions are judged where the answer depends on who keeps the
+/// playlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Matching {
+    /// On this device: words match without accents or case, and "in the
+    /// last" counts calendar days.
+    Device,
+    /// On Fonoteca's server: words match without case only, and "in the
+    /// last" counts from this moment, in seconds from 1970-01-01.
+    Server { seconds: i64 },
+}
+
+impl Matching {
+    /// A word as this way of matching compares it.
+    pub fn normal(self, text: &str) -> String {
+        match self {
+            Matching::Device => fold(text),
+            Matching::Server { .. } => text.to_lowercase(),
+        }
+    }
+}
+
 /// What conditions are judged against besides the item: the day it is, as
-/// `today` counts, and the tags' names.
+/// `today` counts, how words and dates are matched, and the tags' names.
 pub struct Now<'a> {
     pub today: i64,
+    pub matching: Matching,
     pub tags: &'a TagNames,
 }
 

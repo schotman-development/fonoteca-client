@@ -18,8 +18,8 @@ use opensubsonic::{Child, Tag};
 use serde::{Deserialize, Serialize};
 
 use crate::browse::matching::fold_words as fold;
-pub use crate::rules::{Entry, Group, Now, Operator, TagNames, Value};
-use crate::rules::{FieldValue, MOST_DEPTH, day_number, passes};
+pub use crate::rules::{Entry, Group, Matching, Now, Operator, TagNames, Value};
+use crate::rules::{FieldValue, MOST_DEPTH, day_number, moment_number, passes};
 
 /// What the server keeps when no limit is sent.
 pub const DEFAULT_LIMIT: u32 = 500;
@@ -132,7 +132,12 @@ impl Field {
         match self.kind() {
             Kind::Text => FieldValue::Texts(texts_of(song, self, now)),
             Kind::Number => FieldValue::Number(number_of(song, self)),
-            Kind::Date => FieldValue::Day(date_of(song, self)),
+            Kind::Date => match now.matching {
+                Matching::Device => FieldValue::Day(date_of(song, self).and_then(day_number)),
+                Matching::Server { .. } => {
+                    FieldValue::Moment(date_of(song, self).and_then(moment_number))
+                }
+            },
             Kind::Flag => FieldValue::Flag(song.starred.is_some()),
         }
     }
@@ -300,7 +305,7 @@ pub fn tag_names(tags: &[Tag]) -> TagNames {
             // A tag under itself would loop; no tree is deeper than the list.
             for _ in 0..tags.len() {
                 let Some(tag) = at else { break };
-                names.push(fold(&tag.name));
+                names.push(tag.name.to_lowercase());
                 at = tag
                     .parent_id
                     .as_deref()
@@ -335,7 +340,7 @@ fn rule_passes(song: &Child, rule: &Rule, now: &Now) -> bool {
         &rule.field.value_of(song, now),
         rule.operator,
         &rule.value,
-        now.today,
+        now,
     )
 }
 
@@ -398,13 +403,12 @@ fn number_of(song: &Child, field: Field) -> Option<i64> {
     }
 }
 
-/// The day a song was added or last played, as `day_number` counts.
-fn date_of(song: &Child, field: Field) -> Option<i64> {
-    let date = match field {
-        Field::Added => &song.created,
-        _ => &song.played,
-    };
-    date.as_deref().and_then(day_number)
+/// When a song was added or last played, as the server wrote it.
+fn date_of(song: &Child, field: Field) -> Option<&str> {
+    match field {
+        Field::Added => song.created.as_deref(),
+        _ => song.played.as_deref(),
+    }
 }
 
 /// What songs are sorted by: a number or the words folded, so a song

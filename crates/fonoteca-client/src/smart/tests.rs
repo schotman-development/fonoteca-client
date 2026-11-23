@@ -3,7 +3,7 @@ use super::from_focus::{from_focus, into_focus};
 use super::words::{parse_rule, sort_index, summary};
 use super::*;
 use crate::focus::{Condition, Focus};
-use crate::rules::{Span, Unit, civil_date};
+use crate::rules::{Matching, Span, Unit, civil_date, moment_number};
 
 fn song(json: &str) -> Child {
     let json = format!(r#"{{"isDir":false,{json}}}"#);
@@ -61,6 +61,7 @@ fn passes(song: &Child, rule: Rule) -> bool {
         &all_of(vec![rule]),
         &Now {
             today: today(),
+            matching: Matching::Device,
             tags: &tags,
         },
     )
@@ -360,6 +361,7 @@ fn match_all_wants_every_rule_and_any_wants_one() {
     let tags = TagNames::new();
     let now = Now {
         today: today(),
+        matching: Matching::Device,
         tags: &tags,
     };
     assert!(!matches(&song, &rules(true), &now));
@@ -376,6 +378,7 @@ fn pick(songs: &[Child], rules: &SmartRules, seed: u64) -> Vec<String> {
     let tags = TagNames::new();
     let now = Now {
         today: today(),
+        matching: Matching::Device,
         tags: &tags,
     };
     select(songs, rules, &now, seed)
@@ -890,6 +893,7 @@ fn a_dates_between_is_two_rules_around_its_ends() {
     let tags = TagNames::new();
     let now = Now {
         today: today(),
+        matching: Matching::Device,
         tags: &tags,
     };
     assert!(matches(&song, &wanted, &now));
@@ -1023,4 +1027,39 @@ fn text_rules_keep_spaces_and_punctuation() {
         &halo,
         text(Field::Title, Operator::Is, "beyonces halo")
     ));
+}
+
+/// Whether the song passes the rule for a playlist the server keeps, at
+/// noon on the 31st of March 2026.
+fn passes_on_server(song: &Child, rule: Rule) -> bool {
+    let tags = TagNames::new();
+    let now = Now {
+        today: today(),
+        matching: Matching::Server {
+            seconds: moment_number("2026-03-31T12:00:00Z").unwrap(),
+        },
+        tags: &tags,
+    };
+    matches(song, &all_of(vec![rule]), &now)
+}
+
+#[test]
+fn rules_for_the_server_match_as_the_server_does() {
+    let song = song(
+        r#""id":"1","title":"T","artist":"Beyoncé","created":"2026-03-30T11:00:00Z","played":"2026-03-30T13:00:00Z""#,
+    );
+    // The server doesn't look past an accent, the device does.
+    let artist = || text(Field::Artist, Operator::Is, "beyonce");
+    assert!(passes(&song, artist()));
+    assert!(!passes_on_server(&song, artist()));
+    assert!(passes_on_server(
+        &song,
+        text(Field::Artist, Operator::Is, "BEYONCÉ")
+    ));
+    // Added 25 hours ago is out of the last day for the server, in for a device.
+    let added = || within(Field::Added, Operator::InTheLast, 1, Unit::Days);
+    assert!(passes(&song, added()));
+    assert!(!passes_on_server(&song, added()));
+    let played = || within(Field::LastPlayed, Operator::InTheLast, 1, Unit::Days);
+    assert!(passes_on_server(&song, played()));
 }
