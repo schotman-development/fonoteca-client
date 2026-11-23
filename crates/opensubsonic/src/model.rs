@@ -163,6 +163,8 @@ pub struct ArtistID3 {
     pub album_count: Option<i64>,
     /// Date the artist was starred. [ISO 8601]
     pub starred: Option<String>,
+    /// The artist's rating by the account [1-5].
+    pub user_rating: Option<i64>,
     /// The artist MusicBrainzID.
     pub music_brainz_id: Option<String>,
     /// The artist sort name.

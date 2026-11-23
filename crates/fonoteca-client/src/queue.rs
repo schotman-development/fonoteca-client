@@ -280,6 +280,14 @@ impl Queue {
         }
     }
 
+    /// Records the stars the song `id` is rated, none for 0, wherever it is
+    /// queued.
+    pub fn set_rating(&mut self, id: &str, stars: i32) {
+        for entry in self.entries.iter_mut().filter(|entry| entry.song.id == id) {
+            entry.song.user_rating = (stars > 0).then_some(i64::from(stars));
+        }
+    }
+
     /// Takes out the songs in `songs`.
     pub fn remove(&mut self, songs: Range<usize>) -> Moved {
         self.remove_many(&[songs])

@@ -48,12 +48,16 @@ mod fields;
 mod focus;
 mod listens;
 mod played;
+mod ratings;
 mod search;
 mod smart;
 mod stats;
+mod top_rated;
 #[cfg(test)]
 pub use stats::TEST_ROOTS as LISTENBRAINZ_ROOTS;
 pub(crate) mod matching;
+
+pub(crate) use ratings::{rate, stars_of};
 
 /// The newest albums on the home page, and the albums played last.
 const RECENT: usize = 24;
@@ -339,6 +343,10 @@ pub struct Browser {
     focus: focus::State,
     /// What the server lists as played last, for the home page.
     played: played::Played,
+    /// The albums rated highest, for the home page.
+    top_rated: top_rated::TopRated,
+    /// The album or artist on screen whose header shows its rating.
+    header_rated: Option<String>,
     /// The radio directory once asked, its countries' names by code, its
     /// languages, each shelf's stations as they came, the shelves shown, the
     /// shelves asked for, each genre's place on the page, the shelves' tiles
@@ -414,6 +422,7 @@ pub fn open_library(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_roles("".into());
     ui.set_may_administer(true);
     ui.set_may_download(true);
+    ui.set_may_rate(true);
     sidebar(ui, browser);
     load_playlists(ui, browser);
     open(ui, browser, "home".into());
@@ -458,6 +467,7 @@ pub fn reconnect(ui: &AppWindow, browser: &Shared, client: Client) {
     ui.set_roles("".into());
     ui.set_may_administer(true);
     ui.set_may_download(true);
+    ui.set_may_rate(true);
     // The server's extensions are known now.
     sidebar(ui, browser);
     load_playlists(ui, browser);
@@ -945,6 +955,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |row| toggle_line_love(&weak.unwrap(), &browser, row as usize)
     });
+    ratings::connect(ui, browser);
     ui.on_toggle_track_column({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| toggle_column(&weak.unwrap(), &browser, index as usize)
@@ -1708,6 +1719,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         b.lines = Rc::default();
         b.songs.clear();
         b.album = None;
+        b.header_rated = None;
         b.playlist = None;
         b.covers.clear();
         b.fetching = 0;
@@ -1732,6 +1744,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_header_title("".into());
     ui.set_header_names(ModelRc::default());
     ui.set_header_facts("".into());
+    ui.set_header_rating(0);
     ui.set_details(ModelRc::default());
     ui.set_playlist_editable(false);
     ui.set_smart_playlist(false);
@@ -2383,6 +2396,7 @@ fn home(ui: &AppWindow, browser: &Shared) {
     }
     count_tracks(ui, browser);
     played::ask(ui, browser);
+    top_rated::ask(ui, browser);
     saved_stations(ui, browser);
     created_for::shelf(ui, browser);
     stats::ask(ui, browser);
@@ -3181,6 +3195,7 @@ const COVER: &str = "Cover";
 const TITLE: &str = "Title";
 const COMPOSITION: &str = "Composition";
 const LOVED: &str = "Loved";
+const RATING: &str = "Rating";
 
 /// The tracks table's columns: one for every field of a song in OpenSubsonic
 /// but the ids, which its links use.
@@ -3203,7 +3218,7 @@ const COLUMNS: &[Column<Child>] = &[
     Column { shown: true, ..numeric("Duration", 72.0, |song| text(&song.duration.map(duration).unwrap_or_default()), |song| float(song.duration)) },
     Column { shown: true, ..numeric(LOVED, 40.0, |_| Vec::new(), |song| Some(if song.starred.is_some() { 1.0 } else { 0.0 })) },
     column("Starred", 100.0, |song| day(&song.starred)),
-    numeric("Rating", 64.0, |song| number(song.user_rating), |song| float(song.user_rating)),
+    numeric(RATING, 64.0, |song| number(song.user_rating), |song| float(song.user_rating)),
     numeric("Average rating", 72.0, |song| text(&song.average_rating.map(|r| format!("{r:.1}")).unwrap_or_default()), |song| song.average_rating),
     tally("Plays", 56.0, |song| number(song.play_count), |song| float(Some(song.play_count.unwrap_or(0)))),
     column("Last played", 100.0, |song| day(&song.played)),
@@ -3455,6 +3470,7 @@ fn track_line(
         part: movement.is_some(),
         cells: ModelRc::new(VecModel::from(cells)),
         loved: song.starred.is_some(),
+        rating: stars_of(song.user_rating),
         cover: cover.unwrap_or_default(),
         folder: song.is_dir,
         selected: b.selected.contains(&link) && !created_for::is_missing(song),
@@ -4487,6 +4503,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             ui.set_header_title(album.name.as_str().into());
             ui.set_header_names(names(album_names(&album)));
             ui.set_header_facts(album_facts(&album).into());
+            ratings::show_header(ui, browser, &album.id, album.user_rating);
             header_image(ui, browser, album.cover_art);
             header_motion(ui, browser, album.id);
 
@@ -4559,6 +4576,7 @@ fn work_rows(run: &[Child]) -> Vec<Track> {
             names: names([composers, credits].concat()),
             duration: song.duration.map(duration).unwrap_or_default().into(),
             loved: song.starred.is_some(),
+            rating: stars_of(song.user_rating),
             years: years.into(),
             performed: performed_alone.into(),
             work: work.into(),
@@ -4613,6 +4631,7 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
             }
             ui.set_header_title(artist.artist.name.as_str().into());
             ui.set_header_facts(count(artist.album.len(), "album", "albums").into());
+            ratings::show_header(ui, browser, &artist.artist.id, artist.artist.user_rating);
             browser.borrow_mut().own_albums = own_albums_of(&artist.artist, &artist.album)
                 .map(|album| format!("album:{}", album.id))
                 .collect();
@@ -4787,6 +4806,7 @@ fn song_track(song: &Child) -> Track {
         names: names(artists.into_iter().chain(album).collect()),
         duration: song.duration.map(duration).unwrap_or_default().into(),
         loved: song.starred.is_some(),
+        rating: stars_of(song.user_rating),
         ..Track::default()
     }
 }

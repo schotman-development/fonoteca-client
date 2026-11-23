@@ -1,6 +1,6 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
 export { AccentChoice, AlbumTile, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
 
@@ -100,6 +100,8 @@ export struct Track {
     split: int,
     duration: string,
     loved: bool,
+    // The stars its song is rated, 0 for none.
+    rating: int,
     // Whether the song is kept on this device, and whether it was asked for
     // on its own.
     downloaded: bool,
@@ -1563,7 +1565,12 @@ export component AppWindow inherits Window {
     in-out property <bool> look-up-lyrics;
     callback choose-look-up-lyrics(allowed: bool);
     in property <bool> playing-loved;
+    in property <int> playing-rating;
     callback toggle-playing-love();
+    callback rate-playing(stars: int);
+    // A song, album or artist was rated, whatever the page; for the queue's
+    // copy and the sheet's stars.
+    callback song-rated(id: string, stars: int);
     // A song was loved or unloved, whatever the page; for the sheet's heart.
     callback song-loved(id: string, loved: bool);
     callback add-playing-to-playlist(id: string);
@@ -1830,6 +1837,18 @@ export component AppWindow inherits Window {
     callback tiles-in-view(first: int, last: int);
     callback toggle-love(row: int);
     callback toggle-line-love(row: int);
+    // Rates the song of an album's or playlist's track, or of a table's row,
+    // or the album or artist on screen, `stars` out of five, which clears the
+    // rating it already has.
+    callback rate-track(row: int, stars: int);
+    callback rate-line(row: int, stars: int);
+    callback rate-header(stars: int);
+    // Whether the account may rate: not after the server said it may not.
+    in property <bool> may-rate: true;
+    // The stars the album or artist on screen is rated.
+    in property <int> header-rating;
+    // The albums the server rates highest, for the home page.
+    in property <[AlbumTile]> rated-albums;
     callback toggle-track-column(index: int);
     // Sorts the page's table by its `index`th column shown, or turns that
     // around.
@@ -2524,6 +2543,13 @@ export component AppWindow inherits Window {
                         selecting: root.selected-tiles > 0;
                         select(index, range) => { root.select-tile(index, range); }
                     }
+                    if root.page == Page.home && root.rated-albums.length > 0: CoverShelf {
+                        title: "Top rated albums";
+                        tiles: root.rated-albums;
+                        entries: root.can-play ? root.queue-entries : [];
+                        activated(index, id) => { root.queue-link(root.rated-albums[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
                     if root.page == Page.home && root.played-albums.length > 0: CoverShelf {
                         title: "Last played albums";
                         tiles: root.played-albums;
@@ -2756,6 +2782,12 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                        if root.may-rate && (root.page == Page.album || root.page == Page.artist): StarRating {
+                            cross-axis-self-alignment: center;
+                            rating: root.header-rating;
+                            subject: root.header-title;
+                            rate(stars) => { root.rate-header(stars); }
+                        }
                         if root.created-for: Button {
                             cross-axis-self-alignment: center;
                             text: "Save to library";
@@ -2950,6 +2982,8 @@ export component AppWindow inherits Window {
                                 split: track.split;
                                 duration: track.duration;
                                 loved: track.loved;
+                                rating: track.rating;
+                                may-rate: root.may-rate;
                                 years: track.years;
                                 performed: track.performed;
                                 unavailable: track.unavailable;
@@ -2974,6 +3008,7 @@ export component AppWindow inherits Window {
                                 add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
                                 remove => { root.remove-from-playlist(row); }
                                 toggle-love => { root.toggle-love(row); }
+                                rate(stars) => { root.rate-track(row, stars); }
                                 tag => {
                                     root.tag-track(row);
                                     root.ask(Asking.tag-songs);
@@ -3296,6 +3331,8 @@ export component AppWindow inherits Window {
                                 }
                                 remove => { root.remove-from-playlist(line.position); }
                                 toggle-love => { root.toggle-line-love(row); }
+                                may-rate: root.may-rate && root.page != Page.compositions;
+                                rate(stars) => { root.rate-line(row, stars); }
                                 select(range) => { root.select-line(row, range); }
                                 add-to-playlist(id) => { root.add-line-to-playlist(row, id); }
                                 tag => {
@@ -4291,6 +4328,8 @@ export component AppWindow inherits Window {
                     names: root.playing-names;
                     album: root.playing-album;
                     loved: root.playing-loved;
+                    rating: root.playing-rating;
+                    may-rate: root.may-rate;
                     playlists: root.playlist-targets;
                     taggable: root.tags-offered;
                     output-devices: root.output-devices;
@@ -4313,6 +4352,7 @@ export component AppWindow inherits Window {
                     open-playing => { root.toggle-now-playing(); }
                     open(link) => { root.open-from-now-playing(link); }
                     toggle-love => { root.toggle-playing-love(); }
+                    rate(stars) => { root.rate-playing(stars); }
                     add-to-playlist(id) => { root.add-playing-to-playlist(id); }
                     tag => {
                         root.tag-playing();
@@ -4751,6 +4791,11 @@ export component AppWindow inherits Window {
                                             label: "Lyrics";
                                             clicked => { root.show-lyrics(); }
                                         }
+                                        if root.may-rate: StarRating {
+                                            rating: root.playing-rating;
+                                            subject: root.playing-title;
+                                            rate(stars) => { root.rate-playing(stars); }
+                                        }
                                         IconButton {
                                             icon: Icons.heart;
                                             filled: root.playing-loved;
@@ -4764,14 +4809,17 @@ export component AppWindow inherits Window {
                                             line: {
                                                 title: root.playing-title,
                                                 loved: root.playing-loved,
+                                                rating: root.playing-rating,
                                                 album: root.playing-album,
                                                 artists: root.playing-names,
                                             };
                                             playlists: root.playlist-targets;
                                             taggable: root.tags-offered;
                                             selectable: false;
+                                            may-rate: root.may-rate;
                                             open(link) => { root.open-from-now-playing(link); }
                                             toggle-love => { root.toggle-playing-love(); }
+                                            rate(stars) => { root.rate-playing(stars); }
                                             add-to-playlist(id) => { root.add-playing-to-playlist(id); }
                                             tag => {
                                                 root.tag-playing();

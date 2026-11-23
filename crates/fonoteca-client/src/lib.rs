@@ -1009,6 +1009,9 @@ mod tests {
 
     /// The ids the server was asked to star.
     static STARRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// What the server was asked to rate, as "id=stars". It refuses the song s1,
+    /// as an account without the comment role is.
+    static RATED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// The songs of the playlist `WORKS`: the classical album's four
     /// movements of Symphony No. 5 together, its overture, then its second
     /// and third movements alone, numbered as Fonoteca numbers them.
@@ -2280,6 +2283,15 @@ mod tests {
                 FIRST_COVERS.lock().unwrap().extend(id.map(str::to_owned));
             }
             reply("200 OK", "image/png", PNG)
+        } else if request.contains("/rest/setRating") {
+            let stars = param("rating").unwrap_or_default();
+            RATED.lock().unwrap().push(format!("{}={stars}", id.unwrap_or_default()));
+            if id == Some("s1") {
+                return json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Not allowed"}}}"#,
+                );
+            }
+            json(OK)
         } else if request.contains("/rest/unstar")
             || (request.contains("/rest/star") && id == Some("w5"))
         {
@@ -4629,6 +4641,30 @@ mod tests {
             click_heart(&ui, true);
             wait_for("the refused unstar", || ui.get_page_problem() != "").await;
             assert!(ui.get_tracks().iter().all(|track| track.loved));
+
+            // A rating shows at once and is sent, a press on the rating takes
+            // it back, and the album's own goes by its id. A server that
+            // refuses it, as for an account without the comment role, gets the
+            // stars put back and the controls taken away.
+            assert!(ui.get_may_rate());
+            let problem_before = ui.get_page_problem();
+            ui.invoke_rate_track(1, 4);
+            assert_eq!(ui.get_tracks().row_data(1).unwrap().rating, 4);
+            wait_for("the rating sent", || *RATED.lock().unwrap() == ["s2=4"]).await;
+            ui.invoke_rate_track(1, 4);
+            assert_eq!(ui.get_tracks().row_data(1).unwrap().rating, 0);
+            wait_for("the rating taken back", || RATED.lock().unwrap().len() == 2).await;
+            assert_eq!(RATED.lock().unwrap()[1], "s2=0");
+            ui.invoke_rate_header(3);
+            assert_eq!(ui.get_header_rating(), 3);
+            wait_for("the album's rating sent", || RATED.lock().unwrap().len() == 3).await;
+            assert_eq!(RATED.lock().unwrap()[2], "a1=3");
+            assert!(ui.get_may_rate());
+            ui.invoke_rate_track(0, 2);
+            assert_eq!(ui.get_tracks().row_data(0).unwrap().rating, 2);
+            wait_for("the refused rating", || !ui.get_may_rate()).await;
+            assert_eq!(ui.get_tracks().row_data(0).unwrap().rating, 0, "put back");
+            assert_eq!(ui.get_page_problem(), problem_before, "no problem for an account that may not rate");
 
             click(&ui, "Mara Lind");
             wait_for("the artist", || {

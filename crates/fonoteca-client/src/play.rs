@@ -295,6 +295,27 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
             }
         }
     });
+    ui.on_rate_playing({
+        let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
+        move |pressed| {
+            let ui = weak.unwrap();
+            if let Some(id) = shown_song_id(&playing.borrow()) {
+                browse::rate(&ui, &browser, id, ui.get_playing_rating(), pressed);
+            }
+        }
+    });
+    // Whichever way an item is rated, the queue's copy and the sheet's stars
+    // follow.
+    ui.on_song_rated({
+        let (weak, playing) = (ui.as_weak(), playing.clone());
+        move |id, stars| {
+            let mut p = playing.borrow_mut();
+            p.queue.set_rating(&id, stars);
+            if shown_song_id(&p).as_deref() == Some(id.as_str()) {
+                weak.unwrap().set_playing_rating(stars);
+            }
+        }
+    });
     ui.on_add_playing_to_playlist({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |playlist| {
@@ -1671,6 +1692,7 @@ fn show_station(ui: &AppWindow, browser: &browse::Shared, tuned: &Tuned) {
     ui.set_playing_names(ModelRc::new(VecModel::from(vec![line])));
     ui.set_playing_album(Name::default());
     ui.set_playing_loved(false);
+    ui.set_playing_rating(0);
     ui.set_playing_shown(ui.get_playing_shown() + 1);
     ui.set_playing_duration(0.0);
     ui.set_playing_waveform(ModelRc::default());
@@ -1723,6 +1745,7 @@ fn show_song(
             .map_or_else(SharedString::new, |id| format!("album:{id}").into()),
     });
     ui.set_playing_loved(song.starred.is_some());
+    ui.set_playing_rating(browse::stars_of(song.user_rating));
     ui.set_queue_holds_works(p.queue.songs().any(|song| !song.works.is_empty()));
     ui.set_playing_shown(ui.get_playing_shown() + 1);
     ui.set_playing_duration(song.duration.unwrap_or_default() as f32);

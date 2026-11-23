@@ -141,6 +141,7 @@ export struct AlbumTile {
 
 export global Icons {
     out property <string> smart: "M13 3L5 14h6l-1 7 8-11h-6z";
+    out property <string> star: "M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z";
     out property <string> heart: "M12 20s-7.5-4.6-9.2-9.4C1.6 7.2 3.8 4 7 4c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.2 0 5.4 3.2 4.2 6.6C19.5 15.4 12 20 12 20z";
     out property <string> back: "M15 5l-7 7 7 7";
     out property <string> link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1";
@@ -654,6 +655,40 @@ export component IconButton inherits Pressable {
         stroke: root.enabled ? root.color : Theme.muted.transparentize(60%);
         stroke-width: root.stroke;
         fill: root.filled ? root.color : transparent;
+    }
+}
+
+// The choices of a "Rate" menu entry, one to five stars, each linking to its
+// number, with the one the item has marked.
+export global StarChoices {
+    public pure function of(rating: int) -> [Name] {
+        return [
+            { label: "1 star" + (rating == 1 ? ", yours" : ""), link: "1" },
+            { label: "2 stars" + (rating == 2 ? ", yours" : ""), link: "2" },
+            { label: "3 stars" + (rating == 3 ? ", yours" : ""), link: "3" },
+            { label: "4 stars" + (rating == 4 ? ", yours" : ""), link: "4" },
+            { label: "5 stars" + (rating == 5 ? ", yours" : ""), link: "5" },
+        ];
+    }
+}
+
+// Five stars, the first `rating` of them lit. A press says which star; the
+// owner decides what that does to the rating, as a press on the one that is
+// the rating clears it.
+export component StarRating inherits HorizontalLayout {
+    in property <int> rating;
+    in property <string> subject;
+    callback rate(stars: int);
+
+    for star in [1, 2, 3, 4, 5]: IconButton {
+        width: Screen.phone ? Theme.phone-target : 26px;
+        icon: Icons.star;
+        filled: star <= root.rating;
+        color: star <= root.rating ? Theme.accent : Theme.muted;
+        label: "Rate " + root.subject + " " + star + (star == 1 ? " star" : " stars");
+        accessible-checkable: true;
+        accessible-checked: star == root.rating;
+        clicked => { root.rate(star); }
     }
 }
 
@@ -1363,6 +1398,9 @@ export component TrackRow inherits Pressable {
     in property <string> performed;
     in property <bool> loved;
     in property <bool> lovable: true;
+    // The stars its song is rated, 0 for none, and whether its menu rates.
+    in property <int> rating;
+    in property <bool> may-rate;
     // Whether it shows its album's cover before its title, at the size of
     // the tracks table's cover column.
     in property <bool> covered;
@@ -1395,6 +1433,7 @@ export component TrackRow inherits Pressable {
     in property <bool> unavailable;
     callback open(link: string);
     callback toggle-love();
+    callback rate(stars: int);
     // With Shift held, everything from the row last picked to this one.
     callback select(range: bool);
     callback add-to-playlist(id: string);
@@ -1509,7 +1548,7 @@ export component TrackRow inherits Pressable {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
-        if !root.unavailable && (root.playlists.length > 0 || root.removable || root.taggable || root.playable || root.downloadable): MoreMenu {
+        if !root.unavailable && (root.may-rate || root.playlists.length > 0 || root.removable || root.taggable || root.playable || root.downloadable): MoreMenu {
             cross-axis-self-alignment: center;
             label: "More for " + root.title;
             opening => {
@@ -1518,6 +1557,9 @@ export component TrackRow inherits Pressable {
                     self.entries.push({ id: "play", label: "Play from here", icon: Icons.play });
                     self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
                     self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
+                }
+                if root.may-rate {
+                    self.entries.push({ id: "rate", label: "Rate", icon: Icons.star, choices: StarChoices.of(root.rating) });
                 }
                 if root.playlists.length > 0 {
                     self.entries.push({ id: "playlist", label: "Add to playlist", icon: Icons.playlist, choices: root.playlists });
@@ -1540,6 +1582,8 @@ export component TrackRow inherits Pressable {
                     root.play();
                 } else if id == "next" || id == "queue" {
                     root.queue(id == "next");
+                } else if id == "rate" {
+                    root.rate(choice.to-float());
                 } else if id == "playlist" {
                     root.add-to-playlist(choice);
                 } else if id == "tags" {
@@ -1580,6 +1624,8 @@ export struct TrackLine {
     title: string,
     cells: [[Name]],
     loved: bool,
+    // The stars its song is rated, 0 for none.
+    rating: int,
     cover: image,
     folder: bool,
     selected: bool,
@@ -1933,8 +1979,11 @@ export component TrackMenu inherits MoreMenu {
     // playlist.
     in property <bool> downloadable-songs;
     in property <bool> removable;
+    // Whether it rates the song: not when the account may not.
+    in property <bool> may-rate;
     callback open(link: string);
     callback toggle-love();
+    callback rate(stars: int);
     callback select(range: bool);
     callback add-to-playlist(id: string);
     callback remove();
@@ -1954,6 +2003,9 @@ export component TrackMenu inherits MoreMenu {
             self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
         }
         self.entries.push({ id: "love", label: root.line.loved ? "Unlove" : "Love", icon: Icons.heart });
+        if root.may-rate && !root.line.folder {
+            self.entries.push({ id: "rate", label: "Rate", icon: Icons.star, choices: StarChoices.of(root.line.rating) });
+        }
         if root.line.album.link != "" {
             self.entries.push({ id: "album", label: "Go to album", icon: Icons.album });
         }
@@ -1993,6 +2045,8 @@ export component TrackMenu inherits MoreMenu {
             root.queue(id == "next");
         } else if id == "love" {
             root.toggle-love();
+        } else if id == "rate" {
+            root.rate(choice.to-float());
         } else if id == "album" {
             root.open(root.line.album.link);
         } else if id == "artist" {
@@ -2037,8 +2091,10 @@ export component TrackLineRow inherits Rectangle {
     // take off the playlist.
     in property <bool> downloadable-songs;
     in property <bool> removable;
+    in property <bool> may-rate;
     callback open(link: string);
     callback toggle-love();
+    callback rate(stars: int);
     // With Shift held, everything from the row last picked to this one.
     callback select(range: bool);
     callback add-to-playlist(id: string);
@@ -2153,8 +2209,10 @@ export component TrackLineRow inherits Rectangle {
                 downloadable: root.downloadable;
                 downloadable-songs: root.downloadable-songs;
                 removable: root.removable;
+                may-rate: root.may-rate;
                 open(link) => { root.open(link); }
                 toggle-love => { root.toggle-love(); }
+                rate(stars) => { root.rate(stars); }
                 select(range) => { root.select(range); }
                 add-to-playlist(id) => { root.add-to-playlist(id); }
                 remove => { root.remove(); }
@@ -5142,6 +5200,8 @@ export component PlayerBar inherits Rectangle {
     in property <[Name]> names;
     in property <Name> album;
     in property <bool> loved;
+    in property <int> rating;
+    in property <bool> may-rate;
     // The playlists the song's menu adds to, and whether it tags.
     in property <[Name]> playlists;
     in property <bool> taggable;
@@ -5179,6 +5239,7 @@ export component PlayerBar inherits Rectangle {
     callback cycle-repeat();
     callback open(link: string);
     callback toggle-love();
+    callback rate(stars: int);
     callback add-to-playlist(id: string);
     callback tag();
     callback list-devices();
@@ -5353,14 +5414,17 @@ export component PlayerBar inherits Rectangle {
                         line: {
                             title: root.title,
                             loved: root.loved,
+                            rating: root.rating,
                             album: root.album,
                             artists: root.names,
                         };
                         playlists: root.playlists;
                         taggable: root.taggable;
                         selectable: false;
+                        may-rate: root.may-rate;
                         open(link) => { root.open(link); }
                         toggle-love => { root.toggle-love(); }
+                        rate(stars) => { root.rate(stars); }
                         add-to-playlist(id) => { root.add-to-playlist(id); }
                         tag => { root.tag(); }
                     }
