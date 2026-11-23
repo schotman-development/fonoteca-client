@@ -23,6 +23,8 @@ use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use playback::{NetworkProtocol, OutputDevice, OutputKind};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
+mod similar;
+
 use crate::active::Active;
 use crate::queue::{Moved, Plan, Queue, Row, Shape, plan, run_from};
 use crate::radio;
@@ -441,6 +443,7 @@ fn show_stream_quality(ui: &AppWindow, saved: &prefs::Prefs) {
 /// Puts songs in the queue from the pages' menus, and has the now playing
 /// page's list of it jump, reorder, take out and clear.
 fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
+    similar::wire(ui, browser, playing);
     ui.on_queue_tracks({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |row, count, next| {

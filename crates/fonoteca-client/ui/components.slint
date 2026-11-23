@@ -1417,6 +1417,8 @@ export component TrackRow inherits Pressable {
     in property <bool> taggable;
     // Whether its menu can play from it.
     in property <bool> playable;
+    // Whether the server can make a path of songs to its song.
+    in property <bool> pathable;
     // Whether its menu can download its song, or take back a download of it
     // alone.
     in property <bool> downloadable;
@@ -1444,6 +1446,9 @@ export component TrackRow inherits Pressable {
     callback remove-download();
     // Puts its song in the queue, to play next or at the end.
     callback queue(next: bool);
+    // Songs that sound like its song: "play" or "queue" them, or make a
+    // "path" to it.
+    callback similar(how: string);
     label: self.title;
     enabled: !root.unavailable;
     opacity: root.unavailable ? 0.45 : 1;
@@ -1557,6 +1562,11 @@ export component TrackRow inherits Pressable {
                     self.entries.push({ id: "play", label: "Play from here", icon: Icons.play });
                     self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
                     self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
+                    self.entries.push({ id: "similar-play", label: "Play similar", icon: Icons.play });
+                    self.entries.push({ id: "similar-queue", label: "Add similar to queue", icon: Icons.queue });
+                }
+                if root.playable && root.pathable {
+                    self.entries.push({ id: "similar-path", label: "Make a path to here", icon: Icons.forward });
                 }
                 if root.may-rate {
                     self.entries.push({ id: "rate", label: "Rate", icon: Icons.star, choices: StarChoices.of(root.rating) });
@@ -1584,6 +1594,12 @@ export component TrackRow inherits Pressable {
                     root.queue(id == "next");
                 } else if id == "rate" {
                     root.rate(choice.to-float());
+                } else if id == "similar-play" {
+                    root.similar("play");
+                } else if id == "similar-queue" {
+                    root.similar("queue");
+                } else if id == "similar-path" {
+                    root.similar("path");
                 } else if id == "playlist" {
                     root.add-to-playlist(choice);
                 } else if id == "tags" {
@@ -1981,6 +1997,8 @@ export component TrackMenu inherits MoreMenu {
     in property <bool> removable;
     // Whether it rates the song: not when the account may not.
     in property <bool> may-rate;
+    // Whether the server can make a path of songs to this one.
+    in property <bool> pathable;
     callback open(link: string);
     callback toggle-love();
     callback rate(stars: int);
@@ -1991,6 +2009,9 @@ export component TrackMenu inherits MoreMenu {
     callback play();
     // Puts the song in the queue, to play next or at the end.
     callback queue(next: bool);
+    // Songs that sound like it, as `how` says: "play" or "queue" them, or
+    // make a "path" to it from the end of the queue.
+    callback similar(how: string);
     callback download();
     callback remove-download();
 
@@ -2001,6 +2022,13 @@ export component TrackMenu inherits MoreMenu {
             self.entries.push({ id: "play", label: root.line.folder ? "Play now" : "Play from here", icon: Icons.play });
             self.entries.push({ id: "next", label: "Play next", icon: Icons.next });
             self.entries.push({ id: "queue", label: "Add to queue", icon: Icons.queue });
+        }
+        if root.playable && !root.line.folder {
+            self.entries.push({ id: "similar-play", label: "Play similar", icon: Icons.play });
+            self.entries.push({ id: "similar-queue", label: "Add similar to queue", icon: Icons.queue });
+        }
+        if root.playable && root.pathable && !root.line.folder {
+            self.entries.push({ id: "similar-path", label: "Make a path to here", icon: Icons.forward });
         }
         self.entries.push({ id: "love", label: root.line.loved ? "Unlove" : "Love", icon: Icons.heart });
         if root.may-rate && !root.line.folder {
@@ -2043,6 +2071,12 @@ export component TrackMenu inherits MoreMenu {
             root.play();
         } else if id == "next" || id == "queue" {
             root.queue(id == "next");
+        } else if id == "similar-play" {
+            root.similar("play");
+        } else if id == "similar-queue" {
+            root.similar("queue");
+        } else if id == "similar-path" {
+            root.similar("path");
         } else if id == "love" {
             root.toggle-love();
         } else if id == "rate" {
@@ -2092,6 +2126,7 @@ export component TrackLineRow inherits Rectangle {
     in property <bool> downloadable-songs;
     in property <bool> removable;
     in property <bool> may-rate;
+    in property <bool> pathable;
     callback open(link: string);
     callback toggle-love();
     callback rate(stars: int);
@@ -2103,6 +2138,9 @@ export component TrackLineRow inherits Rectangle {
     callback play();
     // Puts its song in the queue, to play next or at the end.
     callback queue(next: bool);
+    // Songs that sound like its song: "play" or "queue" them, or make a
+    // "path" to it.
+    callback similar(how: string);
     callback download();
     callback remove-download();
     property <bool> shift;
@@ -2210,6 +2248,7 @@ export component TrackLineRow inherits Rectangle {
                 downloadable-songs: root.downloadable-songs;
                 removable: root.removable;
                 may-rate: root.may-rate;
+                pathable: root.pathable;
                 open(link) => { root.open(link); }
                 toggle-love => { root.toggle-love(); }
                 rate(stars) => { root.rate(stars); }
@@ -2219,6 +2258,7 @@ export component TrackLineRow inherits Rectangle {
                 tag => { root.tag(); }
                 play => { root.play(); }
                 queue(next) => { root.queue(next); }
+                similar(how) => { root.similar(how); }
                 download => { root.download(); }
                 remove-download => { root.remove-download(); }
             }
@@ -2856,7 +2896,10 @@ export component SelectionBar inherits Rectangle {
 // or add them to the queue.
 export component PlayButton inherits HorizontalLayout {
     in property <bool> enabled: true;
+    // Whether its menu can play songs that sound like what it plays.
+    in property <bool> similar-offered;
     callback play();
+    callback similar();
     // How to queue the songs: "next", "queue", "shuffle-now", "shuffle-next"
     // or "shuffle-last".
     callback queue(how: string);
@@ -2952,14 +2995,25 @@ export component PlayButton inherits HorizontalLayout {
             filled: false;
             color: Theme.on-accent;
             hover-color: transparent;
-            entries: [
-                { id: "next", label: "Play next", icon: Icons.next },
-                { id: "queue", label: "Add to queue", icon: Icons.queue },
-                { id: "shuffle-now", label: "Shuffle now", icon: Icons.shuffle },
-                { id: "shuffle-next", label: "Shuffle next", icon: Icons.shuffle },
-                { id: "shuffle-last", label: "Shuffle last", icon: Icons.shuffle },
-            ];
-            activated(id, choice) => { root.queue(id); }
+            opening => {
+                self.entries = [
+                    { id: "next", label: "Play next", icon: Icons.next },
+                    { id: "queue", label: "Add to queue", icon: Icons.queue },
+                    { id: "shuffle-now", label: "Shuffle now", icon: Icons.shuffle },
+                    { id: "shuffle-next", label: "Shuffle next", icon: Icons.shuffle },
+                    { id: "shuffle-last", label: "Shuffle last", icon: Icons.shuffle },
+                ];
+                if root.similar-offered {
+                    self.entries.push({ id: "similar", label: "Play something like this", icon: Icons.play });
+                }
+            }
+            activated(id, choice) => {
+                if id == "similar" {
+                    root.similar();
+                } else {
+                    root.queue(id);
+                }
+            }
         }
     }
 }

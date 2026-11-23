@@ -1800,6 +1800,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "artist" => {
             ui.set_page(Page::Artist);
+            ui.set_shown_id(id.as_str().into());
             artist(ui, browser, id);
         }
         "playlist" => {
@@ -2272,6 +2273,7 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     ui.set_folders_offered(offers(&b, FOLDERS));
     ui.set_smart_offered(offers(&b, SMART_PLAYLISTS));
     ui.set_tags_offered(offers(&b, TAGS));
+    ui.set_sonic_paths_offered(offers(&b, opensubsonic::SONIC_SIMILARITY));
     #[cfg(not(target_family = "wasm"))]
     {
         let decides = offers(&b, crate::quality::TRANSCODING);

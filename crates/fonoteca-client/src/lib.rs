@@ -1097,6 +1097,8 @@ mod tests {
     static SAVE_DOWN: AtomicBool = AtomicBool::new(false);
     static SAVE_REFUSED: AtomicBool = AtomicBool::new(false);
     static NO_MOTION: AtomicBool = AtomicBool::new(false);
+    /// While set, the server has analysed no song, so none sounds like another.
+    static NOTHING_SIMILAR: AtomicBool = AtomicBool::new(false);
     /// While set, the classical album's motion cover takes a while to come.
     static SLOW_MOTION: AtomicBool = AtomicBool::new(false);
     static MOTIONS_ASKED: AtomicUsize = AtomicUsize::new(0);
@@ -1792,7 +1794,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}{indexed}{smart}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}{indexed}{smart},{{"name":"sonicSimilarity","versions":[1]}}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1961,6 +1963,16 @@ mod tests {
             ok(&format!(r#""album":{{{},"song":{songs}}}"#, album_now()))
         } else if request.contains("/rest/getSong") && id == Some("t1") {
             ok(&format!(r#""song":{HARBOUR_LIGHTS}"#))
+        } else if request.contains("/rest/getSonicSimilarTracks") {
+            ok(if NOTHING_SIMILAR.load(Relaxed) {
+                r#""sonicMatch":[]"#
+            } else {
+                r#""sonicMatch":[{"entry":{"id":"sim1","isDir":false,"title":"Alike","duration":100},"similarity":0.9}]"#
+            })
+        } else if request.contains("/rest/findSonicPath") {
+            ok(
+                r#""sonicMatch":[{"entry":{"id":"q1","isDir":false,"title":"Song"},"similarity":1},{"entry":{"id":"mid","isDir":false,"title":"Between"},"similarity":0.6},{"entry":{"id":"s1","isDir":false,"title":"Harbour Lights"},"similarity":0.2}]"#,
+            )
         } else if request.contains("/rest/getSong") && id == Some("t2") {
             ok(
                 r#""song":{"id":"t2","parent":"d2","isDir":false,"title":"Rope and Anchor","duration":218}"#,
@@ -6524,6 +6536,30 @@ mod tests {
             assert_eq!(track_picks(&ui), [false, true]);
             ui.invoke_clear_selection();
             assert_eq!(track_picks(&ui), [false, false]);
+            // A track row's menu queues songs that sound like its song, and
+            // says so when none has been analysed; and makes a path to its
+            // song from the end of the queue, which the queue has already.
+            let song_menu = format!("More for {top}");
+            let queued = opensubsonic::Child {
+                id: "q1".into(),
+                title: "Song".into(),
+                ..Default::default()
+            };
+            play::testing::show_song(&ui, vec![queued.clone()], 0);
+            click(&ui, &song_menu);
+            click(&ui, "Add similar to queue");
+            wait_for("the similar song queued", || play::testing::queued_ids().0 == ["q1", "sim1"]).await;
+            NOTHING_SIMILAR.store(true, Relaxed);
+            click(&ui, &song_menu);
+            click(&ui, "Add similar to queue");
+            wait_for("the nothing yet notice", || ui.get_notice() == "Nothing to compare yet.").await;
+            assert_eq!(play::testing::queued_ids().0, ["q1", "sim1"]);
+            NOTHING_SIMILAR.store(false, Relaxed);
+            play::testing::show_song(&ui, vec![queued], 0);
+            click(&ui, &song_menu);
+            click(&ui, "Make a path to here");
+            wait_for("the path queued", || play::testing::queued_ids().0 == ["q1", "mid", "s1"]).await;
+            play::testing::clear(&ui);
             // A finger held on a name under the title picks the row too. The
             // page's header names the artists as well, above the rows.
             let artist = ui.get_tracks().row_data(1).unwrap().names.row_data(0).unwrap().label;

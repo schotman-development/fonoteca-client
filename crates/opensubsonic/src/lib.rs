@@ -2015,4 +2015,62 @@ mod tests {
             log[4]
         );
     }
+
+    #[tokio::test]
+    async fn similar_songs_come_from_the_analysis_where_the_server_has_it() {
+        fn song(id: &str) -> String {
+            format!(r#"{{"id":"{id}","title":"T","isDir":false}}"#)
+        }
+        let (server, log) = serve(|request| {
+            let body = if request.contains("getOpenSubsonicExtensions") {
+                r#","openSubsonicExtensions":[{"name":"sonicSimilarity","versions":[1]}]"#.into()
+            } else if request.contains("id=empty") {
+                String::new()
+            } else if request.contains("getSonicSimilarTracks") {
+                format!(
+                    r#","sonicMatch":[{{"entry":{},"similarity":0.9}}]"#,
+                    song("near")
+                )
+            } else if request.contains("findSonicPath") {
+                let ends = [song("a"), song("b")];
+                format!(
+                    r#","sonicMatch":[{{"entry":{},"similarity":1}},{{"entry":{},"similarity":0.5}}]"#,
+                    ends[0], ends[1]
+                )
+            } else {
+                format!(r#","similarSongs":{{"song":[{}]}}"#, song("older"))
+            };
+            json(&format!(
+                r#"{{"subsonic-response":{{"status":"ok","version":"1.16.1"{body}}}}}"#
+            ))
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let ids = |songs: Vec<Child>| songs.into_iter().map(|song| song.id).collect::<Vec<_>>();
+
+        assert_eq!(ids(client.similar_songs("s", 50).await.unwrap()), ["older"]);
+        client.get_open_subsonic_extensions().await.unwrap();
+        assert_eq!(ids(client.similar_songs("s", 50).await.unwrap()), ["near"]);
+        assert!(client.similar_songs("empty", 50).await.unwrap().is_empty());
+        let path = client.find_sonic_path("a", "b", Some(25)).await.unwrap();
+        assert_eq!(
+            ids(path.into_iter().map(|found| found.entry).collect()),
+            ["a", "b"]
+        );
+        let log = log.lock().unwrap();
+        assert!(
+            log[0].contains("getSimilarSongs") && log[0].contains("count=50"),
+            "{}",
+            log[0]
+        );
+        assert!(
+            log[2].contains("getSonicSimilarTracks") && log[2].contains("count=50"),
+            "{}",
+            log[2]
+        );
+        assert!(
+            log[4].contains("startSongId=a") && log[4].contains("endSongId=b"),
+            "{}",
+            log[4]
+        );
+    }
 }

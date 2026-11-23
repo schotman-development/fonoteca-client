@@ -1770,6 +1770,8 @@ export component AppWindow inherits Window {
     // be moved, as names linking to folder or tag ids, "" the top level.
     in property <bool> folders-offered;
     in property <bool> tags-offered;
+    // Whether the server can make a path of songs between two songs.
+    in property <bool> sonic-paths-offered;
     in property <string> shown-id;
     in property <[Name]> move-targets;
     // Where the playlists on the playlists page can be moved, and those
@@ -1920,6 +1922,11 @@ export component AppWindow inherits Window {
     callback queue-link(link: string, how: string);
     callback queue-page(how: string);
     callback queue-selection(how: string);
+    // Songs that sound like the song of a row: `how` is "play" or "queue"
+    // them, or "path" for a path to it from the end of the queue; or like
+    // the artist on screen.
+    callback similar-song(row: int, how: string);
+    callback similar-artist();
     // The queue on the now playing sheet, by its rows there: the first is
     // the track playing.
     callback jump-to(row: int);
@@ -2770,6 +2777,8 @@ export component AppWindow inherits Window {
                                 }
                             }
                             queue(how) => { root.queue-page(how); }
+                            similar-offered: root.page == Page.artist;
+                            similar => { root.similar-artist(); }
                         }
                         if root.can-download && root.may-download && (root.page == Page.album || (root.page == Page.playlist && !root.created-for)) && (root.tracks.length > 0 || root.track-lines.length > 0): DownloadButton {
                             state: root.download-state;
@@ -3005,6 +3014,7 @@ export component AppWindow inherits Window {
                                 playlists: root.playlist-targets;
                                 taggable: root.tags-offered;
                                 playable: root.can-play;
+                                pathable: root.sonic-paths-offered;
                                 downloadable: root.can-download && root.may-download;
                                 download-removable: track.downloaded-alone;
                                 open(link) => { root.open(link); }
@@ -3013,6 +3023,7 @@ export component AppWindow inherits Window {
                                 download => { root.download-track(row); }
                                 remove-download => { root.remove-track-download(row); }
                                 queue(next) => { root.queue-tracks(row, 1, next); }
+                                similar(how) => { root.similar-song(row, how); }
                                 add-to-playlist(id) => { root.add-track-to-playlist(row, id); }
                                 remove => { root.remove-from-playlist(row); }
                                 toggle-love => { root.toggle-love(row); }
@@ -3303,6 +3314,7 @@ export component AppWindow inherits Window {
                                 playlists: root.page == Page.compositions ? root.no-names : root.playlist-targets;
                                 taggable: root.tags-offered && root.page != Page.compositions;
                                 playable: root.can-play && root.page != Page.compositions;
+                                pathable: root.sonic-paths-offered;
                                 downloadable: root.can-download && root.may-download;
                                 downloadable-songs: root.page == Page.playlist && root.can-download && root.may-download;
                                 removable: root.page == Page.playlist && root.playlist-editable;
@@ -3322,6 +3334,7 @@ export component AppWindow inherits Window {
                                         root.queue-tracks(row, 1, next);
                                     }
                                 }
+                                similar(how) => { root.similar-song(row, how); }
                                 // A playlist's song goes by its place on it, as it may be on it twice.
                                 download => {
                                     if root.page == Page.playlist {

@@ -10,6 +10,9 @@ use crate::Stream;
 use crate::model::*;
 use crate::{Client, Error, Params, Result, ServerInfo};
 
+/// The extension with `getSonicSimilarTracks` and `findSonicPath`.
+pub const SONIC_SIMILARITY: &str = "sonicSimilarity";
+
 /// Which albums `getAlbumList` and `getAlbumList2` return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlbumListType {
@@ -1004,8 +1007,9 @@ impl Client {
 
     // Sonic similarity
 
-    /// Songs that sound like this one, by audio analysis. Needs
-    /// `sonicSimilarity`; `count` defaults to 10.
+    /// Songs that sound like this one, by audio analysis, most alike first;
+    /// none until the server has analysed its library. Needs
+    /// [`SONIC_SIMILARITY`]; `count` defaults to 10.
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/getsonicsimilartracks/>
     pub async fn get_sonic_similar_tracks(
@@ -1013,17 +1017,20 @@ impl Client {
         id: &str,
         count: Option<u32>,
     ) -> Result<Vec<SonicMatch>> {
-        self.call(
-            "getSonicSimilarTracks",
-            Params::new().req("id", id).opt("count", count),
-            "sonicMatch",
-        )
-        .await
+        let matches: Option<Vec<SonicMatch>> = self
+            .call(
+                "getSonicSimilarTracks",
+                Params::new().req("id", id).opt("count", count),
+                "sonicMatch",
+            )
+            .await?;
+        Ok(matches.unwrap_or_default())
     }
 
     /// A path of songs from one song to another through similar sound,
-    /// starting and ending with those two. Needs `sonicSimilarity`; `count`
-    /// defaults to 25.
+    /// starting and ending with those two, though it may be shorter than
+    /// `count`, which defaults to 25 and is at most 25. Needs
+    /// [`SONIC_SIMILARITY`].
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/findsonicpath/>
     pub async fn find_sonic_path(
@@ -1036,7 +1043,19 @@ impl Client {
             .req("startSongId", start_song_id)
             .req("endSongId", end_song_id)
             .opt("count", count);
-        self.call("findSonicPath", params, "sonicMatch").await
+        let path: Option<Vec<SonicMatch>> =
+            self.call("findSonicPath", params, "sonicMatch").await?;
+        Ok(path.unwrap_or_default())
+    }
+
+    /// Songs that sound like this one, from the audio analysis where the
+    /// server has [`SONIC_SIMILARITY`] and from `getSimilarSongs` where not.
+    pub async fn similar_songs(&self, id: &str, count: u32) -> Result<Vec<Child>> {
+        if !self.supports(SONIC_SIMILARITY) {
+            return Ok(self.get_similar_songs(id, Some(count)).await?.song);
+        }
+        let matches = self.get_sonic_similar_tracks(id, Some(count)).await?;
+        Ok(matches.into_iter().map(|found| found.entry).collect())
     }
 
     // Bookmarks
