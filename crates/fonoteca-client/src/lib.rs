@@ -1084,6 +1084,9 @@ mod tests {
     /// no motion covers; and how many it was asked for.
     static QUEUED: AtomicBool = AtomicBool::new(false);
     static INDEXED: AtomicBool = AtomicBool::new(false);
+    /// While set, the by-index queue lost its first song to the library, so
+    /// it is served without it and the index a place lower.
+    static LOST_FIRST: AtomicBool = AtomicBool::new(false);
     /// The play queues the server was asked to save, as `PLAYLIST_WRITES`
     /// has them; while set, it answers the next save as one restarting does,
     /// and every save as one that doesn't let the user.
@@ -2235,9 +2238,12 @@ mod tests {
             let song = |id: &str| {
                 format!(r#"{{"id":"{id}","isDir":false,"title":"Song {id}","duration":200}}"#)
             };
-            let entries = [song("d1"), song("d2"), song("d1")].join(",");
+            let (entries, index) = match LOST_FIRST.load(Relaxed) {
+                true => ([song("d2"), song("d1")].join(","), 1),
+                false => ([song("d1"), song("d2"), song("d1")].join(","), 2),
+            };
             ok(&format!(
-                r#""playQueueByIndex":{{"currentIndex":2,"position":7000,"username":"joe","changed":"2024-01-01T00:00:00Z","changedBy":"test","entry":[{entries}]}}"#
+                r#""playQueueByIndex":{{"currentIndex":{index},"position":7000,"username":"joe","changed":"2024-01-01T00:00:00Z","changedBy":"test","entry":[{entries}]}}"#
             ))
         } else if request.contains("/rest/savePlayQueue") {
             SAVES.lock().unwrap().push(write_of(request));
@@ -10002,6 +10008,24 @@ mod tests {
                 SAVES.lock().unwrap().clone(),
                 ["savePlayQueueByIndex id=d1&id=d2&id=d1&currentIndex=2&position=9000"]
             );
+
+            // A song the library lost before the playing one is left out and
+            // the index shifts with it, so the one resumed is still the
+            // second d1, now the queue's last.
+            LOST_FIRST.store(true, Relaxed);
+            play::testing::restore(&ui);
+            wait_for("the queue without the lost song", || {
+                play::testing::resume_point() == Some((1, 7.0))
+            })
+            .await;
+            SAVES.lock().unwrap().clear();
+            play::testing::save(1, 9.0);
+            wait_for("the save without it", || !SAVES.lock().unwrap().is_empty()).await;
+            assert_eq!(
+                SAVES.lock().unwrap().clone(),
+                ["savePlayQueueByIndex id=d2&id=d1&currentIndex=1&position=9000"]
+            );
+            LOST_FIRST.store(false, Relaxed);
             INDEXED.store(false, Relaxed);
             play::testing::ask_extensions().await;
             play::testing::clear(&ui);

@@ -1104,6 +1104,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_queue_goes_out_by_index_and_one_never_saved_comes_back_empty() {
+        let (server, log) = serve(|_| {
+            json(
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","playQueueByIndex":{"username":"joe","changed":"0001-01-01T00:00:00Z","changedBy":""}}}"#,
+            )
+        });
+        let client = Client::new(&server, Auth::ApiKey("SECRET".into())).unwrap();
+        client
+            .save_play_queue_by_index(&["d1", "d2", "d1"], Some(2), Some(7000))
+            .await
+            .unwrap();
+        let never_saved = client.get_play_queue_by_index().await.unwrap().unwrap();
+        assert!(never_saved.entry.is_empty() && never_saved.current_index.is_none());
+        let log = log.lock().unwrap();
+        assert!(
+            log[0].contains("id=d1&id=d2&id=d1&currentIndex=2&position=7000"),
+            "{}",
+            log[0]
+        );
+    }
+
+    #[tokio::test]
     async fn a_scrobble_says_what_plays_now_apart_from_a_play_with_its_time() {
         let (server, log) =
             serve(|_| json(r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#));
