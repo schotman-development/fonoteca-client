@@ -120,7 +120,7 @@ fn load_rules(ui: &AppWindow, browser: &Shared, id: String) {
             }
             let Some(json) = answer.playlist.smart_rules else {
                 drop(b);
-                return ui.set_smart_problem("This playlist has no rules to edit.".into());
+                return ui.set_smart_problem("The server keeps this playlist's rules in a form this app can't show, so they can only be edited where it was made.".into());
             };
             match SmartRules::from_value(json) {
                 Ok(rules) => {
