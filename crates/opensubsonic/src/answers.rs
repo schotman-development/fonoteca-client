@@ -317,7 +317,8 @@ impl Answers {
         if kept.answers.len() != before {
             kept.changes += 1;
         }
-        if let Change::Ages(reads) = change {
+        let reads = change.ages();
+        if !reads.is_empty() {
             let an_hour_ago = (self.clock)().saturating_sub(FRESH_FOR);
             let aged = (kept.answers.iter_mut())
                 .filter(|(read, _)| reads.iter().any(|reads| read.starts_with(reads)));
@@ -458,13 +459,18 @@ enum Change {
     /// None, but the answers to the calls whose names start with one of
     /// these are aged: shown at once and asked for again.
     Ages(&'static [&'static str]),
+    /// Both the answers that name one of the call's ids and these, aged.
+    NamingAndAges(&'static [&'static str]),
 }
 
 impl Change {
     fn of(call: &str, params: &[(&str, String)]) -> Option<Self> {
         match call {
             "startScan" => Some(Self::Everything),
-            "star" | "unstar" | "setRating" => Some(Self::Naming),
+            "star" | "unstar" => Some(Self::Naming),
+            // The lists of the albums rated highest don't name an album
+            // until it is rated.
+            "setRating" => Some(Self::NamingAndAges(&["getAlbumList2"])),
             "createPlaylist"
             | "updatePlaylist"
             | "createSmartPlaylist"
@@ -496,7 +502,7 @@ impl Change {
     fn outdates_call(&self, read: &str) -> bool {
         match self {
             Self::Everything => true,
-            Self::Naming | Self::Ages(_) => false,
+            Self::Naming | Self::Ages(_) | Self::NamingAndAges(_) => false,
             Self::Reads(reads) | Self::ReadsAndNaming(reads) => read.starts_with(reads),
         }
     }
@@ -504,7 +510,18 @@ impl Change {
     /// Whether the answers that name one of the call's values are out of
     /// date too.
     fn names(&self) -> bool {
-        matches!(self, Self::Naming | Self::ReadsAndNaming(_))
+        matches!(
+            self,
+            Self::Naming | Self::ReadsAndNaming(_) | Self::NamingAndAges(_)
+        )
+    }
+
+    /// The reads whose answers the call ages.
+    fn ages(&self) -> &'static [&'static str] {
+        match self {
+            Self::Ages(reads) | Self::NamingAndAges(reads) => reads,
+            _ => &[],
+        }
     }
 }
 
@@ -803,6 +820,26 @@ mod tests {
             "its page shows no plays"
         );
         assert!(answers.unsaved().is_some(), "saved aged");
+    }
+
+    #[test]
+    fn a_rating_ages_the_album_lists_for_the_albums_they_cannot_name_yet() {
+        let highest = key("getAlbumList2", &[("type", "highest")]);
+        let album = key("getAlbum", &[("id", "a2")]);
+        let answers = kept(&[
+            (&highest, r#"{"albumList2":{"album":[{"id":"a1"}]}}"#),
+            (&album, "{}"),
+        ]);
+        call(
+            &answers,
+            "setRating",
+            &params(&[("id", "a9"), ("rating", "5")]),
+        );
+        assert!(
+            answers.find(&highest).unwrap().aged,
+            "shown, then asked for again"
+        );
+        assert!(!answers.find(&album).unwrap().aged);
     }
 
     #[test]

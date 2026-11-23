@@ -299,7 +299,10 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |pressed| {
             let ui = weak.unwrap();
-            if let Some(id) = shown_song_id(&playing.borrow()) {
+            // Taken out first: rating calls back into the queue's handler,
+            // which borrows `playing` again.
+            let id = shown_song_id(&playing.borrow());
+            if let Some(id) = id {
                 browse::rate(&ui, &browser, id, ui.get_playing_rating(), pressed);
             }
         }
@@ -2630,6 +2633,13 @@ pub(crate) mod testing {
         let (_, playing) = handles();
         let p = playing.borrow();
         p.queue.songs().map(|song| song.starred.is_some()).collect()
+    }
+
+    /// The stars each song queued is rated, in order.
+    pub(crate) fn rated_ids() -> Vec<Option<i64>> {
+        let (_, playing) = handles();
+        let p = playing.borrow();
+        p.queue.songs().map(|song| song.user_rating).collect()
     }
 
     /// What is kept on this device, as the first window has it.

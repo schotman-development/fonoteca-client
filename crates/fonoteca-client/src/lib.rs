@@ -2285,7 +2285,10 @@ mod tests {
             reply("200 OK", "image/png", PNG)
         } else if request.contains("/rest/setRating") {
             let stars = param("rating").unwrap_or_default();
-            RATED.lock().unwrap().push(format!("{}={stars}", id.unwrap_or_default()));
+            RATED
+                .lock()
+                .unwrap()
+                .push(format!("{}={stars}", id.unwrap_or_default()));
             if id == Some("s1") {
                 return json(
                     r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":50,"message":"Not allowed"}}}"#,
@@ -4659,12 +4662,25 @@ mod tests {
             assert_eq!(ui.get_header_rating(), 3);
             wait_for("the album's rating sent", || RATED.lock().unwrap().len() == 3).await;
             assert_eq!(RATED.lock().unwrap()[2], "a1=3");
+            // On a phone all five stars fit beside the header's buttons.
+            ui.window().set_size(slint::LogicalSize::new(412.0, 915.0));
+            idle(Duration::from_millis(400)).await;
+            for stars in ["1 star", "5 stars"] {
+                let label = format!("Rate Night Harbour {stars}");
+                assert!(find(&ui, &label).is_some(), "{label} in sight");
+            }
+            ui.window().set_size(slint::LogicalSize::new(1100.0, 760.0));
+            idle(Duration::from_millis(400)).await;
             assert!(ui.get_may_rate());
             ui.invoke_rate_track(0, 2);
             assert_eq!(ui.get_tracks().row_data(0).unwrap().rating, 2);
             wait_for("the refused rating", || !ui.get_may_rate()).await;
             assert_eq!(ui.get_tracks().row_data(0).unwrap().rating, 0, "put back");
-            assert_eq!(ui.get_page_problem(), problem_before, "no problem for an account that may not rate");
+            assert_eq!(
+                ui.get_page_problem(),
+                problem_before,
+                "no problem for an account that may not rate"
+            );
 
             click(&ui, "Mara Lind");
             wait_for("the artist", || {
@@ -8821,6 +8837,24 @@ mod tests {
             assert_eq!(play::testing::loved_ids(), [false, true]);
             wait_for("the refused unstar", || ui.get_playing_loved()).await;
             assert_eq!(play::testing::loved_ids(), [true, true], "refused, so loved again");
+
+            // The sheet's and the bar's stars rate the song that plays, which
+            // the queue's copy follows, and a press on the rating takes it
+            // back.
+            ui.invoke_rate_playing(4);
+            assert_eq!(ui.get_playing_rating(), 4);
+            assert_eq!(play::testing::rated_ids(), [Some(4), None]);
+            wait_for("the playing song's rating sent", || {
+                RATED.lock().unwrap().iter().any(|rated| rated == "h1=4")
+            })
+            .await;
+            ui.invoke_rate_playing(4);
+            assert_eq!(ui.get_playing_rating(), 0);
+            assert_eq!(play::testing::rated_ids(), [None, None]);
+            wait_for("the playing song's rating taken back", || {
+                RATED.lock().unwrap().iter().any(|rated| rated == "h1=0")
+            })
+            .await;
 
             // A desktop's page shows the banner of the artist that plays,
             // the album's cover until it comes, and the song's words; a song
