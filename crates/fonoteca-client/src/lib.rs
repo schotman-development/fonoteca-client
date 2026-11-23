@@ -13,8 +13,6 @@ mod browser_clock;
 mod catalogue;
 #[cfg(target_os = "macos")]
 mod desktop_media;
-#[cfg(target_os = "macos")]
-mod macos_colors;
 #[cfg(not(target_family = "wasm"))]
 mod download_job;
 #[cfg(not(target_family = "wasm"))]
@@ -29,6 +27,8 @@ mod headphones;
 mod logo_ink;
 mod loves;
 mod lyrics;
+#[cfg(target_os = "macos")]
+mod macos_colors;
 #[cfg(target_os = "android")]
 mod media;
 #[cfg(target_os = "android")]

@@ -9700,18 +9700,35 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(at, dr)| {
-                let range = dr.map(|dr| format!(r#","dynamicRange":{dr}"#)).unwrap_or_default();
-                serde_json::from_str(&format!(r#"{{"id":"s{at}","isDir":false,"title":"T"{range}}}"#)).unwrap()
+                let range = dr
+                    .map(|dr| format!(r#","dynamicRange":{dr}"#))
+                    .unwrap_or_default();
+                serde_json::from_str(&format!(
+                    r#"{{"id":"s{at}","isDir":false,"title":"T"{range}}}"#
+                ))
+                .unwrap()
             })
             .collect();
-        let at = COLUMNS.iter().position(|c| c.title == "Dynamic range").unwrap();
+        let at = COLUMNS
+            .iter()
+            .position(|c| c.title == "Dynamic range")
+            .unwrap();
         let cells: Vec<String> = songs
             .iter()
-            .map(|song| (COLUMNS[at].cell)(song).iter().map(|name| name.label.to_string()).collect())
+            .map(|song| {
+                (COLUMNS[at].cell)(song)
+                    .iter()
+                    .map(|name| name.label.to_string())
+                    .collect()
+            })
             .collect();
         assert_eq!(cells, ["DR 13", "", "DR 8"]);
         assert!(!COLUMNS[at].shown);
-        let by = |descending| Table { sort: Some(at), descending, ..Table::default() };
+        let by = |descending| Table {
+            sort: Some(at),
+            descending,
+            ..Table::default()
+        };
         let all = vec![0, 1, 2];
         assert_eq!(sorted(&songs, all.clone(), COLUMNS, &by(false)), [2, 0, 1]);
         assert_eq!(sorted(&songs, all, COLUMNS, &by(true)), [0, 2, 1]);

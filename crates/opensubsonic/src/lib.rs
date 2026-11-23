@@ -1490,6 +1490,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_decision_the_server_cannot_make_says_why() {
+        let (server, _) = serve(|_| {
+            json(
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1","transcodeDecision":{"canDirectPlay":false,"canTranscode":false,"errorReason":"No transcoding profile matches"}}}"#,
+            )
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let info = ClientInfo {
+            name: "Fonoteca".into(),
+            platform: "Linux".into(),
+            max_audio_bitrate: 0,
+            max_transcoding_audio_bitrate: 0,
+            direct_play_profiles: vec![],
+            transcoding_profiles: vec![],
+            codec_profiles: vec![],
+        };
+        let decision = client.get_transcode_decision("tr-1", &info).await.unwrap();
+        assert!(!decision.can_direct_play && !decision.can_transcode);
+        assert_eq!(decision.transcode_params, None);
+        assert_eq!(
+            decision.error_reason.as_deref(),
+            Some("No transcoding profile matches")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_forged_transcode_param_is_the_servers_error_10_and_the_media_is_a_song() {
+        let (server, log) = serve(|request| {
+            if request.contains("transcodeParams=0001-0005-004") {
+                reply("200 OK", "Content-Type: audio/ogg\r\n", "OggS")
+            } else {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":10,"message":"Invalid transcodeParams"}}}"#,
+                )
+            }
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        assert!(matches!(
+            client
+                .get_transcode_stream("tr-1", "forged", Some(12.5))
+                .await,
+            Err(Error::Api(ApiError { code: 10, .. }))
+        ));
+        client
+            .get_transcode_stream("tr-1", "0001-0005-004", None)
+            .await
+            .unwrap();
+        let log = log.lock().unwrap();
+        assert!(log.iter().all(|r| r.contains("mediaType=song")), "{log:?}");
+        assert!(log[0].contains("offset=12.5"), "{}", log[0]);
+    }
+
+    #[tokio::test]
     async fn waveform_in_fonotecas_shape() {
         let (server, log) = serve(|request| {
             json(if request.contains("id=tr-1") {

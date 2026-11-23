@@ -27,7 +27,7 @@ const DECODED_CODECS: [&str; 8] = [
     "pcm_s24le",
 ];
 /// What a conversion may be sent as, the first the server can make winning.
-const CONVERSIONS: [(&str, &str); 3] = [("ogg", "opus"), ("mp4", "aac"), ("mp3", "mp3")];
+const CONVERSIONS: [(&str, &str); 3] = [("ogg", "opus"), ("adts", "aac"), ("mp3", "mp3")];
 
 /// What to ask the server for when fetching a song to play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
