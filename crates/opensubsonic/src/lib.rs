@@ -2048,6 +2048,9 @@ mod tests {
         let ids = |songs: Vec<Child>| songs.into_iter().map(|song| song.id).collect::<Vec<_>>();
 
         assert_eq!(ids(client.similar_songs("s", 50).await.unwrap()), ["older"]);
+        assert!(client.similar_songs("empty", 50).await.unwrap().is_empty());
+        let artist = client.get_similar_songs2("empty", Some(50)).await.unwrap();
+        assert!(artist.song.is_empty());
         client.get_open_subsonic_extensions().await.unwrap();
         assert_eq!(ids(client.similar_songs("s", 50).await.unwrap()), ["near"]);
         assert!(client.similar_songs("empty", 50).await.unwrap().is_empty());
@@ -2063,14 +2066,14 @@ mod tests {
             log[0]
         );
         assert!(
-            log[2].contains("getSonicSimilarTracks") && log[2].contains("count=50"),
-            "{}",
-            log[2]
-        );
-        assert!(
-            log[4].contains("startSongId=a") && log[4].contains("endSongId=b"),
+            log[4].contains("getSonicSimilarTracks") && log[4].contains("count=50"),
             "{}",
             log[4]
+        );
+        assert!(
+            log[6].contains("startSongId=a") && log[6].contains("endSongId=b"),
+            "{}",
+            log[6]
         );
     }
 }

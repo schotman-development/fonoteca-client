@@ -6548,7 +6548,9 @@ mod tests {
             play::testing::show_song(&ui, vec![queued.clone()], 0);
             click(&ui, &song_menu);
             click(&ui, "Add similar to queue");
+            assert!(!ui.get_working().is_empty(), "a spinner while it looks");
             wait_for("the similar song queued", || play::testing::queued_ids().0 == ["q1", "sim1"]).await;
+            assert!(ui.get_working().is_empty());
             NOTHING_SIMILAR.store(true, Relaxed);
             click(&ui, &song_menu);
             click(&ui, "Add similar to queue");

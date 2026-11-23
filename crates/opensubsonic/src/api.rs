@@ -397,24 +397,28 @@ impl Client {
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/getsimilarsongs/>
     pub async fn get_similar_songs(&self, id: &str, count: Option<u32>) -> Result<SimilarSongs> {
-        self.call(
-            "getSimilarSongs",
-            Params::new().req("id", id).opt("count", count),
-            "similarSongs",
-        )
-        .await
+        let songs: Option<SimilarSongs> = self
+            .call(
+                "getSimilarSongs",
+                Params::new().req("id", id).opt("count", count),
+                "similarSongs",
+            )
+            .await?;
+        Ok(songs.unwrap_or_default())
     }
 
     /// Like [`Client::get_similar_songs`], by ID3 tags. `id` is an artist.
     ///
     /// <https://opensubsonic.netlify.app/docs/endpoints/getsimilarsongs2/>
     pub async fn get_similar_songs2(&self, id: &str, count: Option<u32>) -> Result<SimilarSongs2> {
-        self.call(
-            "getSimilarSongs2",
-            Params::new().req("id", id).opt("count", count),
-            "similarSongs2",
-        )
-        .await
+        let songs: Option<SimilarSongs2> = self
+            .call(
+                "getSimilarSongs2",
+                Params::new().req("id", id).opt("count", count),
+                "similarSongs2",
+            )
+            .await?;
+        Ok(songs.unwrap_or_default())
     }
 
     /// Top songs of the artist with this name. `count` defaults to 50.

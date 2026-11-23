@@ -1,6 +1,6 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, Spinner, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
 export { AccentChoice, AlbumTile, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
 
@@ -1790,6 +1790,8 @@ export component AppWindow inherits Window {
     in property <bool> tag-choices-loading;
     // A short word on what was just done, such as songs added to a playlist.
     in property <string> notice;
+    // What is under way, said with a spinner until it is done.
+    in property <string> working;
     // The albums page's order, as the index into its Sort menu, its
     // direction, and the filter typed on it; the same for the artists page,
     // and for the composers page, which has the artists' Sort menu where the
@@ -4971,7 +4973,7 @@ export component AppWindow inherits Window {
     }
 
     // Over the player's bar, when it is up, as the selection bar.
-    if root.step == Step.done && root.notice != "" && root.selected-tiles == 0 && QueueSelection.count == 0: Rectangle {
+    if root.step == Step.done && (root.notice != "" || root.working != "") && root.selected-tiles == 0 && QueueSelection.count == 0: Rectangle {
         x: root.sidebar-width + (root.width - root.sidebar-width - root.queue-beside-width - self.width) / 2;
         y: root.height - self.height - 24px - root.bottom-inset - (root.can-play && root.playing ? (root.phone ? 72px : 80px) : 0) - root.bottom-bar-height;
         width: min(notice.preferred-width, root.width - root.sidebar-width - root.queue-beside-width - 32px);
@@ -4982,8 +4984,13 @@ export component AppWindow inherits Window {
             padding: 12px;
             padding-left: 16px;
             padding-right: 16px;
+            spacing: 8px;
+            if root.working != "": Spinner {
+                cross-axis-self-alignment: center;
+                color: Palette.background;
+            }
             Text {
-                text: root.notice;
+                text: root.working != "" ? root.working : root.notice;
                 font-size: Theme.body;
                 color: Palette.background;
                 wrap: word-wrap;

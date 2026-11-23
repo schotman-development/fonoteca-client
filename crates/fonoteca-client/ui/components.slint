@@ -4067,6 +4067,24 @@ component Toggle inherits Pressable {
     }
 }
 
+// Three dots lighting in turn, for what takes a while and leaves the window
+// usable.
+export component Spinner inherits HorizontalLayout {
+    in property <brush> color: Theme.text;
+
+    spacing: 4px;
+    accessible-role: image;
+    accessible-label: "Working";
+
+    for step in [0, 1, 2]: Rectangle {
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: root.color;
+        opacity: 0.25 + 0.75 * abs(1 - 2 * mod(animation-tick() / 1s + step / 3, 1));
+    }
+}
+
 export component Switch inherits Toggle {
     accessible-role: switch;
     property <length> track-height: Screen.phone ? 32px : 20px;

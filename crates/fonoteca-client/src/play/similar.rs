@@ -13,7 +13,7 @@ use crate::{AppWindow, browse};
 const MIX_SIZE: u32 = 50;
 /// How many songs a path asks for, the most the server gives.
 const PATH_SIZE: u32 = 25;
-// The lookup takes seconds, so the window says it is under way and stays usable.
+// The lookup takes seconds, so the window shows a spinner with this and stays usable.
 const SEARCHING: &str = "Looking for songs that sound alike…";
 // The server answers with none until it has analysed the library.
 const NOTHING_YET: &str = "Nothing to compare yet.";
@@ -140,11 +140,12 @@ fn run(
     lookup: impl Future<Output = opensubsonic::Result<Vec<Child>>> + 'static,
     deliver: impl FnOnce(&AppWindow, &browse::Shared, &Shared, Vec<Child>) + 'static,
 ) {
-    browse::notify(ui, browser, SEARCHING.into());
+    ui.set_working(SEARCHING.into());
     let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
     slint::spawn_local(async move {
         let found = lookup.await;
         let Some(ui) = weak.upgrade() else { return };
+        ui.set_working("".into());
         match found {
             Ok(songs) if songs.is_empty() => browse::notify(&ui, &browser, NOTHING_YET.into()),
             Ok(songs) => deliver(&ui, &browser, &playing, songs),

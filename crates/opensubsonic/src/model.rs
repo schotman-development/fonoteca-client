@@ -1155,7 +1155,7 @@ pub struct Songs {
 /// SimilarSongs list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/similarsongs/>
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimilarSongs {
     /// List of songs
@@ -1166,7 +1166,7 @@ pub struct SimilarSongs {
 /// SimilarSongs2 list.
 ///
 /// <https://opensubsonic.netlify.app/docs/responses/similarsongs2/>
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimilarSongs2 {
     /// List of songs
