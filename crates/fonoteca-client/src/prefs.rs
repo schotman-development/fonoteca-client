@@ -99,6 +99,15 @@ pub struct Prefs {
     /// Whether LRCLIB is asked for the lyrics the server hasn't got, which
     /// tells it the song's artist, title, album and length.
     pub look_up_lyrics: bool,
+    /// Whether songs that sound like the last one play when the queue has
+    /// played to its end; none for the default, which is on.
+    pub auto_play: Option<bool>,
+}
+
+impl Prefs {
+    pub fn auto_play(&self) -> bool {
+        self.auto_play.unwrap_or(true)
+    }
 }
 
 /// Whether an overview page's Focus panel is open, and the set of filters it
@@ -528,6 +537,15 @@ mod tests {
             (chosen.color_scheme, chosen.accent, chosen.simple_seek_bar),
             (2, 3, true)
         );
+    }
+
+    #[test]
+    fn auto_play_is_on_until_it_is_turned_off() {
+        assert!(Prefs::default().auto_play());
+        let earlier: Prefs = serde_json::from_str(r#"{"repeat": 1}"#).unwrap();
+        assert!(earlier.auto_play());
+        let off: Prefs = serde_json::from_str(r#"{"auto_play": false}"#).unwrap();
+        assert!(!off.auto_play());
     }
 
     #[test]
