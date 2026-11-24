@@ -4842,11 +4842,6 @@ export component AppWindow inherits Window {
                                             label: "Lyrics";
                                             clicked => { root.show-lyrics(); }
                                         }
-                                        if root.may-rate: StarRating {
-                                            rating: root.playing-rating;
-                                            subject: root.playing-title;
-                                            rate(stars) => { root.rate-playing(stars); }
-                                        }
                                         IconButton {
                                             icon: Icons.heart;
                                             filled: root.playing-loved;
