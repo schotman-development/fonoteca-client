@@ -74,6 +74,8 @@ pub struct Playing {
     /// and no song to love, tag or scrobble.
     station: Option<Tuned>,
     shown: Option<usize>,
+    /// What the radio, or auto play, has queued, once either runs.
+    following: similar::Following,
     path: Vec<Step>,
     /// How many of the queue's changes the player was handed. Until it has
     /// made them all, the track it says plays counts in the queue before.
@@ -467,6 +469,9 @@ fn wire_queue(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     ui.on_queue_link({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |link, how| {
+            if how == "radio" {
+                return similar::start_radio(&weak.unwrap(), &browser, &playing, link.into());
+            }
             let Some(client) = browse::client(&browser) else {
                 return;
             };
@@ -1355,6 +1360,7 @@ fn adopt(
     p.player = Some(player);
     p.queue = queue;
     p.station = station;
+    p.following = similar::Following::default();
     p.requeued = 0;
     p.resume = None;
     p.saved = None;
@@ -1369,6 +1375,7 @@ fn adopt(
     p.tick.start(TimerMode::Repeated, TICK, move || {
         if let Some(ui) = weak.upgrade() {
             show(&ui, &pages, &ticked);
+            similar::keep_going(&ui, &pages, &ticked);
         }
     });
     drop(p);
@@ -1392,16 +1399,35 @@ fn enqueue(
         [song] => song.title.clone(),
         songs => format!("{} tracks", songs.len()),
     };
-    let mut p = playing.borrow_mut();
-    if p.queue.is_empty() {
-        drop(p);
+    if playing.borrow().queue.is_empty() {
         return play(ui, browser, playing, songs, 0);
     }
+    insert(ui, browser, playing, songs, next, shuffle_seed);
+    let text = if next {
+        format!("Playing {what} next.")
+    } else {
+        format!("Added {what} to the queue.")
+    };
+    browse::notify(ui, browser, text);
+}
+
+/// Puts `songs` in the queue after the song playing, or at its end, and
+/// plays on from them when all of the queue was played.
+fn insert(
+    ui: &AppWindow,
+    browser: &browse::Shared,
+    playing: &Shared,
+    songs: Vec<Child>,
+    next: bool,
+    shuffle_seed: Option<u64>,
+) {
+    let mut p = playing.borrow_mut();
     let at = match p.shown {
         Some(current) if next => current + 1,
         _ => p.queue.len(),
     };
     let moved = p.queue.insert(at, songs, shuffle_seed);
+    p.following.reopen();
     let ended = p
         .player
         .as_ref()
@@ -1415,12 +1441,6 @@ fn enqueue(
             .iter()
             .for_each(|player| player.jump(at));
     }
-    let text = if next {
-        format!("Playing {what} next.")
-    } else {
-        format!("Added {what} to the queue.")
-    };
-    browse::notify(ui, browser, text);
 }
 
 /// Has the player, the bar and the queue's list follow a change to the
@@ -1472,6 +1492,7 @@ fn clear(ui: &AppWindow, browser: &browse::Shared, playing: &Shared) {
     p.tick.stop();
     p.queue = Queue::default();
     p.station = None;
+    p.following = similar::Following::default();
     p.resume = None;
     p.shown = None;
     p.saved = None;

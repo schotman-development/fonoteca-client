@@ -1969,10 +1969,8 @@ mod tests {
             } else {
                 r#""sonicMatch":[{"entry":{"id":"sim1","isDir":false,"title":"Alike","duration":100},"similarity":0.9}]"#
             })
-        } else if request.contains("/rest/findSonicPath") {
-            ok(
-                r#""sonicMatch":[{"entry":{"id":"q1","isDir":false,"title":"Song"},"similarity":1},{"entry":{"id":"mid","isDir":false,"title":"Between"},"similarity":0.6},{"entry":{"id":"s1","isDir":false,"title":"Harbour Lights"},"similarity":0.2}]"#,
-            )
+        } else if request.contains("/rest/getSong") && id == Some("s1") {
+            ok(r#""song":{"id":"s1","isDir":false,"title":"Harbour Lights","duration":252}"#)
         } else if request.contains("/rest/getSong") && id == Some("t2") {
             ok(
                 r#""song":{"id":"t2","parent":"d2","isDir":false,"title":"Rope and Anchor","duration":218}"#,
@@ -6536,31 +6534,33 @@ mod tests {
             assert_eq!(track_picks(&ui), [false, true]);
             ui.invoke_clear_selection();
             assert_eq!(track_picks(&ui), [false, false]);
-            // A track row's menu queues songs that sound like its song, and
-            // says so when none has been analysed; and makes a path to its
-            // song from the end of the queue, which the queue has already.
+            // A track row's menu starts a radio: its song, then the songs
+            // that sound like it, in place of the queue; and says so when
+            // none has been analysed, leaving the queue as it is.
             let song_menu = format!("More for {top}");
             let queued = opensubsonic::Child {
                 id: "q1".into(),
                 title: "Song".into(),
                 ..Default::default()
             };
-            play::testing::show_song(&ui, vec![queued.clone()], 0);
-            click(&ui, &song_menu);
-            click(&ui, "Add similar to queue");
-            assert!(!ui.get_working().is_empty(), "a spinner while it looks");
-            wait_for("the similar song queued", || play::testing::queued_ids().0 == ["q1", "sim1"]).await;
-            assert!(ui.get_working().is_empty());
+            play::testing::show_song(&ui, vec![queued], 0);
             NOTHING_SIMILAR.store(true, Relaxed);
             click(&ui, &song_menu);
-            click(&ui, "Add similar to queue");
+            click(&ui, "Start radio");
+            assert!(!ui.get_working().is_empty(), "a spinner while it looks");
             wait_for("the nothing yet notice", || ui.get_notice() == "Nothing to compare yet.").await;
-            assert_eq!(play::testing::queued_ids().0, ["q1", "sim1"]);
+            assert!(ui.get_working().is_empty());
+            assert_eq!(play::testing::queued_ids().0, ["q1"]);
             NOTHING_SIMILAR.store(false, Relaxed);
-            play::testing::show_song(&ui, vec![queued], 0);
             click(&ui, &song_menu);
-            click(&ui, "Make a path to here");
-            wait_for("the path queued", || play::testing::queued_ids().0 == ["q1", "mid", "s1"]).await;
+            click(&ui, "Start radio");
+            wait_for("the radio queued", || play::testing::queued_ids().0 == ["s1", "sim1"]).await;
+            // An album's radio plays the album, then songs like it.
+            ui.invoke_queue_link("album:a1".into(), "radio".into());
+            wait_for("the album's radio queued", || {
+                play::testing::queued_ids().0 == ["s1", "s2", "sim1"]
+            })
+            .await;
             play::testing::clear(&ui);
             // A finger held on a name under the title picks the row too. The
             // page's header names the artists as well, above the rows.
@@ -10184,6 +10184,13 @@ mod tests {
             ui.invoke_choose_simple_seek_bar(false);
             wait_for("the waveform again", || ui.get_playing_waveform().row_count() > 0).await;
             assert!(!prefs::load().simple_seek_bar);
+
+            // Auto play is on until it is turned off, and the choice stays.
+            assert!(ui.get_auto_play());
+            ui.invoke_choose_auto_play(false);
+            assert!(!prefs::load().auto_play());
+            ui.invoke_choose_auto_play(true);
+            assert!(prefs::load().auto_play());
 
             // A phone's signal path opens in the sheet its menus open in,
             // wholly in sight, and Android's back closes it; a wider window

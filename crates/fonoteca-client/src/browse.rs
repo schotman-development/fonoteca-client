@@ -2274,7 +2274,7 @@ fn sidebar(ui: &AppWindow, browser: &Shared) {
     ui.set_folders_offered(offers(&b, FOLDERS));
     ui.set_smart_offered(offers(&b, SMART_PLAYLISTS));
     ui.set_tags_offered(offers(&b, TAGS));
-    ui.set_sonic_paths_offered(offers(&b, opensubsonic::SONIC_SIMILARITY));
+    ui.set_radio_offered(b.client.is_some() && !b.offline);
     #[cfg(not(target_family = "wasm"))]
     {
         let decides = offers(&b, crate::quality::TRANSCODING);
