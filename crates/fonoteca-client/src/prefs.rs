@@ -6,7 +6,7 @@
 //! settings folder keep them, and the browser preview its localStorage.
 //! Where neither works they last until the app closes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,9 @@ pub struct Prefs {
     /// The sound device to play on, by cpal id; none for the system's
     /// default.
     pub output_device: Option<String>,
+    /// The sound devices, by cpal id, that exclusive mode is on for. Only a
+    /// Mac offers it; no device is in it until it is turned on.
+    pub exclusive_devices: BTreeSet<String>,
     /// Volume leveling's entry in the settings: off, by track or by album.
     pub leveling: i32,
     /// The format and bitrate to stream in, on wifi and on mobile data.

@@ -4,6 +4,9 @@
 //! the app does not tell them apart.
 
 #[cfg(not(target_family = "wasm"))]
+use std::collections::BTreeSet;
+
+#[cfg(not(target_family = "wasm"))]
 use playback::Dsp;
 use playback::{Leveling, Player, Repeat, Status, Track};
 
@@ -107,6 +110,16 @@ impl Active {
     pub fn set_device(&self, device: Option<String>) {
         match self {
             Active::Local(player) => player.set_device(device),
+            Active::Network(_) => {}
+        }
+    }
+
+    /// Has the sound devices that exclusive mode is on for be taken for the
+    /// player's own. A device on the network has no such mode.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn set_exclusive_devices(&self, devices: BTreeSet<String>) {
+        match self {
+            Active::Local(player) => player.set_exclusive_devices(devices),
             Active::Network(_) => {}
         }
     }

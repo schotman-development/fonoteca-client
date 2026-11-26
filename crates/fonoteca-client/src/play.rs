@@ -18,9 +18,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use opensubsonic::{Child, Client};
-use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 #[cfg(not(target_family = "wasm"))]
-use playback::{NetworkProtocol, OutputDevice, OutputKind};
+use playback::{ExclusiveOffer, NetworkProtocol, OutputDevice, OutputKind};
+use playback::{Gain, Leveling, Player, Quality, Repeat, Step, Track};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 mod similar;
@@ -102,6 +102,13 @@ pub struct Playing {
     /// to the next.
     #[cfg(not(target_family = "wasm"))]
     device_keys: Vec<String>,
+    /// Whether the menu offers exclusive mode for each of `devices`.
+    #[cfg(not(target_family = "wasm"))]
+    device_exclusive: Vec<ExclusiveOffer>,
+    /// The place in `devices` of the one chosen, which exclusive mode in the
+    /// menu and in the settings is for.
+    #[cfg(not(target_family = "wasm"))]
+    chosen_device: Option<usize>,
     /// The device the player last said it plays on, by cpal id.
     #[cfg(not(target_family = "wasm"))]
     output: Option<String>,
@@ -384,6 +391,11 @@ pub fn wire(ui: &AppWindow, browser: &browse::Shared) -> Shared {
     ui.on_choose_output({
         let (weak, browser, playing) = (ui.as_weak(), browser.clone(), playing.clone());
         move |index| choose_output(&weak.unwrap(), &browser, &playing, index as usize)
+    });
+    #[cfg(not(target_family = "wasm"))]
+    ui.on_choose_exclusive({
+        let (weak, playing) = (ui.as_weak(), playing.clone());
+        move |on| set_exclusive(&weak.unwrap(), &playing, on)
     });
     ui.on_choose_leveling({
         let playing = playing.clone();
@@ -855,6 +867,7 @@ fn show_devices(
     let mut devices = Vec::new();
     let mut titles = Vec::new();
     let mut keys = Vec::new();
+    let mut offers = Vec::new();
     let mut entries = Vec::new();
     let (mut saved_at, mut system_at, mut playing_to_at) = (None, None, None);
     if SYSTEM_DEFAULT_LISTED {
@@ -862,6 +875,7 @@ fn show_devices(
         devices.push(None);
         titles.push(SharedString::from("System default"));
         keys.push(SYSTEM_DEFAULT_KEY.to_owned());
+        offers.push(ExclusiveOffer::NotOffered);
         entries.push((
             SharedString::from("System default"),
             SharedString::new(),
@@ -884,6 +898,7 @@ fn show_devices(
         entries.push((device.name.into(), device.detail.into(), device.kind));
         titles.push(device.title.into());
         keys.push(device.key);
+        offers.push(device.exclusive);
         devices.push(Some(device.id));
     }
     let chosen = playing_to_at.or(saved_at).or(system_at);
@@ -927,6 +942,9 @@ fn show_devices(
     p.devices = devices;
     p.device_titles = titles;
     p.device_keys = keys;
+    p.device_exclusive = offers;
+    p.chosen_device = chosen;
+    show_exclusive(ui, &p);
     if let Some(chosen) = chosen.filter(|_| playing_to_at.is_none()) {
         follow_device(ui, &p, chosen);
     }
@@ -988,6 +1006,10 @@ fn listed_networks(playing: &Playing) -> Vec<OutputDevice> {
 #[cfg(not(target_family = "wasm"))]
 fn choose_output(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, index: usize) {
     let mut p = playing.borrow_mut();
+    if index == p.devices.len() {
+        drop(p);
+        return set_exclusive(ui, playing, !exclusive_is_on(&playing.borrow()));
+    }
     let device = p.devices.get(index).cloned().flatten();
     let was_remote = p.player.as_ref().is_some_and(Active::is_network);
     let network = device
@@ -1009,6 +1031,7 @@ fn choose_output(ui: &AppWindow, browser: &browse::Shared, playing: &Shared, ind
         return list_devices(ui, playing);
     }
     p.network_target = found;
+    p.chosen_device = Some(index);
     mark_device(ui, &p, index);
     if network.is_none() {
         save_output(device.clone());
@@ -1060,6 +1083,77 @@ fn mark_device(ui: &AppWindow, playing: &Playing, chosen: usize) {
     if let Some(title) = playing.device_titles.get(chosen) {
         ui.set_output_name(title.clone());
     }
+    show_exclusive(ui, playing);
+}
+
+/// Whether exclusive mode is on for the device chosen.
+#[cfg(not(target_family = "wasm"))]
+fn exclusive_is_on(playing: &Playing) -> bool {
+    chosen_id(playing).is_some_and(|id| prefs::load().exclusive_devices.contains(&id))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn chosen_id(playing: &Playing) -> Option<String> {
+    let chosen = playing.chosen_device?;
+    playing.devices.get(chosen).cloned().flatten()
+}
+
+/// Shows exclusive mode for the device chosen: as the last entry of the
+/// menu of outputs, whose id is one past the devices' so that choosing it
+/// is not choosing a device, and as the switch in the settings. Neither
+/// shows for a device it isn't offered for.
+#[cfg(not(target_family = "wasm"))]
+fn show_exclusive(ui: &AppWindow, playing: &Playing) {
+    let offer = (playing.chosen_device)
+        .and_then(|chosen| playing.device_exclusive.get(chosen))
+        .copied()
+        .unwrap_or_default();
+    let on = exclusive_is_on(playing);
+    ui.set_exclusive_offered(offer != ExclusiveOffer::NotOffered);
+    ui.set_exclusive_mode(on);
+    let mut menu: Vec<MenuEntry> = ui
+        .get_output_devices()
+        .iter()
+        .take(playing.devices.len())
+        .collect();
+    menu.extend(exclusive_entry(offer, on, playing.devices.len()));
+    ui.set_output_devices(ModelRc::new(VecModel::from(menu)));
+}
+
+/// The menu's entry for exclusive mode, with `at` as its id, none where it
+/// isn't offered.
+#[cfg(not(target_family = "wasm"))]
+fn exclusive_entry(offer: ExclusiveOffer, on: bool, at: usize) -> Option<MenuEntry> {
+    let detail = match offer {
+        ExclusiveOffer::NotOffered => return None,
+        ExclusiveOffer::Offered => "",
+        ExclusiveOffer::InUseByAnotherApp => "In use by another app",
+    };
+    Some(MenuEntry {
+        id: at.to_string().into(),
+        label: "Exclusive mode".into(),
+        detail: detail.into(),
+        checked: on,
+        ..Default::default()
+    })
+}
+
+/// Turns exclusive mode on or off for the device chosen, and keeps it.
+#[cfg(not(target_family = "wasm"))]
+fn set_exclusive(ui: &AppWindow, playing: &Shared, on: bool) {
+    let p = playing.borrow();
+    let Some(id) = chosen_id(&p) else { return };
+    let mut saved = prefs::load();
+    if on {
+        saved.exclusive_devices.insert(id);
+    } else {
+        saved.exclusive_devices.remove(&id);
+    }
+    prefs::save(&saved);
+    if let Some(player) = &p.player {
+        player.set_exclusive_devices(saved.exclusive_devices);
+    }
+    show_exclusive(ui, &p);
 }
 
 /// Puts the kind of the device `chosen` from the menu on the button that
@@ -2480,7 +2574,9 @@ fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
 
 #[cfg(not(any(target_os = "android", target_family = "wasm")))]
 fn new_player(device: Option<String>, fetch: playback::Fetch) -> Player {
-    Player::new(device, fetch)
+    let player = Player::new(device, fetch);
+    player.set_exclusive_devices(prefs::load().exclusive_devices);
+    player
 }
 
 /// The OpenSubsonic extension with which a server converts a song from
@@ -2807,6 +2903,24 @@ mod tests {
     fn queue(durations: &[Option<i64>]) -> Queue {
         let songs = durations.iter().enumerate();
         Queue::new(songs.map(|(i, d)| song(&i.to_string(), *d)).collect())
+    }
+
+    #[test]
+    fn exclusive_mode_is_an_entry_one_past_the_devices_where_it_is_offered() {
+        assert!(exclusive_entry(ExclusiveOffer::NotOffered, true, 3).is_none());
+        let offered = exclusive_entry(ExclusiveOffer::Offered, true, 3).unwrap();
+        assert_eq!(
+            (
+                offered.id.as_str(),
+                offered.label.as_str(),
+                offered.detail.as_str()
+            ),
+            ("3", "Exclusive mode", "")
+        );
+        assert!(offered.checked);
+        let in_use = exclusive_entry(ExclusiveOffer::InUseByAnotherApp, false, 3).unwrap();
+        assert_eq!(in_use.detail.as_str(), "In use by another app");
+        assert!(!in_use.checked);
     }
 
     #[test]

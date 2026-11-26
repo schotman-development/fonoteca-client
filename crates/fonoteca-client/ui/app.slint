@@ -1795,6 +1795,11 @@ export component AppWindow inherits Window {
     // played to its end.
     in-out property <bool> auto-play;
     callback choose-auto-play(on: bool);
+    // Whether the sound device chosen can be taken for this app alone, which
+    // a Mac's can, and whether it is.
+    in property <bool> exclusive-offered;
+    in-out property <bool> exclusive-mode;
+    callback choose-exclusive(on: bool);
     in property <string> shown-id;
     in property <[Name]> move-targets;
     // Where the playlists on the playlists page can be moved, and those
@@ -3849,6 +3854,18 @@ export component AppWindow inherits Window {
                         }
                         if root.radio-offered: Text {
                             text: "When the queue has played to its end, the server is asked for songs that sound like the last one, and they play on, instead of stopping. A radio, started from a song, an album or an artist, always goes on.";
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                            wrap: word-wrap;
+                        }
+                        if root.can-play && root.exclusive-offered: Switch {
+                            text: "Exclusive mode for " + root.output-name;
+                            checked <=> root.exclusive-mode;
+                            enabled: !Input.modal;
+                            toggled => { root.choose-exclusive(self.checked); }
+                        }
+                        if root.can-play && root.exclusive-offered: Text {
+                            text: "The app takes the sound device for itself and sets it to the rate of each song, so that no other app plays on it and macOS does not mix or convert. Songs are still played as 32-bit float.";
                             font-size: Theme.body;
                             color: Theme.muted;
                             wrap: word-wrap;
