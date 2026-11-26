@@ -7,11 +7,14 @@
 
 use cpal::{DeviceDescription, DeviceDirection, DeviceType, InterfaceType};
 
+use crate::exclusive::{self, ExclusiveOffer};
+
 /// An output to choose from: its `name` and a short `detail` to tell it from
 /// others of the name, and `title`, which says all of that in one line;
 /// its `kind`, shown beside the name. `key` is what it goes by from one
 /// connection to the next, for what is kept about it. `same_as` holds the
 /// ids of the routes that were folded into it, which still play on it.
+/// `exclusive` says whether the menu offers exclusive mode for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDevice {
     pub id: String,
@@ -21,6 +24,7 @@ pub struct OutputDevice {
     pub title: String,
     pub kind: OutputKind,
     pub same_as: Vec<String>,
+    pub exclusive: ExclusiveOffer,
 }
 
 /// What sort of output it is, as far as the system says.
@@ -230,6 +234,7 @@ fn rank(output: &Output) -> u8 {
 fn describe(output: Output) -> OutputDevice {
     let key = key(&output);
     let kind = kind_of(output.kind, output.interface);
+    let exclusive = exclusive::offered(output.interface);
     let (name, detail, title) = if output.id.starts_with(ANDROID_HOST_PREFIX) {
         let name = android_name(&output);
         (name.clone(), String::new(), name)
@@ -252,6 +257,7 @@ fn describe(output: Output) -> OutputDevice {
         title,
         kind,
         same_as: output.same_as,
+        exclusive,
     }
 }
 

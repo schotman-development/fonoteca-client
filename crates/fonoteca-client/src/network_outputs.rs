@@ -57,6 +57,7 @@ pub fn output_device(device: &Device) -> OutputDevice {
             Protocol::AirPlay => NetworkProtocol::AirPlay,
         }),
         same_as: Vec::new(),
+        exclusive: playback::ExclusiveOffer::NotOffered,
     }
 }
 

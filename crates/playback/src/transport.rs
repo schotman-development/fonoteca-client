@@ -40,7 +40,7 @@ fn interface_of(transport: u32) -> InterfaceType {
 
 /// cpal keeps a device's Core Audio id out of reach, but prints it in the
 /// device's debug output, as `Device { audio_device_id: 73, name: .. }`.
-fn audio_device_id_in(debug: &str) -> Option<u32> {
+pub(crate) fn audio_device_id_in(debug: &str) -> Option<u32> {
     let (_, after) = debug.split_once("audio_device_id: ")?;
     let digits = after.split(|c: char| !c.is_ascii_digit()).next()?;
     digits.parse().ok()

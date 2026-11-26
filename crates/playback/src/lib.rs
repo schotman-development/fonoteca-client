@@ -12,12 +12,16 @@
 //! The browser has no FFmpeg and no sound device for it: there the crate has
 //! only its types and a [`Player`] that plays nothing (`silent.rs`).
 
+#[cfg(target_os = "macos")]
+mod core_audio;
 #[cfg(not(target_family = "wasm"))]
 mod decode;
 #[cfg(not(target_family = "wasm"))]
 mod download;
 #[cfg(not(target_family = "wasm"))]
 mod dsp;
+#[cfg(not(target_family = "wasm"))]
+mod exclusive;
 #[cfg(not(target_family = "wasm"))]
 mod output;
 #[cfg(not(target_family = "wasm"))]
@@ -34,7 +38,7 @@ mod switches;
 mod transport;
 
 #[cfg(not(target_family = "wasm"))]
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 #[cfg(not(target_family = "wasm"))]
 use std::fmt;
 #[cfg(not(target_family = "wasm"))]
@@ -52,6 +56,8 @@ pub use cpal::SampleFormat;
 pub use download::{Download, Fill, live as live_download, new as download, open as open_file};
 #[cfg(not(target_family = "wasm"))]
 pub use dsp::{Band, Crossfeed, Dsp, Equalizer, Filter};
+#[cfg(not(target_family = "wasm"))]
+pub use exclusive::ExclusiveOffer;
 #[cfg(not(target_family = "wasm"))]
 pub use output::{SystemMixer, devices, system_output};
 #[cfg(not(target_family = "wasm"))]
@@ -413,6 +419,28 @@ impl Player {
         self.send(Command::Reopen);
     }
 
+    /// Takes the devices, by cpal id, that exclusive mode is on for. Where
+    /// that changes how the device in use plays, it is opened anew.
+    pub fn set_exclusive_devices(&self, devices: BTreeSet<String>) {
+        let changed = {
+            let mut ring = self.shared.ring.lock().unwrap();
+            let in_use = ring.wanted.clone();
+            let was_on = in_use
+                .as_ref()
+                .is_some_and(|id| ring.exclusive_devices.contains(id));
+            let is_on = in_use.as_ref().is_some_and(|id| devices.contains(id));
+            ring.exclusive_devices = devices;
+            if was_on != is_on {
+                ring.find_device_again();
+            }
+            was_on != is_on
+        };
+        if changed {
+            self.shared.changed.notify_all();
+            self.send(Command::Reopen);
+        }
+    }
+
     pub fn status(&self) -> Status {
         let ring = self.shared.ring.lock().unwrap();
         let front = ring.segments.front();
@@ -456,6 +484,12 @@ fn device_steps(device: &output::Device, route: Route, open: Format) -> Vec<Step
         text: format!("{how}: {} ({open})", device.name),
         quality,
     }];
+    if let Some(note) = &device.exclusive_note {
+        steps.push(Step {
+            text: note.clone(),
+            quality: Quality::High,
+        });
+    }
     if route == Route::Mixed {
         // Which rate it runs the output at isn't something Android says.
         steps.push(Step {

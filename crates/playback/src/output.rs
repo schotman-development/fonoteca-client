@@ -1,7 +1,7 @@
 //! The sound device: the decoded audio waiting for it, and the thread that
 //! opens it in the format of whatever plays next.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,10 +11,18 @@ use cpal::{
     SupportedStreamConfigRange,
 };
 
+use crate::exclusive::{self, Exclusive, ExclusiveOffer};
 use crate::outputs::{self, Found, OutputDevice};
 #[cfg(target_os = "linux")]
 use crate::pipewire_default::default_sink;
 use crate::{Format, Step, switches};
+
+/// What holds a Mac's device for exclusive mode; where there is no Core Audio,
+/// nothing.
+#[cfg(target_os = "macos")]
+type CoreAudio = crate::core_audio::CoreAudioDevice;
+#[cfg(not(target_os = "macos"))]
+type CoreAudio = exclusive::Nowhere;
 
 /// One track's decoded audio, in the device's format.
 pub(crate) struct Segment {
@@ -61,8 +69,11 @@ pub(crate) enum Route {
 #[derive(Clone, Default)]
 pub(crate) struct Device {
     pub name: String,
-    /// It is the hardware itself, so nothing else mixes in or converts.
+    /// It is the hardware itself, so nothing else mixes in or converts: ALSA's
+    /// own route to it, or on a Mac the stream holds it and has set its rate.
     pub exclusive: bool,
+    /// Why exclusive mode, asked for, isn't what plays.
+    pub exclusive_note: Option<String>,
     /// What it takes, less what it wouldn't open (`refused`), until it is
     /// found again.
     pub supported: Vec<SupportedStreamConfigRange>,
@@ -78,6 +89,8 @@ pub(crate) struct Ring {
     /// one open, once it is.
     pub wanted: Option<String>,
     pub device: Option<Device>,
+    /// The devices, by cpal id, that exclusive mode is on for.
+    pub exclusive_devices: BTreeSet<String>,
     /// The format the device is open in.
     pub open: Option<Format>,
     /// How the system carries what is played in `open`.
@@ -329,6 +342,7 @@ pub(crate) fn run(
     let mut generation = None;
     let mut device = None;
     let mut stream: Option<(cpal::Stream, Format)> = None;
+    let mut exclusive = Exclusive::<CoreAudio>::new(exclusive::own_process());
     loop {
         let mut ring = shared.ring.lock().unwrap();
         let open = stream.as_ref().map(|(_, format)| *format);
@@ -341,6 +355,7 @@ pub(crate) fn run(
         if ring.quit {
             drop(ring);
             drop(stream.take());
+            exclusive.let_go();
             release(system);
             return;
         }
@@ -350,6 +365,7 @@ pub(crate) fn run(
             ring.open = None;
             drop(ring);
             close(&shared, &mut stream);
+            exclusive.let_go();
             device = find(wanted.as_deref());
             let found = device
                 .as_ref()
@@ -379,6 +395,10 @@ pub(crate) fn run(
         }
         let wanted = ring.wanted(open);
         let wanted_device = ring.wanted.clone();
+        let exclusive_asked = cfg!(target_os = "macos")
+            && wanted_device
+                .as_ref()
+                .is_some_and(|id| ring.exclusive_devices.contains(id));
         let supported = ring
             .device
             .as_ref()
@@ -398,6 +418,11 @@ pub(crate) fn run(
         // The old stream goes first, since a device opened directly can only
         // be open once.
         close(&shared, &mut stream);
+        // After the old stream is gone, so that no stream is open on the
+        // device while it changes rate, and before the new one opens.
+        let standing = exclusive.engage(exclusive_asked, wanted.map(|format| format.rate), || {
+            device.as_ref().and_then(hardware_of)
+        });
         let opened = open_output(
             system,
             wanted_device.as_deref(),
@@ -409,11 +434,18 @@ pub(crate) fn run(
         let mut ring = shared.ring.lock().unwrap();
         match opened {
             Ok((opened, route)) => {
+                if let Some(device) = ring.device.as_mut() {
+                    if exclusive_asked {
+                        device.exclusive = standing.holds();
+                    }
+                    device.exclusive_note = standing.note();
+                }
                 ring.open = opened.as_ref().map(|(_, format)| *format);
                 ring.route = route;
                 stream = opened;
             }
             Err(problem) => {
+                exclusive.let_go();
                 eprintln!("{problem}");
                 if wanted.is_some_and(|format| ring.refuse(format)) {
                     // The decoder may be waiting for a command, with nothing
@@ -538,11 +570,23 @@ fn default_sink(_pipewire: &cpal::Host) -> Option<String> {
     None
 }
 
+#[cfg(target_os = "macos")]
+fn hardware_of(device: &cpal::Device) -> Option<CoreAudio> {
+    CoreAudio::of(device)
+}
+
+/// Only a Mac has devices exclusive mode can take.
+#[cfg(not(target_os = "macos"))]
+fn hardware_of(_device: &cpal::Device) -> Option<CoreAudio> {
+    None
+}
+
 fn describe(device: &cpal::Device) -> Device {
     let id = device.id().map(|id| id.to_string()).unwrap_or_default();
     Device {
         name: listed_name(device),
         exclusive: outputs::exclusive(&id),
+        exclusive_note: None,
         supported: device
             .supported_output_configs()
             .map(Iterator::collect)
@@ -577,7 +621,20 @@ pub fn devices() -> Vec<OutputDevice> {
         .flatten()
         .filter_map(|device| found(&device))
         .collect();
-    outputs::list(found)
+    let mut outputs = outputs::list(found);
+    for output in &mut outputs {
+        if output.exclusive == ExclusiveOffer::Offered && held_by_another(&output.id) {
+            output.exclusive = ExclusiveOffer::InUseByAnotherApp;
+        }
+    }
+    outputs
+}
+
+fn held_by_another(id: &str) -> bool {
+    by_id(id)
+        .as_ref()
+        .and_then(hardware_of)
+        .is_some_and(|hardware| exclusive::in_use_by_another(&hardware))
 }
 
 /// Linux has PipeWire's outputs where it runs, and ALSA's, which reach the

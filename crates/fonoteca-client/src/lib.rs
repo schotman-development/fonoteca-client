@@ -3536,6 +3536,7 @@ mod tests {
                     title: format!("{name} ({pcm})"),
                     kind: playback::OutputKind::Unknown,
                     same_as: Vec::new(),
+                    exclusive: playback::ExclusiveOffer::NotOffered,
                 }
             };
             let (speakers, dac) = (device("alsa:hw:CARD=PCH,DEV=0", "Speakers"), device("alsa:hw:CARD=DAC,DEV=0", "USB DAC"));
@@ -5093,6 +5094,7 @@ mod tests {
                                 title: "Speakers (hw:CARD=PCH,DEV=0)".into(),
                                 kind: playback::OutputKind::Speaker,
                                 same_as: Vec::new(),
+                                exclusive: playback::ExclusiveOffer::NotOffered,
                             },
                             playback::OutputDevice {
                                 id: dac.into(),
@@ -5102,6 +5104,7 @@ mod tests {
                                 title: "USB DAC (hw:CARD=DAC,DEV=0)".into(),
                                 kind: playback::OutputKind::Usb,
                                 same_as: vec![merged_away.into()],
+                                exclusive: playback::ExclusiveOffer::NotOffered,
                             },
                         ],
                         system.map(str::to_owned),
@@ -5191,6 +5194,7 @@ mod tests {
                     title: "Kitchen".into(),
                     kind: playback::OutputKind::Network(playback::NetworkProtocol::Cast),
                     same_as: Vec::new(),
+                    exclusive: playback::ExclusiveOffer::NotOffered,
                 };
                 let list_with_kitchen = || {
                     play::testing::show_devices(
@@ -5204,6 +5208,7 @@ mod tests {
                                 title: "Speakers".into(),
                                 kind: playback::OutputKind::Speaker,
                                 same_as: Vec::new(),
+                                exclusive: playback::ExclusiveOffer::NotOffered,
                             },
                             kitchen.clone(),
                         ],

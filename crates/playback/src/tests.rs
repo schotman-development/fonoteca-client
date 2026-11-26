@@ -1016,6 +1016,66 @@ fn the_signal_path_says_who_carries_the_audio() {
     assert_eq!(steps(Route::Direct).len(), 1);
 }
 
+#[test]
+fn the_signal_path_says_exclusive_only_for_a_device_the_stream_holds() {
+    let open = Format {
+        rate: 96_000,
+        channels: 2,
+        sample: F32,
+    };
+    let held = output::Device {
+        name: "DAC".into(),
+        exclusive: true,
+        ..Default::default()
+    };
+    let [exclusive] = &device_steps(&held, Route::Direct, open)[..] else {
+        panic!("one step");
+    };
+    assert_eq!(
+        exclusive.text,
+        "Exclusive: DAC (96000 Hz 32-bit float, 2 channels)"
+    );
+    assert_eq!(exclusive.quality, Quality::Lossless);
+
+    let declined = output::Device {
+        name: "DAC".into(),
+        exclusive_note: Some("Exclusive mode wasn't available: in use by another app".into()),
+        ..Default::default()
+    };
+    let [shared, note] = &device_steps(&declined, Route::Direct, open)[..] else {
+        panic!("two steps");
+    };
+    assert_eq!(
+        shared.text,
+        "Shared: DAC (96000 Hz 32-bit float, 2 channels)"
+    );
+    assert_eq!(
+        note.text,
+        "Exclusive mode wasn't available: in use by another app"
+    );
+    assert_eq!(shared.quality, Quality::High);
+}
+
+#[test]
+fn exclusive_mode_reopens_only_the_device_it_changes_for() {
+    let player = Player::new(Some("alsa:default".into()), Box::new(|_, _| unreachable!()));
+    let on = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect();
+    let generation = || player.shared.ring.lock().unwrap().generation;
+    let before = generation();
+    player.set_exclusive_devices(on(&["alsa:other"]));
+    assert_eq!(
+        generation(),
+        before,
+        "another device's setting is not this one's"
+    );
+    player.set_exclusive_devices(on(&["alsa:other", "alsa:default"]));
+    assert_eq!(generation(), before + 1);
+    player.set_exclusive_devices(on(&["alsa:default", "alsa:other"]));
+    assert_eq!(generation(), before + 1, "nothing changed for this device");
+    player.set_exclusive_devices(on(&[]));
+    assert_eq!(generation(), before + 2);
+}
+
 /// A decoder of tracks named `ids`, each a tenth of a second, for a 44.1
 /// kHz device; and the ids it fetches, in turn.
 fn decoder_of(ids: &[&str]) -> (Decoder, Arc<Shared>, Arc<std::sync::Mutex<Vec<String>>>) {
