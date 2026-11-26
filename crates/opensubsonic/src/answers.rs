@@ -116,6 +116,8 @@ pub struct Unsaved {
 pub struct Found {
     pub answer: Map<String, Value>,
     pub aged: bool,
+    /// When it came, by the clock.
+    pub at: u64,
 }
 
 /// A look through the answers, as they were when a call changed the
@@ -245,7 +247,7 @@ impl Answers {
     /// The answer kept for `read`, if one is and it can be read.
     pub fn find(&self, read: &str) -> Option<Found> {
         let now = (self.clock)();
-        let (text, aged) = {
+        let (text, aged, at) = {
             let mut kept = self.lock();
             kept.shown += 1;
             let (shown, searching) = (kept.shown, kept.searches > 0);
@@ -253,11 +255,16 @@ impl Answers {
             // is saved with the next.
             let answer = kept.answers.get_mut(read)?;
             answer.shown = shown;
-            (answer.text.clone(), searching || !is_fresh(answer.at, now))
+            (
+                answer.text.clone(),
+                searching || !is_fresh(answer.at, now),
+                answer.at,
+            )
         };
         Some(Found {
             answer: serde_json::from_str(&text).ok()?,
             aged,
+            at,
         })
     }
 

@@ -119,9 +119,26 @@ fn remove(account: &str) -> io::Result<()> {
 /// What `answers` keep under `key` as a `T`, and whether it is aged; none
 /// when nothing is, or when it was kept in another shape.
 pub fn find<T: DeserializeOwned>(answers: &Answers, key: &str) -> Option<(T, bool)> {
+    let kept = find_dated(answers, key)?;
+    Some((kept.value, kept.aged))
+}
+
+/// What the answers keep under a key, whether it is aged and when it came.
+pub struct Dated<T> {
+    pub value: T,
+    pub aged: bool,
+    pub at: u64,
+}
+
+/// [`find`], with when the answer came.
+pub fn find_dated<T: DeserializeOwned>(answers: &Answers, key: &str) -> Option<Dated<T>> {
     let found = answers.find(key)?;
     let value = serde_json::from_value(Value::Object(found.answer)).ok()?;
-    Some((value, found.aged))
+    Some(Dated {
+        value,
+        aged: found.aged,
+        at: found.at,
+    })
 }
 
 /// Keeps `value` under `key`, fresh, unless the answers were cleared since
