@@ -5,8 +5,10 @@
 //! songs are the library's.
 //!
 //! The list and each playlist on it are kept on this device, so the shelf
-//! and its banners show at once. The list is asked for again once it is an
-//! hour old; a playlist only when the list says ListenBrainz changed it.
+//! and its banners show at once. The list is asked for again on every visit
+//! to Home, and while it stays open once an hour has passed; a playlist only
+//! when the list says ListenBrainz changed it. The shelf says how old its
+//! list is, and why it couldn't be renewed.
 //! The library's songs of each are looked up as soon as Home has it, and
 //! kept with it, so its page plays them at once. Opened, its tracks are
 //! looked up again, and the page changes once they all are.
@@ -14,6 +16,7 @@
 use listenbrainz as lb;
 use serde::{Deserialize, Serialize};
 
+use super::freshness::{Freshness, why};
 use super::matching::{fold, lookup, search_anew};
 use super::*;
 use crate::KindTint;
@@ -52,6 +55,8 @@ pub(super) struct State {
     tiles: Rc<VecModel<AlbumTile>>,
     /// The banner each tile was given, by row.
     banners: Vec<Option<String>>,
+    /// How old the list on the shelf is, and why it couldn't be renewed.
+    freshness: Freshness,
 }
 
 /// The playlists made for a user as kept on this device: the list as
@@ -227,10 +232,10 @@ pub(crate) async fn account() -> Option<(lb::Client, String)> {
 
 /// Shows the shelf on the home page: the playlists made for the user as
 /// kept, at once, with the banners of those kept whole, or none without a
-/// token. A list an hour old, or none, is asked for again and shown where it
-/// differs; then the playlists on it not kept whole are fetched, and their
-/// tracks looked up in the library. Says so when ListenBrainz can't be asked
-/// and nothing is kept.
+/// token. The list is asked for again and shown where it differs; then the
+/// playlists on it not kept whole are fetched, and their tracks looked up in
+/// the library. Says so when ListenBrainz can't be asked, with the age of the
+/// list kept, or alone when nothing is kept.
 pub(super) fn shelf(ui: &AppWindow, browser: &Shared) {
     let (weak, browser) = (ui.as_weak(), browser.clone());
     slint::spawn_local(async move {
@@ -241,30 +246,33 @@ pub(super) fn shelf(ui: &AppWindow, browser: &Shared) {
             return show_shelf(&ui, &browser, Shelf::default());
         };
         let kept = kept_shelf(&answers, &user);
-        if let Some((shelf, _)) = &kept {
-            show_shelf(&ui, &browser, shelf.clone());
+        if let Some(kept) = &kept {
+            show_shelf(&ui, &browser, kept.value.clone());
+            set_freshness(&ui, &browser, Freshness::kept(kept.at));
         }
-        if kept.as_ref().is_none_or(|(_, aged)| *aged) {
-            let listed = list(&answers, &client, &user).await;
-            let Some(ui) = weak.upgrade() else { return };
-            match listed {
-                Ok(shelf) if browser.borrow().created_for.shelf != shelf || kept.is_none() => {
-                    show_shelf(&ui, &browser, shelf)
+        // The list is one call, and the playlists on it are fetched only
+        // where it says they changed.
+        let listed = list(&answers, &client, &user).await;
+        let Some(ui) = weak.upgrade() else { return };
+        match listed {
+            Ok(shelf) => {
+                if browser.borrow().created_for.shelf != shelf || kept.is_none() {
+                    show_shelf(&ui, &browser, shelf);
                 }
-                Ok(_) => {}
-                Err(e) if kept.is_some() => {
-                    eprintln!("ListenBrainz: the playlists made for you stay as kept: {e}");
-                    return;
+                set_freshness(&ui, &browser, Freshness::updated(answers::now()));
+            }
+            Err(e) if kept.is_some() => {
+                let at = kept.map(|kept| kept.at);
+                let failed = Freshness::failed(why(&e), at, answers::now());
+                return set_freshness(&ui, &browser, failed);
+            }
+            Err(e) => {
+                ui.set_created_for_you(ModelRc::default());
+                set_freshness(&ui, &browser, Freshness::default());
+                if ui.get_page() == Page::Home {
+                    ui.set_page_problem(format!("Created for you couldn't be fetched: {e}").into());
                 }
-                Err(e) => {
-                    ui.set_created_for_you(ModelRc::default());
-                    if ui.get_page() == Page::Home {
-                        ui.set_page_problem(
-                            format!("Created for you couldn't be fetched: {e}").into(),
-                        );
-                    }
-                    return;
-                }
+                return;
             }
         }
         fetch_shelf_tracks(&ui, &browser, &answers, &client, &user).await;
@@ -288,17 +296,40 @@ fn show_shelf(ui: &AppWindow, browser: &Shared, shelf: Shelf) {
     banners(ui, browser);
 }
 
-/// The shelf kept for `user`, and whether it is an hour old or more.
-fn kept_shelf(answers: &Answers, user: &str) -> Option<(Shelf, bool)> {
-    answers::find(answers, &kept_under(user))
+/// The shelf kept for `user`, whether it is an hour old or more, and when it
+/// came.
+fn kept_shelf(answers: &Answers, user: &str) -> Option<answers::Dated<Shelf>> {
+    answers::find_dated(answers, &kept_under(user))
+}
+
+/// Notes how old the list on the shelf is, and says so on the page.
+fn set_freshness(ui: &AppWindow, browser: &Shared, freshness: Freshness) {
+    browser.borrow_mut().created_for.freshness = freshness;
+    show_note(ui, browser);
+}
+
+/// Words how old the list on the shelf is.
+pub(super) fn show_note(ui: &AppWindow, browser: &Shared) {
+    let note = browser.borrow().created_for.freshness.note(answers::now());
+    ui.set_created_for_note(note.into());
+}
+
+/// Whether the list on the shelf is due to be asked for again.
+pub(super) fn is_due(browser: &Shared) -> bool {
+    browser
+        .borrow()
+        .created_for
+        .freshness
+        .is_due(answers::now())
 }
 
 /// Changes the shelf kept for `user` as `change` says. The list on it keeps
 /// its age, as it isn't asked for anew.
 fn change_shelf(answers: &Answers, user: &str, change: impl FnOnce(&mut Shelf)) {
-    let Some((mut shelf, _)) = kept_shelf(answers, user) else {
+    let Some(kept) = kept_shelf(answers, user) else {
         return;
     };
+    let mut shelf = kept.value;
     change(&mut shelf);
     answers::amend(answers, &kept_under(user), &shelf);
 }
@@ -309,7 +340,7 @@ async fn list(answers: &Answers, client: &lb::Client, user: &str) -> Result<Shel
     let writes = answers.writes();
     let list = without_exploration(client.playlists_created_for(user).await?);
     // Read after the call: a playlist may have been kept meanwhile.
-    let kept = kept_shelf(answers, user).map(|(shelf, _)| shelf);
+    let kept = kept_shelf(answers, user).map(|kept| kept.value);
     let shelf = kept.unwrap_or_default().listing(list);
     answers::keep(answers, kept_under(user), &shelf, writes);
     Ok(shelf)
@@ -671,10 +702,10 @@ async fn playlist(browser: &Shared, mbid: &str) -> Result<Opened, String> {
     };
     let answers = listenbrainz_answers(browser).await;
     let kept = (answers.as_deref()).and_then(|answers| kept_shelf(answers, &user));
-    if let Some((shelf, _)) = &kept
-        && let Some(playlist) = shelf.current(mbid)
+    if let Some(kept) = &kept
+        && let Some(playlist) = kept.value.current(mbid)
     {
-        let songs = shelf.kept_songs(mbid).cloned();
+        let songs = kept.value.kept_songs(mbid).cloned();
         let playlist = playlist.clone();
         return Ok(Opened {
             user,

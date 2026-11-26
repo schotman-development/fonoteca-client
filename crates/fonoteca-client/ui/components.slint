@@ -2550,6 +2550,11 @@ export component CoverShelf {
     in property <[MenuEntry]> entries;
     // Whether "See all" beside the title opens a page with all of them.
     in property <bool> more;
+    // How old the tiles are, under the title, and whether a button beside it
+    // asks for them anew.
+    in property <string> note;
+    in property <bool> refreshable;
+    callback refresh();
     callback open(link: string);
     callback select(index: int, range: bool);
     callback in-view(first: int, last: int);
@@ -2674,6 +2679,11 @@ export component CoverShelf {
                 label: "See all " + root.title;
                 clicked => { root.see-all(); }
             }
+            if root.refreshable: IconButton {
+                icon: Icons.refresh;
+                label: "Refresh " + root.title;
+                clicked => { root.refresh(); }
+            }
             // A finger slides the shelf on a phone, where the title takes
             // the arrows' room.
             if root.last-first > 0 && !Screen.phone: IconButton {
@@ -2688,6 +2698,12 @@ export component CoverShelf {
                 enabled: root.first < root.last-first;
                 clicked => { root.rest-on(root.first + root.columns, root.step); }
             }
+        }
+        if root.note != "": Text {
+            text: root.note;
+            font-size: Theme.detail;
+            color: Theme.muted;
+            wrap: word-wrap;
         }
         swipe := SwipeGestureHandler {
             height: root.tile-height;
@@ -5816,6 +5832,9 @@ export component ListeningStats inherits VerticalLayout {
     in property <[RankedList]> lists;
     // Whether the rankings are those of another period than the one picked.
     in property <bool> stale;
+    // How old the rankings are, or why they couldn't be renewed.
+    in property <string> note;
+    callback refresh();
     callback period-picked(index: int);
     callback open(link: string);
     alignment: start;
@@ -5878,6 +5897,11 @@ export component ListeningStats inherits VerticalLayout {
             color: Theme.text;
             vertical-alignment: center;
         }
+        IconButton {
+            icon: Icons.refresh;
+            label: "Refresh your listening";
+            clicked => { root.refresh(); }
+        }
         if !root.fits-two: IconButton {
             icon: Icons.back;
             label: "Previous ranking";
@@ -5890,6 +5914,12 @@ export component ListeningStats inherits VerticalLayout {
             enabled: root.slide < root.last-slide;
             clicked => { root.slide-to(root.slide + 1); }
         }
+    }
+    if root.note != "": Text {
+        text: root.note;
+        font-size: Theme.detail;
+        color: Theme.muted;
+        wrap: word-wrap;
     }
     FlexboxLayout {
         spacing-horizontal: 8px;

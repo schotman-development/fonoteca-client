@@ -864,7 +864,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::pin::Pin;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
     use std::task::{Context, Poll};
     use std::time::{Duration, Instant};
 
@@ -1244,6 +1244,11 @@ mod tests {
     /// When each of those was asked.
     static LISTENBRAINZ_AT: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
     static LISTENBRAINZ_DOWN: AtomicBool = AtomicBool::new(false);
+    /// The status ListenBrainz refuses every call with, 401 for a token it
+    /// rejects or 429 for its rate limit; 0 for none.
+    static LISTENBRAINZ_REFUSES: AtomicU16 = AtomicU16::new(0);
+    /// The playlists the stand-in's list leaves out.
+    static PLAYLISTS_GONE: Mutex<Vec<&str>> = Mutex::new(Vec::new());
     /// Whether the stand-in answers for the playlist "later" after a pause, and
     /// whether it has answered, to show a tile's banner before the last's tracks.
     static LATER_SLOW: AtomicBool = AtomicBool::new(false);
@@ -1350,6 +1355,13 @@ mod tests {
         if LISTENBRAINZ_DOWN.load(Relaxed) {
             return reply("503 Service Unavailable", "text/plain", b"down");
         }
+        match LISTENBRAINZ_REFUSES.load(Relaxed) {
+            0 => {}
+            status => {
+                let status = format!("{status} Refused");
+                return reply(&status, "application/json", br#"{"error":"refused"}"#);
+            }
+        }
         let playlist = |title: &str, id: &str, patch: &str, tracks: &str| {
             // The weekly ones a week apart, the newest first.
             let date = match id {
@@ -1413,7 +1425,9 @@ mod tests {
         ];
         let target = line.split_whitespace().nth(1).unwrap_or_default();
         let body = if target == "/1/user/joe/playlists/createdfor" {
+            let gone = PLAYLISTS_GONE.lock().unwrap().clone();
             let all: Vec<String> = (lists.iter())
+                .filter(|(_, id, ..)| !gone.contains(id))
                 .map(|(title, id, patch, _)| playlist(title, id, patch, ""))
                 .collect();
             format!(
@@ -7079,8 +7093,8 @@ mod tests {
                 scroll_page_at(&again, 200.0, -150.0);
             }
             assert!(sees(night), "the lists come into view");
-            // The dots are under the rows.
-            scroll_page_at(&again, 200.0, -300.0);
+            // The dots are under the rows, and the note on how old they are.
+            scroll_page_at(&again, 200.0, -340.0);
             idle(Duration::from_millis(100)).await;
             let enabled = |label: &str| button(&again, label).accessible_enabled();
             let dots = || ["Top albums", "Top artists", "Top genres"].map(|title| button(&again, title).accessible_item_selected() == Some(true));
@@ -7777,11 +7791,11 @@ mod tests {
             idle(Duration::from_millis(300)).await;
             assert_eq!(covers(), [false, true, false]);
             // The page and the shelf each fetched the trip playlist's tracks, the
-            // shelf the others'; Home showed the shelf as kept within the hour
-            // and asked for nothing.
+            // shelf the others'; each visit to Home asks the list again, and
+            // fetches no playlist the list doesn't say changed.
             let asked = LISTENBRAINZ_ASKED.lock().unwrap().clone();
             let list = "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true";
-            assert_eq!(asked.iter().filter(|line| *line == list).count(), 1);
+            assert!(asked.iter().any(|line| line == list));
             let mut fetched: Vec<&str> = (asked.iter())
                 .filter_map(|line| line.strip_prefix("GET /1/playlist/"))
                 .collect();
@@ -8037,13 +8051,21 @@ mod tests {
             let before = asked().len();
             LISTENBRAINZ_DOWN.store(true, Relaxed);
             ui.invoke_open("home".into());
+            wait_for("the list asked for on a visit", || asked().len() > before).await;
             idle(Duration::from_millis(400)).await;
-            assert_eq!(asked().len(), before);
+            assert_eq!(
+                asked()[before..],
+                ["GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true"]
+            );
             assert_eq!(ui.get_created_for_you().row_count(), 3);
             assert_eq!(ui.get_page_problem(), "");
+            wait_for("the failed ask said", || {
+                ui.get_created_for_note().starts_with("Couldn't update, showing the data from")
+            })
+            .await;
             // An hour on, the list is asked for again; while ListenBrainz is
-            // down the tiles kept stay, with their banners, and nothing is
-            // said.
+            // down the tiles kept stay, with their banners.
+            let before = asked().len();
             answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
             ui.invoke_show_more();
             wait_for("the list asked for again", || asked().len() > before).await;
@@ -8060,6 +8082,10 @@ mod tests {
             idle(Duration::from_millis(400)).await;
             assert_eq!(asked()[before + 1], "GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true");
             assert_eq!(playlist_fetches(), fetched);
+            wait_for("the shelf says when it was updated", || {
+                ui.get_created_for_note().starts_with("Updated ")
+            })
+            .await;
             // One it changed is fetched again with the list, an hour on.
             PLAYLISTS_CHANGED.lock().unwrap().push("daily");
             answers::LATER.fetch_add(opensubsonic::FRESH_FOR, Relaxed);
@@ -8091,6 +8117,30 @@ mod tests {
                 ["GET /1/user/joe/playlists/createdfor HTTP/1.1 token=true"]
             );
             assert_eq!(playlist_fetches(), fetched);
+
+            // A token ListenBrainz rejects, or its rate limit, is said on the
+            // shelf, which keeps its tiles.
+            for (status, said) in [(401, "rejected the token"), (429, "limiting the calls")] {
+                LISTENBRAINZ_REFUSES.store(status, Relaxed);
+                ui.invoke_show_more();
+                wait_for("the refusal said", || ui.get_created_for_note().contains(said)).await;
+                assert!(ui.get_created_for_note().starts_with("Couldn't update, showing the data from"));
+                assert_eq!(ui.get_created_for_you().row_count(), 3);
+            }
+            LISTENBRAINZ_REFUSES.store(0, Relaxed);
+            // A new list, with the Road Trip gone from it, is swapped in for
+            // the one kept at the next visit, and the playlist back with the
+            // one after.
+            PLAYLISTS_GONE.lock().unwrap().push("trip");
+            ui.invoke_show_more();
+            wait_for("the new list swapped in", || ui.get_created_for_you().row_count() == 2).await;
+            assert!(ui.get_created_for_note().starts_with("Updated "));
+            assert_eq!(ui.get_page_problem(), "");
+            PLAYLISTS_GONE.lock().unwrap().clear();
+            ui.invoke_show_more();
+            wait_for("the list back", || ui.get_created_for_you().row_count() == 3).await;
+            idle(Duration::from_millis(400)).await;
+            let fetched = playlist_fetches();
 
             // Removing the token forgets what ListenBrainz answered, on this
             // device too: with a token set again and ListenBrainz down, the
@@ -8129,7 +8179,8 @@ mod tests {
             assert_eq!(ui.get_page_problem(), "");
 
             // After a restart the shelf and its banners show at once from
-            // what is kept on this device: ListenBrainz, down, isn't asked.
+            // what is kept on this device: ListenBrainz, down, fails the list's
+            // ask, which says so beside them, and no playlist is asked.
             idle(Duration::from_millis(400)).await;
             wait_for("ListenBrainz's answers saved", || {
                 std::fs::read_to_string(&joes_listenbrainz)
@@ -8152,7 +8203,7 @@ mod tests {
             wait_for("its banner kept", || restarted_covers()[1]).await;
             assert_eq!(restarted_covers(), [false, true, false]);
             let asked_since = asked()[before..].to_vec();
-            assert!(!asked_since.iter().any(|line| line.contains("/playlist")), "{asked_since:?}");
+            assert!(!asked_since.iter().any(|line| line.contains("GET /1/playlist/")), "{asked_since:?}");
             assert_eq!(restarted.get_page_problem(), "");
             // The library's songs of the playlists are kept too, as Home found
             // them once the token came back: a playlist's rows play them at
@@ -8610,8 +8661,11 @@ mod tests {
             };
             assert_eq!(first(&ui), "Sonatas (Deluxe)");
             assert_eq!(ui.get_stat_period(), 2);
+            // This year's genres are not worked out yet, which a visit asks for
+            // again at once rather than an hour on.
             ui.invoke_show_more();
-            assert!(!ui.get_stat_loading());
+            assert!(ui.get_stat_loading());
+            wait_for("the lists asked for again", || !ui.get_stat_loading()).await;
             assert_eq!(token(store::load_listenbrainz().await), Some(kept.token));
             let signed_in_as = store::load().await.expect("saved").login;
             assert!(matches!(signed_in_as, Login::Password { ref username, .. } if username == "eve"));

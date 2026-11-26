@@ -46,6 +46,7 @@ use crate::{
 pub(crate) mod created_for;
 mod fields;
 mod focus;
+mod freshness;
 mod listens;
 mod played;
 mod ratings;
@@ -331,6 +332,7 @@ pub struct Browser {
     notice: Timer,
     /// Asks how the server's scan is going while the settings page is up.
     scan: Timer,
+
     /// The account signed in, once the server has said what it may do.
     me: Option<User>,
     /// The stations saved on the server as last asked, and the home page's
@@ -882,6 +884,7 @@ pub fn stop(browser: &Shared) {
 
 pub fn wire(ui: &AppWindow, browser: &Shared) {
     stats::wire(ui, browser);
+    freshness::wire(ui, browser);
     search::wire(ui, browser);
     focus::wire(ui, browser);
     let mut carried = DataTransfer::default();

@@ -18,6 +18,7 @@ use opensubsonic::{AlbumID3, Answers, ArtistID3};
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 
+use super::freshness::{Freshness, why};
 use super::{Browser, Shared, count, pixels};
 use crate::{AppWindow, RankedEntry, RankedList, answers, store};
 
@@ -74,7 +75,7 @@ impl<T> Fetched<T> {
         match result {
             Ok(Some(places)) => Fetched::Heard(places),
             Ok(None) => Fetched::NotCalculated,
-            Err(e) => Fetched::Failed(e.to_string()),
+            Err(e) => Fetched::Failed(why(&e)),
         }
     }
 
@@ -135,12 +136,31 @@ impl Answer {
         })
     }
 
+    /// Why the first list that failed did.
+    fn failure(&self) -> Option<String> {
+        let problems = [
+            self.albums.failure(),
+            self.artists.failure(),
+            self.genres.failure(),
+        ];
+        problems.into_iter().flatten().next().map(str::to_owned)
+    }
+
     /// Each list, or where it failed the one in `kept`.
     fn or(self, kept: Answer) -> Answer {
         Answer {
             albums: self.albums.or(kept.albums),
             artists: self.artists.or(kept.artists),
             genres: self.genres.or(kept.genres),
+        }
+    }
+}
+
+impl<T> Fetched<T> {
+    fn failure(&self) -> Option<&str> {
+        match self {
+            Fetched::Failed(problem) => Some(problem),
+            _ => None,
         }
     }
 }
@@ -152,6 +172,15 @@ struct Kept {
     albums: Option<Vec<TopAlbum>>,
     artists: Option<Vec<TopArtist>>,
     genres: Option<Vec<TopGenre>>,
+}
+
+impl Kept {
+    /// Whether the lists are to be asked for again: they are an hour old, or
+    /// ListenBrainz hadn't worked a period out yet, which it does during the
+    /// day.
+    fn is_aged(&self, by_the_clock: bool) -> bool {
+        by_the_clock || self.albums.is_none() || self.artists.is_none() || self.genres.is_none()
+    }
 }
 
 impl From<Kept> for Answer {
@@ -169,11 +198,12 @@ fn kept_under(user: &str, range: Range) -> String {
     format!("stats:{user}:{}", range.as_str())
 }
 
-/// The lists of `range` kept for `user`, and whether they are an hour old or
-/// more.
-fn kept(answers: &Answers, user: &str, range: Range) -> Option<(Answer, bool)> {
-    let (kept, aged) = answers::find::<Kept>(answers, &kept_under(user, range))?;
-    Some((kept.into(), aged))
+/// The lists of `range` kept for `user`, whether they are to be asked for
+/// again, and when they came.
+fn kept(answers: &Answers, user: &str, range: Range) -> Option<(Answer, bool, u64)> {
+    let found = answers::find_dated::<Kept>(answers, &kept_under(user, range))?;
+    let aged = found.value.is_aged(found.aged);
+    Some((found.value.into(), aged, found.at))
 }
 
 pub(super) struct Stats {
@@ -188,6 +218,8 @@ pub(super) struct Stats {
     /// asks restart at round 1 too.
     session: Rc<()>,
     answer: Option<Answer>,
+    /// How old the lists on screen are, and why they couldn't be renewed.
+    freshness: Freshness,
     client: Option<Rc<listenbrainz::Client>>,
     /// Whether the library and the artists had arrived when the lists on
     /// screen were made, which are made again when that changes, as more of
@@ -212,6 +244,7 @@ impl Default for Stats {
             loading: false,
             session: Rc::new(()),
             answer: None,
+            freshness: Freshness::default(),
             client: None,
             drawn: None,
             drawing: 0,
@@ -268,6 +301,7 @@ fn pick(ui: &AppWindow, browser: &Shared, index: usize) {
         // The lists on their way are another period's.
         b.stats.round += 1;
         b.stats.loading = false;
+        b.stats.freshness = Freshness::default();
     }
     ui.set_stat_period(index as i32);
     ui.set_stat_loading(false);
@@ -286,7 +320,7 @@ fn show_kept_or_fetch(ui: &AppWindow, browser: &Shared) {
     }
     let user = ui.get_listenbrainz_user().to_string();
     let range = PERIODS[browser.borrow().stats.period].1;
-    let Some((answer, aged)) = kept(&answers, &user, range) else {
+    let Some((answer, aged, at)) = kept(&answers, &user, range) else {
         return fetch(ui, browser, answers);
     };
     let is_shown = {
@@ -298,9 +332,11 @@ fn show_kept_or_fetch(ui: &AppWindow, browser: &Shared) {
             let mut b = browser.borrow_mut();
             b.stats.user = user;
             b.stats.answer = Some(answer);
+            b.stats.freshness = Freshness::kept(at);
             b.stats.drawn = None;
         }
         show(ui, browser);
+        show_note(ui, browser);
     }
     if aged {
         fetch(ui, browser, answers);
@@ -351,7 +387,7 @@ fn fetch(ui: &AppWindow, browser: &Shared, answers: Arc<Answers>) {
             Some(client) => Some(answer(client, &user, range).await),
             None => None,
         };
-        let answer = answer.map(|answer| kept_or_filled(&answers, &user, range, answer, writes));
+        let settled = answer.map(|answer| kept_or_filled(&answers, &user, range, answer, writes));
         let Some(ui) = weak.upgrade() else { return };
         {
             let mut b = browser.borrow_mut();
@@ -360,34 +396,56 @@ fn fetch(ui: &AppWindow, browser: &Shared, answers: Arc<Answers>) {
                 return;
             }
             b.stats.loading = false;
-            b.stats.answer = answer;
+            (b.stats.answer, b.stats.freshness) = match settled {
+                Some((answer, freshness)) => (Some(answer), freshness),
+                None => (None, Freshness::default()),
+            };
             b.stats.client = client;
             b.stats.drawn = None;
         }
         ui.set_stat_loading(false);
         show(&ui, &browser);
+        show_note(&ui, &browser);
     })
     .expect("the event loop is running");
 }
 
 /// Keeps `answer` once every list came, unless the answers kept were cleared
 /// since there were `writes`; else gives the lists that failed those kept.
+/// With how old they are, and why the ones that failed did.
 fn kept_or_filled(
     answers: &Answers,
     user: &str,
     range: Range,
     answer: Answer,
     writes: u64,
-) -> Answer {
+) -> (Answer, Freshness) {
     let key = kept_under(user, range);
+    let now = answers::now();
     if let Some(kept) = answer.kept() {
         answers::keep(answers, key, &kept, writes);
-        return answer;
+        return (answer, Freshness::updated(now));
     }
-    match answers::find::<Kept>(answers, &key) {
-        Some((kept, _)) => answer.or(kept.into()),
-        None => answer,
+    let problem = answer.failure().unwrap_or_default();
+    match answers::find_dated::<Kept>(answers, &key) {
+        Some(kept) => (
+            answer.or(kept.value.into()),
+            Freshness::failed(problem, Some(kept.at), now),
+        ),
+        None => (answer, Freshness::failed(problem, None, now)),
     }
+}
+
+/// Words how old the lists on screen are.
+pub(super) fn show_note(ui: &AppWindow, browser: &Shared) {
+    let note = browser.borrow().stats.freshness.note(answers::now());
+    ui.set_stat_note(note.into());
+}
+
+/// Whether the lists on screen are due to be asked for again.
+pub(super) fn is_due(browser: &Shared) -> bool {
+    let b = browser.borrow();
+    !b.stats.loading && b.stats.freshness.is_due(answers::now())
 }
 
 /// The client for the saved token. ListenBrainz asks for one call a second
@@ -1170,5 +1228,80 @@ mod tests {
         let none_kept = answered(failed(), Fetched::Failed("down too".to_owned()));
         let shown = answered(failed(), Fetched::NotCalculated).or(none_kept);
         assert_eq!(shown.albums.note(), "down", "says why where none is kept");
+    }
+    fn worked_out() -> Kept {
+        Kept {
+            albums: Some(Vec::new()),
+            artists: Some(Vec::new()),
+            genres: Some(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn lists_kept_with_a_period_not_worked_out_are_aged_at_once() {
+        assert!(!worked_out().is_aged(false));
+        assert!(worked_out().is_aged(true), "an hour old");
+        for waiting in [
+            Kept {
+                albums: None,
+                ..worked_out()
+            },
+            Kept {
+                artists: None,
+                ..worked_out()
+            },
+            Kept {
+                genres: None,
+                ..worked_out()
+            },
+        ] {
+            assert!(waiting.is_aged(false));
+        }
+    }
+
+    const KEPT_AT: u64 = 1_000_000;
+
+    /// The lists of this year as kept at [`KEPT_AT`], and an ask for them
+    /// that ListenBrainz refused with `status`.
+    fn refused(status: u16) -> (Answer, Freshness) {
+        let answers = Answers::new(|| KEPT_AT);
+        let kept = answered(albums(&["Kept"]), Fetched::Heard(Vec::new()))
+            .kept()
+            .unwrap();
+        answers::keep(&answers, kept_under("rob", Range::ThisYear), &kept, 0);
+        let (answer, _) = match status {
+            401 => period_answer(Range::ThisYear, |_| (401, r#"{"error":"Invalid token"}"#)),
+            _ => period_answer(Range::ThisYear, |_| (429, "")),
+        };
+        kept_or_filled(&answers, "rob", Range::ThisYear, answer, 0)
+    }
+
+    #[test]
+    fn a_refused_token_shows_the_lists_kept_and_says_why() {
+        let (answer, freshness) = refused(401);
+        assert_eq!(answer.albums.places()[0].release_group_name, "Kept");
+        assert_eq!(
+            freshness.note(KEPT_AT + 3 * 3600),
+            "Couldn't update, showing the data from 3 hours ago: ListenBrainz rejected the token"
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_shows_the_lists_kept_and_says_why() {
+        let (answer, freshness) = refused(429);
+        assert_eq!(answer.albums.places()[0].release_group_name, "Kept");
+        assert!(freshness.note(KEPT_AT + 60).contains("limiting the calls"));
+    }
+
+    #[test]
+    fn lists_that_came_are_kept_and_updated_now() {
+        let answers = Answers::new(|| KEPT_AT);
+        let came = answered(albums(&["New"]), Fetched::Heard(Vec::new()));
+        let (shown, freshness) = kept_or_filled(&answers, "rob", Range::ThisYear, came, 0);
+        assert_eq!(shown.albums.places()[0].release_group_name, "New");
+        assert!(freshness.note(answers::now()).starts_with("Updated "));
+        let (kept, _, at) = kept(&answers, "rob", Range::ThisYear).expect("kept");
+        assert_eq!(kept.albums.places()[0].release_group_name, "New");
+        assert_eq!(at, KEPT_AT);
     }
 }

@@ -503,6 +503,11 @@ component PageScroll inherits FocusScope {
             root.back();
             return accept;
         }
+        // F5 and Ctrl+R ask for the page anew, as a browser's do.
+        if event.text == Key.F5 || (event.modifiers.control && (event.text == "r" || event.text == "\u{12}")) {
+            root.refresh();
+            return accept;
+        }
         if root.key(event) {
             return accept;
         }
@@ -1497,6 +1502,10 @@ export component AppWindow inherits Window {
     in property <int> stat-period;
     in property <[RankedList]> stat-lists;
     in property <bool> stat-loading;
+    // How old the rankings and the playlists made for you are, or why they
+    // couldn't be renewed.
+    in property <string> stat-note;
+    in property <string> created-for-note;
     callback pick-stat-period(index: int);
     // The genres page's genres, or on a genre's page those under it; and its
     // artists, those with the most of its albums first.
@@ -2591,6 +2600,8 @@ export component AppWindow inherits Window {
                         period: root.stat-period;
                         lists: root.stat-lists;
                         stale: root.stat-loading;
+                        note: root.stat-note;
+                        refresh => { root.refresh(); }
                         period-picked(index) => { root.pick-stat-period(index); }
                         open(link) => { root.open(link); }
                     }
@@ -2599,6 +2610,9 @@ export component AppWindow inherits Window {
                         tiles: root.created-for-you;
                         wide: true;
                         min-size: 300px;
+                        note: root.created-for-note;
+                        refreshable: true;
+                        refresh => { root.refresh(); }
                         open(link) => { root.open(link); }
                     }
                     if root.page == Page.home && root.saved-stations.length > 0: CoverShelf {
