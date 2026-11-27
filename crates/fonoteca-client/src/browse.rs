@@ -43,6 +43,7 @@ use crate::{
     catalogue, logo_ink, offline, prefs, zone,
 };
 
+mod artist_page;
 mod booklets;
 pub(crate) mod created_for;
 mod credits;
@@ -176,8 +177,8 @@ const GENRE_TREE: &str = "fonotecaGenres";
 const GENRE_DESCRIPTIONS: i64 = 2;
 /// Fonoteca's extension for artists' banners.
 const ARTIST_BANNER: &str = "fonotecaArtistBanner";
-/// How many of an artist's top songs their page shows.
-const TOP_SONGS: u32 = 5;
+/// How many of an artist's top songs their page asks for.
+const TOP_SONGS: u32 = 10;
 /// About how long the start of a biography or notes is, before More.
 const ABOUT_SHORT: usize = 320;
 
@@ -356,6 +357,8 @@ pub struct Browser {
     similar_albums: similar_albums::SimilarAlbums,
     /// The booklets of the album on screen and the page being read.
     booklets: booklets::Booklets,
+    /// The artist page's shelves and grids.
+    artist_page: artist_page::Shelves,
     /// The album or artist on screen whose header shows its rating.
     header_rated: Option<String>,
     /// The radio directory once asked, its countries' names by code, its
@@ -908,6 +911,14 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     ui.on_open({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |link| open(&weak.unwrap(), &browser, link.into())
+    });
+    ui.on_artist_tab_picked({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |index| {
+            let ui = weak.unwrap();
+            let link = artist_page::link(&ui.get_shown_id(), artist_page::Tab::from_index(index));
+            open(&ui, &browser, link);
+        }
     });
     ui.on_show_section({
         let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -1773,7 +1784,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_about("".into());
     ui.set_about_short("".into());
     ui.set_about_open(false);
-    ui.set_similar(ModelRc::default());
+    artist_page::clear(ui, browser);
     credits::clear(ui, browser);
     similar_albums::clear(ui, browser);
     booklets::clear(ui, browser);
@@ -1818,8 +1829,9 @@ fn show(ui: &AppWindow, browser: &Shared) {
         }
         "artist" => {
             ui.set_page(Page::Artist);
-            ui.set_shown_id(id.as_str().into());
-            artist(ui, browser, id);
+            let (id, tab) = artist_page::parse(&id);
+            ui.set_shown_id(id.into());
+            artist(ui, browser, id.to_owned(), tab);
         }
         "playlist" => {
             ui.set_page(Page::Playlist);
@@ -4619,28 +4631,20 @@ fn work_rows(run: &[Child]) -> Vec<Track> {
     tracks
 }
 
-/// An artist's page: their picture and name, what the server says about
-/// them, their top songs and the artists like them, and their albums.
-fn artist(ui: &AppWindow, browser: &Shared, id: String) {
-    let info = id.clone();
-    aside(
-        ui,
-        browser,
-        move |client| {
-            let info = info.clone();
-            async move { client.get_artist_info2(&info, None, None).await }
-        },
-        |ui, _, info| {
-            show_about(ui, info.biography.as_deref());
-            ui.set_similar(names(info.similar_artist.iter().map(linked).collect()));
-        },
-    );
+/// An artist's page: their picture and name, and in the tab shown what the
+/// server says about them, their top songs, the artists like them, or their
+/// releases. Each tab asks only for what it shows.
+fn artist(ui: &AppWindow, browser: &Shared, id: String, tab: artist_page::Tab) {
+    ui.set_artist_tab(tab.index());
     let by_id = browser
         .borrow()
         .client
         .as_ref()
         .is_some_and(|client| client.supports(TOP_SONGS_BY_ID));
-    if by_id {
+    if tab != artist_page::Tab::Releases {
+        artist_page::ask_info(ui, browser, id.clone(), tab);
+    }
+    if tab == artist_page::Tab::Overview && by_id {
         top_songs(ui, browser, id.clone(), true);
     }
     load(
@@ -4651,7 +4655,7 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
             async move { client.get_artist(&id).await }
         },
         move |ui, browser, artist| {
-            if !by_id {
+            if tab == artist_page::Tab::Overview && !by_id {
                 top_songs(ui, browser, artist.artist.name.clone(), false);
             }
             ui.set_header_title(artist.artist.name.as_str().into());
@@ -4660,13 +4664,10 @@ fn artist(ui: &AppWindow, browser: &Shared, id: String) {
             browser.borrow_mut().own_albums = own_albums_of(&artist.artist, &artist.album)
                 .map(|album| format!("album:{}", album.id))
                 .collect();
-            header_image(ui, browser, artist.artist.cover_art);
-            clear_tiles(ui, &mut browser.borrow_mut());
-            let tiles = artist.album.iter().map(|album| {
-                let year = album.year.map(|year| unlinked(year.to_string()));
-                album_tile(album, year.into_iter().collect())
-            });
-            add_tiles(ui, browser, tiles.collect());
+            header_image(ui, browser, artist.artist.cover_art.clone());
+            let offered = offers(&browser.borrow(), ARTIST_BANNER);
+            artist_page::show_banner(ui, browser, artist_page::banner_of(&artist.artist, offered));
+            artist_page::show_albums(ui, browser, &artist, tab);
         },
     );
 }
@@ -4678,19 +4679,24 @@ pub(crate) fn own_albums_of<'a>(
     artist: &'a ArtistID3,
     albums: &'a [AlbumID3],
 ) -> impl Iterator<Item = &'a AlbumID3> {
-    albums.iter().filter(|album| {
-        let compilation = album.is_compilation == Some(true)
-            || album
-                .release_types
-                .iter()
-                .any(|kind| kind.eq_ignore_ascii_case("compilation"));
-        let by_artist = if album.artists.is_empty() {
-            album.artist_id.as_deref() == Some(artist.id.as_str())
-        } else {
-            album.artists.iter().any(|by| by.id == artist.id)
-        };
-        by_artist && !compilation
-    })
+    albums
+        .iter()
+        .filter(|album| is_by(artist, album) && !is_compilation(album))
+}
+
+fn is_compilation(album: &AlbumID3) -> bool {
+    album.is_compilation == Some(true)
+        || (album.release_types.iter()).any(|kind| kind.eq_ignore_ascii_case("compilation"))
+}
+
+/// Whether `artist` is among the album's artists, or its one artist where
+/// the server lists none.
+fn is_by(artist: &ArtistID3, album: &AlbumID3) -> bool {
+    if album.artists.is_empty() {
+        album.artist_id.as_deref() == Some(artist.id.as_str())
+    } else {
+        album.artists.iter().any(|by| by.id == artist.id)
+    }
 }
 
 /// A playlist's tracks: each with its artists and album, and the heart that

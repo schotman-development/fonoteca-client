@@ -1,5 +1,6 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { Tabs, TitledGrid } from "tabs.slint";
 import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, Spinner, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
 export { AccentChoice, AlbumTile, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
@@ -1446,7 +1447,23 @@ export component AppWindow inherits Window {
     in property <image> genre-banner;
     // A genre's popular radio stations, for its page.
     in property <StationShelf> genre-radio;
-    in property <[Name]> similar;
+    // An artist's page: the tab shown (the page's link says which), the
+    // artist's banner, whether it has one, the shelves and grids of its tabs,
+    // whether it has albums to play, and whether the server has answered
+    // about it, and the top songs shown beyond five on a narrow page.
+    in property <int> artist-tab;
+    in property <image> artist-banner;
+    in property <bool> artist-banner-shown;
+    in property <[AlbumTile]> artist-albums;
+    in property <[AlbumTile]> artist-singles;
+    in property <[AlbumTile]> artist-collaborations;
+    in property <[AlbumTile]> artist-compilations;
+    in property <[AlbumTile]> similar-artists;
+    in property <bool> artist-playable;
+    in property <bool> artist-info-answered;
+    in property <bool> artist-no-releases;
+    in-out property <bool> top-tracks-open;
+    callback artist-tab-picked(index: int);
     // The people credited on an album, and the albums that sound like it.
     in property <[AlbumTile]> credits;
     in property <[AlbumTile]> similar-albums;
@@ -1654,14 +1671,14 @@ export component AppWindow inherits Window {
         { id: "queue", label: "Add to queue", icon: Icons.queue },
         { id: "radio", label: "Start radio", icon: Icons.radio },
     ] : root.queue-entries;
-    property <bool> tiles-queued: root.can-play && (root.page == Page.albums || root.page == Page.artist || root.page == Page.playlists || root.page == Page.downloads);
+    property <bool> tiles-queued: root.can-play && (root.page == Page.albums || root.page == Page.playlists || root.page == Page.downloads);
     property <bool> tiles-moved: root.page == Page.playlists && root.tile-moves.length > 0;
     property <[MenuEntry]> tile-entries: root.tiles-queued && root.tiles-moved ? [
         { id: "play", label: "Play now", icon: Icons.play },
         { id: "next", label: "Play next", icon: Icons.next },
         { id: "queue", label: "Add to queue", icon: Icons.queue },
         { id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves },
-    ] : root.tiles-queued ? (root.page == Page.albums || root.page == Page.artist ? root.album-entries : root.queue-entries) : root.tiles-moved ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
+    ] : root.tiles-queued ? (root.page == Page.albums ? root.album-entries : root.queue-entries) : root.tiles-moved ? [{ id: "move", label: "Move to folder", icon: Icons.folder, choices: root.tile-moves }] : [];
     // The sound devices to play on, the system's default first, and the one
     // chosen, with the icon of its kind and what the kind is called; volume
     // leveling: off, by track or by album.
@@ -2543,18 +2560,22 @@ export component AppWindow inherits Window {
                     height: stage.banner-height;
                     radius: 0;
                     accessible-role: image;
-                    accessible-label: root.page == Page.genre ? root.header-title : root.created-for-kind;
-                    picture: root.page == Page.genre ? root.genre-banner : root.created-for-banner;
-                    name: root.page == Page.genre ? root.header-title : root.created-for-kind;
+                    accessible-label: root.page == Page.genre || root.page == Page.artist ? root.header-title : root.created-for-kind;
+                    picture: root.page == Page.genre ? root.genre-banner : root.page == Page.artist ? root.artist-banner : root.created-for-banner;
+                    // The artist's name is in the header over its edge.
+                    name: root.page == Page.genre ? root.header-title : root.page == Page.artist ? "" : root.created-for-kind;
                     name-size: Screen.phone ? 28px * Theme.zoom : 40px * Theme.zoom;
-                    backdrop: root.page == Page.genre ? #1c1c2c : KindTints.backdrop(root.created-for-tint);
-                    wash: root.page == Page.genre ? transparent : KindTints.wash(root.created-for-tint);
+                    backdrop: root.page == Page.genre || root.page == Page.artist ? #1c1c2c : KindTints.backdrop(root.created-for-tint);
+                    wash: root.page == Page.genre || root.page == Page.artist ? transparent : KindTints.wash(root.created-for-tint);
                 }
                 stage := VerticalLayout {
-                    property <length> banner-height: root.page == Page.genre ? (Screen.phone ? 200px : 320px * Theme.zoom) : root.page == Page.playlist && root.created-for && root.created-for-kind != "" ? (Screen.phone ? 140px : 200px * Theme.zoom) : 0px;
+                    property <length> banner-height: root.page == Page.genre ? (Screen.phone ? 200px : 320px * Theme.zoom) : root.page == Page.playlist && root.created-for && root.created-for-kind != "" ? (Screen.phone ? 140px : 200px * Theme.zoom) : root.page == Page.artist && root.artist-banner-shown ? (Screen.phone ? 120px : 200px * Theme.zoom) : 0px;
+                    // How far an artist's header reaches up over its banner:
+                    // half its picture.
+                    property <length> overhang: root.page == Page.artist && root.artist-banner-shown ? (Screen.phone ? 48px : 110px) : 0px;
                     // Set, so the content height doesn't depend on itself;
                     // below the banner, where a set height would centre it.
-                    y: self.banner-height;
+                    y: self.banner-height - self.overhang;
                     height: self.preferred-height;
                     // At most 1600px wide and centred, but for a table,
                     // which is wider than the page when its columns don't
@@ -2564,7 +2585,7 @@ export component AppWindow inherits Window {
                     // and its columns don't narrow.
                     width: root.table ? max(scroll.visible-width, root.table-need) : min(scroll.visible-width, 1600px);
                     padding: 24px;
-                    padding-top: self.banner-height > 0 ? 24px : 8px;
+                    padding-top: self.overhang > 0 ? 0px : self.banner-height > 0 ? 24px : 8px;
                     // Room to scroll the last tiles out from under the bar.
                     padding-bottom: root.selected-tiles > 0 ? 96px : 24px;
                     spacing: 24px;
@@ -2818,8 +2839,13 @@ export component AppWindow inherits Window {
                         title: root.header-title;
                         names: root.header-names;
                         facts: root.header-facts;
+                        // Over an artist's banner a phone's picture is smaller, so the
+                        // text fits beside it; the text starts below the banner's edge.
+                        artwork-size: stage.overhang > 0 && Screen.phone ? 96px : 220px;
+                        text-width: stage.overhang > 0 && Screen.phone ? 160px : 280px;
+                        text-offset: stage.overhang > 0 ? stage.overhang + 8px : 0px;
                         open(link) => { root.open(link); }
-                        if root.can-play && ((root.page == Page.album && root.tracks.length > 0) || (root.page == Page.playlist && root.track-lines.length > 0) || (root.page == Page.artist && root.tiles.length > 0)): PlayButton {
+                        if root.can-play && ((root.page == Page.album && root.tracks.length > 0) || (root.page == Page.playlist && root.track-lines.length > 0) || (root.page == Page.artist && root.artist-playable)): PlayButton {
                             enabled: !Input.modal;
                             // An artist's songs on their page are their top ones; Play is all their own albums.
                             play => {
@@ -2895,6 +2921,11 @@ export component AppWindow inherits Window {
                         subject: root.header-title;
                         rate(stars) => { root.rate-header(stars); }
                     }
+                    if root.page == Page.artist: Tabs {
+                        titles: ["Overview", "About", "Releases"];
+                        current: root.artist-tab;
+                        picked(index) => { root.artist-tab-picked(index); }
+                    }
                     // A genre's banner with its name over it, then the genres it
                     // sits under and how much the library has of it.
                     if root.page == Page.genre: VerticalLayout {
@@ -2947,20 +2978,47 @@ export component AppWindow inherits Window {
                     // until opened, at the width it has so it wraps. In a
                     // HorizontalLayout, which measures it at its 800px most
                     // where a VerticalLayout would at its own whole width.
-                    if (root.page == Page.artist || root.page == Page.album || root.page == Page.genre) && root.about != "": VerticalLayout {
+                    // An artist's Overview has its start, with Read more to the
+                    // About tab, which has all of it.
+                    if root.page == Page.artist && root.artist-tab == 0 && root.about-short != "": VerticalLayout {
                         spacing: 4px;
                         HorizontalLayout {
                             alignment: start;
                             Text {
                                 preferred-width: min(scroll.visible-width - 48px, 800px);
                                 max-width: 800px;
-                                text: root.about-open ? root.about : root.about-short;
+                                text: root.about-short;
                                 font-size: Theme.body;
                                 color: Theme.text;
                                 wrap: word-wrap;
                             }
                         }
                         if root.about-short != root.about: HorizontalLayout {
+                            alignment: start;
+                            Link {
+                                text: "Read more";
+                                font-size: Theme.detail;
+                                font-weight: 600;
+                                min-height: Screen.phone ? Theme.phone-target : 0px;
+                                clicked => { root.artist-tab-picked(1); }
+                            }
+                        }
+                    }
+                    if root.page == Page.artist && root.artist-tab == 1 && root.about == "" && root.artist-info-answered: Note { text: "No biography."; }
+                    if ((root.page == Page.artist && root.artist-tab == 1) || root.page == Page.album || root.page == Page.genre) && root.about != "": VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            alignment: start;
+                            Text {
+                                preferred-width: min(scroll.visible-width - 48px, 800px);
+                                max-width: 800px;
+                                text: root.about-open || root.page == Page.artist ? root.about : root.about-short;
+                                font-size: Theme.body;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                        }
+                        if root.about-short != root.about && root.page != Page.artist: HorizontalLayout {
                             alignment: start;
                             Link {
                                 text: root.about-open ? "Less" : "More";
@@ -3025,7 +3083,63 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.history: Heading { text: "History"; }
                     if root.page == Page.history && root.header-facts != "": Note { text: root.header-facts; }
-                    if root.page == Page.album || root.page == Page.artist || root.page == Page.history || (root.page == Page.search && root.tracks.length > 0): VerticalLayout {
+                    // An artist's top songs, five to a column: two columns side by
+                    // side where the page is wide, else one with the rest after
+                    // Show more.
+                    if root.page == Page.artist && root.tracks.length > 0: GridLayout {
+                        property <bool> two-columns: scroll.visible-width >= 900px;
+                        property <int> per-column: 5;
+                        spacing-horizontal: 24px;
+                        for track[at] in root.tracks: TrackRow {
+                            property <bool> shown: at < parent.per-column || parent.two-columns || root.top-tracks-open;
+                            col: parent.two-columns ? floor(at / parent.per-column) : 0;
+                            row: parent.two-columns ? mod(at, parent.per-column) : at;
+                            visible: self.shown;
+                            max-height: self.shown ? 100000px : 0px;
+                            title: track.title;
+                            names: track.names;
+                            split: track.split;
+                            duration: track.duration;
+                            loved: track.loved;
+                            rating: track.rating;
+                            may-rate: root.may-rate;
+                            selected: track.selected;
+                            selecting: root.selected-tiles > 0;
+                            playlists: root.playlist-targets;
+                            taggable: root.tags-offered;
+                            playable: root.can-play;
+                            radio-offered: root.radio-offered;
+                            downloadable: root.can-download && root.may-download;
+                            download-removable: track.downloaded-alone;
+                            downloaded: track.downloaded;
+                            unavailable: track.unavailable;
+                            open(link) => { root.open(link); }
+                            select(range) => { root.select-track(at, range); }
+                            play => { root.play-tracks(at); }
+                            download => { root.download-track(at); }
+                            remove-download => { root.remove-track-download(at); }
+                            queue(next) => { root.queue-tracks(at, 1, next); }
+                            start-radio => { root.start-song-radio(at); }
+                            add-to-playlist(id) => { root.add-track-to-playlist(at, id); }
+                            toggle-love => { root.toggle-love(at); }
+                            rate(stars) => { root.rate-track(at, stars); }
+                            tag => {
+                                root.tag-track(at);
+                                root.ask(Asking.tag-songs);
+                            }
+                        }
+                    }
+                    if root.page == Page.artist && root.tracks.length > 5 && scroll.visible-width < 900px: HorizontalLayout {
+                        alignment: start;
+                        Link {
+                            text: root.top-tracks-open ? "Show less" : "Show more";
+                            font-size: Theme.detail;
+                            font-weight: 600;
+                            min-height: Screen.phone ? Theme.phone-target : 0px;
+                            clicked => { root.top-tracks-open = !root.top-tracks-open; }
+                        }
+                    }
+                    if root.page == Page.album || root.page == Page.history || (root.page == Page.search && root.tracks.length > 0): VerticalLayout {
                         for track[row] in root.tracks: VerticalLayout {
                             if track.work != "": TrackRow {
                                 title: track.work;
@@ -3154,21 +3268,53 @@ export component AppWindow inherits Window {
                             clicked => { root.open(root.older-listens); }
                         }
                     }
-                    if root.page == Page.artist && root.similar.length > 0: VerticalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "Similar artists";
-                            font-size: Theme.heading;
-                            font-weight: 600;
-                            color: Theme.text;
-                        }
-                        Links {
-                            preferred-width: min(scroll.visible-width, 1600px) - 48px;
-                            names: root.similar;
-                            text-color: Theme.text;
-                            open(link) => { root.open(link); }
-                        }
+                    // An artist's own albums and the artists like them, after
+                    // their top songs, and on the Releases tab a grid for each kind
+                    // of release, the empty ones left out.
+                    if root.page == Page.artist && root.artist-tab == 0 && root.artist-albums.length > 0: CoverShelf {
+                        title: "Albums";
+                        tiles: root.artist-albums;
+                        more: true;
+                        see-all => { root.artist-tab-picked(2); }
+                        entries: root.can-play ? root.album-entries : [];
+                        activated(index, id) => { root.queue-link(root.artist-albums[index].link, id); }
+                        open(link) => { root.open(link); }
                     }
+                    if root.page == Page.artist && root.artist-tab == 0 && root.similar-artists.length > 0: CoverShelf {
+                        title: "Similar artists";
+                        tiles: root.similar-artists;
+                        round: true;
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.artist && root.artist-tab == 2 && root.artist-albums.length > 0: TitledGrid {
+                        title: "Albums";
+                        tiles: root.artist-albums;
+                        entries: root.can-play ? root.album-entries : [];
+                        activated(index, id) => { root.queue-link(root.artist-albums[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.artist && root.artist-tab == 2 && root.artist-singles.length > 0: TitledGrid {
+                        title: "Singles and EPs";
+                        tiles: root.artist-singles;
+                        entries: root.can-play ? root.album-entries : [];
+                        activated(index, id) => { root.queue-link(root.artist-singles[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.artist && root.artist-tab == 2 && root.artist-collaborations.length > 0: TitledGrid {
+                        title: "Collaborations";
+                        tiles: root.artist-collaborations;
+                        entries: root.can-play ? root.album-entries : [];
+                        activated(index, id) => { root.queue-link(root.artist-collaborations[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.artist && root.artist-tab == 2 && root.artist-compilations.length > 0: TitledGrid {
+                        title: "Compilations";
+                        tiles: root.artist-compilations;
+                        entries: root.can-play ? root.album-entries : [];
+                        activated(index, id) => { root.queue-link(root.artist-compilations[index].link, id); }
+                        open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.artist && root.artist-no-releases && !root.loading && root.page-problem == "": Note { text: "No releases."; }
                     if root.page == Page.album && root.booklets.length > 0: CoverShelf {
                         title: "Booklets";
                         tiles: root.booklets;
@@ -3233,15 +3379,9 @@ export component AppWindow inherits Window {
                         tiles: root.genre-tiles;
                         open(link) => { root.open(link); }
                     }
-                    if root.page == Page.artist && (root.tracks.length > 0 || root.similar.length > 0) && root.tiles.length > 0: Text {
-                        text: "Albums";
-                        font-size: Theme.heading;
-                        font-weight: 600;
-                        color: Theme.text;
-                    }
                     if root.page == Page.downloads: Heading { text: "Downloads"; }
                     if root.page == Page.downloads && root.tiles.length == 0 && root.tracks.length == 0: Note { text: "Nothing is downloaded yet."; }
-                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.artist || root.page == Page.composers || root.page == Page.downloads: CoverGrid {
+                    if root.page == Page.albums || root.page == Page.artists || root.page == Page.playlists || root.page == Page.composers || root.page == Page.downloads: CoverGrid {
                         tiles: root.tiles;
                         round: root.page == Page.artists || root.page == Page.composers;
                         view-top: -scroll.content-y - self.y;

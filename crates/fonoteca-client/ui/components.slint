@@ -3027,6 +3027,11 @@ export component PageHeader inherits FlexboxLayout {
     in property <string> title;
     in property <[Name]> names;
     in property <string> facts;
+    in property <length> artwork-size: 220px;
+    // A page whose banner the header overlaps sets the picture smaller on a
+    // phone, and the text lower, below the banner's edge.
+    in property <length> text-width: 280px;
+    in property <length> text-offset: 0px;
     callback open(link: string);
 
     alignment: stretch;
@@ -3034,14 +3039,15 @@ export component PageHeader inherits FlexboxLayout {
     spacing: 24px;
 
     if root.show-artwork: Artwork {
-        size: 220px;
+        size: root.artwork-size;
         round: root.round;
         source: root.artwork;
     }
     VerticalLayout {
-        preferred-width: 280px;
+        preferred-width: root.text-width;
         horizontal-stretch: 1;
         alignment: start;
+        padding-top: root.text-offset;
         spacing: 6px;
         if root.kind != "": Text {
             text: root.kind;

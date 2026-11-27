@@ -1,0 +1,134 @@
+import { CoverGrid, AlbumTile, MenuEntry, Screen, Theme, Input } from "components.slint";
+
+// A row of tabs, one of them current, which a page shows the sections of. It
+// is one stop for Tab: the arrow keys, Home and End move between the tabs,
+// and a click or tap picks one. The tabs share the width where they fit, and
+// are as wide as `least-width` where they don't, when the row slides
+// sideways.
+export component Tabs inherits FocusScope {
+    in property <[string]> titles;
+    in property <int> current;
+    // A tab asked for, by its place; the page changes `current`.
+    callback picked(index: int);
+
+    property <length> target: Screen.phone ? Theme.phone-target : 40px;
+    property <length> least-width: 112px * Theme.zoom;
+    property <length> tab-width: max(root.least-width, root.width / max(1, root.titles.length));
+
+    height: root.target;
+    // Slides the current tab into view when the keys moved it out of it.
+    changed current => {
+        strip.content-x = clamp(strip.content-x, -(root.current * root.tab-width), root.width - (root.current + 1) * root.tab-width);
+    }
+    enabled: !Input.modal;
+    accessible-role: tab-list;
+    accessible-label: "Sections";
+
+    // The tab at `index`, or the nearest there is, picked and brought into view.
+    function pick(index: int) {
+        let at = clamp(index, 0, root.titles.length - 1);
+        if at != root.current {
+            root.picked(at);
+        }
+    }
+
+    key-pressed(event) => {
+        if event.text == Key.LeftArrow {
+            root.pick(root.current - 1);
+            return accept;
+        }
+        if event.text == Key.RightArrow {
+            root.pick(root.current + 1);
+            return accept;
+        }
+        if event.text == Key.Home {
+            root.pick(0);
+            return accept;
+        }
+        if event.text == Key.End {
+            root.pick(root.titles.length - 1);
+            return accept;
+        }
+        reject
+    }
+
+    Rectangle {
+        y: parent.height - self.height;
+        height: 1px;
+        background: Theme.muted.transparentize(70%);
+    }
+
+    strip := Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: root.tab-width * root.titles.length;
+        for title[i] in root.titles: Rectangle {
+            x: i * root.tab-width;
+            width: root.tab-width;
+            height: strip.height;
+            accessible-role: tab;
+            accessible-label: title;
+            accessible-item-selectable: true;
+            accessible-item-selected: i == root.current;
+            accessible-action-default => { root.pick(i); }
+
+            if root.has-focus && i == root.current: Rectangle {
+                x: 3px;
+                y: 3px;
+                width: parent.width - 6px;
+                height: parent.height - 6px;
+                border-radius: Theme.radius;
+                border-width: 2px;
+                border-color: Theme.accent;
+            }
+            if touch.has-hover && i != root.current: Rectangle {
+                background: Theme.hover;
+            }
+            Text {
+                text: title;
+                font-size: Theme.body;
+                font-weight: i == root.current ? 600 : 400;
+                color: i == root.current || touch.has-hover ? Theme.text : Theme.muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if i == root.current: Rectangle {
+                y: parent.height - self.height;
+                height: 2px;
+                background: Theme.accent;
+            }
+            touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => {
+                    root.focus();
+                    root.pick(i);
+                }
+            }
+        }
+    }
+}
+
+// A heading over a grid of covers, for a page's group of releases.
+export component TitledGrid inherits VerticalLayout {
+    in property <string> title;
+    in property <[AlbumTile]> tiles;
+    in property <[MenuEntry]> entries;
+    callback open(link: string);
+    callback activated(index: int, id: string);
+
+    spacing: 12px;
+
+    Text {
+        text: root.title;
+        font-size: Theme.heading;
+        font-weight: 600;
+        color: Theme.text;
+    }
+    CoverGrid {
+        tiles: root.tiles;
+        entries: root.entries;
+        open(link) => { root.open(link); }
+        activated(index, id) => { root.activated(index, id); }
+    }
+}

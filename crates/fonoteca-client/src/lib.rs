@@ -4021,7 +4021,7 @@ mod tests {
             ui.invoke_clear_selection();
             click(&ui, "Mara Lind");
             wait_for("her page", || {
-                ui.get_page() == Page::Artist && ui.get_tiles().row_count() == 1
+                ui.get_page() == Page::Artist && ui.get_artist_albums().row_count() == 1
             })
             .await;
             // What the server says about her, her top songs by her id, and
@@ -4034,10 +4034,11 @@ mod tests {
             wait_for("her biography", || ui.get_about() != "").await;
             assert_eq!(ui.get_about(), "Mara Lind sings.");
             assert_eq!(ui.get_about_short(), "Mara Lind sings.");
+            wait_for("her similar artists", || ui.get_similar_artists().row_count() == 2).await;
             let similar: Vec<(String, String)> = ui
-                .get_similar()
+                .get_similar_artists()
                 .iter()
-                .map(|name| (name.label.into(), name.link.into()))
+                .map(|tile| (tile.title.into(), tile.link.into()))
                 .collect();
             assert_eq!(
                 similar,
@@ -4046,6 +4047,29 @@ mod tests {
                     ("Nobody Here".to_owned(), String::new())
                 ]
             );
+            assert_eq!(ui.get_artist_tab(), 0);
+            // The About tab has her biography and nothing the Overview has;
+            // the Releases tab her albums, grouped. Each is a link of its
+            // own, which back and forward step through.
+            ui.invoke_artist_tab_picked(1);
+            wait_for("the About tab", || ui.get_artist_tab() == 1 && ui.get_about() != "").await;
+            assert_eq!(ui.get_about(), "Mara Lind sings.");
+            assert_eq!(ui.get_header_title(), "Mara Lind");
+            assert_eq!(ui.get_tracks().row_count(), 0);
+            assert_eq!(ui.get_similar_artists().row_count(), 0);
+            ui.invoke_artist_tab_picked(2);
+            wait_for("the Releases tab", || ui.get_artist_albums().row_count() == 1).await;
+            assert_eq!(ui.get_artist_tab(), 2);
+            assert_eq!(ui.get_artist_singles().row_count(), 0);
+            assert!(!ui.get_artist_no_releases());
+            assert_eq!(ui.get_tracks().row_count(), 0);
+            ui.invoke_back();
+            wait_for("the About tab again", || ui.get_artist_tab() == 1).await;
+            ui.invoke_back();
+            wait_for("the Overview again", || {
+                ui.get_artist_tab() == 0 && ui.get_tracks().row_count() == 2
+            })
+            .await;
             click(&ui, "Albums");
             assert_eq!(ui.get_tiles().row_count(), 100);
 
@@ -4815,12 +4839,12 @@ mod tests {
 
             click(&ui, "Mara Lind");
             wait_for("the artist", || {
-                ui.get_page() == Page::Artist && ui.get_tiles().row_count() == 1
+                ui.get_page() == Page::Artist && ui.get_artist_albums().row_count() == 1
             })
             .await;
             assert_eq!(ui.get_header_title(), "Mara Lind");
             assert_eq!(
-                ui.get_tiles()
+                ui.get_artist_albums()
                     .row_data(0)
                     .unwrap()
                     .names
@@ -4840,7 +4864,7 @@ mod tests {
             assert_eq!(times_asked("getAlbum"), albums + 1);
             assert!(ui.get_tracks().row_data(1).unwrap().loved);
             click(&ui, "Forward");
-            wait_for("the artist again", || ui.get_tiles().row_count() == 1).await;
+            wait_for("the artist again", || ui.get_artist_albums().row_count() == 1).await;
             assert_eq!(ui.get_page(), Page::Artist);
             assert!(!ui.get_can_go_forward());
             ui.invoke_forward();
@@ -4860,7 +4884,7 @@ mod tests {
             ALBUM_RENAMED.store(true, Relaxed);
             SLOW_ALBUM.store(true, Relaxed);
             let only_tile = |title: &str| {
-                let tiles = ui.get_tiles();
+                let tiles = ui.get_artist_albums();
                 tiles.row_count() == 1 && tiles.row_data(0).unwrap().title == title
             };
             click(&ui, "Forward");
