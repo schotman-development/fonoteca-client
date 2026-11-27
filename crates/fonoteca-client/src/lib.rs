@@ -934,6 +934,18 @@ mod tests {
         2, 48, 129, 208, 47, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
 
+    /// How big a booklet page the mock draws: larger than the test's window,
+    /// and portrait, so a viewer that shows it at its own size is caught.
+    const PAGE_SIZE: (u32, u32) = (1400, 2000);
+
+    fn tall_page() -> Vec<u8> {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(PAGE_SIZE.0, PAGE_SIZE.1)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("a blank picture encodes");
+        png.into_inner()
+    }
+
     const OK: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.64.0","openSubsonic":true}}"#;
     const WRONG_PASSWORD: &str = r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":40,"message":"Wrong username or password"}}}"#;
 
@@ -1942,7 +1954,7 @@ mod tests {
                     r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"The page could not be drawn."}}}"#,
                 )
             } else {
-                reply("200 OK", "image/png", PNG)
+                reply("200 OK", "image/png", &tall_page())
             }
         } else if request.contains("/rest/getAlbumInfo2") {
             let notes = r#""albumInfo":{"notes":"Recorded at sea &amp; on land.<br/><a href=\"https://example.org\">Read more</a>"}"#;
@@ -4693,6 +4705,34 @@ mod tests {
             wait_for("the first page", || ui.get_booklet_page().size().width > 0).await;
             assert_eq!(ui.get_booklet_position(), "1 of 3");
             assert!(!ui.get_booklet_can_go_back() && ui.get_booklet_can_go_on());
+            // The whole page is in view: the picture is the viewer's area, in
+            // the window and above the player bar, though the page itself is
+            // larger than the window.
+            let page = ui.get_booklet_page().size();
+            assert_eq!((page.width, page.height), PAGE_SIZE);
+            let shown = ui
+                .root_element()
+                .query_descendants()
+                .match_accessible_role(AccessibleRole::Image)
+                .match_predicate(|image| {
+                    image.accessible_label().is_some_and(|l| l.starts_with("Libretto"))
+                })
+                .find_first()
+                .expect("no page in the viewer");
+            let (shown_at, shown_size) = (shown.absolute_position(), shown.size());
+            let window = ui.window().size().to_logical(ui.window().scale_factor());
+            assert!(
+                shown_size.width > 300.0 && shown_size.width <= window.width,
+                "the page is {} wide in a window {} wide",
+                shown_size.width,
+                window.width
+            );
+            assert!(
+                shown_size.height > 300.0 && shown_at.y + shown_size.height <= window.height,
+                "the page ends at {} in a window {} high",
+                shown_at.y + shown_size.height,
+                window.height
+            );
             press(&ui, slint::platform::Key::LeftArrow);
             assert_eq!(ui.get_booklet_position(), "1 of 3", "the first page is the start");
             press(&ui, slint::platform::Key::RightArrow);

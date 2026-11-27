@@ -5448,6 +5448,8 @@ export component AppWindow inherits Window {
                         }
                     }
                     Image {
+                        width: parent.width;
+                        height: parent.height;
                         source: root.booklet-page;
                         image-fit: contain;
                         accessible-role: image;
