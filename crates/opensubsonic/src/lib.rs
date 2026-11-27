@@ -1598,7 +1598,11 @@ mod tests {
         let log = log.lock().unwrap();
         assert!(log[0].contains("/rest/getAlbumBooklets") && log[0].contains("id=al-1"));
         assert!(log[1].contains("/rest/getBookletPage"));
-        assert!(log[1].contains("page=3") && log[1].contains("size=800"), "{}", log[1]);
+        assert!(
+            log[1].contains("page=3") && log[1].contains("size=800"),
+            "{}",
+            log[1]
+        );
         assert!(!log[2].contains("size="), "{}", log[2]);
         assert!(log[3].contains("/rest/getBookletFile"));
     }
