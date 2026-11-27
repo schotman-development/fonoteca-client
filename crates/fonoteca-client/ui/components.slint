@@ -139,6 +139,21 @@ export struct AlbumTile {
     smart: bool,
 }
 
+// One person credited on an album, and on which of its tracks where not all.
+export struct CreditPerson {
+    label: string,
+    // The artist's page, empty where the server gives the person no id.
+    link: string,
+    tracks: string,
+}
+
+// What one role or instrument of an album's credits has: its heading and
+// the people.
+export struct CreditSection {
+    heading: string,
+    people: [CreditPerson],
+}
+
 export global Icons {
     out property <string> smart: "M13 3L5 14h6l-1 7 8-11h-6z";
     out property <string> star: "M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z";

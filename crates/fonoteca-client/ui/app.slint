@@ -1,8 +1,8 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, Spinner, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, CreditPerson, CreditSection, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, Spinner, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AccentChoice, AlbumTile, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, CreditPerson, CreditSection, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -1447,6 +1447,12 @@ export component AppWindow inherits Window {
     // A genre's popular radio stations, for its page.
     in property <StationShelf> genre-radio;
     in property <[Name]> similar;
+    // An album's credits by role, whether the long ones are cut short, and
+    // the albums that sound like it.
+    in property <[CreditSection]> credits;
+    in property <bool> credits-more;
+    in property <[AlbumTile]> similar-albums;
+    callback show-all-credits();
     // The settings page's word on the server's scan of its libraries, and
     // whether one is going.
     in property <string> scan-status;
@@ -3150,6 +3156,58 @@ export component AppWindow inherits Window {
                             text-color: Theme.text;
                             open(link) => { root.open(link); }
                         }
+                    }
+                    if root.page == Page.album && root.credits.length > 0: VerticalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: "Credits";
+                            font-size: Theme.heading;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        for section in root.credits: VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: section.heading;
+                                font-size: Theme.detail;
+                                font-weight: 600;
+                                color: Theme.muted;
+                            }
+                            FlexboxLayout {
+                                spacing-horizontal: 24px;
+                                spacing-vertical: 4px;
+                                for person in section.people: VerticalLayout {
+                                    Link {
+                                        text: person.label;
+                                        enabled: person.link != "";
+                                        color: Theme.text;
+                                        min-height: Screen.phone ? Theme.phone-target : 0px;
+                                        clicked => { root.open(person.link); }
+                                    }
+                                    if person.tracks != "": Text {
+                                        text: person.tracks;
+                                        font-size: Theme.small;
+                                        color: Theme.muted;
+                                    }
+                                }
+                            }
+                        }
+                        if root.credits-more: HorizontalLayout {
+                            alignment: start;
+                            Link {
+                                text: "Show all";
+                                font-weight: 600;
+                                min-height: Screen.phone ? Theme.phone-target : 0px;
+                                clicked => { root.show-all-credits(); }
+                            }
+                        }
+                    }
+                    if root.page == Page.album && root.similar-albums.length > 0: CoverShelf {
+                        title: "Similar albums";
+                        tiles: root.similar-albums;
+                        entries: root.can-play ? root.album-entries : [];
+                        activated(index, id) => { root.queue-link(root.similar-albums[index].link, id); }
+                        open(link) => { root.open(link); }
                     }
                     // A genre's albums, artists and popular radio stations
                     // sliding by, each with all of them behind "See all",

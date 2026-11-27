@@ -44,6 +44,7 @@ use crate::{
 };
 
 pub(crate) mod created_for;
+mod credits;
 mod fields;
 mod focus;
 mod freshness;
@@ -51,6 +52,7 @@ mod listens;
 mod played;
 mod ratings;
 mod search;
+mod similar_albums;
 mod smart;
 mod stats;
 mod top_rated;
@@ -347,6 +349,8 @@ pub struct Browser {
     played: played::Played,
     /// The albums rated highest, for the home page.
     top_rated: top_rated::TopRated,
+    /// The albums that sound like the album on screen.
+    similar_albums: similar_albums::SimilarAlbums,
     /// The album or artist on screen whose header shows its rating.
     header_rated: Option<String>,
     /// The radio directory once asked, its countries' names by code, its
@@ -887,6 +891,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     freshness::wire(ui, browser);
     search::wire(ui, browser);
     focus::wire(ui, browser);
+    credits::wire(ui, browser);
     let mut carried = DataTransfer::default();
     carried.set_plain_text("playlist".into());
     ui.global::<Drag>().set_data(carried);
@@ -1763,6 +1768,8 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_about_short("".into());
     ui.set_about_open(false);
     ui.set_similar(ModelRc::default());
+    credits::clear(ui);
+    similar_albums::clear(ui, browser);
     ui.set_genre_tiles(ModelRc::default());
     ui.set_genre_artists(ModelRc::default());
     ui.set_genre_banner(Image::default());
@@ -4506,6 +4513,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             let songs = album.song;
             let album = album.album;
             let shown = album.clone();
+            let album_id = shown.id.clone();
             ui.set_header_title(album.name.as_str().into());
             ui.set_header_names(names(album_names(&album)));
             ui.set_header_facts(album_facts(&album).into());
@@ -4513,11 +4521,14 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             header_image(ui, browser, album.cover_art);
             header_motion(ui, browser, album.id);
 
+            credits::show(ui, &songs);
+            let sounding_alike = songs.clone();
             let mut b = browser.borrow_mut();
             let rows: Vec<Track> = songs.chunk_by(same_work).flat_map(work_rows).collect();
             show_songs(&mut b, songs, rows);
             b.album = Some(shown);
             drop(b);
+            similar_albums::ask(ui, browser, &album_id, &sounding_alike);
             show_downloads(ui, browser);
             #[cfg(not(target_family = "wasm"))]
             crate::downloads::follow_shown(ui, browser);

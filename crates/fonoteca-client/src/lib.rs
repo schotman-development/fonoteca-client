@@ -1981,7 +1981,7 @@ mod tests {
             ok(if NOTHING_SIMILAR.load(Relaxed) {
                 r#""sonicMatch":[]"#
             } else {
-                r#""sonicMatch":[{"entry":{"id":"sim1","isDir":false,"title":"Alike","duration":100},"similarity":0.9}]"#
+                r#""sonicMatch":[{"entry":{"id":"sim1","isDir":false,"title":"Alike","albumId":"z1","album":"Tide Tables","artist":"Mara Lind","duration":100},"similarity":0.9}]"#
             })
         } else if request.contains("/rest/getSong") && id == Some("s1") {
             ok(r#""song":{"id":"s1","isDir":false,"title":"Harbour Lights","duration":252}"#)
@@ -4649,6 +4649,19 @@ mod tests {
             wait_for("the notes", || ui.get_about() != "").await;
             assert_eq!(ui.get_about(), "Recorded at sea & on land.\nRead more");
             assert_eq!(ui.get_about_short(), "Recorded at sea & on land.");
+            // The credits come with the tracks: the one artist the songs
+            // name, on the song that names them, numbered by disc and track.
+            let credits = ui.get_credits();
+            assert_eq!(credits.row_count(), 1);
+            let credited = credits.row_data(0).unwrap();
+            assert_eq!(credited.heading, "Artists");
+            let artist = credited.people.row_data(0).unwrap();
+            assert_eq!((artist.label.as_str(), artist.tracks.as_str()), ("Mara Lind", "track 2.1"));
+            assert!(!ui.get_credits_more());
+            // The albums that sound like its songs, from the server's matches.
+            wait_for("the similar albums", || ui.get_similar_albums().row_count() == 1).await;
+            let similar = ui.get_similar_albums().row_data(0).unwrap();
+            assert_eq!((similar.title.as_str(), similar.link.as_str()), ("Tide Tables", "album:z1"));
             let at = usize::try_from(ui.get_section()).unwrap();
             assert_eq!(ui.get_sections().row_data(at).unwrap(), "Albums", "an album is among the albums");
             assert_eq!(ui.get_header_title(), "Night Harbour");
@@ -5700,7 +5713,8 @@ mod tests {
             assert_eq!(work(6), none());
             assert_eq!(row(6), ("IV. Allegro", to(&[]), 0, true, false));
             // On a phone the rows wrap, and the page still scrolls to the end
-            // of the last one, above the bottom bar.
+            // of its last shelf, above the bottom bar.
+            wait_for("the similar albums", || ui.get_similar_albums().row_count() == 1).await;
             let bottom_bar = 64.0;
             let window = ui.window();
             window.set_size(slint::LogicalSize::new(360.0, 640.0));
@@ -5709,11 +5723,11 @@ mod tests {
                 delta_x: 0.0,
                 delta_y: -100000.0,
             });
-            let last = button(&ui, "IV. Allegro");
+            let last = button(&ui, "Tide Tables");
             let bottom = last.absolute_position().y + last.size().height;
             assert!(
                 (600.0 - bottom_bar..=640.0 - bottom_bar).contains(&bottom),
-                "the last row ends at {bottom}"
+                "the last shelf ends at {bottom}"
             );
             window.set_size(slint::LogicalSize::new(1100.0, 760.0));
             // Red or blue, as far as encoding lets them be.
@@ -6582,7 +6596,8 @@ mod tests {
             .await;
             play::testing::clear(&ui);
             // A finger held on a name under the title picks the row too. The
-            // page's header names the artists as well, above the rows.
+            // page's header names the artists as well, above the rows, and
+            // the credits and similar albums below them.
             let artist = ui.get_tracks().row_data(1).unwrap().names.row_data(0).unwrap().label;
             let names = ui
                 .root_element()
@@ -6591,7 +6606,7 @@ mod tests {
                 .match_predicate(move |link| link.accessible_label().is_some_and(|l| l == artist))
                 .find_all();
             ui.global::<Input>().set_touch(true);
-            hold(&ui, middle(names.last().unwrap()), 0.0, 800).await;
+            hold(&ui, middle(&names[2]), 0.0, 800).await;
             ui.global::<Input>().set_touch(false);
             ui.global::<Input>().set_finger(false);
             assert_eq!(track_picks(&ui), [false, true]);
