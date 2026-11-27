@@ -1467,6 +1467,10 @@ export component AppWindow inherits Window {
     // by a link in the page, which gives them to the page.
     callback artist-tab-picked(index: int);
     callback artist-tab-opened(index: int);
+    // How many columns the top songs take on a page this wide, and the column
+    // of the song at a place among them (src/browse/artist_page.rs).
+    pure callback song-columns(width: length, songs: int) -> int;
+    pure callback song-column(at: int, songs: int, columns: int) -> int;
     // The people credited on an album, and the albums that sound like it.
     in property <[AlbumTile]> credits;
     in property <[AlbumTile]> similar-albums;
@@ -2588,6 +2592,8 @@ export component AppWindow inherits Window {
                     // and its columns don't narrow.
                     width: root.table ? max(scroll.visible-width, root.table-need) : min(scroll.visible-width, 1600px);
                     padding: 24px;
+                    // The columns an artist's top songs take at this width, less the padding.
+                    property <int> top-columns: root.song-columns(self.width - 48px, root.tracks.length);
                     padding-top: self.overhang > 0 ? 0px : self.banner-height > 0 ? 24px : 8px;
                     // Room to scroll the last tiles out from under the bar.
                     padding-bottom: root.selected-tiles > 0 ? 96px : 24px;
@@ -3088,17 +3094,17 @@ export component AppWindow inherits Window {
                     }
                     if root.page == Page.history: Heading { text: "History"; }
                     if root.page == Page.history && root.header-facts != "": Note { text: root.header-facts; }
-                    // An artist's top songs, five to a column: two columns side by
-                    // side where the page is wide, else one with the rest after
-                    // Show more. A song not shown is not built, so it takes no room.
+                    // An artist's top songs in as many columns as the page's width
+                    // has room for, split evenly and read down each; in one column
+                    // only the first five show, the rest after Show more. A song
+                    // not shown is not built, so it takes no room.
                     if root.page == Page.artist && root.tracks.length > 0: tops := HorizontalLayout {
-                        property <bool> two-columns: scroll.visible-width >= 900px;
-                        property <int> per-column: 5;
+                        property <int> collapsed-songs: 5;
                         spacing: 24px;
-                        for column in (tops.two-columns ? 2 : 1): VerticalLayout {
+                        for column in stage.top-columns: VerticalLayout {
                             alignment: start;
                             for track[at] in root.tracks: VerticalLayout {
-                                property <bool> here: tops.two-columns ? floor(at / tops.per-column) == column : (at < tops.per-column || root.top-tracks-open);
+                                property <bool> here: stage.top-columns > 1 ? root.song-column(at, root.tracks.length, stage.top-columns) == column : (at < tops.collapsed-songs || root.top-tracks-open);
                                 if self.here: TrackRow {
                                     title: track.title;
                                     names: track.names;
@@ -3135,7 +3141,7 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.page == Page.artist && root.tracks.length > 5 && scroll.visible-width < 900px: HorizontalLayout {
+                    if root.page == Page.artist && root.tracks.length > 5 && stage.top-columns == 1: HorizontalLayout {
                         alignment: start;
                         Link {
                             text: root.top-tracks-open ? "Show less" : "Show more";

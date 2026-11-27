@@ -17,6 +17,32 @@ const RELEASES_SUFFIX: &str = "/releases";
 /// What the biography's source is called when the server gives its address.
 const BIOGRAPHY_SOURCE: &str = "Last.fm";
 
+/// How wide, in logical pixels, a column of top songs is least, and how many
+/// columns there are at most: a phone gets one, a tablet two, a wide window
+/// the most.
+const LEAST_SONG_COLUMN_WIDTH: f32 = 320.0;
+const MOST_SONG_COLUMNS: usize = 4;
+
+/// How many columns `songs` top songs take on a page `width` wide: as many as
+/// fit, never more than there are songs.
+pub(super) fn song_columns(width: f32, songs: usize) -> usize {
+    let fit = (width / LEAST_SONG_COLUMN_WIDTH).floor().max(1.0) as usize;
+    fit.clamp(1, MOST_SONG_COLUMNS).min(songs.max(1))
+}
+
+/// The column of the `at`th of `songs` songs split over `columns` columns as
+/// evenly as can be, read down each in turn: the first columns take the odd
+/// ones out, so 10 songs in 3 columns are 4, 3 and 3.
+pub(super) fn song_column(at: usize, songs: usize, columns: usize) -> usize {
+    let (each, longer) = (songs / columns.max(1), songs % columns.max(1));
+    let in_longer = longer * (each + 1);
+    if at < in_longer {
+        at / (each + 1)
+    } else {
+        longer + (at - in_longer) / each.max(1)
+    }
+}
+
 /// The shelves and grids the page fills, by place in `Shelves`.
 const ALBUMS: usize = 0;
 const SINGLES: usize = 1;
@@ -299,6 +325,42 @@ fn show_similar(ui: &AppWindow, browser: &Shared, similar: &[ArtistID3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn columns_follow_the_width_up_to_the_most() {
+        let at = |width| song_columns(width, 10);
+        assert_eq!(at(0.0), 1);
+        assert_eq!(at(364.0), 1);
+        assert_eq!(at(652.0), 2);
+        assert_eq!(at(812.0), 2);
+        assert_eq!(at(1000.0), 3);
+        assert_eq!(at(1412.0), MOST_SONG_COLUMNS);
+        assert_eq!(at(9000.0), MOST_SONG_COLUMNS);
+    }
+
+    #[test]
+    fn no_more_columns_than_songs() {
+        assert_eq!(song_columns(9000.0, 2), 2);
+        assert_eq!(song_columns(9000.0, 0), 1);
+    }
+
+    fn split(songs: usize, columns: usize) -> Vec<usize> {
+        let mut sizes = vec![0; columns];
+        (0..songs).for_each(|at| sizes[song_column(at, songs, columns)] += 1);
+        sizes
+    }
+
+    #[test]
+    fn songs_split_evenly_in_reading_order() {
+        assert_eq!(split(10, 1), [10]);
+        assert_eq!(split(10, 2), [5, 5]);
+        assert_eq!(split(10, 3), [4, 3, 3]);
+        assert_eq!(split(10, 4), [3, 3, 2, 2]);
+        assert_eq!(split(7, 3), [3, 2, 2]);
+        assert_eq!(split(3, 3), [1, 1, 1]);
+        let columns: Vec<usize> = (0..10).map(|at| song_column(at, 10, 3)).collect();
+        assert_eq!(columns, [0, 0, 0, 0, 1, 1, 1, 2, 2, 2]);
+    }
 
     fn album(json: &str) -> AlbumID3 {
         serde_json::from_str(&format!(

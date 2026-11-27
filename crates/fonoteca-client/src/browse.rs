@@ -923,6 +923,13 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
             }
         }
     });
+    ui.on_song_columns(|width, songs| {
+        artist_page::song_columns(width, usize::try_from(songs).unwrap_or_default()) as i32
+    });
+    ui.on_song_column(|at, songs, columns| {
+        let index = |number: i32| usize::try_from(number).unwrap_or_default();
+        artist_page::song_column(index(at), index(songs), index(columns)) as i32
+    });
     ui.on_artist_tab_opened({
         let (weak, browser) = (ui.as_weak(), browser.clone());
         move |index| {
