@@ -3171,6 +3171,11 @@ export component AppWindow inherits Window {
                             open(link) => { root.open(link); }
                         }
                     }
+                    if root.page == Page.album && root.booklets.length > 0: CoverShelf {
+                        title: "Booklets";
+                        tiles: root.booklets;
+                        open(link) => { root.open-booklet(link); }
+                    }
                     if root.page == Page.album && root.credits.length > 0: VerticalLayout {
                         spacing: 12px;
                         Text {
@@ -3222,11 +3227,6 @@ export component AppWindow inherits Window {
                         entries: root.can-play ? root.album-entries : [];
                         activated(index, id) => { root.queue-link(root.similar-albums[index].link, id); }
                         open(link) => { root.open(link); }
-                    }
-                    if root.page == Page.album && root.booklets.length > 0: CoverShelf {
-                        title: "Booklets";
-                        tiles: root.booklets;
-                        open(link) => { root.open-booklet(link); }
                     }
                     // A genre's albums, artists and popular radio stations
                     // sliding by, each with all of them behind "See all",
