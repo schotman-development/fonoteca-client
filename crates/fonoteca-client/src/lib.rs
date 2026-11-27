@@ -2677,6 +2677,18 @@ mod tests {
         button(ui, label).invoke_accessible_default_action();
     }
 
+    /// Picks the tab of a tab bar named `label`, which gives the bar the keys.
+    fn pick_tab(ui: &AppWindow, label: &str) {
+        let label = label.to_owned();
+        ui.root_element()
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Tab)
+            .match_predicate(move |tab| tab.accessible_label().is_some_and(|l| l == label))
+            .find_first()
+            .expect("no such tab")
+            .invoke_accessible_default_action();
+    }
+
     /// Opens the page's Sort menu, moves its choice one entry along with
     /// `key`, as the arrow keys do, and closes it.
     async fn move_sort_choice(ui: &AppWindow, key: slint::platform::Key) {
@@ -4048,6 +4060,20 @@ mod tests {
                 ]
             );
             assert_eq!(ui.get_artist_tab(), 0);
+            // The tab bar keeps the keys across the page's reload on each
+            // tab it picks, so the arrow keys, Home and End go on moving.
+            pick_tab(&ui, "Overview");
+            for (key, tab) in [
+                (slint::platform::Key::RightArrow, 1),
+                (slint::platform::Key::RightArrow, 2),
+                (slint::platform::Key::LeftArrow, 1),
+                (slint::platform::Key::End, 2),
+                (slint::platform::Key::Home, 0),
+            ] {
+                press(&ui, key);
+                wait_for("the tab the key moved to", || ui.get_artist_tab() == tab).await;
+            }
+            wait_for("her top songs again", || ui.get_tracks().row_count() == 2).await;
             // The About tab has her biography and nothing the Overview has;
             // the Releases tab her albums, grouped. Each is a link of its
             // own, which back and forward step through.

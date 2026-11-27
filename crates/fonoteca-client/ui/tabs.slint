@@ -70,7 +70,10 @@ export component Tabs inherits FocusScope {
             accessible-label: title;
             accessible-item-selectable: true;
             accessible-item-selected: i == root.current;
-            accessible-action-default => { root.pick(i); }
+            accessible-action-default => {
+                root.focus();
+                root.pick(i);
+            }
 
             if root.has-focus && i == root.current: Rectangle {
                 x: 3px;

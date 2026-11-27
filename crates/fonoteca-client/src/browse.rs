@@ -917,6 +917,17 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
         move |index| {
             let ui = weak.unwrap();
             let link = artist_page::link(&ui.get_shown_id(), artist_page::Tab::from_index(index));
+            // No arrival: the tab bar keeps the keys, to go on to the next tab.
+            if push_history(&browser, link) {
+                show(&ui, &browser);
+            }
+        }
+    });
+    ui.on_artist_tab_opened({
+        let (weak, browser) = (ui.as_weak(), browser.clone());
+        move |index| {
+            let ui = weak.unwrap();
+            let link = artist_page::link(&ui.get_shown_id(), artist_page::Tab::from_index(index));
             open(&ui, &browser, link);
         }
     });
@@ -1657,18 +1668,25 @@ pub fn songs_held(browser: &Shared, links: &[String]) -> HashMap<String, Child> 
 }
 
 fn open(ui: &AppWindow, browser: &Shared, link: String) {
-    {
-        let mut b = browser.borrow_mut();
-        if b.history.get(b.at) == Some(&link) {
-            return;
-        }
-        let keep = if b.history.is_empty() { 0 } else { b.at + 1 };
-        b.history.truncate(keep);
-        b.history.push(link);
-        b.at = b.history.len() - 1;
+    if !push_history(browser, link) {
+        return;
     }
     ui.set_arrival(ui.get_arrival() + 1);
     show(ui, browser);
+}
+
+/// Adds `link` to the history after the page on screen, unless it is that
+/// page. Says whether it was added.
+fn push_history(browser: &Shared, link: String) -> bool {
+    let mut b = browser.borrow_mut();
+    if b.history.get(b.at) == Some(&link) {
+        return false;
+    }
+    let keep = if b.history.is_empty() { 0 } else { b.at + 1 };
+    b.history.truncate(keep);
+    b.history.push(link);
+    b.at = b.history.len() - 1;
+    true
 }
 
 /// Moves `by` pages back (-1) or forward (1) through the history.

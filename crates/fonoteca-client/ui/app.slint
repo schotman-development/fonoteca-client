@@ -1463,7 +1463,10 @@ export component AppWindow inherits Window {
     in property <bool> artist-info-answered;
     in property <bool> artist-no-releases;
     in-out property <bool> top-tracks-open;
+    // A tab asked for on the tab bar, which keeps the keys, and one asked for
+    // by a link in the page, which gives them to the page.
     callback artist-tab-picked(index: int);
+    callback artist-tab-opened(index: int);
     // The people credited on an album, and the albums that sound like it.
     in property <[AlbumTile]> credits;
     in property <[AlbumTile]> similar-albums;
@@ -2917,6 +2920,8 @@ export component AppWindow inherits Window {
                     // the header's row has no room for beside its buttons.
                     if Screen.phone && root.may-rate && (root.page == Page.album || root.page == Page.artist): StarRating {
                         alignment: start;
+                        // Under the text, past the small picture and the header's gap.
+                        padding-left: stage.overhang > 0 ? 96px + 24px : 0px;
                         rating: root.header-rating;
                         subject: root.header-title;
                         rate(stars) => { root.rate-header(stars); }
@@ -3000,7 +3005,7 @@ export component AppWindow inherits Window {
                                 font-size: Theme.detail;
                                 font-weight: 600;
                                 min-height: Screen.phone ? Theme.phone-target : 0px;
-                                clicked => { root.artist-tab-picked(1); }
+                                clicked => { root.artist-tab-opened(1); }
                             }
                         }
                     }
@@ -3085,47 +3090,48 @@ export component AppWindow inherits Window {
                     if root.page == Page.history && root.header-facts != "": Note { text: root.header-facts; }
                     // An artist's top songs, five to a column: two columns side by
                     // side where the page is wide, else one with the rest after
-                    // Show more.
-                    if root.page == Page.artist && root.tracks.length > 0: GridLayout {
+                    // Show more. A song not shown is not built, so it takes no room.
+                    if root.page == Page.artist && root.tracks.length > 0: tops := HorizontalLayout {
                         property <bool> two-columns: scroll.visible-width >= 900px;
                         property <int> per-column: 5;
-                        spacing-horizontal: 24px;
-                        for track[at] in root.tracks: TrackRow {
-                            property <bool> shown: at < parent.per-column || parent.two-columns || root.top-tracks-open;
-                            col: parent.two-columns ? floor(at / parent.per-column) : 0;
-                            row: parent.two-columns ? mod(at, parent.per-column) : at;
-                            visible: self.shown;
-                            max-height: self.shown ? 100000px : 0px;
-                            title: track.title;
-                            names: track.names;
-                            split: track.split;
-                            duration: track.duration;
-                            loved: track.loved;
-                            rating: track.rating;
-                            may-rate: root.may-rate;
-                            selected: track.selected;
-                            selecting: root.selected-tiles > 0;
-                            playlists: root.playlist-targets;
-                            taggable: root.tags-offered;
-                            playable: root.can-play;
-                            radio-offered: root.radio-offered;
-                            downloadable: root.can-download && root.may-download;
-                            download-removable: track.downloaded-alone;
-                            downloaded: track.downloaded;
-                            unavailable: track.unavailable;
-                            open(link) => { root.open(link); }
-                            select(range) => { root.select-track(at, range); }
-                            play => { root.play-tracks(at); }
-                            download => { root.download-track(at); }
-                            remove-download => { root.remove-track-download(at); }
-                            queue(next) => { root.queue-tracks(at, 1, next); }
-                            start-radio => { root.start-song-radio(at); }
-                            add-to-playlist(id) => { root.add-track-to-playlist(at, id); }
-                            toggle-love => { root.toggle-love(at); }
-                            rate(stars) => { root.rate-track(at, stars); }
-                            tag => {
-                                root.tag-track(at);
-                                root.ask(Asking.tag-songs);
+                        spacing: 24px;
+                        for column in (tops.two-columns ? 2 : 1): VerticalLayout {
+                            alignment: start;
+                            for track[at] in root.tracks: VerticalLayout {
+                                property <bool> here: tops.two-columns ? floor(at / tops.per-column) == column : (at < tops.per-column || root.top-tracks-open);
+                                if self.here: TrackRow {
+                                    title: track.title;
+                                    names: track.names;
+                                    split: track.split;
+                                    duration: track.duration;
+                                    loved: track.loved;
+                                    rating: track.rating;
+                                    may-rate: root.may-rate;
+                                    selected: track.selected;
+                                    selecting: root.selected-tiles > 0;
+                                    playlists: root.playlist-targets;
+                                    taggable: root.tags-offered;
+                                    playable: root.can-play;
+                                    radio-offered: root.radio-offered;
+                                    downloadable: root.can-download && root.may-download;
+                                    download-removable: track.downloaded-alone;
+                                    downloaded: track.downloaded;
+                                    unavailable: track.unavailable;
+                                    open(link) => { root.open(link); }
+                                    select(range) => { root.select-track(at, range); }
+                                    play => { root.play-tracks(at); }
+                                    download => { root.download-track(at); }
+                                    remove-download => { root.remove-track-download(at); }
+                                    queue(next) => { root.queue-tracks(at, 1, next); }
+                                    start-radio => { root.start-song-radio(at); }
+                                    add-to-playlist(id) => { root.add-track-to-playlist(at, id); }
+                                    toggle-love => { root.toggle-love(at); }
+                                    rate(stars) => { root.rate-track(at, stars); }
+                                    tag => {
+                                        root.tag-track(at);
+                                        root.ask(Asking.tag-songs);
+                                    }
+                                }
                             }
                         }
                     }
@@ -3275,7 +3281,7 @@ export component AppWindow inherits Window {
                         title: "Albums";
                         tiles: root.artist-albums;
                         more: true;
-                        see-all => { root.artist-tab-picked(2); }
+                        see-all => { root.artist-tab-opened(2); }
                         entries: root.can-play ? root.album-entries : [];
                         activated(index, id) => { root.queue-link(root.artist-albums[index].link, id); }
                         open(link) => { root.open(link); }
