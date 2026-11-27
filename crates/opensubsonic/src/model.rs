@@ -447,6 +447,45 @@ pub struct Recorded {
     pub places: Vec<String>,
 }
 
+/// Not in the spec: the booklets of an album, from Fonoteca's
+/// `fonotecaBooklets` extension.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Booklets {
+    pub album_id: String,
+    #[serde(default)]
+    pub item: Vec<Booklet>,
+}
+
+/// Not in the spec: one file that comes with an album, from Fonoteca's
+/// `fonotecaBooklets` extension.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Booklet {
+    pub id: String,
+    /// The file's name without its extension.
+    pub name: String,
+    pub kind: BookletKind,
+    pub content_type: String,
+    /// Bytes.
+    pub size: u64,
+    /// For a PDF the server could count.
+    pub pages: Option<u32>,
+}
+
+/// What sort of file a [`Booklet`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BookletKind {
+    Booklet,
+    Libretto,
+    /// A picture: a back cover, an inlay, a disc.
+    Artwork,
+    /// Any kind a later server adds.
+    #[serde(other)]
+    Other,
+}
+
 /// Not in the spec: a song's level over time, from Fonoteca's
 /// `fonotecaWaveform` extension.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

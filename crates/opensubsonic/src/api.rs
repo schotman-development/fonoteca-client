@@ -13,6 +13,10 @@ use crate::{Client, Error, Params, Result, ServerInfo};
 /// The extension with `getSonicSimilarTracks` and `findSonicPath`.
 pub const SONIC_SIMILARITY: &str = "sonicSimilarity";
 
+/// Fonoteca's extension with `getAlbumBooklets`, `getBookletFile` and
+/// `getBookletPage`.
+pub const FONOTECA_BOOKLETS: &str = "fonotecaBooklets";
+
 /// Which albums `getAlbumList` and `getAlbumList2` return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlbumListType {
@@ -853,6 +857,45 @@ impl Client {
             Params::new().req("id", id).opt("size", size),
         )
         .await
+    }
+
+    /// The booklets, librettos and scans that come with an album, in the
+    /// order of their paths; none gives an empty list. Not in the spec:
+    /// Fonoteca's own call, offered where the client
+    /// [`supports`](Client::supports) [`FONOTECA_BOOKLETS`].
+    pub async fn get_album_booklets(&self, id: &str) -> Result<Booklets> {
+        self.call(
+            "getAlbumBooklets",
+            Params::new().req("id", id),
+            "albumBooklets",
+        )
+        .await
+    }
+
+    /// A booklet's file as it is. Needs the download role. Not in the spec:
+    /// see [`get_album_booklets`](Self::get_album_booklets).
+    pub async fn get_booklet_file(&self, id: &str) -> Result<Vec<u8>> {
+        self.bytes("getBookletFile", Params::new().req("id", id))
+            .await
+    }
+
+    /// One page of a booklet as a JPEG whose longest side is `size` pixels
+    /// (1200 by default, at most 4000). `page` counts from 1 and is ignored
+    /// for a picture, which is scaled to `size`. An unknown booklet or page
+    /// answers error 70; error 0 says the server could not draw the page.
+    /// Not in the spec: see
+    /// [`get_album_booklets`](Self::get_album_booklets).
+    pub async fn get_booklet_page(
+        &self,
+        id: &str,
+        page: u32,
+        size: Option<u32>,
+    ) -> Result<Vec<u8>> {
+        let params = Params::new()
+            .req("id", id)
+            .req("page", page)
+            .opt("size", size);
+        self.bytes("getBookletPage", params).await
     }
 
     /// A song's level over its length, to draw as its waveform. Not in the

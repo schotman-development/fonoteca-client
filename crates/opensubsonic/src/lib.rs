@@ -1562,6 +1562,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn booklets_in_fonotecas_shape() {
+        let (server, log) = serve(|request| {
+            if request.contains("getAlbumBooklets") {
+                json(
+                    r#"{"subsonic-response":{"status":"ok","version":"1.16.1","albumBooklets":{"albumId":"al-1","item":[{"id":"bk-1","name":"Booklet","kind":"booklet","contentType":"application/pdf","size":182345,"pages":32},{"id":"bk-2","name":"Back","kind":"artwork","contentType":"image/jpeg","size":4821},{"id":"bk-3","name":"Notes","kind":"scroll","contentType":"text/plain","size":9}]}}}"#,
+                )
+            } else if request.contains("page=99") {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"The page could not be drawn."}}}"#,
+                )
+            } else {
+                reply("200 OK", "Content-Type: image/jpeg\r\n", "JPEG")
+            }
+        });
+        let client = Client::new(&server, Auth::ApiKey("K".into())).unwrap();
+        let booklets = client.get_album_booklets("al-1").await.unwrap();
+        assert_eq!(booklets.album_id, "al-1");
+        let kinds: Vec<_> = booklets.item.iter().map(|b| (b.kind, b.pages)).collect();
+        assert_eq!(
+            kinds,
+            [
+                (BookletKind::Booklet, Some(32)),
+                (BookletKind::Artwork, None),
+                (BookletKind::Other, None)
+            ]
+        );
+        let page = client.get_booklet_page("bk-1", 3, Some(800)).await.unwrap();
+        assert_eq!(page, b"JPEG");
+        assert!(matches!(
+            client.get_booklet_page("bk-1", 99, None).await,
+            Err(Error::Api(ApiError { code: 0, .. }))
+        ));
+        client.get_booklet_file("bk-1").await.unwrap();
+        let log = log.lock().unwrap();
+        assert!(log[0].contains("/rest/getAlbumBooklets") && log[0].contains("id=al-1"));
+        assert!(log[1].contains("/rest/getBookletPage"));
+        assert!(log[1].contains("page=3") && log[1].contains("size=800"), "{}", log[1]);
+        assert!(!log[2].contains("size="), "{}", log[2]);
+        assert!(log[3].contains("/rest/getBookletFile"));
+    }
+
+    #[tokio::test]
     async fn composers_and_compositions_in_fonotecas_shape() {
         let (server, log) = serve(|request| {
             json(if request.contains("getComposers") {

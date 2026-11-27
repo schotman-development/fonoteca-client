@@ -34,10 +34,11 @@ const FORMAT: u32 = 1;
 /// the moment the app opens; the Settings page asks the server every time,
 /// with [`crate::Client::asking_the_server`], as a kept answer says nothing
 /// of what it is doing now.
-const KEPT: [&str; 21] = [
+const KEPT: [&str; 22] = [
     "getAlbumList2",
     "getAlbum",
     "getAlbumInfo2",
+    "getAlbumBooklets",
     "getArtists",
     "getArtist",
     "getArtistInfo2",
