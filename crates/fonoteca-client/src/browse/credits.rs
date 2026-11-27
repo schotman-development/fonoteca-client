@@ -1,83 +1,81 @@
-//! The album page's Credits shelf: everyone credited on the album once,
-//! grouped by role, with the tracks they are on where not all.
+//! The album page's Credits shelf: a round tile for everyone credited on the
+//! album, once, with their roles and the tracks they are on where not all.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use super::*;
-use crate::{CreditPerson, CreditSection};
 
-/// How many people a role shows before "Show all".
-const PEOPLE_PER_ROLE: usize = 8;
+/// What the role is of: the album's performing, its writing, its direction
+/// or its production, which put its people in that order, other roles last.
+fn group_of(role: &str) -> usize {
+    match role {
+        "artist" | "albumartist" | "performer" | "ensemble" => 0,
+        "composer" | "lyricist" => 1,
+        "conductor" | "arranger" => 2,
+        "producer" | "engineer" | "mixer" | "mastering" => 3,
+        _ => 4,
+    }
+}
 
-/// Roles the shelf knows, in the order it lists them, with their headings.
-/// Any other role comes after them under its own name.
-const KNOWN_ROLES: [(&str, &str); 11] = [
-    ("artist", "Artists"),
-    ("albumartist", "Album artists"),
-    ("composer", "Composers"),
-    ("lyricist", "Lyricists"),
-    ("performer", "Performers"),
-    ("conductor", "Conductors"),
-    ("ensemble", "Ensembles"),
-    ("producer", "Producers"),
-    ("engineer", "Engineers"),
-    ("mixer", "Mixing"),
-    ("mastering", "Mastering"),
-];
-
-/// The people of one role, or of one instrument or other sub-role of it.
+/// One role of a person, with the instrument or other sub-role of it.
 #[derive(Debug, PartialEq)]
-pub(super) struct CreditGroup {
+pub(super) struct RoleCredit {
     pub role: String,
     pub sub_role: Option<String>,
-    pub people: Vec<Credit>,
+}
+
+impl RoleCredit {
+    /// "producer", "album artist", "guitar" for a performer of one, and
+    /// "engineer (recording)" for any other role with a sub-role.
+    fn label(&self) -> String {
+        let role = match self.role.as_str() {
+            "albumartist" => "album artist",
+            other => other,
+        };
+        match (&self.sub_role, role) {
+            (Some(sub), "performer") => sub.clone(),
+            (Some(sub), _) => format!("{role} ({sub})"),
+            (None, _) => role.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct Credit {
+pub(super) struct CreditedPerson {
     pub name: String,
     /// Empty where the server gives the person no id.
     pub artist_id: String,
+    pub roles: Vec<RoleCredit>,
     /// "tracks 1, 3-5"; empty for a person on every track.
     pub tracks: String,
+    pub track_count: usize,
 }
 
-impl CreditGroup {
-    fn heading(&self) -> String {
-        let known = KNOWN_ROLES.iter().find(|(role, _)| *role == self.role);
-        let role = known.map_or_else(
-            || capitalised(&self.role),
-            |(_, heading)| heading.to_string(),
-        );
-        match (&self.sub_role, self.role.as_str()) {
-            (Some(sub), "performer") => capitalised(sub),
-            (Some(sub), _) => format!("{role} · {sub}"),
-            (None, _) => role,
+impl CreditedPerson {
+    /// The roles as one line: "Producer, mixer".
+    fn roles_line(&self) -> String {
+        let mut labels: Vec<String> = Vec::new();
+        for label in self.roles.iter().map(RoleCredit::label) {
+            if !labels.contains(&label) {
+                labels.push(label);
+            }
         }
+        capitalised(&labels.join(", "))
     }
 
-    fn rank(&self) -> usize {
-        (KNOWN_ROLES.iter())
-            .position(|(role, _)| *role == self.role)
-            .unwrap_or(KNOWN_ROLES.len())
+    /// The first group of any of their roles.
+    fn group(&self) -> usize {
+        (self.roles.iter())
+            .map(|credit| group_of(&credit.role))
+            .min()
+            .unwrap_or(usize::MAX)
     }
 
-    /// The group's person `credit` names, added when not there yet; their
-    /// place in `people`.
-    fn person_of(&mut self, credit: &Credited) -> usize {
-        let is_them = |person: &Credit| match credit.artist_id.is_empty() {
-            true => person.artist_id.is_empty() && person.name == credit.name,
-            false => person.artist_id == credit.artist_id,
-        };
-        if let Some(at) = self.people.iter().position(is_them) {
-            return at;
+    fn is(&self, credit: &Credited) -> bool {
+        match credit.artist_id.is_empty() {
+            true => self.artist_id.is_empty() && self.name == credit.name,
+            false => self.artist_id == credit.artist_id,
         }
-        self.people.push(Credit {
-            name: credit.name.clone(),
-            artist_id: credit.artist_id.clone(),
-            tracks: String::new(),
-        });
-        self.people.len() - 1
     }
 }
 
@@ -124,45 +122,54 @@ fn credited(song: &Child) -> Vec<Credited> {
         .collect()
 }
 
-/// Everyone credited on the songs of an album, by role: each person once
-/// per role, with the tracks they are on where that isn't every one.
-pub(super) fn credits(songs: &[Child]) -> Vec<CreditGroup> {
+/// Everyone credited on the songs of an album, each person once with all
+/// their roles and the tracks they are on where that isn't every one: the
+/// album's makers first, in each group those on most tracks.
+pub(super) fn credits_by_person(songs: &[Child]) -> Vec<CreditedPerson> {
     let places = Places::of(songs);
-    // Each group with, for each of its people, the songs they are on.
-    let mut drafts: Vec<(CreditGroup, Vec<BTreeSet<usize>>)> = Vec::new();
+    // Each person with the songs they are on.
+    let mut drafts: Vec<(CreditedPerson, BTreeSet<usize>)> = Vec::new();
     for (index, song) in songs.iter().enumerate() {
         for credit in credited(song) {
-            let at = drafts
-                .iter()
-                .position(|(group, _)| {
-                    group.role == credit.role && group.sub_role == credit.sub_role
-                })
+            let at = (drafts.iter())
+                .position(|(person, _)| person.is(&credit))
                 .unwrap_or_else(|| {
-                    let group = CreditGroup {
-                        role: credit.role.clone(),
-                        sub_role: credit.sub_role.clone(),
-                        people: Vec::new(),
+                    let person = CreditedPerson {
+                        name: credit.name.clone(),
+                        artist_id: credit.artist_id.clone(),
+                        roles: Vec::new(),
+                        tracks: String::new(),
+                        track_count: 0,
                     };
-                    drafts.push((group, Vec::new()));
+                    drafts.push((person, BTreeSet::new()));
                     drafts.len() - 1
                 });
-            let (group, on) = &mut drafts[at];
-            let person = group.person_of(&credit);
-            on.resize_with(group.people.len(), BTreeSet::new);
-            on[person].insert(index);
+            let (person, on) = &mut drafts[at];
+            let role = RoleCredit {
+                role: credit.role,
+                sub_role: credit.sub_role,
+            };
+            if !person.roles.contains(&role) {
+                person.roles.push(role);
+            }
+            on.insert(index);
         }
     }
-    let mut groups: Vec<CreditGroup> = (drafts.into_iter())
-        .map(|(mut group, on)| {
-            for (person, songs_on) in group.people.iter_mut().zip(on) {
-                person.tracks = places.describe(&songs_on, songs.len());
-            }
-            group
+    let mut people: Vec<CreditedPerson> = (drafts.into_iter())
+        .map(|(mut person, on)| {
+            // Stable, so the roles of one group keep the order they came in.
+            person.roles.sort_by_key(|credit| group_of(&credit.role));
+            person.tracks = places.describe(&on, songs.len());
+            person.track_count = on.len();
+            person
         })
         .collect();
-    // Stable, so the sub-roles of one role and the unknown roles keep the order they came in.
-    groups.sort_by_key(CreditGroup::rank);
-    groups
+    people.sort_by(|a, b| {
+        (a.group().cmp(&b.group()))
+            .then_with(|| b.track_count.cmp(&a.track_count))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    people
 }
 
 /// Where each song of an album is: its disc and track number.
@@ -229,55 +236,177 @@ impl Places {
     }
 }
 
-/// The groups as the page draws them, with each cut to its first people
-/// unless `all`.
-fn sections(groups: &[CreditGroup], all: bool) -> ModelRc<CreditSection> {
-    let limit = if all { usize::MAX } else { PEOPLE_PER_ROLE };
-    let sections: Vec<CreditSection> = (groups.iter())
-        .map(|group| {
-            let people: Vec<CreditPerson> = (group.people.iter().take(limit))
-                .map(|person| CreditPerson {
-                    label: person.name.as_str().into(),
-                    link: match person.artist_id.is_empty() {
-                        true => "".into(),
-                        false => format!("artist:{}", person.artist_id).into(),
-                    },
-                    tracks: person.tracks.as_str().into(),
-                })
-                .collect();
-            CreditSection {
-                heading: group.heading().into(),
-                people: ModelRc::new(VecModel::from(people)),
-            }
-        })
+/// What the server says of a credited person's id.
+#[derive(Clone, Debug, PartialEq)]
+enum Lookup {
+    /// An artist, with the id of their picture where they have one.
+    Artist {
+        cover: Option<String>,
+    },
+    NotAnArtist,
+}
+
+/// The server's error code for what isn't there.
+const NOT_FOUND: i64 = 70;
+
+/// The shelf's tiles and the people they are for, and what is known of the
+/// ids of people credited on any album this session.
+#[derive(Default)]
+pub(super) struct Credits {
+    tiles: Rc<VecModel<AlbumTile>>,
+    people: Vec<CreditedPerson>,
+    lookups: HashMap<String, Lookup>,
+    /// The ids being asked of the server, so none is asked twice at once.
+    asking: HashSet<String>,
+}
+
+/// A person's tile: their name, roles and tracks, opening their artist page
+/// where they are an artist, and the id of their picture.
+fn tile(person: &CreditedPerson, lookup: Option<&Lookup>) -> (AlbumTile, Option<String>) {
+    let lines = [person.roles_line(), capitalised(&person.tracks)];
+    let (link, cover) = match (person.artist_id.as_str(), lookup) {
+        ("", _) | (_, Some(Lookup::NotAnArtist)) => (String::new(), None),
+        (id, Some(Lookup::Artist { cover })) => (format!("artist:{id}"), cover.clone()),
+        (id, None) => (format!("artist:{id}"), None),
+    };
+    let lines: Vec<Name> = (lines.into_iter())
+        .filter(|line| !line.is_empty())
+        .map(unlinked)
         .collect();
-    ModelRc::new(VecModel::from(sections))
+    let tile = AlbumTile {
+        title: person.name.as_str().into(),
+        names: names(lines),
+        link: link.into(),
+        ..AlbumTile::default()
+    };
+    (tile, cover)
 }
 
-/// Draws the shelf for the songs of the album on screen; not at all where
-/// nothing is credited.
-pub(super) fn show(ui: &AppWindow, songs: &[Child]) {
-    let groups = credits(songs);
-    let is_cut = groups
-        .iter()
-        .any(|group| group.people.len() > PEOPLE_PER_ROLE);
-    ui.set_credits(sections(&groups, false));
-    ui.set_credits_more(is_cut);
+/// The people in `rows` with an id nothing is known of yet, by row.
+fn to_look_up(
+    people: &[CreditedPerson],
+    rows: Range<usize>,
+    lookups: &HashMap<String, Lookup>,
+) -> Vec<(usize, String)> {
+    rows.filter_map(|row| Some((row, people.get(row)?.artist_id.clone())))
+        .filter(|(_, id)| !id.is_empty() && !lookups.contains_key(id))
+        .collect()
 }
 
-pub(super) fn clear(ui: &AppWindow) {
+/// What the library's artists say of `id`, where it is one of them.
+fn from_library(b: &Browser, id: &str) -> Option<Lookup> {
+    let artist = b.artists.iter().find(|artist| artist.id == id)?;
+    let cover = artist.cover_art.clone().filter(|cover| !cover.is_empty());
+    Some(Lookup::Artist { cover })
+}
+
+/// What the server's answer to asking for an artist settles, nothing where
+/// it didn't (the network failing, say), so it is asked again.
+fn lookup_of(answer: opensubsonic::Result<opensubsonic::ArtistWithAlbumsID3>) -> Option<Lookup> {
+    match answer {
+        Ok(found) => Some(Lookup::Artist {
+            cover: found.artist.cover_art.filter(|cover| !cover.is_empty()),
+        }),
+        Err(opensubsonic::Error::Api(error)) if error.code == NOT_FOUND => {
+            Some(Lookup::NotAnArtist)
+        }
+        Err(_) => None,
+    }
+}
+
+/// Draws the shelf for the songs of the album on screen, with the pictures
+/// the library's artists give; not at all where nothing is credited. The
+/// others are asked for as their tiles come into view.
+pub(super) fn show(ui: &AppWindow, browser: &Shared, songs: &[Child]) {
+    let size = tile_pixels(ui);
+    let wanted = {
+        let mut b = browser.borrow_mut();
+        let people = credits_by_person(songs);
+        for person in &people {
+            if b.credits.lookups.contains_key(&person.artist_id) {
+                continue;
+            }
+            if let Some(found) = from_library(&b, &person.artist_id) {
+                b.credits.lookups.insert(person.artist_id.clone(), found);
+            }
+        }
+        let tiles = (people.iter())
+            .map(|person| tile(person, b.credits.lookups.get(&person.artist_id)))
+            .collect();
+        let (model, wanted) = seen_covers(&b, tiles, size, false);
+        b.credits.tiles = model;
+        b.credits.people = people;
+        ui.set_credits(ModelRc::from(b.credits.tiles.clone()));
+        wanted
+    };
+    side_covers(browser, |b| &b.credits.tiles, wanted, size, false);
+}
+
+pub(super) fn clear(ui: &AppWindow, browser: &Shared) {
+    let mut b = browser.borrow_mut();
+    b.credits.tiles = Rc::default();
+    b.credits.people.clear();
+    b.credits.asking.clear();
     ui.set_credits(ModelRc::default());
-    ui.set_credits_more(false);
+}
+
+/// Asks the server about the people in `rows` nothing is known of, one
+/// after the other, and gives their tiles what it answers.
+fn look_up(ui: &AppWindow, browser: &Shared, rows: Range<usize>) {
+    let (wanted, client, tiles, visit) = {
+        let mut b = browser.borrow_mut();
+        let Some(client) = b.client.clone() else {
+            return;
+        };
+        if b.offline {
+            return;
+        }
+        let mut wanted = to_look_up(&b.credits.people, rows, &b.credits.lookups);
+        wanted.retain(|(_, id)| b.credits.asking.insert(id.clone()));
+        (wanted, client, b.credits.tiles.clone(), b.visit)
+    };
+    let (weak, browser) = (ui.as_weak(), browser.clone());
+    slint::spawn_local(async move {
+        for (row, id) in wanted {
+            let answer = lookup_of(client.get_artist(&id).await);
+            let Some(ui) = weak.upgrade() else { return };
+            let mut b = browser.borrow_mut();
+            if b.visit != visit || !Rc::ptr_eq(&b.credits.tiles, &tiles) {
+                return;
+            }
+            b.credits.asking.remove(&id);
+            let Some(found) = answer else { continue };
+            b.credits.lookups.insert(id, found.clone());
+            let Some(person) = b.credits.people.get(row) else {
+                continue;
+            };
+            let (shown, cover) = tile(person, Some(&found));
+            drop(b);
+            if let Some(mut current) = tiles.row_data(row) {
+                current.link = shown.link;
+                tiles.set_row_data(row, current);
+            }
+            if let Some(cover) = cover {
+                let size = tile_pixels(&ui);
+                side_covers(
+                    &browser,
+                    |b| &b.credits.tiles,
+                    vec![(row, cover)],
+                    size,
+                    false,
+                );
+            }
+        }
+    })
+    .expect("the event loop is running");
 }
 
 pub(super) fn wire(ui: &AppWindow, browser: &Shared) {
-    ui.on_show_all_credits({
+    ui.on_credits_in_view({
         let (weak, browser) = (ui.as_weak(), browser.clone());
-        move || {
-            let ui = weak.unwrap();
-            let groups = credits(&browser.borrow().songs);
-            ui.set_credits(sections(&groups, true));
-            ui.set_credits_more(false);
+        move |first, last| {
+            let rows = first.max(0) as usize..(last + 1).max(0) as usize;
+            look_up(&weak.unwrap(), &browser, rows);
         }
     });
 }
@@ -303,14 +432,18 @@ mod tests {
         who("composer", None, name, id)
     }
 
-    fn tracks_of(group: &CreditGroup) -> Vec<(&str, &str)> {
-        (group.people.iter())
+    fn performer(name: &str, id: &str, sub: &str) -> serde_json::Value {
+        who("performer", Some(sub), name, id)
+    }
+
+    fn tracks_of(people: &[CreditedPerson]) -> Vec<(&str, &str)> {
+        (people.iter())
             .map(|person| (person.name.as_str(), person.tracks.as_str()))
             .collect()
     }
 
-    fn headings(songs: &[Child]) -> Vec<String> {
-        credits(songs).iter().map(CreditGroup::heading).collect()
+    fn names_of(people: &[CreditedPerson]) -> Vec<&str> {
+        people.iter().map(|person| person.name.as_str()).collect()
     }
 
     #[test]
@@ -324,10 +457,8 @@ mod tests {
                 song(n, 1, json!(people))
             })
             .collect();
-        let groups = credits(&songs);
-        assert_eq!(groups.len(), 1);
         assert_eq!(
-            tracks_of(&groups[0]),
+            tracks_of(&credits_by_person(&songs)),
             [("Ada", ""), ("Ben", "tracks 1, 3-5")]
         );
     }
@@ -340,46 +471,75 @@ mod tests {
             song(3, 1, json!([composer("Ada", "a"), composer("Cy", "c")])),
             song(4, 1, json!([composer("Ada", "a"), composer("Cy", "c")])),
         ];
-        let groups = credits(&songs);
         assert_eq!(
-            tracks_of(&groups[0]),
-            [("Ada", ""), ("Ben", "track 2"), ("Cy", "tracks 3, 4")]
+            tracks_of(&credits_by_person(&songs)),
+            [("Ada", ""), ("Cy", "tracks 3, 4"), ("Ben", "track 2")]
         );
     }
 
     #[test]
-    fn one_person_in_two_roles_is_in_both_groups() {
-        let songs = vec![song(
-            1,
-            1,
-            json!([composer("Ada", "a"), who("producer", None, "Ada", "a")]),
-        )];
-        assert_eq!(headings(&songs), ["Composers", "Producers"]);
+    fn one_person_in_two_roles_is_one_person_with_both_roles() {
+        let songs = vec![
+            song(1, 1, json!([who("arranger", None, "Vince", "v")])),
+            song(2, 1, json!([who("conductor", None, "Vince", "v")])),
+        ];
+        let people = credits_by_person(&songs);
+        assert_eq!(people.len(), 1);
+        assert_eq!(people[0].roles_line(), "Arranger, conductor");
+        assert_eq!(people[0].tracks, "");
     }
 
     #[test]
-    fn performers_are_grouped_by_instrument_and_come_after_the_composers() {
+    fn a_performer_is_told_by_instrument_and_other_roles_keep_theirs() {
         let songs = vec![song(
             1,
             1,
             json!([
-                who("performer", Some("Guitar"), "Tom", "t"),
-                who("performer", Some("drums"), "Steve", "s"),
-                composer("Ada", "a"),
+                performer("Tom", "t", "Guitar"),
+                who("producer", None, "Tom", "t"),
+                who("mixer", None, "Tom", "t"),
+                who("engineer", Some("Recording"), "Tom", "t"),
+                who("albumartist", None, "Tom", "t"),
             ]),
         )];
-        assert_eq!(headings(&songs), ["Composers", "Guitar", "Drums"]);
+        assert_eq!(
+            credits_by_person(&songs)[0].roles_line(),
+            "Guitar, album artist, producer, mixer, engineer (recording)"
+        );
     }
 
     #[test]
-    fn a_person_without_an_id_is_told_by_name_and_has_no_link() {
+    fn the_makers_come_first_then_by_most_tracks_then_by_name() {
+        let songs = vec![
+            song(
+                1,
+                1,
+                json!([
+                    who("mixer", None, "Mia", "m"),
+                    who("lyricist", None, "Lou", "l"),
+                    who("arranger", None, "Ari", "r"),
+                    performer("Zed", "z", "drums"),
+                    performer("Abe", "e", "bass"),
+                    who("other", None, "Odd", "o"),
+                ]),
+            ),
+            song(2, 1, json!([performer("Zed", "z", "drums")])),
+        ];
+        assert_eq!(
+            names_of(&credits_by_person(&songs)),
+            ["Zed", "Abe", "Lou", "Ari", "Mia", "Odd"]
+        );
+    }
+
+    #[test]
+    fn a_person_without_an_id_is_told_by_name_and_has_no_id() {
         let songs = vec![
             song(1, 1, json!([composer("Ada", "")])),
             song(2, 1, json!([composer("Ada", ""), composer("Bo", "")])),
         ];
-        let groups = credits(&songs);
-        assert_eq!(tracks_of(&groups[0]), [("Ada", ""), ("Bo", "track 2")]);
-        assert_eq!(groups[0].people[0].artist_id, "");
+        let people = credits_by_person(&songs);
+        assert_eq!(tracks_of(&people), [("Ada", ""), ("Bo", "track 2")]);
+        assert_eq!(people[0].artist_id, "");
     }
 
     #[test]
@@ -390,9 +550,8 @@ mod tests {
             song(1, 2, json!([composer("Ada", "a"), composer("Ben", "b")])),
             song(2, 2, json!([composer("Ada", "a")])),
         ];
-        let groups = credits(&songs);
         assert_eq!(
-            tracks_of(&groups[0]),
+            tracks_of(&credits_by_person(&songs)),
             [("Ada", ""), ("Ben", "tracks 1.2, 2.1")]
         );
     }
@@ -403,11 +562,13 @@ mod tests {
             1,
             1,
             json!([
-                who("arranger", None, "Zed", "z"),
+                who("remixer", None, "Zed", "z"),
                 who("producer", None, "Pat", "p")
             ]),
         )];
-        assert_eq!(headings(&songs), ["Producers", "Arranger"]);
+        let people = credits_by_person(&songs);
+        assert_eq!(names_of(&people), ["Pat", "Zed"]);
+        assert_eq!(people[1].roles_line(), "Remixer");
     }
 
     #[test]
@@ -417,17 +578,93 @@ mod tests {
             "displayComposer": "Ada", "displayArtist": "The Band",
         }))
         .unwrap();
-        let groups = credits(&[song]);
-        let found: Vec<(&str, &str)> = (groups.iter())
-            .map(|group| (group.role.as_str(), group.people[0].name.as_str()))
+        let found: Vec<(String, String)> = (credits_by_person(&[song]).iter())
+            .map(|person| (person.name.clone(), person.roles_line()))
             .collect();
-        assert_eq!(found, [("artist", "The Band"), ("composer", "Ada")]);
+        assert_eq!(
+            found,
+            [
+                ("The Band".to_owned(), "Artist".to_owned()),
+                ("Ada".to_owned(), "Composer".to_owned())
+            ]
+        );
     }
 
     #[test]
-    fn no_credits_at_all_give_no_groups() {
+    fn no_credits_at_all_give_no_people() {
         let song: Child =
             serde_json::from_value(json!({ "id": "s", "isDir": false, "title": "T" })).unwrap();
-        assert!(credits(&[song]).is_empty());
+        assert!(credits_by_person(&[song]).is_empty());
+    }
+
+    #[test]
+    fn a_tile_has_the_name_the_roles_and_the_tracks_and_opens_an_artist() {
+        let songs = vec![
+            song(1, 1, json!([composer("Ada", "a")])),
+            song(
+                2,
+                1,
+                json!([composer("Ada", "a"), performer("Ben", "b", "Guitar")]),
+            ),
+        ];
+        let people = credits_by_person(&songs);
+        let found = Lookup::Artist {
+            cover: Some("c".into()),
+        };
+        let (ben, cover) = tile(&people[0], Some(&found));
+        assert_eq!(ben.title, "Ben");
+        let lines: Vec<String> = (ben.names.iter())
+            .map(|name| name.label.to_string())
+            .collect();
+        assert_eq!(lines, ["Guitar", "Track 2"]);
+        assert_eq!(
+            (ben.link.as_str(), cover.as_deref()),
+            ("artist:b", Some("c"))
+        );
+    }
+
+    #[test]
+    fn a_person_who_is_not_an_artist_or_has_no_id_has_a_tile_that_opens_nothing() {
+        let songs = vec![song(
+            1,
+            1,
+            json!([composer("Ada", "a"), composer("Bo", "")]),
+        )];
+        let people = credits_by_person(&songs);
+        assert_eq!(tile(&people[0], Some(&Lookup::NotAnArtist)).0.link, "");
+        assert_eq!(tile(&people[1], None).0.link, "");
+        assert_eq!(tile(&people[0], None).0.link, "artist:a");
+    }
+
+    #[test]
+    fn only_people_with_an_unknown_id_in_view_are_looked_up() {
+        let songs = vec![song(
+            1,
+            1,
+            json!([
+                composer("Ada", "a"),
+                composer("Ben", "b"),
+                composer("Cy", "c"),
+                composer("Di", "")
+            ]),
+        )];
+        let people = credits_by_person(&songs);
+        let lookups = HashMap::from([("b".to_owned(), Lookup::NotAnArtist)]);
+        assert_eq!(
+            to_look_up(&people, 0..4, &lookups),
+            [(0, "a".to_owned()), (2, "c".to_owned())]
+        );
+        assert!(to_look_up(&people, 3..9, &lookups).is_empty());
+    }
+
+    #[test]
+    fn only_an_answer_that_is_not_found_marks_a_person_as_no_artist() {
+        let not_found = opensubsonic::Error::Api(opensubsonic::ApiError {
+            code: NOT_FOUND,
+            message: Some("No such artist".into()),
+            help_url: None,
+        });
+        assert_eq!(lookup_of(Err(not_found)), Some(Lookup::NotAnArtist));
+        assert_eq!(lookup_of(Err(opensubsonic::Error::Status(500))), None);
     }
 }

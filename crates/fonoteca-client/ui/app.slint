@@ -1,8 +1,8 @@
 import "../data/fonts/Inter-VariableFont.ttf";
 import { Palette, ScrollView, TextEdit } from "std-widgets.slint";
-import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, CreditPerson, CreditSection, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, Spinner, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
+import { AccentChoice, AlbumTile, KindTint, KindTints, Artwork, BottomBar, Button, CheckBox, Choice, CoverGrid, CoverShelf, Drag, EqBandLine, EqBandRow, DownloadButton, EqGraph, EqGridLine, EqPoint, FingerSpeed, FocusBand, FocusMenuEntry, FocusRow, FocusSection, FocusSheet, FocusState, FocusValue, Fling, GenreBanner, GenreGrid, GhostButton, IconButton, LineEdit, Icons, Input, Landing, Link, LyricLine, Links, ListRow, ListeningStats, LyricsView, MenuEntry, MoreMenu, Name, NavEntry, NowPlaying, OutputPicker, PageHeader, PathStep, PlayButton, PlayerBar, LevelPicker, PlayerControls, QueueLine, QueueReorder, QueueSelection, Pressable, RankedList, Screen, SelectionBar, SettingsRow, Sidebar, SignalPathLight, SmartRuleLine, SmartRuleRow, Switch, AccentSwatches, Theme, TopBar, TrackColumn, TrackHeader, TrackLine, TrackLineRow, Spinner, StarRating, TrackMenu, TrackRow, QualityPicker, Waveform } from "components.slint";
 
-export { AccentChoice, AlbumTile, CreditPerson, CreditSection, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
+export { AccentChoice, AlbumTile, Drag, FocusBand, FocusMenuEntry, FocusRow, FocusState, FocusValue, Icons, Input, LyricLine, MenuEntry, Name, NavEntry, QueueSelection, SmartRuleRow, TrackColumn, TrackLine, Waveform }
 
 export enum Step { opening, server, sign-in, listenbrainz, done }
 
@@ -1447,12 +1447,9 @@ export component AppWindow inherits Window {
     // A genre's popular radio stations, for its page.
     in property <StationShelf> genre-radio;
     in property <[Name]> similar;
-    // An album's credits by role, whether the long ones are cut short, and
-    // the albums that sound like it.
-    in property <[CreditSection]> credits;
-    in property <bool> credits-more;
+    // The people credited on an album, and the albums that sound like it.
+    in property <[AlbumTile]> credits;
     in property <[AlbumTile]> similar-albums;
-    callback show-all-credits();
     // An album's booklets, and the page viewer over the window.
     in property <[AlbumTile]> booklets;
     in-out property <bool> booklet-open;
@@ -1467,6 +1464,7 @@ export component AppWindow inherits Window {
     callback turn-booklet(by: int);
     callback retry-booklet();
     callback close-booklet();
+    callback credits-in-view(first: int, last: int);
     // The settings page's word on the server's scan of its libraries, and
     // whether one is going.
     in property <string> scan-status;
@@ -3176,50 +3174,14 @@ export component AppWindow inherits Window {
                         tiles: root.booklets;
                         open(link) => { root.open-booklet(link); }
                     }
-                    if root.page == Page.album && root.credits.length > 0: VerticalLayout {
-                        spacing: 12px;
-                        Text {
-                            text: "Credits";
-                            font-size: Theme.heading;
-                            font-weight: 600;
-                            color: Theme.text;
-                        }
-                        for section in root.credits: VerticalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: section.heading;
-                                font-size: Theme.detail;
-                                font-weight: 600;
-                                color: Theme.muted;
-                            }
-                            FlexboxLayout {
-                                spacing-horizontal: 24px;
-                                spacing-vertical: 4px;
-                                for person in section.people: VerticalLayout {
-                                    Link {
-                                        text: person.label;
-                                        enabled: person.link != "";
-                                        color: Theme.text;
-                                        min-height: Screen.phone ? Theme.phone-target : 0px;
-                                        clicked => { root.open(person.link); }
-                                    }
-                                    if person.tracks != "": Text {
-                                        text: person.tracks;
-                                        font-size: Theme.small;
-                                        color: Theme.muted;
-                                    }
-                                }
-                            }
-                        }
-                        if root.credits-more: HorizontalLayout {
-                            alignment: start;
-                            Link {
-                                text: "Show all";
-                                font-weight: 600;
-                                min-height: Screen.phone ? Theme.phone-target : 0px;
-                                clicked => { root.show-all-credits(); }
-                            }
-                        }
+                    // A person who is not an artist has no link, and their
+                    // tile does nothing.
+                    if root.page == Page.album && root.credits.length > 0: CoverShelf {
+                        title: "Credits";
+                        tiles: root.credits;
+                        round: true;
+                        open(link) => { root.open(link); }
+                        in-view(first, last) => { root.credits-in-view(first, last); }
                     }
                     if root.page == Page.album && root.similar-albums.length > 0: CoverShelf {
                         title: "Similar albums";

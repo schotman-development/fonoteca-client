@@ -4679,13 +4679,13 @@ mod tests {
             assert_eq!(ui.get_about_short(), "Recorded at sea & on land.");
             // The credits come with the tracks: the one artist the songs
             // name, on the song that names them, numbered by disc and track.
+            // The server gave them no id, so the tile opens nothing.
             let credits = ui.get_credits();
             assert_eq!(credits.row_count(), 1);
-            let credited = credits.row_data(0).unwrap();
-            assert_eq!(credited.heading, "Artists");
-            let artist = credited.people.row_data(0).unwrap();
-            assert_eq!((artist.label.as_str(), artist.tracks.as_str()), ("Mara Lind", "track 2.1"));
-            assert!(!ui.get_credits_more());
+            let artist = credits.row_data(0).unwrap();
+            let lines: Vec<String> = artist.names.iter().map(|name| name.label.to_string()).collect();
+            assert_eq!((artist.title.as_str(), artist.link.as_str()), ("Mara Lind", ""));
+            assert_eq!(lines, ["Artist", "Track 2.1"]);
             // The albums that sound like its songs, from the server's matches.
             wait_for("the similar albums", || ui.get_similar_albums().row_count() == 1).await;
             let similar = ui.get_similar_albums().row_data(0).unwrap();

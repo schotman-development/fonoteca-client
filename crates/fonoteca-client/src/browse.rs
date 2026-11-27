@@ -350,6 +350,8 @@ pub struct Browser {
     played: played::Played,
     /// The albums rated highest, for the home page.
     top_rated: top_rated::TopRated,
+    /// The people credited on the album on screen.
+    credits: credits::Credits,
     /// The albums that sound like the album on screen.
     similar_albums: similar_albums::SimilarAlbums,
     /// The booklets of the album on screen and the page being read.
@@ -1772,7 +1774,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_about_short("".into());
     ui.set_about_open(false);
     ui.set_similar(ModelRc::default());
-    credits::clear(ui);
+    credits::clear(ui, browser);
     similar_albums::clear(ui, browser);
     booklets::clear(ui, browser);
     ui.set_genre_tiles(ModelRc::default());
@@ -4526,7 +4528,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             header_image(ui, browser, album.cover_art);
             header_motion(ui, browser, album.id);
 
-            credits::show(ui, &songs);
+            credits::show(ui, browser, &songs);
             let sounding_alike = songs.clone();
             let mut b = browser.borrow_mut();
             let rows: Vec<Track> = songs.chunk_by(same_work).flat_map(work_rows).collect();
