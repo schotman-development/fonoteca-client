@@ -1808,7 +1808,7 @@ mod tests {
                 ""
             };
             ok(&format!(
-                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}{indexed}{smart},{{"name":"sonicSimilarity","versions":[1]}}]"#
+                r#""openSubsonicExtensions":[{{"name":"songLyrics","versions":[1]}},{motion}{waveform}{compositions}{{"name":"fonotecaGenres","versions":[{genre_versions}]}},{banner}{{"name":"fonotecaRadioCatalogue","versions":[1,2]}}{by_id}{organized}{offset}{indexed}{smart},{{"name":"sonicSimilarity","versions":[1]}},{{"name":"fonotecaBooklets","versions":[1]}}]"#
             ))
         } else if !["u=joe&", "u=eve&"]
             .iter()
@@ -1927,6 +1927,22 @@ mod tests {
                 json(
                     r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"No such waveform."}}}"#,
                 )
+            }
+        } else if request.contains("/rest/getAlbumBooklets") {
+            // Night Harbour comes with a three-page libretto and a picture.
+            ok(if id == Some("a1") {
+                r#""albumBooklets":{"albumId":"a1","item":[{"id":"bk-1","name":"Libretto","kind":"libretto","contentType":"application/pdf","size":1000,"pages":3},{"id":"bk-2","name":"Back cover","kind":"artwork","contentType":"image/jpeg","size":500}]}"#
+            } else {
+                r#""albumBooklets":{"albumId":"x"}"#
+            })
+        } else if request.contains("/rest/getBookletPage") {
+            // The server can't draw the libretto's last page.
+            if param("page") == Some("3") {
+                json(
+                    r#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"The page could not be drawn."}}}"#,
+                )
+            } else {
+                reply("200 OK", "image/png", PNG)
             }
         } else if request.contains("/rest/getAlbumInfo2") {
             let notes = r#""albumInfo":{"notes":"Recorded at sea &amp; on land.<br/><a href=\"https://example.org\">Read more</a>"}"#;
@@ -4662,7 +4678,42 @@ mod tests {
             wait_for("the similar albums", || ui.get_similar_albums().row_count() == 1).await;
             let similar = ui.get_similar_albums().row_data(0).unwrap();
             assert_eq!((similar.title.as_str(), similar.link.as_str()), ("Tide Tables", "album:z1"));
-            let at = usize::try_from(ui.get_section()).unwrap();
+            // Its booklets, each with its first page, and a viewer that turns
+            // the pages, stops at the ends and says when one can't be drawn.
+            wait_for("the booklets", || ui.get_booklets().row_count() == 2).await;
+            let libretto = ui.get_booklets().row_data(0).unwrap();
+            assert_eq!(libretto.names.row_data(0).unwrap().label, "Libretto · 3 pages");
+            let picture = ui.get_booklets().row_data(1).unwrap();
+            assert_eq!(picture.names.row_data(0).unwrap().label, "Artwork");
+            wait_for("the first pages", || {
+                ui.get_booklets().iter().all(|tile| tile.cover.size().width > 0)
+            })
+            .await;
+            ui.invoke_open_booklet("booklet:0".into());
+            wait_for("the first page", || ui.get_booklet_page().size().width > 0).await;
+            assert_eq!(ui.get_booklet_position(), "1 of 3");
+            assert!(!ui.get_booklet_can_go_back() && ui.get_booklet_can_go_on());
+            press(&ui, slint::platform::Key::LeftArrow);
+            assert_eq!(ui.get_booklet_position(), "1 of 3", "the first page is the start");
+            press(&ui, slint::platform::Key::RightArrow);
+            press(&ui, slint::platform::Key::RightArrow);
+            wait_for("the notice", || ui.get_booklet_notice() != "").await;
+            assert_eq!(ui.get_booklet_position(), "3 of 3");
+            assert_eq!(ui.get_booklet_notice(), "The server could not draw this page");
+            assert!(ui.get_booklet_can_go_back() && !ui.get_booklet_can_go_on());
+            press(&ui, slint::platform::Key::LeftArrow);
+            wait_for("the page back", || ui.get_booklet_notice() == "" && ui.get_booklet_page().size().width > 0).await;
+            assert_eq!(ui.get_booklet_position(), "2 of 3");
+            press(&ui, slint::platform::Key::Escape);
+            assert!(!ui.get_booklet_open());
+            ui.invoke_open_booklet("booklet:0".into());
+            assert_eq!(ui.get_booklet_position(), "2 of 3", "opened again where it was left");
+            press(&ui, slint::platform::Key::Escape);
+            ui.invoke_open_booklet("booklet:1".into());
+            wait_for("the picture", || ui.get_booklet_page().size().width > 0).await;
+            assert_eq!(ui.get_booklet_position(), "", "a picture has no page counter");
+            press(&ui, slint::platform::Key::Escape);
+            let at =usize::try_from(ui.get_section()).unwrap();
             assert_eq!(ui.get_sections().row_data(at).unwrap(), "Albums", "an album is among the albums");
             assert_eq!(ui.get_header_title(), "Night Harbour");
             assert_eq!(ui.get_header_facts(), "2021 · Folk · 2 tracks, 8 minutes");

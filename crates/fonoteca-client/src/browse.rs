@@ -43,6 +43,7 @@ use crate::{
     catalogue, logo_ink, offline, prefs, zone,
 };
 
+mod booklets;
 pub(crate) mod created_for;
 mod credits;
 mod fields;
@@ -351,6 +352,8 @@ pub struct Browser {
     top_rated: top_rated::TopRated,
     /// The albums that sound like the album on screen.
     similar_albums: similar_albums::SimilarAlbums,
+    /// The booklets of the album on screen and the page being read.
+    booklets: booklets::Booklets,
     /// The album or artist on screen whose header shows its rating.
     header_rated: Option<String>,
     /// The radio directory once asked, its countries' names by code, its
@@ -892,6 +895,7 @@ pub fn wire(ui: &AppWindow, browser: &Shared) {
     search::wire(ui, browser);
     focus::wire(ui, browser);
     credits::wire(ui, browser);
+    booklets::wire(ui, browser);
     let mut carried = DataTransfer::default();
     carried.set_plain_text("playlist".into());
     ui.global::<Drag>().set_data(carried);
@@ -1770,6 +1774,7 @@ fn show(ui: &AppWindow, browser: &Shared) {
     ui.set_similar(ModelRc::default());
     credits::clear(ui);
     similar_albums::clear(ui, browser);
+    booklets::clear(ui, browser);
     ui.set_genre_tiles(ModelRc::default());
     ui.set_genre_artists(ModelRc::default());
     ui.set_genre_banner(Image::default());
@@ -4529,6 +4534,7 @@ fn album(ui: &AppWindow, browser: &Shared, id: String) {
             b.album = Some(shown);
             drop(b);
             similar_albums::ask(ui, browser, &album_id, &sounding_alike);
+            booklets::ask(ui, browser, &album_id);
             show_downloads(ui, browser);
             #[cfg(not(target_family = "wasm"))]
             crate::downloads::follow_shown(ui, browser);

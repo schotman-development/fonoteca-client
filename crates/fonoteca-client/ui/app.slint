@@ -1453,6 +1453,20 @@ export component AppWindow inherits Window {
     in property <bool> credits-more;
     in property <[AlbumTile]> similar-albums;
     callback show-all-credits();
+    // An album's booklets, and the page viewer over the window.
+    in property <[AlbumTile]> booklets;
+    in-out property <bool> booklet-open;
+    in property <string> booklet-title;
+    in property <image> booklet-page;
+    in property <string> booklet-position;
+    in property <bool> booklet-can-go-back;
+    in property <bool> booklet-can-go-on;
+    in property <bool> booklet-loading;
+    in property <string> booklet-notice;
+    callback open-booklet(link: string);
+    callback turn-booklet(by: int);
+    callback retry-booklet();
+    callback close-booklet();
     // The settings page's word on the server's scan of its libraries, and
     // whether one is going.
     in property <string> scan-status;
@@ -3208,6 +3222,11 @@ export component AppWindow inherits Window {
                         entries: root.can-play ? root.album-entries : [];
                         activated(index, id) => { root.queue-link(root.similar-albums[index].link, id); }
                         open(link) => { root.open(link); }
+                    }
+                    if root.page == Page.album && root.booklets.length > 0: CoverShelf {
+                        title: "Booklets";
+                        tiles: root.booklets;
+                        open(link) => { root.open-booklet(link); }
                     }
                     // A genre's albums, artists and popular radio stations
                     // sliding by, each with all of them behind "See all",
@@ -5341,6 +5360,124 @@ export component AppWindow inherits Window {
                             back-clicked => {
                                 root.problem = "";
                                 root.step = Step.sign-in;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A booklet's pages over the page, above the player bar, which plays on.
+    // The arrows turn the page, Escape or Android's back closes it, and a
+    // swipe sideways turns it on a phone.
+    if root.step == Step.done && root.booklet-open: Rectangle {
+        y: root.safe-area-insets.top;
+        height: root.height - root.safe-area-insets.top - root.bottom-inset - root.player-bar-height - root.bottom-bar-height;
+        background: Palette.background;
+        // Keeps clicks from reaching the page below.
+        TouchArea { }
+        FocusScope {
+            accessible-role: groupbox;
+            accessible-label: root.booklet-title;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape || event.text == Key.Back {
+                    root.close-booklet();
+                    Input.refocus += 1;
+                    return accept;
+                }
+                if event.text == Key.LeftArrow {
+                    root.turn-booklet(-1);
+                    return accept;
+                }
+                if event.text == Key.RightArrow {
+                    root.turn-booklet(1);
+                    return accept;
+                }
+                reject
+            }
+            VerticalLayout {
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.booklet-title;
+                        font-size: Theme.heading;
+                        font-weight: 600;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.booklet-position;
+                        font-size: Theme.detail;
+                        color: Theme.muted;
+                        vertical-alignment: center;
+                    }
+                    IconButton {
+                        icon: Icons.back;
+                        label: "Previous page";
+                        enabled: root.booklet-can-go-back;
+                        clicked => { root.turn-booklet(-1); }
+                    }
+                    IconButton {
+                        icon: Icons.forward;
+                        label: "Next page";
+                        enabled: root.booklet-can-go-on;
+                        clicked => { root.turn-booklet(1); }
+                    }
+                    IconButton {
+                        icon: Icons.close;
+                        label: "Close";
+                        clicked => {
+                            root.close-booklet();
+                            Input.refocus += 1;
+                        }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+                    SwipeGestureHandler {
+                        handle-swipe-left: root.booklet-can-go-on;
+                        handle-swipe-right: root.booklet-can-go-back;
+                        swiped => {
+                            root.turn-booklet(self.current-position.x < self.pressed-position.x ? 1 : -1);
+                        }
+                    }
+                    Image {
+                        source: root.booklet-page;
+                        image-fit: contain;
+                        accessible-role: image;
+                        accessible-label: root.booklet-title + " " + root.booklet-position;
+                    }
+                    if root.booklet-loading: Text {
+                        text: "Loading…";
+                        font-size: Theme.body;
+                        color: Theme.muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        accessible-live-region: polite;
+                    }
+                    if root.booklet-notice != "": VerticalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        padding: 16px;
+                        Text {
+                            text: root.booklet-notice;
+                            font-size: Theme.body;
+                            color: Theme.muted;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            accessible-live-region: polite;
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Try again";
+                                clicked => { root.retry-booklet(); }
                             }
                         }
                     }
