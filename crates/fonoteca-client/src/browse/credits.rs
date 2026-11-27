@@ -269,13 +269,15 @@ fn tile(person: &CreditedPerson, lookup: Option<&Lookup>) -> (AlbumTile, Option<
         (id, Some(Lookup::Artist { cover })) => (format!("artist:{id}"), cover.clone()),
         (id, None) => (format!("artist:{id}"), None),
     };
-    let lines: Vec<Name> = (lines.into_iter())
+    // One name, not two: names are joined by commas, which would run the
+    // roles into the tracks.
+    let lines: Vec<&str> = (lines.iter())
+        .map(String::as_str)
         .filter(|line| !line.is_empty())
-        .map(unlinked)
         .collect();
     let tile = AlbumTile {
         title: person.name.as_str().into(),
-        names: names(lines),
+        names: names(vec![unlinked(lines.join(" · "))]),
         link: link.into(),
         ..AlbumTile::default()
     };
@@ -616,7 +618,7 @@ mod tests {
         let lines: Vec<String> = (ben.names.iter())
             .map(|name| name.label.to_string())
             .collect();
-        assert_eq!(lines, ["Guitar", "Track 2"]);
+        assert_eq!(lines, ["Guitar · Track 2"]);
         assert_eq!(
             (ben.link.as_str(), cover.as_deref()),
             ("artist:b", Some("c"))

@@ -4685,7 +4685,7 @@ mod tests {
             let artist = credits.row_data(0).unwrap();
             let lines: Vec<String> = artist.names.iter().map(|name| name.label.to_string()).collect();
             assert_eq!((artist.title.as_str(), artist.link.as_str()), ("Mara Lind", ""));
-            assert_eq!(lines, ["Artist", "Track 2.1"]);
+            assert_eq!(lines, ["Artist · Track 2.1"]);
             // The albums that sound like its songs, from the server's matches.
             wait_for("the similar albums", || ui.get_similar_albums().row_count() == 1).await;
             let similar = ui.get_similar_albums().row_data(0).unwrap();
