@@ -18,6 +18,8 @@ const SMALLEST_PAGE_PIXELS: u32 = 600;
 const LARGEST_PAGE_PIXELS: u32 = 4000;
 /// What a tile's link starts with, then the booklet's place on the shelf.
 const LINK_PREFIX: &str = "booklet:";
+/// The error code the server gives a booklet or page that is not there.
+const NO_SUCH_PAGE_CODE: i64 = 70;
 /// The error code the server gives a page it could not draw.
 const COULD_NOT_DRAW_CODE: i64 = 0;
 const COULD_NOT_DRAW: &str = "The server could not draw this page";
@@ -42,6 +44,15 @@ pub(super) struct Booklets {
 struct Viewing {
     item: usize,
     page: u32,
+    /// The last page, once the server has said where a document it could
+    /// not count ends.
+    last: Option<u32>,
+}
+
+impl Viewing {
+    fn count(&self, item: &Booklet) -> Option<u32> {
+        page_count(item).or(self.last)
+    }
 }
 
 /// The pages last seen at full size, the oldest let go first.
@@ -84,23 +95,33 @@ fn caption(item: &Booklet) -> String {
     }
 }
 
-/// How many pages there are to turn: a picture is one.
-fn page_count(item: &Booklet) -> u32 {
-    item.pages.unwrap_or(1).max(1)
+/// How many pages there are to turn: a picture is one. A document the
+/// server could not count has no count, and is turned until the server says
+/// there is no such page.
+fn page_count(item: &Booklet) -> Option<u32> {
+    match item.pages {
+        Some(pages) => Some(pages.max(1)),
+        None if item.kind == BookletKind::Artwork || item.content_type.starts_with("image/") => {
+            Some(1)
+        }
+        None => None,
+    }
 }
 
 /// The page `by` pages on from `page` (counted from 1), stopping at the
-/// first and the last of `count`.
-fn turned(page: u32, count: u32, by: i32) -> u32 {
-    page.saturating_add_signed(by).clamp(1, count.max(1))
+/// first and the last of `count` where it is known.
+fn turned(page: u32, count: Option<u32>, by: i32) -> u32 {
+    let page = page.saturating_add_signed(by).max(1);
+    count.map_or(page, |count| page.min(count.max(1)))
 }
 
-/// "7 of 32", nothing for a single page.
-fn position(page: u32, count: u32) -> String {
-    if count > 1 {
-        format!("{page} of {count}")
-    } else {
-        String::new()
+/// "7 of 32", "page 7" where the count is not known, nothing for a single
+/// page.
+fn position(page: u32, count: Option<u32>) -> String {
+    match count {
+        Some(count) if count > 1 => format!("{page} of {count}"),
+        Some(_) => String::new(),
+        None => format!("page {page}"),
     }
 }
 
@@ -264,7 +285,11 @@ fn open(ui: &AppWindow, browser: &Shared, link: &str) {
     let page = (b.booklets.left_on.get(&booklet.id))
         .map_or(1, |&page| turned(page, page_count(booklet), 0));
     ui.set_booklet_title(booklet.name.as_str().into());
-    b.booklets.viewing = Some(Viewing { item, page });
+    b.booklets.viewing = Some(Viewing {
+        item,
+        page,
+        last: None,
+    });
     drop(b);
     ui.set_booklet_page(Image::default());
     ui.set_booklet_open(true);
@@ -278,7 +303,7 @@ fn turn(ui: &AppWindow, browser: &Shared, by: i32) {
         let Some(viewing) = &mut booklets.viewing else {
             return;
         };
-        let count = page_count(&booklets.items[viewing.item]);
+        let count = viewing.count(&booklets.items[viewing.item]);
         let page = turned(viewing.page, count, by);
         if page == viewing.page {
             return;
@@ -309,13 +334,13 @@ fn show_page(ui: &AppWindow, browser: &Shared) {
             return;
         };
         let item = &booklets.items[viewing.item];
-        let (id, page, count) = (item.id.clone(), viewing.page, page_count(item));
+        let (id, page, count) = (item.id.clone(), viewing.page, viewing.count(item));
         booklets.asked += 1;
         (id, page, count, booklets.asked)
     };
     ui.set_booklet_position(position(page, count).into());
     ui.set_booklet_can_go_back(page > 1);
-    ui.set_booklet_can_go_on(page < count);
+    ui.set_booklet_can_go_on(count.is_none_or(|count| page < count));
     ui.set_booklet_notice("".into());
     ui.set_booklet_loading(true);
     let (weak, browser) = (ui.as_weak(), browser.clone());
@@ -324,6 +349,10 @@ fn show_page(ui: &AppWindow, browser: &Shared) {
         let result = page_image(&browser, &id, page, pixels).await;
         let Some(ui) = weak.upgrade() else { return };
         if browser.borrow().booklets.asked != ticket {
+            return;
+        }
+        if ended_uncounted(&browser, page, &result) {
+            show_page(&ui, &browser);
             return;
         }
         ui.set_booklet_loading(false);
@@ -336,6 +365,25 @@ fn show_page(ui: &AppWindow, browser: &Shared) {
         }
     })
     .expect("the event loop is running");
+}
+
+/// Whether `result` says the document, which had no count, ends before
+/// `page`; the viewer then goes back to its last page and keeps that as the
+/// count.
+fn ended_uncounted(browser: &Shared, page: u32, result: &Result<Image, Error>) -> bool {
+    let no_such_page = matches!(result, Err(Error::Api(api)) if api.code == NO_SUCH_PAGE_CODE);
+    let mut b = browser.borrow_mut();
+    let booklets = &mut b.booklets;
+    let Some(viewing) = &mut booklets.viewing else {
+        return false;
+    };
+    let uncounted = viewing.count(&booklets.items[viewing.item]).is_none();
+    if !(no_such_page && uncounted && page > 1) {
+        return false;
+    }
+    viewing.last = Some(page - 1);
+    viewing.page = page - 1;
+    true
 }
 
 pub(super) fn wire(ui: &AppWindow, browser: &Shared) {
@@ -380,29 +428,33 @@ mod tests {
 
     #[test]
     fn pages_stop_at_the_first_and_the_last() {
-        assert_eq!(turned(1, 32, -1), 1);
-        assert_eq!(turned(1, 32, 1), 2);
-        assert_eq!(turned(32, 32, 1), 32);
-        assert_eq!(turned(7, 32, -1), 6);
-        assert_eq!(turned(5, 1, 1), 1, "a picture has one page");
+        assert_eq!(turned(1, Some(32), -1), 1);
+        assert_eq!(turned(1, Some(32), 1), 2);
+        assert_eq!(turned(32, Some(32), 1), 32);
+        assert_eq!(turned(7, Some(32), -1), 6);
+        assert_eq!(turned(5, Some(1), 1), 1, "a picture has one page");
         assert_eq!(
-            turned(40, 32, 0),
+            turned(40, Some(32), 0),
             32,
             "a page past the end comes back to it"
         );
+        assert_eq!(turned(40, None, 1), 41, "no count, no end");
+        assert_eq!(turned(1, None, -1), 1);
     }
 
     #[test]
     fn a_picture_has_one_page_and_a_document_without_a_count_too() {
-        assert_eq!(page_count(&booklet("artwork", None)), 1);
-        assert_eq!(page_count(&booklet("booklet", Some(0))), 1);
-        assert_eq!(page_count(&booklet("booklet", Some(12))), 12);
+        assert_eq!(page_count(&booklet("artwork", None)), Some(1));
+        assert_eq!(page_count(&booklet("booklet", Some(0))), Some(1));
+        assert_eq!(page_count(&booklet("booklet", Some(12))), Some(12));
+        assert_eq!(page_count(&booklet("booklet", None)), None);
     }
 
     #[test]
     fn the_counter_is_left_out_for_a_single_page() {
-        assert_eq!(position(7, 32), "7 of 32");
-        assert_eq!(position(1, 1), "");
+        assert_eq!(position(7, Some(32)), "7 of 32");
+        assert_eq!(position(1, Some(1)), "");
+        assert_eq!(position(7, None), "page 7");
     }
 
     #[test]
